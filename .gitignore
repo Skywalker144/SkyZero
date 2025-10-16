@@ -1,1 +1,20 @@
+# 这是一个注释，Git会忽略它
+
+# 忽略所有以 .pt 结尾的文件 (PyTorch模型文件)
 *.pt
+
+# 忽略所有以 .pth 结尾的文件 (另一种常见的模型后缀)
+*.pth
+
+# 根据你的目录结构，直接忽略 checkpoints 文件夹也是好主意
+# 末尾的 / 表示这是一个文件夹
+gomoku_checkpoints/
+
+# 你可以添加其他任何需要忽略的文件或文件夹
+# 例如，Python的虚拟环境文件夹
+venv/
+__pycache__/
+
+# 操作系统自动生成的文件
+.DS_Store
+Thumbs.db
