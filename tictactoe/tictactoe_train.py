@@ -9,7 +9,7 @@ if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
     game = TicTacToe(history_step=3)
     model = ResNet(game, num_blocks=1, history_step=3).to('cuda')
-    optimizer = optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-4)
     args = {
         'mode': 'train',
         'num_simulations': 200,
@@ -37,7 +37,7 @@ if __name__ == '__main__':
 
         # RR: 256*5/20/8=8
 
-        'target_ReplayRatio': 16,
+        'target_ReplayRatio': 10,
 
         'playout_cap_min_ratio': 0.2,
         'playout_cap_exponent': 1.5,
@@ -45,7 +45,7 @@ if __name__ == '__main__':
         'policy_training_threshold': 0.5,
 
         'device': 'cuda',
-        'savetime_interval': 30,
+        'savetime_interval': 120,
         'file_name': 'tictactoe',
     }
 

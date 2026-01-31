@@ -15,7 +15,6 @@ if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
     game = TicTacToe(history_step=3)
     model = ResNet(game, num_blocks=1, history_step=3).to('cuda')
-    model.load_state_dict(torch.load(f'tictactoe_model.pt'))
     optimizer = optim.Adam(model.parameters(), lr=0.003)
     args = {
         'mode': 'eval',
@@ -25,10 +24,12 @@ if __name__ == '__main__':
         'dirichlet_epsilon': 0,
         'dirichlet_alpha': 0.1,
         'buffer_size': 2000,
+        'file_name': 'tictactoe',
         'device': 'cuda'
     }
 
     alphazero = AlphaZero(game, model, optimizer, args)
+    alphazero.load_checkpoint()
 
     to_play = int(input(
         f'1 for the first move and -1 for the second move\n'
