@@ -67,7 +67,7 @@ class MCTS:
         child_visit_counts = np.array([child.n for child in node.children])
         child_values = np.array([child.v for child in node.children])
 
-        q_values = child_values / (child_visit_counts + 1e-8)
+        q_values = -child_values / (child_visit_counts + 1e-8)
         u_values = self.args['c_puct'] * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
 
         puct_scores = q_values + u_values
@@ -95,8 +95,6 @@ class MCTS:
         policy /= policy_sum
 
         if node.parent is None and self.args['mode'] == 'train':
-            # policy = add_dirichlet_noise_origin(policy, self.args['dirichlet_alpha'], self.args['dirichlet_epsilon'])
-            # policy = add_dirichlet_noise_sm(policy, self.args['dirichlet_epsilon'])
             policy = add_dirichlet_noise(policy, self.args['dirichlet_alpha'], self.args['dirichlet_epsilon'])
 
             step_count = np.count_nonzero(state)
@@ -143,11 +141,9 @@ class MCTS:
                 node = self.select(node)
 
             if self.game.is_terminal(node.state):
-                value = self.game.get_winner(node.state)
+                value = self.game.get_winner(node.state) * node.to_play
             else:
                 value = self.expand(node)
-
-            value *= -node.to_play
 
             self.backpropagate(node, value)
 
@@ -317,7 +313,7 @@ class AlphaZero:
             recent_total = len(recent_winners)
 
             avg_step_time = sum(recent_step_times) / len(recent_step_times) if recent_step_times else 0
-            
+
             current_buffer_size = len(self.replay_buffer)
             print(f'\n[Game {game_count}] Steps: {len(memory)}, Winner: {int(winner):+d}, '
                   f'Buffer: {current_buffer_size}, Avg Len: {avg_game_len:.1f}')
@@ -342,7 +338,7 @@ class AlphaZero:
 
             self.model.train()
             train_losses = []
-            
+
             train_start = time.time()
             for step in range(train_steps_per_generation):
                 batch = self.replay_buffer.sample(batch_size)
@@ -357,7 +353,7 @@ class AlphaZero:
                 recent_train_times.pop(0)
             avg_train_time = sum(recent_train_times) / len(recent_train_times)
             time_per_step = train_time / train_steps_per_generation
-            
+
             avg_loss = np.mean(train_losses)
             self.losses.append(avg_loss)
             print(f'  [Training] {train_steps_per_generation} steps, Avg Loss: {avg_loss:.4f}, '
@@ -443,7 +439,7 @@ class AlphaZero:
 
             pattern = os.path.join(checkpoint_dir, "*.pth")
             checkpoint_files = glob.glob(pattern)
-            
+
             if not checkpoint_files:
                 print(f"No checkpoint files found in: {checkpoint_dir}")
                 return False
