@@ -11,16 +11,18 @@ if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
     game = Gomoku(board_size=9, history_step=4)
     model = ResNet(game, num_blocks=4, num_channels=256, history_step=4).to('cuda')
-    model.load_state_dict(torch.load(f'gomoku_model.pt'))
     optimizer = None
     args = {
         'mode': 'eval',
-        'num_simulations': 800,
+        'num_simulations': 600,
         'c_puct': 1,
+        'buffer_size': 100000,
+        'file_name': 'gomoku',
         'device': 'cuda'
     }
 
     alphazero = AlphaZero(game, model, optimizer, args)
+    alphazero.load_checkpoint()
 
     to_play = int(input(
         f'1 for the first move and -1 for the second move\n'
