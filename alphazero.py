@@ -29,16 +29,6 @@ class Node:
     def is_expanded(self):
         return len(self.children) > 0
 
-    def get_puct(self, c):
-        # PUCT Formula:
-        # PUCT = v / n + c_puct * prior * sqrt(N) / (1 + n)
-        if self.n == 0:
-            q = 0
-        else:
-            q = self.v / self.n
-        u = c * self.prior * (math.sqrt(self.parent.n) / (self.n + 1))
-        return q + u
-
     def update(self, value):
         self.v += value
         self.n += 1
@@ -50,16 +40,6 @@ class MCTS:
         self.args = args.copy()
         self.model = model.to(args['device'])
         self.model.eval()
-
-    def select__(self, node):
-        max_puct = -np.inf
-        selected_child = None
-        for child in node.children:
-            puct = child.get_puct(self.args['c_puct'])
-            if puct > max_puct:
-                max_puct = puct
-                selected_child = child
-        return selected_child
 
     def select(self, node):
 
