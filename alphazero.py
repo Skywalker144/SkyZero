@@ -9,8 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from replay_buffer import ReplayBuffer
-from utils import add_dirichlet_noise, print_board, temperature_transform, \
-    random_augment_batch
+from utils import add_dirichlet_noise, print_board, temperature_transform, random_augment_batch
 
 
 class Node:
@@ -85,8 +84,6 @@ class MCTS:
 
             policy = temperature_transform(policy, root_temperature)
 
-        # print(f'policy after noise: {policy}')
-
         for action, prob in enumerate(policy):
             if prob > 0:
                 child = Node(
@@ -106,7 +103,7 @@ class MCTS:
             node = node.parent
 
     @torch.inference_mode()
-    def search(self, state, to_play, process_bar=False, num_simulations=None):
+    def search(self, state, to_play, num_simulations=None, process_bar=False):
 
         root = Node(state, to_play)
 
@@ -170,7 +167,7 @@ class AlphaZero:
 
             num_simulations = self._get_randomized_simulations()
 
-            action_probs = self.mcts.search(state, to_play, num_simulations=num_simulations)
+            action_probs = self.mcts.search(state, to_play, num_simulations)
 
             memory.append((state, action_probs, to_play, num_simulations))
             if len(memory) >= self.args['zero_t_step']:
@@ -185,11 +182,13 @@ class AlphaZero:
             to_play = -to_play
 
         final_state = state
-        last_to_play = -to_play
-        value = self.game.get_winner(state) * last_to_play
+        # last_to_play = -to_play
+        # value = self.game.get_winner(state) * last_to_play
+        winner = self.game.get_winner(final_state)
         return_memory = []
         for state, policy_target, to_play, num_sims in memory:
-            outcome = value if to_play == last_to_play else -value
+            # outcome = value if to_play == last_to_play else -value
+            outcome = winner * to_play
             return_memory.append((
                 self.game.encode_state(state, to_play),
                 policy_target,
@@ -207,8 +206,7 @@ class AlphaZero:
 
         states = torch.tensor(np.array(states), dtype=torch.float32, device=self.args['device'])
         policy_targets = torch.tensor(np.array(policy_targets), dtype=torch.float32, device=self.args['device'])
-        value_targets = torch.tensor(np.array(value_targets).reshape(-1, 1), dtype=torch.float32,
-                                     device=self.args['device'])
+        value_targets = torch.tensor(np.array(value_targets).reshape(-1, 1), dtype=torch.float32, device=self.args['device'])
 
         policy, value = self.model(states)
 
@@ -300,7 +298,7 @@ class AlphaZero:
             print(f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
                   f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%)')
             print(f'  Selfplay Time: {selfplay_time:.2f}s ({step_count} steps), '
-                  f'Recent {len(recent_step_times)} steps Avg: {avg_step_time*1000:.1f}ms/step')
+                  f'Recent {len(recent_step_times)} steps Avg: {avg_step_time * 1000:.1f}ms/step')
 
             if current_buffer_size < min_buffer_size:
                 print(f'  [Skip Training] Buffer {current_buffer_size} < min_buffer_size {min_buffer_size}')
@@ -338,7 +336,7 @@ class AlphaZero:
             self.losses.append(avg_loss)
             print(f'  [Training] {train_steps_per_generation} steps, Avg Loss: {avg_loss:.4f}, '
                   f'Total Steps: {total_train_steps}')
-            print(f'  Train Time: {train_time:.2f}s, Recent {len(recent_train_times)} Avg: {avg_train_time:.2f}s, Per Step: {time_per_step*1000:.1f}ms')
+            print(f'  Train Time: {train_time:.2f}s, Recent {len(recent_train_times)} Avg: {avg_train_time:.2f}s, Per Step: {time_per_step * 1000:.1f}ms')
 
             num_games_per_generation = int(self.args['batch_size'] * self.args[
                 'train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
@@ -346,7 +344,7 @@ class AlphaZero:
             total_elapsed = time.time() - total_start_time
             avg_time_per_game = total_elapsed / game_count
             print(f'  num_games_per_generation: {num_games_per_generation}')
-            print(f'  Total Elapsed: {total_elapsed/60:.1f}min, Avg/Game: {avg_time_per_game:.2f}s')
+            print(f'  Total Elapsed: {total_elapsed / 60:.1f}min, Avg/Game: {avg_time_per_game:.2f}s')
 
             plt.figure(figsize=(10, 6))
             plt.yscale('log')

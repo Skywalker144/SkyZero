@@ -45,7 +45,7 @@ if __name__ == '__main__':
         'policy_training_threshold': 0.5,
 
         'device': 'cuda',
-        'savetime_interval': 120,
+        'savetime_interval': 1200,
         'file_name': 'tictactoe',
     }
 
