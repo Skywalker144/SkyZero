@@ -259,6 +259,9 @@ class AlphaZero:
         print(f'Save Time Interval: {savetime_interval}s ({savetime_interval / 60:.1f}min)')
         print()
 
+        num_games_per_generation = 20
+        init_flag = True
+
         while True:
 
             self.model.eval()
@@ -301,9 +304,9 @@ class AlphaZero:
             if current_buffer_size < min_buffer_size:
                 print(f'  [Skip Training] Buffer {current_buffer_size} < min_buffer_size {min_buffer_size}')
                 continue
-
-            num_games_per_generation = int(self.args['batch_size'] * self.args[
-                'train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
+            elif init_flag:
+                num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
+                init_flag = False
 
             current_time = time.time()
             if current_time - last_save_time >= savetime_interval:
@@ -338,7 +341,7 @@ class AlphaZero:
             print(f'  [Training] {train_steps_per_generation} steps, Avg Loss: {avg_loss:.4f}, Total Steps: {total_train_steps}')
             print(f'  Train Time: {train_time:.2f}s, Recent {len(recent_train_times)} Avg: {avg_train_time:.2f}s, Per Step: {time_per_step * 1000:.1f}ms')
 
-            # num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
+            num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
 
             total_elapsed = time.time() - total_start_time
             avg_time_per_game = total_elapsed / game_count
