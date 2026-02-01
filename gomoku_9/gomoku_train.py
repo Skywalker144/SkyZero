@@ -41,7 +41,7 @@ if __name__ == '__main__':
 
         'target_ReplayRatio': 6,
 
-        'playout_cap_min_ratio': 0.2,
+        'playout_cap_min_ratio': 0.25,
         'playout_cap_exponent': 1.6,
 
         'policy_training_threshold': 0.5,
