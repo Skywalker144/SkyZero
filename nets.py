@@ -5,7 +5,6 @@ import torch.nn.functional as F
 class ResidualBlock(nn.Module):
     def __init__(self, channels):
         super().__init__()
-        # 标准 ResNet Block：两层卷积，保持维度不变
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(channels)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=False)
@@ -21,8 +20,8 @@ class ResidualBlock(nn.Module):
         out = self.conv2(out)
         out = self.bn2(out)
 
-        out += identity  # 先相加
-        out = F.relu(out) # 后 ReLU
+        out += identity
+        out = F.relu(out)
         return out
 
 class GlobalPoolingBlock(nn.Module):
@@ -32,7 +31,6 @@ class GlobalPoolingBlock(nn.Module):
         # 全局池化后的特征降维
         self.pool_conv = nn.Sequential(
             nn.Conv2d(in_channels * 2, reduced_channels, kernel_size=1, bias=False),
-            # 这里 bias 设为 False 较好，因为后面紧跟 BN
             nn.BatchNorm2d(reduced_channels),
             nn.ReLU()
         )
@@ -57,14 +55,14 @@ class GlobalPoolingBlock(nn.Module):
         return torch.cat([x, global_features], dim=1)
 
 class ResNet(nn.Module):
-    def __init__(self, game, num_blocks=4, num_channels=128, history_step=8, use_global_pool=True):
+    def __init__(self, game, num_blocks=4, num_channels=128, use_global_pool=True):
         super().__init__()
         self.use_global_pool = use_global_pool
         self.board_size = game.board_size
         
         # 1. 输入处理层
         # 输入通道 = (历史步数 * 2 (黑白平面)) + 1 (当前颜色平面)
-        input_channels = 2 * history_step + 1
+        input_channels = game.num_planes
         self.start_layer = nn.Sequential(
             nn.Conv2d(input_channels, num_channels, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(num_channels),

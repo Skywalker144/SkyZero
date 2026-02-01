@@ -9,9 +9,8 @@ from utils import print_board
 
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
-    game = TicTacToe()
-    model = ResNet(game).to('cuda')
-    model.load_state_dict(torch.load(f'tictactoe_model.pt'))
+    game = TicTacToe(history_step=3)
+    model = ResNet(game, num_blocks=1).to('cuda')
     optimizer = optim.Adam(model.parameters(), lr=0.003)
     args = {
         'mode': 'eval',
@@ -24,6 +23,7 @@ if __name__ == '__main__':
     }
 
     alphazero = AlphaZero(game, model, optimizer, args)
+    alphazero.load_checkpoint()
 
     to_play = 1
     color = 1

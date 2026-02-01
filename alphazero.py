@@ -76,13 +76,13 @@ class MCTS:
         if node.parent is None and self.args['mode'] == 'train':
             policy = add_dirichlet_noise(policy, self.args['dirichlet_alpha'], self.args['dirichlet_epsilon'])
 
-            step_count = np.count_nonzero(state)
-            root_temperature_start = self.args['root_temperature_start']
-            root_temperature_end = self.args['root_temperature_end']
-            root_temperature = root_temperature_end + (root_temperature_start - root_temperature_end) * 0.5 ** (
-                    step_count / self.game.board_size)
-
-            policy = temperature_transform(policy, root_temperature)
+            # step_count = np.count_nonzero(state)
+            # root_temperature_start = self.args['root_temperature_start']
+            # root_temperature_end = self.args['root_temperature_end']
+            # root_temperature = root_temperature_end + (root_temperature_start - root_temperature_end) * 0.5 ** (
+            #         step_count / self.game.board_size)
+            #
+            # policy = temperature_transform(policy, root_temperature)
 
         for action, prob in enumerate(policy):
             if prob > 0:
@@ -237,7 +237,7 @@ class AlphaZero:
         batch_size = self.args['batch_size']
         min_buffer_size = self.args['min_buffer_size']
         train_steps_per_generation = self.args['train_steps_per_generation']
-        num_games_per_generation = self.args['num_games_per_generation']
+        # num_games_per_generation = self.args['num_games_per_generation']
 
         game_count = 0
         total_train_steps = 0
@@ -255,7 +255,7 @@ class AlphaZero:
         print(f'Batch Size: {batch_size}')
         print(f'Min Buffer Size: {min_buffer_size}')
         print(f'Train Steps per Generation: {train_steps_per_generation}')
-        print(f'Games per Train: {num_games_per_generation}')
+        # print(f'Games per Train: {num_games_per_generation}')
         print(f'Save Time Interval: {savetime_interval}s ({savetime_interval / 60:.1f}min)')
         print()
 
@@ -293,16 +293,17 @@ class AlphaZero:
             avg_step_time = sum(recent_step_times) / len(recent_step_times) if recent_step_times else 0
 
             current_buffer_size = len(self.replay_buffer)
-            print(f'\n[Game {game_count}] Steps: {len(memory)}, Winner: {int(winner):+d}, '
-                  f'Buffer: {current_buffer_size}, Avg Len: {avg_game_len:.1f}')
+            print(f'\n[Game {game_count}] Steps: {len(memory)}, Winner: {int(winner):+d}, Buffer: {current_buffer_size}, Avg Len: {avg_game_len:.1f}')
             print(f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
                   f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%)')
-            print(f'  Selfplay Time: {selfplay_time:.2f}s ({step_count} steps), '
-                  f'Recent {len(recent_step_times)} steps Avg: {avg_step_time * 1000:.1f}ms/step')
+            print(f'  Selfplay Time: {selfplay_time:.2f}s ({step_count} steps), Recent {len(recent_step_times)} steps Avg: {avg_step_time * 1000:.1f}ms/step')
 
             if current_buffer_size < min_buffer_size:
                 print(f'  [Skip Training] Buffer {current_buffer_size} < min_buffer_size {min_buffer_size}')
                 continue
+
+            num_games_per_generation = int(self.args['batch_size'] * self.args[
+                'train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
 
             current_time = time.time()
             if current_time - last_save_time >= savetime_interval:
@@ -334,16 +335,14 @@ class AlphaZero:
 
             avg_loss = np.mean(train_losses)
             self.losses.append(avg_loss)
-            print(f'  [Training] {train_steps_per_generation} steps, Avg Loss: {avg_loss:.4f}, '
-                  f'Total Steps: {total_train_steps}')
+            print(f'  [Training] {train_steps_per_generation} steps, Avg Loss: {avg_loss:.4f}, Total Steps: {total_train_steps}')
             print(f'  Train Time: {train_time:.2f}s, Recent {len(recent_train_times)} Avg: {avg_train_time:.2f}s, Per Step: {time_per_step * 1000:.1f}ms')
 
-            num_games_per_generation = int(self.args['batch_size'] * self.args[
-                'train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
+            # num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
 
             total_elapsed = time.time() - total_start_time
             avg_time_per_game = total_elapsed / game_count
-            print(f'  num_games_per_generation: {num_games_per_generation}')
+            # print(f'  num_games_per_generation: {num_games_per_generation}')
             print(f'  Total Elapsed: {total_elapsed / 60:.1f}min, Avg/Game: {avg_time_per_game:.2f}s')
 
             plt.figure(figsize=(10, 6))

@@ -11,6 +11,7 @@ class Gomoku:
         self.board_size = board_size
         self.action_space_size = board_size * board_size
         self.history_step = history_step
+        self.num_planes = 2 * history_step
 
     def get_initial_state(self):
         return np.zeros((self.history_step, self.board_size, self.board_size))
@@ -21,7 +22,7 @@ class Gomoku:
         return board == 0
 
     def get_next_state(self, board, action, to_play):
-        board = deepcopy(board)
+        board = board.copy()
 
         current_board = board[-1].copy()
         x = action // self.board_size
@@ -62,13 +63,14 @@ class Gomoku:
         history_len = board.shape[0]
         board_size = board.shape[1]
 
-        encoded_state = np.zeros((history_len * 2 + 1, board_size, board_size), dtype=np.float32)
+        # encoded_state = np.zeros((history_len * 2 + 1, board_size, board_size), dtype=np.float32)
+        encoded_state = np.zeros((history_len * 2, board_size, board_size), dtype=np.float32)
 
         for i in range(history_len):
             encoded_state[2 * i] = (board[i] == to_play)
             encoded_state[2 * i + 1] = (board[i] == -to_play)
 
-        encoded_state[-1] = (to_play > 0) * np.ones((board_size, board_size), dtype=np.float32)  # to_play
+        # encoded_state[-1] = (to_play > 0) * np.ones((board_size, board_size), dtype=np.float32)  # to_play
 
         return encoded_state
 

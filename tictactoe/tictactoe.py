@@ -1,6 +1,8 @@
 from copy import deepcopy
 import numpy as np
 
+from utils import print_board
+
 
 class TicTacToe:
     def __init__(self, history_step=3):
@@ -8,6 +10,7 @@ class TicTacToe:
         self.board_size = 3
         self.action_space_size = 9
         self.history_step = history_step
+        self.num_planes = 2 * history_step + 1
 
     def get_initial_state(self):
         return np.zeros((self.history_step, self.board_size, self.board_size))
@@ -18,7 +21,7 @@ class TicTacToe:
         return state == 0
 
     def get_next_state(self, board, action, to_play):
-        board = deepcopy(board)
+        board = board.copy()
 
         current_board = board[-1].copy()
         x = action // self.board_size
@@ -78,8 +81,12 @@ class TicTacToe:
         return encoded_state
 
 if __name__ == '__main__':
-    game = TicTacToe()
+    game = TicTacToe(history_step=2)
     state = game.get_initial_state()
-    state[0, 0] = 1
-    state[1, 1] = -1
+    print_board(state)
+    print(state)
+    state[-1, 0, 0] = 1
+    state[-1, 1, 1] = -1
+    print_board(state)
     print(game.encode_state(state, to_play=1))
+    print(game.encode_state(state, to_play=-1))

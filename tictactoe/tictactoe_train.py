@@ -8,7 +8,7 @@ from nets import ResNet
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
     game = TicTacToe(history_step=3)
-    model = ResNet(game, num_blocks=1, history_step=3).to('cuda')
+    model = ResNet(game, num_blocks=1).to('cuda')
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
     args = {
         'mode': 'train',
@@ -45,10 +45,10 @@ if __name__ == '__main__':
         'policy_training_threshold': 0.5,
 
         'device': 'cuda',
-        'savetime_interval': 1200,
+        'savetime_interval': 120,
         'file_name': 'tictactoe',
     }
 
     alphazero = AlphaZero(game, model, optimizer, args)
-    # alphazero.load_checkpoint()
+    alphazero.load_checkpoint()
     alphazero.learn()

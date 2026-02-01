@@ -9,9 +9,8 @@ from utils import print_board
 
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
-    game = Gomoku(board_size=9)
+    game = Gomoku(board_size=9, history_step=4)
     model = ResNet(game, num_blocks=6, num_channels=256).to('cuda')
-    model.load_state_dict(torch.load(f'gomoku_model.pt'))
     optimizer = optim.Adam(model.parameters(), lr=0.003)
     args = {
         'mode': 'eval',
@@ -24,6 +23,7 @@ if __name__ == '__main__':
     }
 
     alphazero = AlphaZero(game, model, optimizer, args)
+    alphazero.load_checkpoint()
 
     to_play = 1
     color = 1
