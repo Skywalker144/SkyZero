@@ -11,7 +11,7 @@ if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
     game = Gomoku(board_size=9, history_step=4)
     model = ResNet(game, num_blocks=4, num_channels=256).to('cuda')
-    optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=5e-5)
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=5e-5)
     args = {
         'mode': 'train',
         'num_simulations': 600,
@@ -30,7 +30,7 @@ if __name__ == '__main__':
         'min_buffer_size': 10000,
 
         'train_steps_per_generation': 5,
-        'num_games_per_generation': 16,
+        # 'num_games_per_generation': 16,
 
         # Replay Ratio: (batch_size * train_steps_per_generations) / (num_games_per_generation * Avg_steps_per_game)
         # RR 通常在2到8之间
