@@ -6,7 +6,7 @@ from tkinter import messagebox
 
 
 class Gomoku:
-    def __init__(self, board_size=15, history_step=8):  # history_board * (8 - 1) and action_board 
+    def __init__(self, board_size=15, history_step=4):  # history_board * (8 - 1) and action_board
         self.board = np.zeros((history_step, board_size, board_size))
         self.board_size = board_size
         self.action_space_size = board_size * board_size
