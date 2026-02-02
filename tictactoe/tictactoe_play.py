@@ -14,7 +14,7 @@ from utils import print_board
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
     game = TicTacToe(history_step=3)
-    model = ResNet(game, num_blocks=10).to('cuda')
+    model = ResNet(game, num_blocks=1).to('cuda')
     optimizer = optim.Adam(model.parameters(), lr=0.003)
     args = {
         'mode': 'eval',

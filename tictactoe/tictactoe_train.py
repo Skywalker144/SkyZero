@@ -50,5 +50,5 @@ if __name__ == '__main__':
     }
 
     alphazero = AlphaZero(game, model, optimizer, args)
-    # alphazero.load_checkpoint()
+    alphazero.load_checkpoint()
     alphazero.learn()
