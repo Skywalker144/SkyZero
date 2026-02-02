@@ -8,6 +8,8 @@ class TicTacToe:
     def __init__(self, history_step=3):
         self.board = np.zeros((3, 3))
         self.board_size = 3
+        self.board_height = 3
+        self.board_width = 3
         self.action_space_size = 9
         self.history_step = history_step
         self.num_planes = 2 * history_step + 1

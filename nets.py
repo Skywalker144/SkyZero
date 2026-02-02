@@ -58,7 +58,9 @@ class ResNet(nn.Module):
     def __init__(self, game, num_blocks=4, num_channels=128, use_global_pool=True):
         super().__init__()
         self.use_global_pool = use_global_pool
-        self.board_size = game.board_size
+        self.board_height = game.board_height
+        self.board_width = game.board_width
+        self.action_space_size = game.action_space_size
         
         # 1. 输入处理层
         # 输入通道 = (历史步数 * 2 (黑白平面)) + 1 (当前颜色平面)
@@ -83,14 +85,16 @@ class ResNet(nn.Module):
         else:
             head_in_channels = num_channels
         
+        board_cells = self.board_height * self.board_width
+        
         # 4. Policy Head
         self.policy_head = nn.Sequential(
             nn.Conv2d(head_in_channels, 2, kernel_size=1, bias=False),
             nn.BatchNorm2d(2),
             nn.ReLU(),
             nn.Flatten(),
-            # 注意：这里假设不包含 Pass 动作，如果包含，通常输出维度是 board_size**2 + 1
-            nn.Linear(2 * self.board_size ** 2, self.board_size ** 2),
+            # 注意：这里假设不包含 Pass 动作，如果包含，通常输出维度是 action_space_size + 1
+            nn.Linear(2 * board_cells, self.action_space_size),
         )
         
         # 5. Value Head
@@ -99,7 +103,7 @@ class ResNet(nn.Module):
             nn.BatchNorm2d(1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(self.board_size ** 2, 256),
+            nn.Linear(board_cells, 256),
             nn.ReLU(),
             nn.Linear(256, 1),
             nn.Tanh()

@@ -96,12 +96,12 @@ def random_augment_sample(state, action_probs, board_size):
 
 def random_augment_batch(batch, board_size):
     """
-    对一个batch的样本进行随机数据增强。
+    对一个batch的样本进行随机数据增强（仅用于正方形棋盘）。
     每个样本独立地随机选择8种变换中的一种。
     
     Args:
         batch: 样本列表，每个样本是 (state, action_probs, outcome, num_sims) 的元组
-        board_size: 棋盘大小
+        board_size: 棋盘大小（正方形）
         
     Returns:
         增强后的batch（数量不变）
@@ -109,6 +109,98 @@ def random_augment_batch(batch, board_size):
     augmented_batch = []
     for state, action_probs, outcome, num_sims in batch:
         aug_state, aug_probs = random_augment_sample(state, action_probs, board_size)
+        augmented_batch.append((aug_state, aug_probs, outcome, num_sims))
+    return augmented_batch
+
+
+def random_augment_sample_rect(state, action_probs, board_height, board_width):
+    """
+    对单个样本随机应用水平翻转变换（用于非正方形棋盘如Connect4）。
+    
+    非正方形棋盘只支持2种变换：
+    - 不变换
+    - 水平翻转
+    
+    Args:
+        state: 状态数组，形状为 (C, H, W)
+        action_probs: 动作概率，形状为 (board_height * board_width,)
+        board_height: 棋盘高度
+        board_width: 棋盘宽度
+        
+    Returns:
+        (transformed_state, transformed_probs): 变换后的状态和动作概率
+    """
+    # 随机选择是否翻转
+    do_flip = np.random.random() < 0.5
+    
+    if do_flip:
+        # 水平翻转
+        flip_state = np.flip(state, axis=2)
+        action_probs_2d = action_probs.reshape(board_height, board_width)
+        flip_probs = np.flip(action_probs_2d, axis=1)
+        return flip_state.copy(), flip_probs.flatten().copy()
+    else:
+        return state.copy(), action_probs.copy()
+
+
+def random_augment_batch_rect(batch, board_height, board_width):
+    """
+    对一个batch的样本进行随机数据增强（用于非正方形棋盘）。
+    每个样本独立地随机选择是否水平翻转。
+    
+    Args:
+        batch: 样本列表，每个样本是 (state, action_probs, outcome, num_sims) 的元组
+        board_height: 棋盘高度
+        board_width: 棋盘宽度
+        
+    Returns:
+        增强后的batch（数量不变）
+    """
+    augmented_batch = []
+    for state, action_probs, outcome, num_sims in batch:
+        aug_state, aug_probs = random_augment_sample_rect(state, action_probs, board_height, board_width)
+        augmented_batch.append((aug_state, aug_probs, outcome, num_sims))
+    return augmented_batch
+
+
+def random_augment_sample_connect4(state, action_probs):
+    """
+    对Connect4等列动作游戏的单个样本随机应用水平翻转。
+    
+    Connect4的动作只有列（7个），翻转时action_probs也需要反转顺序。
+    
+    Args:
+        state: 状态数组，形状为 (C, H, W)
+        action_probs: 动作概率，形状为 (num_columns,)
+        
+    Returns:
+        (transformed_state, transformed_probs): 变换后的状态和动作概率
+    """
+    do_flip = np.random.random() < 0.5
+    
+    if do_flip:
+        # 水平翻转状态
+        flip_state = np.flip(state, axis=2)
+        # 反转动作概率（列的顺序反转）
+        flip_probs = np.flip(action_probs)
+        return flip_state.copy(), flip_probs.copy()
+    else:
+        return state.copy(), action_probs.copy()
+
+
+def random_augment_batch_connect4(batch):
+    """
+    对Connect4等列动作游戏的batch进行随机数据增强。
+    
+    Args:
+        batch: 样本列表，每个样本是 (state, action_probs, outcome, num_sims) 的元组
+        
+    Returns:
+        增强后的batch（数量不变）
+    """
+    augmented_batch = []
+    for state, action_probs, outcome, num_sims in batch:
+        aug_state, aug_probs = random_augment_sample_connect4(state, action_probs)
         augmented_batch.append((aug_state, aug_probs, outcome, num_sims))
     return augmented_batch
 

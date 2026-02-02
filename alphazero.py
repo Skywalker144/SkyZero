@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from replay_buffer import ReplayBuffer
-from utils import add_dirichlet_noise, print_board, temperature_transform, random_augment_batch
+from utils import add_dirichlet_noise, print_board, temperature_transform, random_augment_batch, random_augment_batch_rect, random_augment_batch_connect4
 
 
 class Node:
@@ -109,14 +109,6 @@ class MCTS:
         if node.parent is None and self.args['mode'] == 'train':
             policy = add_dirichlet_noise(policy, self.args['dirichlet_alpha'], self.args['dirichlet_epsilon'])
 
-            # step_count = np.count_nonzero(state)
-            # root_temperature_start = self.args['root_temperature_start']
-            # root_temperature_end = self.args['root_temperature_end']
-            # root_temperature = root_temperature_end + (root_temperature_start - root_temperature_end) * 0.5 ** (
-            #         step_count / self.game.board_size)
-            #
-            # policy = temperature_transform(policy, root_temperature)
-
         for action, prob in enumerate(policy):
             if prob > 0:
                 child = Node(
@@ -157,7 +149,7 @@ class MCTS:
 
             self.backpropagate(node, value)
 
-        action_probs = np.zeros(self.game.board_size ** 2)
+        action_probs = np.zeros(self.game.action_space_size)
         for child in root.children:
             action_probs[child.action_taken] = child.n
         action_probs /= np.sum(action_probs)
@@ -208,7 +200,7 @@ class AlphaZero:
             else:
                 t = self.args['temperature']
             action = np.random.choice(
-                self.game.board_size ** 2,
+                self.game.action_space_size,
                 p=temperature_transform(action_probs, t)
             )
             state = self.game.get_next_state(state, action, to_play)
@@ -232,7 +224,16 @@ class AlphaZero:
         return return_memory, self.game.get_winner(final_state)
 
     def _train_batch(self, batch):
-        batch = random_augment_batch(batch, self.game.board_size)
+        # 根据棋盘形状和动作空间选择数据增强方式
+        if self.game.action_space_size != self.game.board_height * self.game.board_width:
+            # Connect4等列动作游戏：action_space_size == board_width
+            batch = random_augment_batch_connect4(batch)
+        elif self.game.board_height == self.game.board_width:
+            # 正方形棋盘：使用8种对称变换
+            batch = random_augment_batch(batch, self.game.board_size)
+        else:
+            # 非正方形棋盘（动作空间等于棋盘大小）：只使用水平翻转
+            batch = random_augment_batch_rect(batch, self.game.board_height, self.game.board_width)
 
         states, policy_targets, value_targets, num_sims_list = zip(*batch)
         num_sims_array = np.array(num_sims_list)
@@ -402,10 +403,17 @@ class AlphaZero:
         )
         policy = torch.softmax(policy, dim=1).squeeze(0).cpu().numpy()
         policy *= self.game.get_is_legal_actions(state)
-        policy /= np.sum(policy)
-        policy = policy.reshape(self.game.board_size, self.game.board_size)
+        policy_sum = np.sum(policy)
+        if policy_sum > 0:
+            policy /= policy_sum
         value = value.item()
-        action_probs = action_probs.reshape(self.game.board_size, self.game.board_size)
+        
+        # 对于动作空间等于棋盘大小的游戏，按棋盘形状reshape
+        # 对于Connect4等动作空间小于棋盘大小的游戏，保持一维
+        if self.game.action_space_size == self.game.board_height * self.game.board_width:
+            policy = policy.reshape(self.game.board_height, self.game.board_width)
+            action_probs = action_probs.reshape(self.game.board_height, self.game.board_width)
+        
         info = {
             'action_probs': action_probs,
             'policy': policy,
