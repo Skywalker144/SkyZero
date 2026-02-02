@@ -40,13 +40,46 @@ class MCTS:
         self.model = model.to(args['device'])
         self.model.eval()
 
-    def select(self, node):
+    def select__(self, node):
 
         child_priors = np.array([child.prior for child in node.children])
         child_visit_counts = np.array([child.n for child in node.children])
         child_values = np.array([child.v for child in node.children])
 
         q_values = -child_values / (child_visit_counts + 1e-8)
+        u_values = self.args['c_puct'] * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
+
+        puct_scores = q_values + u_values
+
+        best_child_idx = np.argmax(puct_scores)
+        return node.children[best_child_idx]
+
+    def select(self, node): # Q值归一化
+        child_priors = np.array([child.prior for child in node.children])
+        child_visit_counts = np.array([child.n for child in node.children])
+        child_values = np.array([child.v for child in node.children])
+
+        q_values = -child_values / (child_visit_counts + 1e-8)
+
+        # --- 新增：Q值归一化 ---
+        # 如果这是根节点或者为了稳定性，可以维护一棵树范围内的 min_q 和 max_q
+        # 这里使用简化的局部归一化，效果通常也很好
+        if len(node.children) > 0:
+            q_min = np.min(q_values)
+            q_max = np.max(q_values)
+
+            # 避免除以零
+            if q_max - q_min > 1e-5:
+                # 将 Q 值映射到 [0, 1] 区间
+                # 最差的移动变为 0，最好的移动变为 1
+                q_values = (q_values - q_min) / (q_max - q_min)
+            else:
+                # 如果所有 Q 值都一样（比如都是 -1），则退化为仅看 Prior
+                # 或者可以给 Q 值一个默认值，但通常归一化能拉开微小的差距
+                pass
+                # ---------------------
+
+        # 此时 q_values 在 [0, 1] 之间，u_values 也需要在合理范围内
         u_values = self.args['c_puct'] * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
 
         puct_scores = q_values + u_values
