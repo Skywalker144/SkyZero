@@ -12,6 +12,11 @@ from replay_buffer import ReplayBuffer
 from utils import add_dirichlet_noise, print_board, temperature_transform, random_augment_batch, random_augment_batch_rect, random_augment_batch_connect4
 
 
+class MinMaxState:
+    def __init__(self, game, args):
+        self.game = game
+        self.args = args
+
 class Node:
     def __init__(self, state, to_play, prior=0, parent=None, action_taken=None):
         self.state = state
@@ -54,32 +59,22 @@ class MCTS:
         best_child_idx = np.argmax(puct_scores)
         return node.children[best_child_idx]
 
-    def select(self, node): # Q值归一化
+    def select(self, node):
         child_priors = np.array([child.prior for child in node.children])
         child_visit_counts = np.array([child.n for child in node.children])
         child_values = np.array([child.v for child in node.children])
 
         q_values = -child_values / (child_visit_counts + 1e-8)
 
-        # --- 新增：Q值归一化 ---
-        # 如果这是根节点或者为了稳定性，可以维护一棵树范围内的 min_q 和 max_q
-        # 这里使用简化的局部归一化，效果通常也很好
         if len(node.children) > 0:
             q_min = np.min(q_values)
             q_max = np.max(q_values)
 
-            # 避免除以零
             if q_max - q_min > 1e-5:
-                # 将 Q 值映射到 [0, 1] 区间
-                # 最差的移动变为 0，最好的移动变为 1
                 q_values = (q_values - q_min) / (q_max - q_min)
             else:
-                # 如果所有 Q 值都一样（比如都是 -1），则退化为仅看 Prior
-                # 或者可以给 Q 值一个默认值，但通常归一化能拉开微小的差距
                 pass
-                # ---------------------
 
-        # 此时 q_values 在 [0, 1] 之间，u_values 也需要在合理范围内
         u_values = self.args['c_puct'] * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
 
         puct_scores = q_values + u_values
@@ -164,6 +159,8 @@ class AlphaZero:
         self.args = args
         self.mcts = MCTS(game, args, model)
         self.losses = []
+        self.policy_losses = []
+        self.value_losses = []
 
         buffer_size = args['buffer_size']
         self.replay_buffer = ReplayBuffer(
@@ -260,12 +257,12 @@ class AlphaZero:
 
         value_loss = F.mse_loss(value, value_targets)
 
-        loss = policy_loss + 2 * value_loss
+        loss = policy_loss + value_loss
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        return loss.item()
+        return loss.item(), policy_loss.item(), value_loss.item()
 
     def learn(self):
         batch_size = self.args['batch_size']
@@ -355,13 +352,17 @@ class AlphaZero:
 
             self.model.train()
             train_losses = []
+            train_policy_losses = []
+            train_value_losses = []
 
             train_start = time.time()
             for step in range(train_steps_per_generation):
                 batch = self.replay_buffer.sample(batch_size)
 
-                loss = self._train_batch(batch)
+                loss, policy_loss, value_loss = self._train_batch(batch)
                 train_losses.append(loss)
+                train_policy_losses.append(policy_loss)
+                train_value_losses.append(value_loss)
                 total_train_steps += 1
 
             train_time = time.time() - train_start
@@ -372,7 +373,11 @@ class AlphaZero:
             time_per_step = train_time / train_steps_per_generation
 
             avg_loss = np.mean(train_losses)
+            avg_policy_loss = np.mean(train_policy_losses)
+            avg_value_loss = np.mean(train_value_losses)
             self.losses.append(avg_loss)
+            self.policy_losses.append(avg_policy_loss)
+            self.value_losses.append(avg_value_loss)
             print(f'  [Training] {train_steps_per_generation} steps, Avg Loss: {avg_loss:.4f}, Total Steps: {total_train_steps}')
             print(f'  Train Time: {train_time:.2f}s, Recent {len(recent_train_times)} Avg: {avg_train_time:.2f}s, Per Step: {time_per_step * 1000:.1f}ms')
 
@@ -384,6 +389,7 @@ class AlphaZero:
             # print(f'  num_games_per_generation: {num_games_per_generation}')
             print(f'  Total Elapsed: {total_elapsed / 60:.1f}min, Avg/Game: {avg_time_per_game:.2f}s')
 
+            # 图1：总loss图像
             plt.figure(figsize=(10, 6))
             plt.yscale('log')
             plt.xlabel('Games')
@@ -391,6 +397,27 @@ class AlphaZero:
             plt.plot(self.losses)
             plt.title(f'Training Loss (Game {game_count})')
             plt.savefig(f"{self.args['file_name']}_losses.png")
+            plt.close()
+
+            # 图2：分离的policy loss和value loss图像（上下布局）
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+            
+            ax1.set_yscale('log')
+            ax1.set_xlabel('Games')
+            ax1.set_ylabel('Policy Loss')
+            ax1.plot(self.policy_losses, color='blue')
+            ax1.set_title(f'Policy Loss (Game {game_count})')
+            ax1.grid(True, alpha=0.3)
+            
+            ax2.set_yscale('log')
+            ax2.set_xlabel('Games')
+            ax2.set_ylabel('Value Loss')
+            ax2.plot(self.value_losses, color='orange')
+            ax2.set_title(f'Value Loss (Game {game_count})')
+            ax2.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(f"{self.args['file_name']}_losses_detail.png")
             plt.close()
 
     @torch.inference_mode()
@@ -436,6 +463,8 @@ class AlphaZero:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'losses': self.losses,
+            'policy_losses': self.policy_losses,
+            'value_losses': self.value_losses,
             'replay_buffer': {
                 'buffer': list(self.replay_buffer.buffer),
                 'window_size': self.replay_buffer.window_size,
@@ -487,6 +516,14 @@ class AlphaZero:
         if 'losses' in checkpoint:
             self.losses = checkpoint['losses']
             print(f"Losses history loaded ({len(self.losses)} data points)")
+
+        if 'policy_losses' in checkpoint:
+            self.policy_losses = checkpoint['policy_losses']
+            print(f"Policy losses history loaded ({len(self.policy_losses)} data points)")
+
+        if 'value_losses' in checkpoint:
+            self.value_losses = checkpoint['value_losses']
+            print(f"Value losses history loaded ({len(self.value_losses)} data points)")
 
         if 'replay_buffer' in checkpoint:
             buffer_data = checkpoint['replay_buffer']

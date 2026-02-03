@@ -68,18 +68,17 @@ class ResNet(nn.Module):
         self.start_layer = nn.Sequential(
             nn.Conv2d(input_channels, num_channels, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(num_channels),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
         
         # 2. 残差塔 (Backbone)
-        # 直接使用 nn.Sequential 堆叠 Block，无需额外的 ResidualLayer 类
         self.backbone = nn.Sequential(
             *[ResidualBlock(num_channels) for _ in range(num_blocks)]
         )
         
         # 3. 全局池化
         if use_global_pool:
-            g_channels = 32 # 可以是参数化的
+            g_channels = num_channels // 4
             self.global_pool = GlobalPoolingBlock(num_channels, reduced_channels=g_channels)
             head_in_channels = num_channels + g_channels
         else:
@@ -96,7 +95,7 @@ class ResNet(nn.Module):
             # 注意：这里假设不包含 Pass 动作，如果包含，通常输出维度是 action_space_size + 1
             nn.Linear(2 * board_cells, self.action_space_size),
         )
-        
+
         # 5. Value Head
         self.value_head = nn.Sequential(
             nn.Conv2d(head_in_channels, 1, kernel_size=1, bias=False),
@@ -108,6 +107,20 @@ class ResNet(nn.Module):
             nn.Linear(256, 1),
             nn.Tanh()
         )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         # x shape: [B, input_channels, H, W]
