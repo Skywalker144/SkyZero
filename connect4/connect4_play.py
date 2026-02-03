@@ -34,7 +34,7 @@ if __name__ == '__main__':
         'temperature': 0.1,
         'dirichlet_epsilon': 0,
         'dirichlet_alpha': 0.5,
-        'buffer_size': 2000,
+        'buffer_size': 10000,
         'file_name': 'connect4/connect4',
         'device': 'cuda'
     }
@@ -43,13 +43,9 @@ if __name__ == '__main__':
     print(f"Board Size: {game.board_height} x {game.board_width}")
     print(f"Action Space: {game.action_space_size} (columns 0-6)")
     print()
-    
-    # 创建AlphaZero实例
+
     alphazero = AlphaZero(game, model, optimizer, args)
-    
-    # 加载训练好的模型
-    if not alphazero.load_checkpoint():
-        print("Warning: No checkpoint found, using untrained model!")
+    alphazero.load_checkpoint()
     
     print()
     print("=" * 50)

@@ -28,7 +28,7 @@ if __name__ == '__main__':
     # 训练参数
     args = {
         'mode': 'train',
-        'num_simulations': 400,
+        'num_simulations': 600,
         'c_puct': 1.5,
         'temperature': 1.0,
         
@@ -38,15 +38,15 @@ if __name__ == '__main__':
         'dirichlet_epsilon': 0.25,
         
         'buffer_size': 10000,
-        'batch_size': 128,
-        'min_buffer_size': 1000,
+        'batch_size': 512,
+        'min_buffer_size': 2000,
         
         'train_steps_per_generation': 10,
         'num_games_per_generation': 20,
         
-        'target_ReplayRatio': 6,
+        'target_ReplayRatio': 5,
         
-        'playout_cap_min_ratio': 0.2,
+        'playout_cap_min_ratio': 0.3,
         'playout_cap_exponent': 1.5,
         
         'policy_training_threshold': 0.5,
@@ -61,12 +61,7 @@ if __name__ == '__main__':
     print(f"Action Space: {game.action_space_size}")
     print(f"Input Planes: {game.num_planes}")
     print()
-    
-    # 创建AlphaZero实例
+
     alphazero = AlphaZero(game, model, optimizer, args)
-    
-    # 尝试加载之前的检查点
     alphazero.load_checkpoint()
-    
-    # 开始训练
     alphazero.learn()
