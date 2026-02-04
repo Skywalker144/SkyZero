@@ -13,9 +13,27 @@ from utils import add_dirichlet_noise, print_board, temperature_transform, rando
 
 
 class MinMaxState:
-    def __init__(self, game, args):
-        self.game = game
-        self.args = args
+    def __init__(self, known_bounds=None):
+        if known_bounds:
+            self.min_value = known_bounds[0]
+            self.max_value = known_bounds[1]
+        else:
+            self.min_value = float('inf')
+            self.max_value = -float('inf')
+
+    def update(self, value):
+        self.min_value = min(self.min_value, value)
+        self.max_value = max(self.max_value, value)
+
+    def normalize(self, value):
+        if self.max_value > self.min_value:
+            return (value - self.min_value) / (self.max_value - self.min_value)
+        return value
+
+    def reset(self):
+        self.min_value = float('inf')
+        self.max_value = float('-inf')
+
 
 class Node:
     def __init__(self, state, to_play, prior=0, parent=None, action_taken=None):
@@ -44,6 +62,7 @@ class MCTS:
         self.args = args.copy()
         self.model = model.to(args['device'])
         self.model.eval()
+        self.minmax_state = MinMaxState(self.args['Q_norm_bounds'])
 
     def select__(self, node):
 
@@ -67,13 +86,7 @@ class MCTS:
         q_values = -child_values / (child_visit_counts + 1e-8)
 
         if len(node.children) > 0:
-            q_min = np.min(q_values)
-            q_max = np.max(q_values)
-
-            if q_max - q_min > 1e-5:
-                q_values = (q_values - q_min) / (q_max - q_min)
-            else:
-                pass
+            q_values = self.minmax_state.normalize(q_values)
 
         u_values = self.args['c_puct'] * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
 
@@ -119,6 +132,9 @@ class MCTS:
     def backpropagate(self, node, value):
         while node is not None:
             node.update(value)
+            if node.parent is not None and node.n > 0:
+                q = -node.v / (node.n + 1e-8)
+                self.minmax_state.update(q)
             value = -value
             node = node.parent
 
@@ -126,6 +142,7 @@ class MCTS:
     def search(self, state, to_play, num_simulations=None, process_bar=False):
 
         root = Node(state, to_play)
+        self.minmax_state.reset()
 
         if num_simulations is None:
             num_simulations = self.args['num_simulations']
@@ -161,6 +178,7 @@ class AlphaZero:
         self.losses = []
         self.policy_losses = []
         self.value_losses = []
+        self.game_count = 0
 
         buffer_size = args['buffer_size']
         self.replay_buffer = ReplayBuffer(
@@ -270,7 +288,6 @@ class AlphaZero:
         train_steps_per_generation = self.args['train_steps_per_generation']
         # num_games_per_generation = self.args['num_games_per_generation']
 
-        game_count = 0
         total_train_steps = 0
         recent_game_lens = []
 
@@ -300,7 +317,7 @@ class AlphaZero:
             selfplay_start = time.time()
             memory, winner = self.selfplay()
             selfplay_time = time.time() - selfplay_start
-            game_count += 1
+            self.game_count += 1
 
             recent_winners.append(winner)
             if len(recent_winners) > 100:
@@ -328,7 +345,7 @@ class AlphaZero:
             avg_step_time = sum(recent_step_times) / len(recent_step_times) if recent_step_times else 0
 
             current_buffer_size = len(self.replay_buffer)
-            print(f'\n[Game {game_count}] Steps: {len(memory)}, Winner: {int(winner):+d}, Buffer: {current_buffer_size}, Avg Len: {avg_game_len:.1f}')
+            print(f'\n[Game {self.game_count}] Steps: {len(memory)}, Winner: {int(winner):+d}, Buffer: {current_buffer_size}, Avg Len: {avg_game_len:.1f}')
             print(f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
                   f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%)')
             print(f'  Selfplay Time: {selfplay_time:.2f}s ({step_count} steps), Recent {len(recent_step_times)} steps Avg: {avg_step_time * 1000:.1f}ms/step')
@@ -337,7 +354,7 @@ class AlphaZero:
                 print(f'  [Skip Training] Buffer {current_buffer_size} < min_buffer_size {min_buffer_size}')
                 continue
             elif init_flag:
-                train_game_count = game_count
+                train_game_count = self.game_count
                 init_flag = False
 
             current_time = time.time()
@@ -345,9 +362,9 @@ class AlphaZero:
                 self.save_checkpoint()
                 last_save_time = current_time
 
-            if game_count != train_game_count:
+            if self.game_count != train_game_count:
                 print(
-                    f'  [Skip Training] Waiting for {train_game_count - game_count} more games')
+                    f'  [Skip Training] Waiting for {train_game_count - self.game_count} more games')
                 continue
 
             self.model.train()
@@ -382,10 +399,10 @@ class AlphaZero:
             print(f'  Train Time: {train_time:.2f}s, Recent {len(recent_train_times)} Avg: {avg_train_time:.2f}s, Per Step: {time_per_step * 1000:.1f}ms')
 
             num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
-            train_game_count = game_count + num_games_per_generation
+            train_game_count = self.game_count + num_games_per_generation
 
             total_elapsed = time.time() - total_start_time
-            avg_time_per_game = total_elapsed / game_count
+            avg_time_per_game = total_elapsed / self.game_count
             # print(f'  num_games_per_generation: {num_games_per_generation}')
             print(f'  Total Elapsed: {total_elapsed / 60:.1f}min, Avg/Game: {avg_time_per_game:.2f}s')
 
@@ -395,7 +412,7 @@ class AlphaZero:
             plt.xlabel('Games')
             plt.ylabel('Loss')
             plt.plot(self.losses)
-            plt.title(f'Training Loss (Game {game_count})')
+            plt.title(f'Training Loss (Game {self.game_count})')
             plt.savefig(f"{self.args['file_name']}_losses.png")
             plt.close()
 
@@ -406,14 +423,14 @@ class AlphaZero:
             ax1.set_xlabel('Games')
             ax1.set_ylabel('Policy Loss')
             ax1.plot(self.policy_losses, color='blue')
-            ax1.set_title(f'Policy Loss (Game {game_count})')
+            ax1.set_title(f'Policy Loss (Game {self.game_count})')
             ax1.grid(True, alpha=0.3)
             
             ax2.set_yscale('log')
             ax2.set_xlabel('Games')
             ax2.set_ylabel('Value Loss')
             ax2.plot(self.value_losses, color='orange')
-            ax2.set_title(f'Value Loss (Game {game_count})')
+            ax2.set_title(f'Value Loss (Game {self.game_count})')
             ax2.grid(True, alpha=0.3)
             
             plt.tight_layout()
@@ -465,6 +482,7 @@ class AlphaZero:
             'losses': self.losses,
             'policy_losses': self.policy_losses,
             'value_losses': self.value_losses,
+            'game_count': self.game_count,
             'replay_buffer': {
                 'buffer': list(self.replay_buffer.buffer),
                 'window_size': self.replay_buffer.window_size,
@@ -524,6 +542,10 @@ class AlphaZero:
         if 'value_losses' in checkpoint:
             self.value_losses = checkpoint['value_losses']
             print(f"Value losses history loaded ({len(self.value_losses)} data points)")
+
+        if 'game_count' in checkpoint:
+            self.game_count = checkpoint['game_count']
+            print(f"Game count loaded ({self.game_count} games)")
 
         if 'replay_buffer' in checkpoint:
             buffer_data = checkpoint['replay_buffer']

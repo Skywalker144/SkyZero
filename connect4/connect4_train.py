@@ -32,8 +32,8 @@ if __name__ == '__main__':
         'dirichlet_epsilon': 0.25,
         
         'buffer_size': 100000,
-        'batch_size': 512,
-        'min_buffer_size': 2000,
+        'batch_size': 1024,
+        'min_buffer_size': 5000,
         
         'train_steps_per_generation': 5,
         'num_games_per_generation': 20,
@@ -44,6 +44,8 @@ if __name__ == '__main__':
         'playout_cap_exponent': 1.5,
         
         'policy_training_threshold': 0.5,
+
+        'Q_norm_bounds': [-1, 1],
         
         'device': 'cuda',
         'savetime_interval': 1800,

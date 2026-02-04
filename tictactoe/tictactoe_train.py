@@ -44,11 +44,13 @@ if __name__ == '__main__':
 
         'policy_training_threshold': 0.5,
 
+        'Q_norm_bounds': [-1, 1],
+
         'device': 'cuda',
         'savetime_interval': 120,
         'file_name': 'tictactoe',
     }
 
     alphazero = AlphaZero(game, model, optimizer, args)
-    # alphazero.load_checkpoint()
+    alphazero.load_checkpoint()
     alphazero.learn()

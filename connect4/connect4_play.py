@@ -16,17 +16,9 @@ from nets import ResNet
 
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
-    
-    # 创建Connect4游戏实例
     game = Connect4(history_step=3)
-    
-    # 创建网络模型
-    model = ResNet(game, num_blocks=4, num_channels=128).to('cuda')
-    
-    # 创建优化器（加载检查点需要）
+    model = ResNet(game, num_blocks=2, num_channels=128).to('cuda')
     optimizer = optim.Adam(model.parameters(), lr=0.003)
-    
-    # 对战参数
     args = {
         'mode': 'eval',
         'num_simulations': 800,  # 对战时可以用更多模拟
@@ -35,7 +27,8 @@ if __name__ == '__main__':
         'dirichlet_epsilon': 0,
         'dirichlet_alpha': 0.5,
         'buffer_size': 10000,
-        'file_name': 'connect4/connect4',
+        'file_name': 'connect4',
+        'Q_norm_bounds': [-1, 1],
         'device': 'cuda'
     }
     

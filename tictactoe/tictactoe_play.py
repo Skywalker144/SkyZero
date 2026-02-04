@@ -25,6 +25,7 @@ if __name__ == '__main__':
         'dirichlet_alpha': 0.1,
         'buffer_size': 2000,
         'file_name': 'tictactoe',
+        'Q_norm_bounds': [-1, 1],
         'device': 'cuda'
     }
 
