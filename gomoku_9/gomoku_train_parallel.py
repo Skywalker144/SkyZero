@@ -24,16 +24,16 @@ if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
 
     # Initialize Game
-    game = Gomoku(board_size=9, history_step=4)
+    game = Gomoku(board_size=15, history_step=4)
     
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
-    model = ResNet(game, num_blocks=4, num_channels=256).to('cuda')
+    model = ResNet(game, num_blocks=8, num_channels=256).to('cuda')
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=5e-5)
 
     args = {
         'mode': 'train',
-        'num_simulations': 600,
+        'num_simulations': 800,
         'c_puct': 1.5,
         'temperature': 1.0,
         
@@ -41,7 +41,7 @@ if __name__ == '__main__':
         'root_temperature_end': 1.03,
         'zero_t_step': 14,
         
-        'dirichlet_alpha': 0.05,
+        'dirichlet_alpha': 0.03,
         'dirichlet_epsilon': 0.25,
         
         'buffer_size': 100000,
@@ -78,11 +78,11 @@ if __name__ == '__main__':
     model_cls = ResNet
     model_kwargs = {
         'game': game,
-        'num_blocks': 4,
+        'num_blocks': 8,
         'num_channels': 256
     }
 
-    num_workers = 24
+    num_workers = 18
 
     alphazero = AlphaZeroParallel(
         game, 

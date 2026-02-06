@@ -23,7 +23,7 @@ SkyZero/
 │   ├── tictactoe_train.py    # Training script
 │   ├── tictactoe_selfplay.py # Self-play script
 │   └── tictactoe_play.py     # Human vs AI play script
-└── gomoku_9/        # Gomoku (Five in a Row) game implementation
+└── gomoku/        # Gomoku (Five in a Row) game implementation
     ├── gomoku.py         # Game logic
     ├── gomoku_train.py   # Training script
     ├── gomoku_selfplay.py# Self-play script
@@ -60,7 +60,7 @@ python tictactoe_train.py
 ### Training Gomoku
 
 ```bash
-cd gomoku_9
+cd gomoku
 python gomoku_train.py
 ```
 
