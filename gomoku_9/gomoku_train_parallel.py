@@ -82,8 +82,7 @@ if __name__ == '__main__':
         'num_channels': 256
     }
 
-    # Use 16 workers
-    num_workers = 16
+    num_workers = 24
 
     alphazero = AlphaZeroParallel(
         game, 

@@ -77,9 +77,7 @@ if __name__ == '__main__':
         'num_channels': 128
     }
 
-    # Use 18 workers (Verified by user on 265K + 5060)
-    # 你的 CPU 核心多，18个并行能最大化利用率
-    num_workers = 16
+    num_workers = 24
 
     alphazero = AlphaZeroParallel(
         game, 
