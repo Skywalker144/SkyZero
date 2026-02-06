@@ -78,7 +78,8 @@ class ResNet(nn.Module):
         
         # 3. 全局池化
         if use_global_pool:
-            g_channels = num_channels // 4
+            # g_channels = num_channels // 4
+            g_channels = 32
             self.global_pool = GlobalPoolingBlock(num_channels, reduced_channels=g_channels)
             head_in_channels = num_channels + g_channels
         else:

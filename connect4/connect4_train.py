@@ -40,10 +40,10 @@ if __name__ == '__main__':
         
         'target_ReplayRatio': 5,
         
-        'playout_cap_min_ratio': 0.3,
+        'playout_cap_min_ratio': 0.4,
         'playout_cap_exponent': 1.5,
         
-        'policy_training_threshold': 0.5,
+        'policy_training_threshold': 0.7,
 
         'Q_norm_bounds': [-1, 1],
         
