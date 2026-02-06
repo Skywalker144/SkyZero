@@ -15,13 +15,13 @@ class ResidualBlock(nn.Module):
 
         out = self.conv1(x)
         out = self.bn1(out)
-        out = F.relu(out)
+        out = F.silu(out)
 
         out = self.conv2(out)
         out = self.bn2(out)
 
         out += identity
-        out = F.relu(out)
+        out = F.silu(out)
         return out
 
 class GlobalPoolingBlock(nn.Module):
@@ -32,7 +32,7 @@ class GlobalPoolingBlock(nn.Module):
         self.pool_conv = nn.Sequential(
             nn.Conv2d(in_channels * 2, reduced_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(reduced_channels),
-            nn.ReLU()
+            nn.SiLU()
         )
         
     def forward(self, x):
@@ -68,7 +68,7 @@ class ResNet(nn.Module):
         self.start_layer = nn.Sequential(
             nn.Conv2d(input_channels, num_channels, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(num_channels),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
         )
         
         # 2. 残差塔 (Backbone)
@@ -78,8 +78,7 @@ class ResNet(nn.Module):
         
         # 3. 全局池化
         if use_global_pool:
-            # g_channels = num_channels // 4
-            g_channels = 32
+            g_channels = num_channels // 4
             self.global_pool = GlobalPoolingBlock(num_channels, reduced_channels=g_channels)
             head_in_channels = num_channels + g_channels
         else:
@@ -88,24 +87,28 @@ class ResNet(nn.Module):
         board_cells = self.board_height * self.board_width
         
         # 4. Policy Head
+        # 通道数与网络宽度挂钩，例如设为 num_channels // 8 (至少为2)
+        policy_head_channels = max(2, num_channels // 8)
         self.policy_head = nn.Sequential(
-            nn.Conv2d(head_in_channels, 2, kernel_size=1, bias=False),
-            nn.BatchNorm2d(2),
-            nn.ReLU(),
+            nn.Conv2d(head_in_channels, policy_head_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(policy_head_channels),
+            nn.SiLU(),
             nn.Flatten(),
             # 注意：这里假设不包含 Pass 动作，如果包含，通常输出维度是 action_space_size + 1
-            nn.Linear(2 * board_cells, self.action_space_size),
+            nn.Linear(policy_head_channels * board_cells, self.action_space_size),
         )
 
         # 5. Value Head
+        # 隐藏层大小与网络宽度挂钩，例如设为 num_channels * 2
+        value_hidden_size = num_channels * 2
         self.value_head = nn.Sequential(
             nn.Conv2d(head_in_channels, 1, kernel_size=1, bias=False),
             nn.BatchNorm2d(1),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Flatten(),
-            nn.Linear(board_cells, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
+            nn.Linear(board_cells, value_hidden_size),
+            nn.SiLU(),
+            nn.Linear(value_hidden_size, 1),
             nn.Tanh()
         )
 
