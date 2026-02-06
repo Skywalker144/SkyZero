@@ -64,20 +64,6 @@ class MCTS:
         self.model.eval()
         self.minmax_state = MinMaxState(self.args['Q_norm_bounds'])
 
-    def select__(self, node):
-
-        child_priors = np.array([child.prior for child in node.children])
-        child_visit_counts = np.array([child.n for child in node.children])
-        child_values = np.array([child.v for child in node.children])
-
-        q_values = -child_values / (child_visit_counts + 1e-8)
-        u_values = self.args['c_puct'] * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
-
-        puct_scores = q_values + u_values
-
-        best_child_idx = np.argmax(puct_scores)
-        return node.children[best_child_idx]
-
     def select(self, node):
         child_priors = np.array([child.prior for child in node.children])
         child_visit_counts = np.array([child.n for child in node.children])

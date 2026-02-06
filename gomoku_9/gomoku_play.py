@@ -17,6 +17,7 @@ if __name__ == '__main__':
         'num_simulations': 600,
         'c_puct': 1,
         'buffer_size': 100000,
+        'Q_norm_bounds': [-1, 1],
         'file_name': 'gomoku',
         'device': 'cuda'
     }

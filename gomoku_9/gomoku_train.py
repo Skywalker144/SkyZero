@@ -46,6 +46,8 @@ if __name__ == '__main__':
 
         'policy_training_threshold': 0.5,
 
+        'Q_norm_bounds': [-1, 1],
+
         'device': 'cuda',
         'savetime_interval': 600,
         'file_name': 'gomoku',
