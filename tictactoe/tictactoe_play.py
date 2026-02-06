@@ -14,7 +14,7 @@ from utils import print_board
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
     game = TicTacToe(history_step=3)
-    model = ResNet(game, num_blocks=1).to('cuda')
+    model = ResNet(game, num_blocks=1, num_channels=64).to('cuda')
     optimizer = optim.Adam(model.parameters(), lr=0.003)
     args = {
         'mode': 'eval',
@@ -23,7 +23,7 @@ if __name__ == '__main__':
         'temperature': 0.1,
         'dirichlet_epsilon': 0,
         'dirichlet_alpha': 0.1,
-        'buffer_size': 2000,
+        'buffer_size': 10000,
         'file_name': 'tictactoe',
         'Q_norm_bounds': [-1, 1],
         'device': 'cuda'

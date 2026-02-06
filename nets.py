@@ -25,7 +25,6 @@ class ResidualBlock(nn.Module):
         return out
 
 class GlobalPoolingBlock(nn.Module):
-    """KataGo 风格的全局池化模块 - 用于获取全盘语境"""
     def __init__(self, in_channels, reduced_channels=64):
         super().__init__()
         # 全局池化后的特征降维
@@ -48,7 +47,7 @@ class GlobalPoolingBlock(nn.Module):
         # 降维
         global_features = self.pool_conv(global_features)  # [B, reduced, 1, 1]
         
-        # 广播 - expand 不会复制内存，比 repeat 高效
+        # 广播
         global_features = global_features.expand(-1, -1, height, width)
         
         # 拼接到原特征图上
@@ -87,19 +86,16 @@ class ResNet(nn.Module):
         board_cells = self.board_height * self.board_width
         
         # 4. Policy Head
-        # 通道数与网络宽度挂钩，例如设为 num_channels // 8 (至少为2)
         policy_head_channels = max(2, num_channels // 8)
         self.policy_head = nn.Sequential(
             nn.Conv2d(head_in_channels, policy_head_channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(policy_head_channels),
             nn.SiLU(),
             nn.Flatten(),
-            # 注意：这里假设不包含 Pass 动作，如果包含，通常输出维度是 action_space_size + 1
             nn.Linear(policy_head_channels * board_cells, self.action_space_size),
         )
 
         # 5. Value Head
-        # 隐藏层大小与网络宽度挂钩，例如设为 num_channels * 2
         value_hidden_size = num_channels * 2
         self.value_head = nn.Sequential(
             nn.Conv2d(head_in_channels, 1, kernel_size=1, bias=False),

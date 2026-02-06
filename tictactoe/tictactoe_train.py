@@ -8,7 +8,7 @@ from nets import ResNet
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
     game = TicTacToe(history_step=3)
-    model = ResNet(game, num_blocks=1).to('cuda')
+    model = ResNet(game, num_blocks=1, num_channels=64).to('cuda')
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
     args = {
         'mode': 'train',

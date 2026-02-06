@@ -28,7 +28,7 @@ if __name__ == '__main__':
     
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
-    model = ResNet(game, num_blocks=1, num_channels=128).to('cuda')
+    model = ResNet(game, num_blocks=1, num_channels=64).to('cuda')
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
 
     args = {
@@ -44,9 +44,9 @@ if __name__ == '__main__':
         'dirichlet_alpha': 0.3,
         'dirichlet_epsilon': 0.25,
         
-        'buffer_size': 3000,
-        'batch_size': 128,
-        'min_buffer_size': 500,
+        'buffer_size': 10000,
+        'batch_size': 256,
+        'min_buffer_size': 1000,
 
         'train_steps_per_generation': 5, 
         
@@ -79,7 +79,7 @@ if __name__ == '__main__':
     model_kwargs = {
         'game': game,
         'num_blocks': 1,
-        'num_channels': 128
+        'num_channels': 64
     }
 
     # Use 16 workers (Similar to Connect4 setup)
