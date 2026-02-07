@@ -16,8 +16,6 @@ if __name__ == '__main__':
         'c_puct': 1.5,
         'temperature': 1.0,
 
-        'root_temperature_start': 1.05,
-        'root_temperature_end': 1.03,
         'zero_t_step': 3,
 
         'dirichlet_alpha': 0.3,
@@ -28,14 +26,8 @@ if __name__ == '__main__':
         'min_buffer_size': 500,
 
         'train_steps_per_generation': 5,
-        'num_games_per_generation': 20,
 
-        # Replay Ratio: (batch_size * train_steps_per_generations) / (num_games_per_generation * Avg_steps_per_game)
-        # RR 通常在2到8之间
-        # 太高：容易对旧数据过拟合，策略停滞，MCTS有概率策略坍缩
-        # 太低：样本利用率不足，训练速度慢
-
-        # RR: 256*5/20/8=8
+        # 'num_games_per_generation': 20,
 
         'target_ReplayRatio': 8,
 

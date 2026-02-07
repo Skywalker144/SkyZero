@@ -36,19 +36,19 @@ if __name__ == '__main__':
         'min_buffer_size': 2000,
         
         'train_steps_per_generation': 5,
-        'num_games_per_generation': 20,
+        # 'num_games_per_generation': 20,
         
-        'target_ReplayRatio': 5,
+        'target_ReplayRatio': 6,
         
-        'playout_cap_min_ratio': 0.4,
+        'playout_cap_min_ratio': 0.3,
         'playout_cap_exponent': 1.5,
         
-        'policy_training_threshold': 0.7,
+        'policy_training_threshold': 0.5,
 
         'Q_norm_bounds': [-1, 1],
         
         'device': 'cuda',
-        'savetime_interval': 1800,
+        'savetime_interval': 3600,
         'file_name': 'connect4',
     }
     

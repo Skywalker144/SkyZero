@@ -43,21 +43,20 @@ if __name__ == '__main__':
         'batch_size': 1024,
         'min_buffer_size': 5000,
 
-        'train_steps_per_generation': 10, 
-        
+        'train_steps_per_generation': 10,
         # 'num_games_per_generation': 20,
 
-        'target_ReplayRatio': 8.0,
+        'target_ReplayRatio': 6,
         
-        'playout_cap_min_ratio': 0.4,
+        'playout_cap_min_ratio': 0.3,
         'playout_cap_exponent': 1.5,
         
-        'policy_training_threshold': 0.7,
+        'policy_training_threshold': 0.5,
 
         'Q_norm_bounds': [-1, 1],
         
         'device': 'cuda', # Workers will try to use this too. 
-        'savetime_interval': 1800,
+        'savetime_interval': 3600,
 
         'file_name': 'connect4', 
     }
