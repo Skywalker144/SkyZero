@@ -282,6 +282,11 @@ class AlphaZero:
         recent_train_times = []
         total_start_time = time.time()
 
+        # Throughput measuring (Serial)
+        perf_start_time = time.time()
+        perf_steps_count = 0
+        recent_throughput_measurements = [] 
+
         last_save_time = time.time()
         savetime_interval = self.args['savetime_interval']
 
@@ -311,6 +316,10 @@ class AlphaZero:
 
             step_count = len(memory)
             time_per_step = selfplay_time / step_count if step_count > 0 else 0
+            
+            # Update Throughput Stats
+            perf_steps_count += step_count
+            
             for _ in range(step_count):
                 recent_step_times.append(time_per_step)
             while len(recent_step_times) > 100:
@@ -326,15 +335,33 @@ class AlphaZero:
 
             recent_first_win = sum(1 for w in recent_winners if w == 1)
             recent_second_win = sum(1 for w in recent_winners if w == -1)
+            recent_draw = sum(1 for w in recent_winners if w == 0)
             recent_total = len(recent_winners)
 
             avg_step_time = sum(recent_step_times) / len(recent_step_times) if recent_step_times else 0
 
+            # Calculate Global Throughput (Sliding Window)
+            current_duration = time.time() - perf_start_time
+            # Store (duration, steps) tuples
+            recent_throughput_measurements.append((current_duration, perf_steps_count))
+            if len(recent_throughput_measurements) > 10: 
+                recent_throughput_measurements.pop(0)
+            
+            total_window_steps = sum(s for _, s in recent_throughput_measurements)
+            total_window_time = sum(t for t, _ in recent_throughput_measurements)
+            global_steps_per_sec = total_window_steps / total_window_time if total_window_time > 0 else 0
+
             current_buffer_size = len(self.replay_buffer)
-            print(f'\n[Game {self.game_count}] Steps: {len(memory)}, Winner: {int(winner):+d}, Buffer: {current_buffer_size}, Avg Len: {avg_game_len:.1f}')
+            print(f'\n[Game {self.game_count}] Winner: {int(winner):+d}, Len: {len(memory)}, Buffer: {current_buffer_size}, AvgLen: {avg_game_len:.1f}')
+            print(f'  Speed: {global_steps_per_sec:.1f} steps/s (Serial) | {avg_step_time * 1000:.1f} ms/step (Latency)')
             print(f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
-                  f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%)')
-            print(f'  Selfplay Time: {selfplay_time:.2f}s ({step_count} steps), Recent {len(recent_step_times)} steps Avg: {avg_step_time * 1000:.1f}ms/step')
+                  f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%), '
+                  f'Draw: {recent_draw}/{recent_total} ({100 * recent_draw / recent_total:.1f}%)')
+            # print(f'  Selfplay Time: {selfplay_time:.2f}s ({step_count} steps), Recent {len(recent_step_times)} steps Avg: {avg_step_time * 1000:.1f}ms/step')
+
+            # Reset performance counters for next game
+            perf_start_time = time.time()
+            perf_steps_count = 0
 
             if current_buffer_size < min_buffer_size:
                 print(f'  [Skip Training] Buffer {current_buffer_size} < min_buffer_size {min_buffer_size}')

@@ -32,10 +32,10 @@ if __name__ == '__main__':
         'dirichlet_epsilon': 0.25,
         
         'buffer_size': 100000,
-        'batch_size': 512,
-        'min_buffer_size': 2000,
+        'batch_size': 1024,
+        'min_buffer_size': 5000,
         
-        'train_steps_per_generation': 5,
+        'train_steps_per_generation': 10,
         # 'num_games_per_generation': 20,
         
         'target_ReplayRatio': 6,
