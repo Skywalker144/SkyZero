@@ -5,6 +5,26 @@ import time
 from alphazero import AlphaZero, MCTS, temperature_transform
 from copy import deepcopy
 
+def print_board(board):
+    # board shape: (history, size, size)
+    # We only care about the last board state (current state)
+    current_board = board[-1]
+    size = current_board.shape[0]
+    
+    print("  " + " ".join([f"{i:2}" for i in range(size)]))
+    for r in range(size):
+        row_str = f"{r:2} "
+        for c in range(size):
+            val = current_board[r, c]
+            if val == 1:
+                row_str += " X "  # Black
+            elif val == -1:
+                row_str += " O "  # White
+            else:
+                row_str += " . "
+        print(row_str)
+    print()
+
 def play_game_worker(rank, game, model_cls, model_kwargs, model_state_dict, args, seed):
     try:
         # Set seed for this worker
@@ -65,12 +85,12 @@ def play_game_worker(rank, game, model_cls, model_kwargs, model_state_dict, args
                 num_sims
             ))
             
-        return return_memory, winner
+        return return_memory, winner, final_state
     except Exception as e:
         print(f"Worker {rank} failed: {e}")
         import traceback
         traceback.print_exc()
-        return [], 0
+        return [], 0, None
 
 class AlphaZeroParallel(AlphaZero):
     def __init__(self, game, model, optimizer, args, model_cls=None, model_kwargs=None, num_workers=4):
@@ -177,10 +197,11 @@ class AlphaZeroParallel(AlphaZero):
             selfplay_time = time.time() - selfplay_start
             
             # Process results
-            # Each result is (memory, winner)
+            # Each result is (memory, winner, final_state)
             total_steps_in_batch = 0
+            batch_game_states = []
             
-            for memory, winner in results:
+            for memory, winner, final_state in results:
                 if not memory: continue # Failed game
                 
                 self.game_count += 1
@@ -191,6 +212,7 @@ class AlphaZeroParallel(AlphaZero):
                 
                 step_count = len(memory)
                 total_steps_in_batch += step_count
+                batch_game_states.append((step_count, final_state))
                 
                 recent_game_lens.append(step_count)
                 if len(recent_game_lens) > 100:
@@ -198,6 +220,13 @@ class AlphaZeroParallel(AlphaZero):
                     
                 for sample in memory:
                     self.replay_buffer.buffer.append(sample)
+
+            if batch_game_states:
+                batch_game_states.sort(key=lambda x: x[0])
+                median_idx = len(batch_game_states) // 2
+                median_len, median_board = batch_game_states[median_idx]
+                print(f"\n[Median Game] Length: {median_len}")
+                print_board(median_board)
             
             avg_game_len = sum(recent_game_lens) / len(recent_game_lens) if recent_game_lens else 0
             recent_first_win = sum(1 for w in recent_winners if w == 1)
