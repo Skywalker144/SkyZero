@@ -4,6 +4,7 @@ import numpy as np
 import time
 import queue
 import traceback
+from collections import deque
 from alphazero import AlphaZero, MCTS, temperature_transform
 from copy import deepcopy
 
@@ -73,7 +74,7 @@ class RemoteModel:
         # Convert back to tensor to satisfy MCTS interface
         return torch.tensor(policy_np), torch.tensor(value_np)
 
-def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, response_pipes, command_queue, args):
+def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, response_pipes, command_queue, args, start_barrier=None):
     """
     The Server process that holds the GPU model and processes batches of requests.
     """
@@ -86,6 +87,10 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
         model.load_state_dict(model_state_dict)
         model.eval()
         print(f"GPU Worker: Model initialized and weights loaded on {device}")
+        
+        # Wait for all workers to be ready before starting
+        if start_barrier is not None:
+            start_barrier.wait()
         
         max_batch_size = len(response_pipes) # Dynamic batch size up to num_workers
         # Or you can hardcode a limit like 64, 128 etc.
@@ -164,7 +169,7 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
         print(f"GPU Worker crashed: {e}")
         traceback.print_exc()
 
-def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue, seed):
+def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue, seed, start_barrier=None):
     """
     The Client process that runs the game logic and MCTS.
     """
@@ -182,6 +187,10 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
         
         # Initialize MCTS
         mcts = MCTS(game, local_args, remote_model)
+        
+        # Wait for all workers to be ready before starting
+        if start_barrier is not None:
+            start_barrier.wait()
         
         # Loop to play games continuously
         while True:
@@ -201,7 +210,6 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 ratio = min_ratio + (1 - min_ratio) * random_value
                 return max(1, int(base_simulations * ratio))
             
-            game_start_time = time.time()
             while not game.is_terminal(state):
                 num_simulations = get_randomized_simulations(local_args)
                 action_probs = mcts.search(state, to_play, num_simulations)
@@ -220,10 +228,6 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
             
-            game_end_time = time.time()
-            game_duration = game_end_time - game_start_time
-            avg_time_per_step = game_duration / len(memory) if len(memory) > 0 else 0
-
             final_state = state
             winner = game.get_winner(final_state)
             
@@ -239,7 +243,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 ))
             
             # Send result to main process
-            result_queue.put((return_memory, winner, final_state, avg_time_per_step))
+            result_queue.put((return_memory, winner, final_state))
             
     except Exception as e:
         print(f"Worker {rank} failed: {e}")
@@ -291,6 +295,10 @@ class AlphaZeroParallel(AlphaZero):
         print(f"Workers: {self.num_workers}, Device: {self.args['device']}")
         print(f"Batch Size: {self.args['batch_size']}")
         
+        # Barrier to synchronize all workers before starting self-play
+        # Participants: 1 GPU worker + num_workers self-play workers + 1 main process
+        start_barrier = mp.Barrier(self.num_workers + 2)
+        
         # 1. Start GPU Worker
         server_pipes = [p[0] for p in self.worker_pipes]
         
@@ -306,7 +314,8 @@ class AlphaZeroParallel(AlphaZero):
                 self.request_queue,
                 server_pipes,
                 self.command_queue,
-                self.args
+                self.args,
+                start_barrier
             )
         )
         gpu_process.start()
@@ -325,11 +334,17 @@ class AlphaZeroParallel(AlphaZero):
                     self.request_queue,
                     client_pipe,
                     self.result_queue,
-                    base_seed + i
+                    base_seed + i,
+                    start_barrier
                 )
             )
             p.start()
             worker_processes.append(p)
+        
+        # Wait for all workers to be ready
+        print("Waiting for all workers to be ready...")
+        start_barrier.wait()
+        print("All workers ready, starting self-play!")
             
         # 3. Main Training Loop
         try:
@@ -337,16 +352,15 @@ class AlphaZeroParallel(AlphaZero):
             last_save_time = time.time()
             savetime_interval = self.args['savetime_interval']
             
-            recent_game_lens = []
-            recent_winners = []
-            recent_step_times = []  # Added list for recent step times
+            recent_game_lens = deque(maxlen=100)
+            recent_winners = deque(maxlen=100)
             total_train_steps = 0
             start_time = time.time()
 
             # Throughput measuring
             perf_start_time = time.time()
             perf_steps_count = 0
-            recent_throughput_measurements = [] # List of (duration, steps) for sliding window
+            recent_throughput_measurements = deque(maxlen=10)
             
             # Initial wait for some games
             print("Waiting for games to start...")
@@ -356,7 +370,7 @@ class AlphaZeroParallel(AlphaZero):
                 new_games = 0
                 while not self.result_queue.empty():
                     try:
-                        memory, winner, final_state, avg_time_per_step = self.result_queue.get_nowait()
+                        memory, winner, final_state = self.result_queue.get_nowait()
                         self.game_count += 1
                         new_games += 1
                         steps_count = len(memory)
@@ -364,44 +378,31 @@ class AlphaZeroParallel(AlphaZero):
                         
                         # Update stats
                         recent_winners.append(winner)
-                        if len(recent_winners) > 100: recent_winners.pop(0)
-                        
                         recent_game_lens.append(len(memory))
-                        if len(recent_game_lens) > 100: recent_game_lens.pop(0)
-
-                        recent_step_times.append(avg_time_per_step)
-                        if len(recent_step_times) > 100: recent_step_times.pop(0)
                         
                         # Add to buffer
                         for sample in memory:
                             self.replay_buffer.buffer.append(sample)
                             
-                        # Optional: Print info occasionally or for special games
+                        # Print info every 10 games
                         if self.game_count % 10 == 0:
-                            avg_len = sum(recent_game_lens)/len(recent_game_lens)
+                            avg_len = sum(recent_game_lens) / len(recent_game_lens)
                             
                             recent_first_win = sum(1 for w in recent_winners if w == 1)
                             recent_second_win = sum(1 for w in recent_winners if w == -1)
                             recent_draw = sum(1 for w in recent_winners if w == 0)
                             recent_total = len(recent_winners)
-                            
-                            avg_step_time_ms = sum(recent_step_times) / len(recent_step_times) * 1000 if recent_step_times else 0
 
                             # Calculate Global Throughput (Sliding Window)
                             current_duration = time.time() - perf_start_time
-                            
-                            # Store (duration, steps) tuples
                             recent_throughput_measurements.append((current_duration, perf_steps_count))
-                            if len(recent_throughput_measurements) > 10: # Average over last ~100 games
-                                recent_throughput_measurements.pop(0)
                                 
                             total_window_steps = sum(s for _, s in recent_throughput_measurements)
                             total_window_time = sum(t for t, _ in recent_throughput_measurements)
-                            
                             global_steps_per_sec = total_window_steps / total_window_time if total_window_time > 0 else 0
 
                             print(f"\n[Game {self.game_count}] Winner: {int(winner):+d}, Len: {len(memory)}, Buffer: {len(self.replay_buffer)}, AvgLen: {avg_len:.1f}")
-                            print(f'  Speed: {global_steps_per_sec:.1f} steps/s (Global, Smoothed) | {avg_step_time_ms:.1f} ms/step (Worker Latency)')
+                            print(f'  Speed: {global_steps_per_sec:.1f} steps/s')
                             print(f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
                                   f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%), '
                                   f'Draw: {recent_draw}/{recent_total} ({100 * recent_draw / recent_total:.1f}%)')
