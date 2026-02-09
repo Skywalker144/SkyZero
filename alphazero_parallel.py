@@ -4,6 +4,7 @@ import numpy as np
 import time
 import queue
 import traceback
+import os
 from collections import deque
 from alphazero import AlphaZero, MCTS, temperature_transform
 from copy import deepcopy
@@ -60,12 +61,12 @@ class RemoteModel:
         Mimic torch.nn.Module.__call__
         state_tensor: tensor of shape (1, C, H, W) on CPU
         """
-        # Convert tensor to numpy to strip PyTorch overhead for transmission
+        # Optimization: Send CPU tensor directly (uses shared memory) instead of numpy
         # state_tensor is typically (1, C, H, W)
-        state_np = state_tensor.detach().numpy()
+        state_cpu = state_tensor.detach().cpu()
         
-        # Send request: (worker_rank, state_numpy)
-        self.request_queue.put((self.rank, state_np))
+        # Send request: (worker_rank, state_tensor)
+        self.request_queue.put((self.rank, state_cpu))
         
         # Wait for response from dedicated pipe
         # response is (policy_logits_np, value_np)
@@ -93,8 +94,6 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
             start_barrier.wait()
         
         max_batch_size = len(response_pipes) # Dynamic batch size up to num_workers
-        # Or you can hardcode a limit like 64, 128 etc.
-        # max_batch_size = min(len(response_pipes), 64) 
         
         while True:
             # 1. Check for commands (e.g. update weights)
@@ -104,7 +103,7 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
                     if cmd == 'UPDATE':
                         model.load_state_dict(data)
                         model.eval()
-                        print("GPU Worker: Weights updated")
+                        # print("GPU Worker: Weights updated")
                     elif cmd == 'STOP':
                         break
             except Exception:
@@ -114,40 +113,47 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
             batch_states = []
             batch_ranks = []
             
-            # Blocking wait for the first item to avoid busy loop
-            try:
-                # Timeout allows checking command_queue periodically
-                rank, state = request_queue.get(timeout=0.01)
-                batch_states.append(state)
-                batch_ranks.append(rank)
-            except queue.Empty:
-                continue
-                
-            # Collect rest of the batch without waiting too long
-            # We want to fill the batch as much as possible but not latency-starve the first item
-            start_collect = time.time()
+            # Smarter Batch Collection
+            start_time = time.time()
+            max_wait = 0.005 # 5ms window to batch
+            
+            # Try to get as many as possible within window
             while len(batch_states) < max_batch_size:
                 try:
-                    # Very short timeout just to check if data is immediately available
-                    rank, state = request_queue.get_nowait()
+                    if len(batch_states) == 0:
+                        # Wait for first item (up to 10ms to check command_queue periodically)
+                        rank, state = request_queue.get(timeout=0.01)
+                    else:
+                        # We have some items, try to get more but respect the time window
+                        remaining = (start_time + max_wait) - time.time()
+                        if remaining <= 0:
+                            break
+                        # Wait for next item up to remaining time
+                        rank, state = request_queue.get(timeout=remaining)
+                        
                     batch_states.append(state)
                     batch_ranks.append(rank)
+                    
+                    if len(batch_states) == 1:
+                        start_time = time.time() # Start timer on first item arrival
+                        
                 except queue.Empty:
-                    break
-                
-                # Safety break to ensure latency isn't too high
-                if time.time() - start_collect > 0.001: # 1ms max wait (optimized from 50ms)
-                    break
+                    if len(batch_states) > 0:
+                        # Timeout waiting for more items -> process what we have
+                        break
+                    else:
+                        # Timeout waiting for first item -> loop back to check commands
+                        break
             
             if not batch_states:
                 continue
                 
             # 3. Inference
-            # Stack: list of (1, C, H, W) -> (B, C, H, W)
-            # Use concatenate on numpy arrays first
+            # Stack: list of tensors -> (B, C, H, W)
             try:
-                input_np = np.concatenate(batch_states, axis=0)
-                input_tensor = torch.tensor(input_np, dtype=torch.float32, device=device)
+                # Optimization: Use torch.cat directly on the list of tensors
+                # They are already on CPU shared memory, moving to GPU as a batch is efficient
+                input_tensor = torch.cat(batch_states, dim=0).to(device)
                 
                 with torch.no_grad():
                     policies, values = model(input_tensor)
@@ -268,9 +274,9 @@ class AlphaZeroParallel(AlphaZero):
         self.game_count = 0
         
         # Replay Buffer
-        from replay_buffer import ReplayBuffer
+        from replay_buffer import ParallelReplayBuffer
         buffer_size = args['buffer_size']
-        self.replay_buffer = ReplayBuffer(
+        self.replay_buffer = ParallelReplayBuffer(
             window_size=buffer_size,
             board_size=game.board_size,
         )
@@ -287,6 +293,69 @@ class AlphaZeroParallel(AlphaZero):
         self.worker_pipes = [] # (server_end, client_end)
         for _ in range(num_workers):
             self.worker_pipes.append(mp.Pipe())
+
+    def load_checkpoint(self, filepath=None):
+        import glob
+        
+        if filepath is None:
+            checkpoint_dir = f"{self.args['file_name']}_checkpoints"
+            if not os.path.exists(checkpoint_dir):
+                print(f"Checkpoint directory not found: {checkpoint_dir}")
+                return False
+
+            pattern = os.path.join(checkpoint_dir, "*.pth")
+            checkpoint_files = glob.glob(pattern)
+
+            if not checkpoint_files:
+                print(f"No checkpoint files found in: {checkpoint_dir}")
+                return False
+
+            filepath = max(checkpoint_files, key=os.path.getmtime)
+            print(f"Auto-selected latest checkpoint: {filepath}")
+
+        if not os.path.exists(filepath):
+            print(f"Checkpoint file not found: {filepath}")
+            return False
+
+        checkpoint = torch.load(filepath, weights_only=False)
+
+        if 'model_state_dict' in checkpoint:
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"Model loaded")
+
+        if 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            print(f"Optimizer loaded")
+
+        if 'losses' in checkpoint:
+            self.losses = checkpoint['losses']
+        
+        if 'policy_losses' in checkpoint:
+            self.policy_losses = checkpoint['policy_losses']
+            
+        if 'value_losses' in checkpoint:
+            self.value_losses = checkpoint['value_losses']
+
+        if 'game_count' in checkpoint:
+            self.game_count = checkpoint['game_count']
+            print(f"Game count loaded ({self.game_count} games)")
+
+        if 'replay_buffer' in checkpoint:
+            buffer_data = checkpoint['replay_buffer']
+            # ParallelReplayBuffer specific loading
+            self.replay_buffer.buffer = list(buffer_data['buffer'])
+            self.replay_buffer.games_count = buffer_data.get('games_count', 0)
+            
+            # Recalculate position pointer
+            if len(self.replay_buffer.buffer) < self.replay_buffer.window_size:
+                self.replay_buffer.position = len(self.replay_buffer.buffer)
+            else:
+                self.replay_buffer.position = 0 # Assume full buffer wraps around (approximation)
+                
+            print(f"Replay buffer loaded ({len(self.replay_buffer)} samples)")
+
+        print(f"Checkpoint loaded from {filepath}")
+        return True
 
     def learn(self):
         import matplotlib.pyplot as plt
@@ -381,8 +450,8 @@ class AlphaZeroParallel(AlphaZero):
                         recent_game_lens.append(len(memory))
                         
                         # Add to buffer
-                        for sample in memory:
-                            self.replay_buffer.buffer.append(sample)
+                        # Use add_game to ensure ring buffer logic is respected for ParallelReplayBuffer
+                        self.replay_buffer.add_game(memory)
                             
                         # Print info every 10 games
                         if self.game_count % 10 == 0:

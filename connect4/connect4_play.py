@@ -21,7 +21,7 @@ if __name__ == '__main__':
     optimizer = optim.Adam(model.parameters(), lr=0.003)
     args = {
         'mode': 'eval',
-        'num_simulations': 600,  # 对战时可以用更多模拟
+        'num_simulations': 400,  # 对战时可以用更多模拟
         'c_puct': 1.4,
         'temperature': 0.1,
         'dirichlet_epsilon': 0,

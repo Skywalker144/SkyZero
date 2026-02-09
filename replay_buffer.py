@@ -27,7 +27,6 @@ class ReplayBuffer:
     Args:
         window_size: 保存最近多少局游戏的数据，旧数据会被移除
         board_size: 棋盘大小，用于数据增强
-        augment: 是否在添加数据时进行数据增强
     """
     
     def __init__(self, window_size: int = 500000, board_size: int = 9):
@@ -47,41 +46,16 @@ class ReplayBuffer:
     def add_game(self, game_memory: List[Tuple]) -> int:
         """
         添加一局游戏的数据到buffer中。
-        
-        Args:
-            game_memory: 一局游戏的所有样本，每个样本是 (state, policy, value, num_sims) 的元组
-            
-        Returns:
-            实际添加的样本数量
         """
-
-        # 添加到buffer
         for sample in game_memory:
             self.buffer.append(sample)
             
         self.games_count += 1
         return len(game_memory)
     
-    def add_samples(self, samples: List[Tuple], augment: bool = True):
-        """
-        直接添加样本列表到buffer中。
-        
-        Args:
-            samples: 样本列表
-            augment: 是否进行数据增强
-        """
-        for sample in samples:
-            self.buffer.append(sample)
-    
     def sample(self, batch_size: int) -> List[Tuple]:
         """
         从buffer中随机采样一个batch。
-        
-        Args:
-            batch_size: 采样数量
-            
-        Returns:
-            采样的样本列表
         """
         if len(self.buffer) < batch_size:
             return list(self.buffer)
@@ -95,6 +69,46 @@ class ReplayBuffer:
         """清空buffer"""
         self.buffer.clear()
         self.games_count = 0
+
+class ParallelReplayBuffer:
+    """
+    专为并行训练优化的Replay Buffer。
+    使用List代替Deque以优化随机采样性能（避免O(N)的类型转换）。
+    使用环形缓冲区（Ring Buffer）逻辑管理内存。
+    """
+    def __init__(self, window_size: int = 500000, board_size: int = 9):
+        self.window_size = window_size
+        self.board_size = board_size
+        self.buffer = [] # 使用List
+        self.position = 0 # 当前写入指针
+        self.games_count = 0
+        
+    def __len__(self) -> int:
+        return len(self.buffer)
+        
+    def add_game(self, game_memory: List[Tuple]) -> int:
+        for sample in game_memory:
+            if len(self.buffer) < self.window_size:
+                self.buffer.append(sample)
+            else:
+                self.buffer[self.position] = sample
+                self.position = (self.position + 1) % self.window_size
+                
+        self.games_count += 1
+        return len(game_memory)
+        
+    def sample(self, batch_size: int) -> List[Tuple]:
+        # List采样是高效的，不需要转换
+        if len(self.buffer) < batch_size:
+            return list(self.buffer)
+        return random.sample(self.buffer, batch_size)
+        
+    def clear(self):
+        self.buffer = []
+        self.position = 0
+        self.games_count = 0
+
+
     
     def save(self, filepath: str):
         """

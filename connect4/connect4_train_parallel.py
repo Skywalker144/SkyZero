@@ -48,7 +48,7 @@ if __name__ == '__main__':
 
         'target_ReplayRatio': 6,
         
-        'playout_cap_min_ratio': 0.3,
+        'playout_cap_min_ratio': 0.2,
         'playout_cap_exponent': 1.5,
         
         'policy_training_threshold': 0.5,
@@ -76,7 +76,7 @@ if __name__ == '__main__':
         'num_channels': 128
     }
 
-    num_workers = 16
+    num_workers = 20
 
     alphazero = AlphaZeroParallel(
         game, 
