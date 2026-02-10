@@ -28,8 +28,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 
 
-def compute_kl_divergence(policy_target: np.ndarray, policy_prior: np.ndarray, 
-                          epsilon: float = 1e-10) -> float:
+def compute_kl_divergence(policy_target: np.ndarray, policy_prior: np.ndarray, epsilon: float = 1e-10) -> float:
     """
     计算从 policy_prior 到 policy_target 的 KL 散度
     
@@ -74,9 +73,7 @@ def compute_policy_surprise_weights(
     计算一局游戏中每个位置的 Policy Surprise Weight
     
     Args:
-        game_data: 一局游戏的数据，每个元素是 tuple:
-                   (encoded_state, policy_target, outcome, is_full_search, policy_prior)
-                   注意：policy_target 在索引 1，is_full_search 在索引 3，policy_prior 在索引 4
+        game_data: 一局游戏的数据，每个元素是 tuple: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
         baseline_weight_ratio: 均匀分配的权重比例 (默认 0.5，即一半均匀分配)
         fast_search_kl_threshold: fast search 被包含的 KL 散度阈值
         min_weight: 最小权重，防止完全忽略某些样本
@@ -157,11 +154,7 @@ def compute_policy_surprise_weights(
     return weights
 
 
-def apply_surprise_weighting_to_game(
-    game_data: List[Tuple],
-    weights: List[float],
-    stochastic: bool = True,
-) -> List[Tuple]:
+def apply_surprise_weighting_to_game(game_data: List[Tuple], weights: List[float], ) -> List[Tuple]:
     """
     根据 Policy Surprise Weights 重复/采样游戏数据
     
@@ -169,24 +162,22 @@ def apply_surprise_weighting_to_game(
     - 每个位置被写入训练数据 floor(weight) 次
     - 再以 (weight - floor(weight)) 的概率额外写入一次
     
+    注意: 输出保留原始 sample 格式不变（包含 policy_prior）。
+    调用方应负责在写入 replay buffer 前移除多余字段。
+    
     Args:
         game_data: 原始游戏数据
         weights: 每个位置的频率权重
         stochastic: 是否使用随机采样（True）还是简单四舍五入（False）
     
     Returns:
-        重复后的游戏数据（不包含 policy_prior）
+        按权重重复后的游戏数据
     """
     weighted_data = []
     
     for sample, weight in zip(game_data, weights):
         if weight <= 0:
             continue
-        
-        # 移除 policy_prior，只保留训练需要的数据
-        # 假设格式: (state, policy_target, outcome, is_full_search, policy_prior, ...)
-        # 输出格式: (state, policy_target, outcome, is_full_search)
-        # 注意：outcome 需要在外部设置，这里只处理权重
         
         # 计算重复次数
         floor_weight = int(np.floor(weight))
@@ -195,15 +186,10 @@ def apply_surprise_weighting_to_game(
         # 添加 floor(weight) 次
         for _ in range(floor_weight):
             weighted_data.append(sample)
-        
-        # 以 fractional 概率额外添加一次
-        if stochastic:
-            if np.random.random() < fractional:
-                weighted_data.append(sample)
-        else:
-            # 非随机模式：四舍五入
-            if fractional >= 0.5:
-                weighted_data.append(sample)
+
+        # 以weight - floor(weight) 的概率额外添加一次
+        if np.random.random() < fractional:
+            weighted_data.append(sample)
     
     return weighted_data
 
@@ -221,10 +207,6 @@ class PolicySurpriseWeighter:
         baseline_weight_ratio: float = 0.5,
         fast_search_kl_threshold: float = 2.0,
         min_weight: float = 0.01,
-        stochastic: bool = True,
-        # 以下参数已废弃，保留是为了向后兼容
-        full_search_threshold_ratio: float = 0.5,
-        base_num_simulations: int = 800,
     ):
         """
         初始化 PSW 管理器
@@ -234,15 +216,11 @@ class PolicySurpriseWeighter:
             baseline_weight_ratio: 均匀分配的权重比例
             fast_search_kl_threshold: fast search 的 KL 阈值
             min_weight: 最小权重
-            stochastic: 是否使用随机采样
-            full_search_threshold_ratio: [废弃] 不再需要，现使用布尔值 is_full_search
-            base_num_simulations: [废弃] 不再需要，现使用布尔值 is_full_search
         """
         self.enabled = enabled
         self.baseline_weight_ratio = baseline_weight_ratio
         self.fast_search_kl_threshold = fast_search_kl_threshold
         self.min_weight = min_weight
-        self.stochastic = stochastic
         
         # 统计信息
         self.total_samples_before = 0
@@ -273,7 +251,7 @@ class PolicySurpriseWeighter:
         
         # 应用权重
         weighted_data = apply_surprise_weighting_to_game(
-            game_data, weights, stochastic=self.stochastic
+            game_data, weights
         )
         
         # 更新统计

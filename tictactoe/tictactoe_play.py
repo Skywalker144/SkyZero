@@ -20,7 +20,7 @@ if __name__ == '__main__':
         'mode': 'eval',
         'num_simulations': 200,
         'c_puct': 1.4,
-        'temperature': 0.1,
+        'temperature': 0.5,
         'dirichlet_epsilon': 0,
         'dirichlet_alpha': 0.1,
         'buffer_size': 10000,

@@ -59,7 +59,8 @@ class ReplayBuffer:
         """
         if len(self.buffer) < batch_size:
             return list(self.buffer)
-        return random.sample(list(self.buffer), batch_size)
+        indices = random.sample(range(len(self.buffer)), batch_size)
+        return [self.buffer[i] for i in indices]
     
     def get_all(self) -> List[Tuple]:
         """获取buffer中的所有数据"""
@@ -144,7 +145,12 @@ class ParallelReplayBuffer:
         with open(filepath, 'rb') as f:
             data = pickle.load(f)
             
-        self.buffer = deque(data['buffer'], maxlen=self.window_size)
+        self.buffer = list(data['buffer'])
+        # 恢复 ring buffer 的 position 指针
+        if len(self.buffer) < self.window_size:
+            self.position = len(self.buffer)
+        else:
+            self.position = 0
         self.games_count = data.get('games_count', 0)
         
         print(f"Replay buffer loaded from {filepath} ({len(self.buffer)} samples, {self.games_count} games)")

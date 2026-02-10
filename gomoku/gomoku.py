@@ -339,22 +339,49 @@ class Gomoku:
         return board
 
     @staticmethod
+    def _count_consecutive(board_2d, r, c, dr, dc):
+        """沿 (dr,dc) 方向计算从 (r,c) 开始的最大连续同色棋子数（包含自身）"""
+        rows, cols = board_2d.shape
+        player = board_2d[r, c]
+        count = 1
+        # 正方向
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < rows and 0 <= nc < cols and board_2d[nr, nc] == player:
+            count += 1
+            nr += dr
+            nc += dc
+        # 反方向
+        nr, nc = r - dr, c - dc
+        while 0 <= nr < rows and 0 <= nc < cols and board_2d[nr, nc] == player:
+            count += 1
+            nr -= dr
+            nc -= dc
+        return count
+
+    @staticmethod
     def get_winner(board):
-        for i in range(board[-1].shape[0]):
-            for j in range(board[-1].shape[1]):
-                if board[-1][i, j] != 0:
-                    player = board[-1][i, j]
+        current = board[-1]
+        rows, cols = current.shape
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        BLACK = 1
 
-                    if j + 4 < board[-1].shape[1] and np.all(board[-1][i, j:j + 5] == player):
-                        return player
-                    if i + 4 < board[-1].shape[0] and np.all(board[-1][i:i + 5, j] == player):
-                        return player
-                    if i + 4 < board[-1].shape[0] and j + 4 < board[-1].shape[1] and np.all(np.diag(board[-1][i:i + 5, j:j + 5]) == player):
-                        return player
-                    if i + 4 < board[-1].shape[0] and j - 4 >= 0 and np.all(np.diag(np.fliplr(board[-1][i:i + 5, j - 4:j + 1])) == player):
-                        return player
+        for i in range(rows):
+            for j in range(cols):
+                player = current[i, j]
+                if player == 0:
+                    continue
+                for dr, dc in directions:
+                    length = Gomoku._count_consecutive(current, i, j, dr, dc)
+                    if player == BLACK:
+                        # Renju 规则：黑方必须恰好 5 连才算赢，长连不算
+                        if length == 5:
+                            return BLACK
+                    else:
+                        # 白方：5 连及以上都算赢
+                        if length >= 5:
+                            return player
 
-        if np.all(board[-1] != 0):
+        if np.all(current != 0):
             return 0
         return None
 

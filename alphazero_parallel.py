@@ -11,33 +11,13 @@ from policy_surprise_weighting import (
     PolicySurpriseWeighter,
     extract_policy_prior_from_root,
 )
-from copy import deepcopy
+from utils import print_board
 
 # Set start method to spawn for CUDA compatibility
 try:
     mp.set_start_method('spawn', force=True)
 except RuntimeError:
     pass
-
-def print_board(board):
-    # board shape: (history, size, size)
-    # We only care about the last board state (current state)
-    current_board = board[-1]
-    size = current_board.shape[0]
-    
-    print("  " + " ".join([f"{i:2}" for i in range(size)]))
-    for r in range(size):
-        row_str = f"{r:2} "
-        for c in range(size):
-            val = current_board[r, c]
-            if val == 1:
-                row_str += " X "  # Black
-            elif val == -1:
-                row_str += " O "  # White
-            else:
-                row_str += " . "
-        print(row_str)
-    print()
 
 class RemoteModel:
     """
@@ -102,15 +82,14 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
         while True:
             # 1. Check for commands (e.g. update weights)
             try:
-                if not command_queue.empty():
-                    cmd, data = command_queue.get_nowait()
-                    if cmd == 'UPDATE':
-                        model.load_state_dict(data)
-                        model.eval()
-                        # print("GPU Worker: Weights updated")
-                    elif cmd == 'STOP':
-                        break
-            except Exception:
+                cmd, data = command_queue.get_nowait()
+                if cmd == 'UPDATE':
+                    model.load_state_dict(data)
+                    model.eval()
+                    # print("GPU Worker: Weights updated")
+                elif cmd == 'STOP':
+                    break
+            except queue.Empty:
                 pass
 
             # 2. Collect Batch
@@ -319,8 +298,7 @@ class AlphaZeroParallel(AlphaZero):
             enabled=psw_enabled,
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
             fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),
-            min_weight=args.get('psw_min_weight', 0.01),
-            stochastic=args.get('psw_stochastic', True),
+            min_weight=args.get('psw_min_weight', 0.01)
         )
 
         # Queues and Pipes for Parallel Execution
@@ -488,18 +466,17 @@ class AlphaZeroParallel(AlphaZero):
                         
                         # Apply PSW
                         if self.psw.enabled:
-                             weighted_memory, psw_stats = self.psw.process_game(memory)
-                             
-                             # Remove policy_prior from weighted_memory before adding to buffer
-                             # memory format: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
-                             # desired format: (encoded_state, policy_target, outcome, is_full_search)
-                             final_memory = [sample[:4] for sample in weighted_memory]
-                             
-                             if psw_stats.get('enabled', False) and self.game_count % 10 == 0:
-                                print(f'  [PSW] Ratio: {psw_stats["expansion_ratio"]:.2f}, '
-                                      f'KL_mean: {psw_stats["kl_mean"]:.4f}')
+                            weighted_memory, psw_stats = self.psw.process_game(memory)
+
+                            # Remove policy_prior from weighted_memory before adding to buffer
+                            # memory format: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
+                            # desired format: (encoded_state, policy_target, outcome, is_full_search)
+                            final_memory = [sample[:4] for sample in weighted_memory]
+
+                            if psw_stats.get('enabled', False) and self.game_count % 10 == 0:
+                                print(f'  [PSW] Ratio: {psw_stats["expansion_ratio"]:.2f}, KL_mean: {psw_stats["kl_mean"]:.4f}, KL_max: {psw_stats["kl_max"]:.4f}, Weights - Fast: {psw_stats["fast_weight_mean"]:.4f}, Full: {psw_stats["full_weight_mean"]:.4f}')
                         else:
-                             final_memory = memory
+                            final_memory = memory
 
                         # Update stats
                         recent_winners.append(winner)

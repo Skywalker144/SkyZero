@@ -62,8 +62,7 @@ class TicTacToe:
         return None
 
     def is_terminal(self, state):
-        return (np.all(state[-1] != 0)
-                or self.get_winner(state) is not None)
+        return self.get_winner(state) is not None
 
 
     @staticmethod

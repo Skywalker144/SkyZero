@@ -218,6 +218,7 @@ def add_dirichlet_noise_origin(policy, alpha, epsilon=0.25):
 
 
 def add_dirichlet_noise(policy, alpha, epsilon=0.25):
+    policy = policy.copy()  # 避免原地修改传入的数组
     nonzero_mask = policy > 0
     nonzero_count = np.sum(nonzero_mask)
     noise = np.random.dirichlet(np.full(nonzero_count, alpha))

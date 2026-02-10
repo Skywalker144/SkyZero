@@ -47,7 +47,7 @@ if __name__ == '__main__':
         # 'num_games_per_generation': 20,
 
         'target_ReplayRatio': 6,
-        
+
         # Playout Cap Randomization (二选一策略)
         'fast_simulations': 100,  # 快速搜索的 simulation 数量
         'full_search_prob': 0.25,  # 全量搜索的概率
@@ -99,6 +99,6 @@ if __name__ == '__main__':
     )
     
     # Try to load existing checkpoint if any
-    alphazero.load_checkpoint()
-    alphazero.replay_buffer.clear()
+    # alphazero.load_checkpoint()
+    # alphazero.replay_buffer.clear()
     alphazero.learn()

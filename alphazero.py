@@ -34,7 +34,7 @@ class MinMaxState:
     def normalize(self, value):
         if self.max_value > self.min_value:
             return (value - self.min_value) / (self.max_value - self.min_value)
-        return value
+        return 0.5
 
     def reset(self):
         self.min_value = float('inf')
@@ -75,10 +75,18 @@ class MCTS:
         child_visit_counts = np.array([child.n for child in node.children])
         child_values = np.array([child.v for child in node.children])
 
-        q_values = -child_values / (child_visit_counts + 1e-8)
+        # 对已访问的子节点计算 Q 值，未访问的用 0.5（归一化后的中间值）
+        visited = child_visit_counts > 0
+        # 用 np.maximum 防止除零（0 的位置后续会被覆盖为 0.5）
+        safe_counts = np.maximum(child_visit_counts, 1)
+        q_values = -child_values / safe_counts
 
         if len(node.children) > 0:
-            q_values = self.minmax_state.normalize(q_values)
+            # 归一化：只对已访问节点有效，未访问节点设为 0.5
+            q_norm = np.empty_like(q_values)
+            q_norm[visited] = self.minmax_state.normalize(q_values[visited])
+            q_norm[~visited] = 0.5  # 未访问节点使用中间值
+            q_values = q_norm
 
         u_values = self.args['c_puct'] * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
 
@@ -124,8 +132,8 @@ class MCTS:
     def backpropagate(self, node, value):
         while node is not None:
             node.update(value)
-            if node.parent is not None and node.n > 0:
-                q = -node.v / (node.n + 1e-8)
+            if node.parent is not None:
+                q = -node.v / node.n
                 self.minmax_state.update(q)
             value = -value
             node = node.parent
@@ -171,8 +179,6 @@ class MCTS:
             if forced_playout_coeff > 0:
                 total_root_visits = root.n
                 for child in root.children:
-                    if child.n == 0:  # 论文：仅对已接收过 playout 的子节点强制补访问
-                        continue
                     desired_visits = int(math.ceil(
                         math.sqrt(forced_playout_coeff * child.prior * total_root_visits)
                     ))
@@ -205,21 +211,25 @@ class MCTS:
             child_n = np.array([ch.n for ch in children])
             child_v = np.array([ch.v for ch in children])
             child_prior = np.array([ch.prior for ch in children])
-            total_child_visits = np.sum(child_n)
+            # 使用 root.n 与 select() 中的 PUCT 公式保持一致
+            total_visits = root.n
 
             # 计算 Q 值 (注意 select 中的负号逻辑: q = -v / n)
-            q_values = -child_v / (child_n + 1e-8)
+            # 对已访问节点计算实际 Q 值，未访问节点使用中间值 0.5
+            visited = child_n > 0
+            safe_n = np.maximum(child_n, 1)
+            q_values = -child_v / safe_n
             
             # 归一化 Q 值 (使用 search 过程中维护的 minmax_state)
-            q_values_norm = self.minmax_state.normalize(q_values)
+            q_values_norm = np.empty_like(q_values)
+            q_values_norm[visited] = self.minmax_state.normalize(q_values[visited])
+            q_values_norm[~visited] = 0.5
 
             # 找到最优子节点（访问量最多的）
             best_idx = np.argmax(child_n)
 
             # 计算最优子节点的 PUCT 值 (Q_norm + U)
-            best_u = (c_puct * child_prior[best_idx]
-                      * math.sqrt(total_child_visits)
-                      / (1 + child_n[best_idx]))
+            best_u = (c_puct * child_prior[best_idx] * math.sqrt(total_visits) / (1 + child_n[best_idx]))
             best_score = q_values_norm[best_idx] + best_u
 
             # 对每个子节点计算修正后的权重
@@ -241,8 +251,7 @@ class MCTS:
                     else:
                         # U = c * P * sqrt(SumN) / (1 + N)
                         # => N = c * P * sqrt(SumN) / U - 1
-                        wanted = (c_puct * child_prior[i] * math.sqrt(total_child_visits)
-                                  / required_u - 1)
+                        wanted = (c_puct * child_prior[i] * math.sqrt(total_visits) / required_u - 1)
                         wanted = max(0.0, wanted)
                         reduced = min(float(child_n[i]), wanted)
                     
@@ -287,8 +296,7 @@ class AlphaZero:
             enabled=psw_enabled,
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
             fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),
-            min_weight=args.get('psw_min_weight', 0.01),
-            stochastic=args.get('psw_stochastic', True),
+            min_weight=args.get('psw_min_weight', 0.01)
         )
 
     def _get_randomized_simulations(self):
@@ -484,8 +492,7 @@ class AlphaZero:
             avg_sample_count = sum(recent_sample_counts) / len(recent_sample_counts)
             avg_game_steps = sum(recent_game_steps) / len(recent_game_steps)
 
-            for sample in memory:
-                self.replay_buffer.buffer.append(sample)
+            self.replay_buffer.add_game(memory)
 
             recent_first_win = sum(1 for w in recent_winners if w == 1)
             recent_second_win = sum(1 for w in recent_winners if w == -1)
