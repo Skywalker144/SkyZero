@@ -16,8 +16,8 @@ from nets import ResNet
 
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
-    game = Connect4(history_step=3)
-    model = ResNet(game, num_blocks=2, num_channels=128).to('cuda')
+    game = Connect4(history_step=2)
+    model = ResNet(game, num_blocks=4, num_channels=64).to('cuda')
     optimizer = optim.Adam(model.parameters(), lr=0.003)
     args = {
         'mode': 'eval',

@@ -7,6 +7,10 @@ import traceback
 import os
 from collections import deque
 from alphazero import AlphaZero, MCTS, temperature_transform
+from policy_surprise_weighting import (
+    PolicySurpriseWeighter,
+    extract_policy_prior_from_root,
+)
 from copy import deepcopy
 
 # Set start method to spawn for CUDA compatibility
@@ -209,18 +213,32 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             # For now we use static args passed at start
             
             def get_randomized_simulations(args):
+                """
+                Playout Cap Randomization: 二选一策略
+                返回 (num_simulations, is_full_search) 元组
+                """
                 base_simulations = args['num_simulations']
-                min_ratio = args['playout_cap_min_ratio']
-                exponent = args['playout_cap_exponent']
-                random_value = np.random.random() ** exponent
-                ratio = min_ratio + (1 - min_ratio) * random_value
-                return max(1, int(base_simulations * ratio))
-            
-            while not game.is_terminal(state):
-                num_simulations = get_randomized_simulations(local_args)
-                action_probs = mcts.search(state, to_play, num_simulations)
+                fast_simulations = args['fast_simulations']
+                full_search_prob = args.get('full_search_prob', 0.25)
                 
-                memory.append((state, action_probs, to_play, num_simulations))
+                is_full_search = np.random.random() < full_search_prob
+                num_simulations = base_simulations if is_full_search else fast_simulations
+                return num_simulations, is_full_search
+            
+            # Whether to use PSW
+            use_psw = local_args.get('policy_surprise_weighting', False)
+
+            while not game.is_terminal(state):
+                num_simulations, is_full_search = get_randomized_simulations(local_args)
+                
+                if use_psw:
+                    action_probs, policy_prior = mcts.search(
+                        state, to_play, num_simulations, return_policy_prior=True
+                    )
+                    memory.append((state, action_probs, to_play, is_full_search, policy_prior))
+                else:
+                    action_probs = mcts.search(state, to_play, num_simulations)
+                    memory.append((state, action_probs, to_play, is_full_search))
                 
                 if len(memory) >= local_args['zero_t_step']:
                     t = 0.1
@@ -239,14 +257,25 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             
             # Process memory
             return_memory = []
-            for state, policy_target, to_play, num_sims in memory:
-                outcome = winner * to_play
-                return_memory.append((
-                    game.encode_state(state, to_play),
-                    policy_target,
-                    outcome,
-                    num_sims
-                ))
+            if use_psw:
+                for state, policy_target, to_play, is_full, policy_prior in memory:
+                    outcome = winner * to_play
+                    return_memory.append((
+                        game.encode_state(state, to_play),
+                        policy_target,
+                        outcome,
+                        is_full,  # 布尔值：是否全量搜索
+                        policy_prior
+                    ))
+            else:
+                for state, policy_target, to_play, is_full in memory:
+                    outcome = winner * to_play
+                    return_memory.append((
+                        game.encode_state(state, to_play),
+                        policy_target,
+                        outcome,
+                        is_full  # 布尔值：是否全量搜索
+                    ))
             
             # Send result to main process
             result_queue.put((return_memory, winner, final_state))
@@ -284,6 +313,16 @@ class AlphaZeroParallel(AlphaZero):
         if self.model_cls is None:
              self.model_cls = type(model)
         
+        # Initialize Policy Surprise Weighting (PSW)
+        psw_enabled = args.get('policy_surprise_weighting', False)
+        self.psw = PolicySurpriseWeighter(
+            enabled=psw_enabled,
+            baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
+            fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),
+            min_weight=args.get('psw_min_weight', 0.01),
+            stochastic=args.get('psw_stochastic', True),
+        )
+
         # Queues and Pipes for Parallel Execution
         self.request_queue = mp.Queue()
         self.result_queue = mp.Queue()
@@ -417,11 +456,13 @@ class AlphaZeroParallel(AlphaZero):
             
         # 3. Main Training Loop
         try:
-            train_game_count = 0
+            train_game_count = self.game_count
+            init_flag = True
             last_save_time = time.time()
             savetime_interval = self.args['savetime_interval']
             
             recent_game_lens = deque(maxlen=100)
+            recent_sample_counts = deque(maxlen=100)
             recent_winners = deque(maxlen=100)
             total_train_steps = 0
             start_time = time.time()
@@ -445,13 +486,29 @@ class AlphaZeroParallel(AlphaZero):
                         steps_count = len(memory)
                         perf_steps_count += steps_count
                         
+                        # Apply PSW
+                        if self.psw.enabled:
+                             weighted_memory, psw_stats = self.psw.process_game(memory)
+                             
+                             # Remove policy_prior from weighted_memory before adding to buffer
+                             # memory format: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
+                             # desired format: (encoded_state, policy_target, outcome, is_full_search)
+                             final_memory = [sample[:4] for sample in weighted_memory]
+                             
+                             if psw_stats.get('enabled', False) and self.game_count % 10 == 0:
+                                print(f'  [PSW] Ratio: {psw_stats["expansion_ratio"]:.2f}, '
+                                      f'KL_mean: {psw_stats["kl_mean"]:.4f}')
+                        else:
+                             final_memory = memory
+
                         # Update stats
                         recent_winners.append(winner)
-                        recent_game_lens.append(len(memory))
+                        recent_game_lens.append(len(memory)) # Use original length for stats
+                        recent_sample_counts.append(len(final_memory)) # Use filtered length for replay ratio calc
                         
                         # Add to buffer
                         # Use add_game to ensure ring buffer logic is respected for ParallelReplayBuffer
-                        self.replay_buffer.add_game(memory)
+                        self.replay_buffer.add_game(final_memory)
                             
                         # Print info every 10 games
                         if self.game_count % 10 == 0:
@@ -496,9 +553,18 @@ class AlphaZeroParallel(AlphaZero):
                 # Or verify against 'train_game_count' schedule like original code
                 
                 if self.game_count >= train_game_count:
-                    # Train!
                     avg_game_len = sum(recent_game_lens)/len(recent_game_lens) if recent_game_lens else 30
-                    
+                    avg_sample_count = sum(recent_sample_counts) / len(recent_sample_counts) if recent_sample_counts else 30
+
+                    if init_flag:
+                        safe_avg_samples = max(1, avg_sample_count)
+                        num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / safe_avg_samples / self.args['target_ReplayRatio'])
+                        train_game_count = self.game_count + num_games_per_generation
+                        init_flag = False
+                        print(f"  [Init] Skipping immediate training. Next training at game {train_game_count} (+{num_games_per_generation} games)")
+                        continue
+
+                    # Train!
                     self.model.train()
                     train_losses = []
                     train_policy_losses = []
@@ -532,7 +598,9 @@ class AlphaZeroParallel(AlphaZero):
                     # D. Update Schedule
                     target_ratio = self.args['target_ReplayRatio']
                     # new_games_target = steps * batch_size / (avg_len * ratio)
-                    calculated_games = int(self.args['batch_size'] * steps / avg_game_len / target_ratio)
+                    # Use avg_sample_count (filtered) to maintain correct ratio with PSW
+                    safe_avg_samples = max(1, avg_sample_count)
+                    calculated_games = int(self.args['batch_size'] * steps / safe_avg_samples / target_ratio)
                     calculated_games = max(1, calculated_games)
                     
                     train_game_count = self.game_count + calculated_games

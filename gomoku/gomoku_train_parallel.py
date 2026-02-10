@@ -54,10 +54,14 @@ if __name__ == '__main__':
 
         'target_ReplayRatio': 6.0,
 
-        'playout_cap_min_ratio': 0.25,
-        'playout_cap_exponent': 1.6,
+        # Playout Cap Randomization (二选一策略)
+        'fast_simulations': 150,  # 快速搜索的 simulation 数量
+        'full_search_prob': 0.25,  # 全量搜索的概率
 
-        'policy_training_threshold': 0.5,
+        'forced_playouts': True,
+        'forced_playout_coeff': 2.0,
+
+        'policy_target_pruning': True,
 
         'Q_norm_bounds': [-1, 1],
 

@@ -26,25 +26,27 @@ if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
 
     # Initialize Game
-    game = TicTacToe(history_step=3)
+    game = TicTacToe(history_step=2)
 
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
-    model = ResNet(game, num_blocks=1, num_channels=64).to('cuda')
+    model = ResNet(game, num_blocks=2, num_channels=32).to('cuda')
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
 
     args = {
         'mode': 'train',
         'num_simulations': 200,
+        'fast_simulations': 50,
+        'full_search_prob': 0.25,  # 全量搜索的概率
         'c_puct': 1.5,
-        'temperature': 1.0,
+        'temperature': 1,
 
         'zero_t_step': 3,
 
-        'dirichlet_alpha': 0.3,
+        'dirichlet_alpha': 1,
         'dirichlet_epsilon': 0.25,
 
-        'buffer_size': 10000,
+        'buffer_size': 3000,
         'batch_size': 256,
         'min_buffer_size': 1000,
 
@@ -54,15 +56,21 @@ if __name__ == '__main__':
 
         'target_ReplayRatio': 8.0,
 
-        'playout_cap_min_ratio': 0.2,
-        'playout_cap_exponent': 1.5,
+        'forced_playouts': True,
+        'forced_playout_coeff': 2.0,
 
-        'policy_training_threshold': 0.5,
+        'policy_target_pruning': True,
 
         'Q_norm_bounds': [-1, 1],
 
+        'policy_surprise_weighting': True,  # 启用PSW
+        'psw_baseline_ratio': 0.5,  # 均匀分配的权重比例
+        'psw_fast_kl_threshold': 2.0,  # fast search 的 KL 阈值
+        'psw_min_weight': 0.01,  # 最小权重
+        'psw_stochastic': True,  # 随机采样
+
         'device': 'cuda',  # Workers will try to use this too.
-        'savetime_interval': 120,
+        'savetime_interval': 60,
 
         'file_name': 'tictactoe',
     }
@@ -78,12 +86,12 @@ if __name__ == '__main__':
     model_cls = ResNet
     model_kwargs = {
         'game': game,
-        'num_blocks': 1,
-        'num_channels': 64
+        'num_blocks': 2,
+        'num_channels': 32
     }
 
     # Use 16 workers (Similar to Connect4 setup)
-    num_workers = 24
+    num_workers = 20
 
     alphazero = AlphaZeroParallel(
         game,

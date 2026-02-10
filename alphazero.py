@@ -11,6 +11,11 @@ from tqdm import tqdm
 
 from replay_buffer import ReplayBuffer
 from utils import add_dirichlet_noise, print_board, temperature_transform, random_augment_batch, random_augment_batch_rect, random_augment_batch_connect4
+from policy_surprise_weighting import (
+    PolicySurpriseWeighter,
+    extract_policy_prior_from_root,
+    compute_kl_divergence,
+)
 
 
 class MinMaxState:
@@ -125,8 +130,21 @@ class MCTS:
             value = -value
             node = node.parent
 
+    def _run_simulation(self, root):
+        """运行一次 MCTS 模拟（select -> expand -> backpropagate）"""
+        node = root
+        while node.is_expanded():
+            node = self.select(node)
+
+        if self.game.is_terminal(node.state):
+            value = self.game.get_winner(node.state) * node.to_play
+        else:
+            value = self.expand(node)
+
+        self.backpropagate(node, value)
+
     @torch.inference_mode()
-    def search(self, state, to_play, num_simulations=None, process_bar=False):
+    def search(self, state, to_play, num_simulations=None, process_bar=False, return_policy_prior=False):
 
         root = Node(state, to_play)
         self.minmax_state.reset()
@@ -136,22 +154,112 @@ class MCTS:
 
         iterator = tqdm(range(num_simulations), desc='MCTS: ') if process_bar else range(num_simulations)
         for _ in iterator:
-            node = root
+            self._run_simulation(root)
+        
+        # 提取 policy prior (在 forced playouts 之前)
+        # 这是带有 Dirichlet 噪声的 root policy prior
+        policy_prior = None
+        if return_policy_prior:
+            policy_prior = extract_policy_prior_from_root(root, self.game.action_space_size)
 
-            while node.is_expanded():
-                node = self.select(node)
+        # === Forced Playouts ===
+        # KataGo 论文中的 Forced Playouts：对于先验概率足够高但访问次数不足的子节点，
+        # 强制给予一定访问量，确保有潜力的动作（不仅仅是噪声）得到充分评估。
+        # 每个子节点的最低强制访问次数 = ceil(sqrt(coeff * prior * total_visits))
+        if self.args.get('forced_playouts', False) and root.is_expanded():
+            forced_playout_coeff = self.args.get('forced_playout_coeff', 2.0)
+            if forced_playout_coeff > 0:
+                total_root_visits = root.n
+                for child in root.children:
+                    if child.n == 0:  # 论文：仅对已接收过 playout 的子节点强制补访问
+                        continue
+                    desired_visits = int(math.ceil(
+                        math.sqrt(forced_playout_coeff * child.prior * total_root_visits)
+                    ))
+                    while child.n < desired_visits:
+                        node = child
+                        while node.is_expanded():
+                            node = self.select(node)
+                        if self.game.is_terminal(node.state):
+                            value = self.game.get_winner(node.state) * node.to_play
+                        else:
+                            value = self.expand(node)
+                        self.backpropagate(node, value)
 
-            if self.game.is_terminal(node.state):
-                value = self.game.get_winner(node.state) * node.to_play
-            else:
-                value = self.expand(node)
-
-            self.backpropagate(node, value)
-
+        # === Policy Target Pruning (回溯式 PUCT 权重修正) ===
+        # KataGo 论文的核心思想：生成 policy 训练目标时，不直接使用原始访问次数，
+        # 而是对每个非最优子节点进行"回溯修正"——计算如果没有强制访问，
+        # PUCT 公式 "本来会" 给它分配多少访问量，并将其权重降到该值。
+        #
+        # 这样做的效果：
+        # 1. 被强制访问膨胀的动作，其训练权重会被精确地降回"有机"水平
+        # 2. 纯噪声动作（PUCT 不会自然选择的）权重会变得极小或为零
+        # 3. 最优动作保持不变
         action_probs = np.zeros(self.game.action_space_size)
-        for child in root.children:
-            action_probs[child.action_taken] = child.n
-        action_probs /= np.sum(action_probs)
+
+        if self.args.get('policy_target_pruning', False) and root.is_expanded() and len(root.children) > 1:
+            c_puct = self.args['c_puct']
+            children = root.children
+            
+            # 提取数据
+            child_n = np.array([ch.n for ch in children])
+            child_v = np.array([ch.v for ch in children])
+            child_prior = np.array([ch.prior for ch in children])
+            total_child_visits = np.sum(child_n)
+
+            # 计算 Q 值 (注意 select 中的负号逻辑: q = -v / n)
+            q_values = -child_v / (child_n + 1e-8)
+            
+            # 归一化 Q 值 (使用 search 过程中维护的 minmax_state)
+            q_values_norm = self.minmax_state.normalize(q_values)
+
+            # 找到最优子节点（访问量最多的）
+            best_idx = np.argmax(child_n)
+
+            # 计算最优子节点的 PUCT 值 (Q_norm + U)
+            best_u = (c_puct * child_prior[best_idx]
+                      * math.sqrt(total_child_visits)
+                      / (1 + child_n[best_idx]))
+            best_score = q_values_norm[best_idx] + best_u
+
+            # 对每个子节点计算修正后的权重
+            for i, child in enumerate(children):
+                if i == best_idx:
+                    # 最优子节点保持原始访问量
+                    action_probs[child.action_taken] = child_n[i]
+                else:
+                    # 回溯修正：求解 N_wanted
+                    # 我们希望: Q_norm_i + U_wanted = best_score
+                    # => U_wanted = best_score - Q_norm_i
+                    
+                    required_u = best_score - q_values_norm[i]
+                    
+                    # 如果 required_u <= 0，说明该节点 Q 值极高（甚至超过 best_score），
+                    # 此时不应通过 U 值来限制它，保留原访问量
+                    if required_u <= 1e-10:
+                        reduced = float(child_n[i])
+                    else:
+                        # U = c * P * sqrt(SumN) / (1 + N)
+                        # => N = c * P * sqrt(SumN) / U - 1
+                        wanted = (c_puct * child_prior[i] * math.sqrt(total_child_visits)
+                                  / required_u - 1)
+                        wanted = max(0.0, wanted)
+                        reduced = min(float(child_n[i]), wanted)
+                    
+                    # 论文：修正后只剩 <=1 playout 的子节点直接修剪为 0
+                    if reduced <= 1.0:
+                        reduced = 0.0
+                    action_probs[child.action_taken] = reduced
+        else:
+            for child in root.children:
+                action_probs[child.action_taken] = child.n
+
+        action_probs_sum = np.sum(action_probs)
+        if action_probs_sum > 0:
+            action_probs /= action_probs_sum
+        
+        if return_policy_prior:
+            return action_probs, policy_prior
         return action_probs
 
 
@@ -172,31 +280,53 @@ class AlphaZero:
             window_size=buffer_size,
             board_size=game.board_size,
         )
+        
+        # 初始化 Policy Surprise Weighting
+        psw_enabled = args.get('policy_surprise_weighting', False)
+        self.psw = PolicySurpriseWeighter(
+            enabled=psw_enabled,
+            baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
+            fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),
+            min_weight=args.get('psw_min_weight', 0.01),
+            stochastic=args.get('psw_stochastic', True),
+        )
 
     def _get_randomized_simulations(self):
+        """
+        Playout Cap Randomization: 二选一策略
+        返回 (num_simulations, is_full_search) 元组
+        """
+        base_simulations = self.args['num_simulations']  # 例如 600 或 800
+        fast_simulations = self.args['fast_simulations']  # 例如 100，或者 base 的 1/5
+        full_search_prob = self.args.get('full_search_prob', 0.25)  # 全量搜索的概率
 
-        base_simulations = self.args['num_simulations']
-        min_ratio = self.args['playout_cap_min_ratio']
-        exponent = self.args['playout_cap_exponent']
-
-        random_value = np.random.random() ** exponent
-        ratio = min_ratio + (1 - min_ratio) * random_value
-
-        randomized_simulations = int(base_simulations * ratio)
-
-        return max(1, randomized_simulations)
+        # 简单的二选一逻辑
+        is_full_search = np.random.random() < full_search_prob
+        num_simulations = base_simulations if is_full_search else fast_simulations
+        return num_simulations, is_full_search
 
     def selfplay(self):
         memory = []
         to_play = 1
         state = self.game.get_initial_state()
+        
+        # 是否启用 PSW（需要收集 policy prior）
+        use_psw = self.psw.enabled
+        
         while not self.game.is_terminal(state):
 
-            num_simulations = self._get_randomized_simulations()
+            num_simulations, is_full_search = self._get_randomized_simulations()
 
-            action_probs = self.mcts.search(state, to_play, num_simulations)
-
-            memory.append((state, action_probs, to_play, num_simulations))
+            if use_psw:
+                # 返回 policy prior 用于 PSW
+                action_probs, policy_prior = self.mcts.search(
+                    state, to_play, num_simulations, return_policy_prior=True
+                )
+                memory.append((state, action_probs, to_play, is_full_search, policy_prior))
+            else:
+                action_probs = self.mcts.search(state, to_play, num_simulations)
+                memory.append((state, action_probs, to_play, is_full_search))
+            
             if len(memory) >= self.args['zero_t_step']:
                 t = 0.1
             else:
@@ -209,21 +339,55 @@ class AlphaZero:
             to_play = -to_play
 
         final_state = state
-        # last_to_play = -to_play
-        # value = self.game.get_winner(state) * last_to_play
         winner = self.game.get_winner(final_state)
-        return_memory = []
-        for state, policy_target, to_play, num_sims in memory:
-            # outcome = value if to_play == last_to_play else -value
-            outcome = winner * to_play
-            return_memory.append((
-                self.game.encode_state(state, to_play),
-                policy_target,
-                outcome,
-                num_sims
-            ))
+        
+        # 构建带 outcome 的数据
+        raw_memory = []
+        for item in memory:
+            if use_psw:
+                state, policy_target, to_play, is_full, policy_prior = item
+                outcome = winner * to_play
+                raw_memory.append((
+                    self.game.encode_state(state, to_play),
+                    policy_target,
+                    outcome,
+                    is_full,  # 布尔值：是否全量搜索
+                    policy_prior,  # 保留 policy prior 用于 PSW 计算
+                ))
+            else:
+                state, policy_target, to_play, is_full = item
+                outcome = winner * to_play
+                raw_memory.append((
+                    self.game.encode_state(state, to_play),
+                    policy_target,
+                    outcome,
+                    is_full,  # 布尔值：是否全量搜索
+                ))
+        
+        # 应用 Policy Surprise Weighting
+        if use_psw:
+            # PSW 期望格式: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
+            weighted_memory, psw_stats = self.psw.process_game(raw_memory)
+            
+            # 移除 policy_prior，只保留训练需要的数据
+            return_memory = []
+            for sample in weighted_memory:
+                # 取前4个元素: (encoded_state, policy_target, outcome, is_full_search)
+                return_memory.append(sample[:4])
+            
+            # 打印 PSW 统计信息
+            if psw_stats.get('enabled', False):
+                print(f'  [PSW] Before: {psw_stats["samples_before"]}, '
+                      f'After: {psw_stats["samples_after"]}, '
+                      f'Ratio: {psw_stats["expansion_ratio"]:.2f}, '
+                      f'KL_mean: {psw_stats["kl_mean"]:.4f}, '
+                      f'KL_max: {psw_stats["kl_max"]:.4f}')
+        else:
+            return_memory = raw_memory
+        
         print_board(final_state)
-        return return_memory, self.game.get_winner(final_state)
+        # 返回: 训练数据, 胜负结果, 实际游戏步数
+        return return_memory, self.game.get_winner(final_state), len(raw_memory)
 
     def _train_batch(self, batch):
         # 根据棋盘形状和动作空间选择数据增强方式
@@ -237,8 +401,7 @@ class AlphaZero:
             # 非正方形棋盘（动作空间等于棋盘大小）：只使用水平翻转
             batch = random_augment_batch_rect(batch, self.game.board_height, self.game.board_width)
 
-        states, policy_targets, value_targets, num_sims_list = zip(*batch)
-        num_sims_array = np.array(num_sims_list)
+        states, policy_targets, value_targets, is_full_search_list = zip(*batch)
 
         states = torch.tensor(np.array(states), dtype=torch.float32, device=self.args['device'])
         policy_targets = torch.tensor(np.array(policy_targets), dtype=torch.float32, device=self.args['device'])
@@ -246,13 +409,12 @@ class AlphaZero:
 
         policy, value = self.model(states)
 
-        policy_training_threshold = self.args['policy_training_threshold']
-        base_simulations = self.args['num_simulations']
+        # KataGo 论文"二选一"策略：
+        # 只有全量搜索的样本用于 policy 训练
+        # 快速搜索的样本只用于 value 训练
+        policy_mask_tensor = torch.tensor(is_full_search_list, dtype=torch.bool, device=self.args['device'])
 
-        policy_mask = num_sims_array >= (policy_training_threshold * base_simulations)
-        policy_mask_tensor = torch.tensor(policy_mask, dtype=torch.bool, device=self.args['device'])
-
-        if policy_mask.sum() > 0:
+        if policy_mask_tensor.sum() > 0:
             policy_loss = F.cross_entropy(
                 policy[policy_mask_tensor],
                 policy_targets[policy_mask_tensor]
@@ -276,7 +438,8 @@ class AlphaZero:
         # num_games_per_generation = self.args['num_games_per_generation']
 
         total_train_steps = 0
-        recent_game_lens = deque(maxlen=100)
+        recent_sample_counts = deque(maxlen=100)
+        recent_game_steps = deque(maxlen=100)
 
         recent_winners = deque(maxlen=100)
         recent_train_times = deque(maxlen=100)
@@ -305,18 +468,21 @@ class AlphaZero:
         while True:
 
             self.model.eval()
-            memory, winner = self.selfplay()
+            memory, winner, game_steps = self.selfplay()
             self.game_count += 1
 
             recent_winners.append(winner)
 
-            step_count = len(memory)
+            sample_count = len(memory)
             
             # Update Throughput Stats
-            perf_steps_count += step_count
+            perf_steps_count += sample_count
 
-            recent_game_lens.append(len(memory))
-            avg_game_len = sum(recent_game_lens) / len(recent_game_lens)
+            recent_sample_counts.append(sample_count)
+            recent_game_steps.append(game_steps)
+            
+            avg_sample_count = sum(recent_sample_counts) / len(recent_sample_counts)
+            avg_game_steps = sum(recent_game_steps) / len(recent_game_steps)
 
             for sample in memory:
                 self.replay_buffer.buffer.append(sample)
@@ -335,7 +501,7 @@ class AlphaZero:
             global_steps_per_sec = total_window_steps / total_window_time if total_window_time > 0 else 0
 
             current_buffer_size = len(self.replay_buffer)
-            print(f'\n[Game {self.game_count}] Winner: {int(winner):+d}, Len: {len(memory)}, Buffer: {current_buffer_size}, AvgLen: {avg_game_len:.1f}')
+            print(f'\n[Game {self.game_count}] Winner: {int(winner):+d}, Steps: {game_steps}, Samples: {sample_count}, Buffer: {current_buffer_size}, AvgSteps: {avg_game_steps:.1f}, AvgSamples: {avg_sample_count:.1f}')
             print(f'  Speed: {global_steps_per_sec:.1f} steps/s')
             print(f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
                   f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%), '
@@ -348,8 +514,11 @@ class AlphaZero:
                 print(f'  [Skip Training] Buffer {current_buffer_size} < min_buffer_size {min_buffer_size}')
                 continue
             elif init_flag:
-                train_game_count = self.game_count
+                safe_avg_samples = max(1, avg_sample_count)
+                num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / safe_avg_samples / self.args['target_ReplayRatio'])
+                train_game_count = self.game_count + num_games_per_generation
                 init_flag = False
+                print(f"  [Init] Skipping immediate training. Next training at game {train_game_count} (+{num_games_per_generation} games)")
 
             current_time = time.time()
             if current_time - last_save_time >= savetime_interval:
@@ -390,7 +559,8 @@ class AlphaZero:
             print(f'  [Training] {train_steps_per_generation} steps, Avg Loss: {avg_loss:.4f}, Total Steps: {total_train_steps}')
             print(f'  Train Time: {train_time:.2f}s, Recent {len(recent_train_times)} Avg: {avg_train_time:.2f}s, Per Step: {time_per_step * 1000:.1f}ms')
 
-            num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / avg_game_len / self.args['target_ReplayRatio'])
+            safe_avg_samples = max(1, avg_sample_count)
+            num_games_per_generation = int(self.args['batch_size'] * self.args['train_steps_per_generation'] / safe_avg_samples / self.args['target_ReplayRatio'])
             train_game_count = self.game_count + num_games_per_generation
 
             total_elapsed = time.time() - total_start_time

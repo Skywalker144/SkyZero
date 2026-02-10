@@ -21,11 +21,11 @@ if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
 
     # Initialize Game
-    game = Connect4(history_step=3)
+    game = Connect4(history_step=2)
     
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
-    model = ResNet(game, num_blocks=2, num_channels=128).to('cuda')
+    model = ResNet(game, num_blocks=4, num_channels=64).to('cuda')
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
 
     args = {
@@ -48,13 +48,23 @@ if __name__ == '__main__':
 
         'target_ReplayRatio': 6,
         
-        'playout_cap_min_ratio': 0.2,
-        'playout_cap_exponent': 1.5,
-        
-        'policy_training_threshold': 0.5,
+        # Playout Cap Randomization (二选一策略)
+        'fast_simulations': 100,  # 快速搜索的 simulation 数量
+        'full_search_prob': 0.25,  # 全量搜索的概率
+
+        'forced_playouts': True,
+        'forced_playout_coeff': 2.0,
+
+        'policy_target_pruning': True,
 
         'Q_norm_bounds': [-1, 1],
-        
+
+        'policy_surprise_weighting': True,  # 启用PSW
+        'psw_baseline_ratio': 0.5,  # 均匀分配的权重比例
+        'psw_fast_kl_threshold': 2.0,  # fast search 的 KL 阈值
+        'psw_min_weight': 0.01,  # 最小权重
+        'psw_stochastic': True,  # 随机采样
+
         'device': 'cuda', # Workers will try to use this too. 
         'savetime_interval': 3600,
 
@@ -72,8 +82,8 @@ if __name__ == '__main__':
     model_cls = ResNet
     model_kwargs = {
         'game': game,
-        'num_blocks': 2,
-        'num_channels': 128
+        'num_blocks': 4,
+        'num_channels': 64
     }
 
     num_workers = 20
@@ -90,5 +100,5 @@ if __name__ == '__main__':
     
     # Try to load existing checkpoint if any
     alphazero.load_checkpoint()
-    
+    alphazero.replay_buffer.clear()
     alphazero.learn()
