@@ -150,7 +150,7 @@ def compute_policy_surprise_weights(
     
     # 应用最小权重
     weights = [max(min_weight, w) if w > 0 else 0.0 for w in weights]
-    
+
     return weights
 
 
@@ -178,7 +178,7 @@ def apply_surprise_weighting_to_game(game_data: List[Tuple], weights: List[float
     for sample, weight in zip(game_data, weights):
         if weight <= 0:
             continue
-        
+
         # 计算重复次数
         floor_weight = int(np.floor(weight))
         fractional = weight - floor_weight

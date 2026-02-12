@@ -104,6 +104,6 @@ if __name__ == '__main__':
     )
 
     # Try to load existing checkpoint if any
-    # alphazero.load_checkpoint()
+    alphazero.load_checkpoint()
 
     alphazero.learn()

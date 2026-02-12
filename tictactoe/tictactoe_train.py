@@ -32,7 +32,7 @@ if __name__ == '__main__':
         'target_ReplayRatio': 8,
 
         # Playout Cap Randomization (二选一策略)
-        'fast_simulations': 40,  # 快速搜索的 simulation 数量
+        'fast_simulations': 50,  # 快速搜索的 simulation 数量
         'full_search_prob': 0.25,  # 全量搜索的概率
 
         'forced_playouts': True,

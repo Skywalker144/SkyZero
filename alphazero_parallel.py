@@ -473,8 +473,9 @@ class AlphaZeroParallel(AlphaZero):
                             # desired format: (encoded_state, policy_target, outcome, is_full_search)
                             final_memory = [sample[:4] for sample in weighted_memory]
 
+                            # if psw_stats.get('enabled', False):
                             if psw_stats.get('enabled', False) and self.game_count % 10 == 0:
-                                print(f'  [PSW] Ratio: {psw_stats["expansion_ratio"]:.2f}, KL_mean: {psw_stats["kl_mean"]:.4f}, KL_max: {psw_stats["kl_max"]:.4f}, Weights - Fast: {psw_stats["fast_weight_mean"]:.4f}, Full: {psw_stats["full_weight_mean"]:.4f}')
+                                print(f'  [PSW] Ratio: {psw_stats["expansion_ratio"]:.2f}, KL_mean: {psw_stats["kl_mean"]:.4f}, KL_max: {psw_stats["kl_max"]:.4f}')
                         else:
                             final_memory = memory
 

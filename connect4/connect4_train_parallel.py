@@ -86,7 +86,7 @@ if __name__ == '__main__':
         'num_channels': 64
     }
 
-    num_workers = 20
+    num_workers = 16
 
     alphazero = AlphaZeroParallel(
         game, 
@@ -99,6 +99,6 @@ if __name__ == '__main__':
     )
     
     # Try to load existing checkpoint if any
-    # alphazero.load_checkpoint()
+    alphazero.load_checkpoint()
     # alphazero.replay_buffer.clear()
     alphazero.learn()
