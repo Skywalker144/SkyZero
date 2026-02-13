@@ -306,6 +306,9 @@ class AlphaZero:
         )
 
         self.halflife = np.sqrt(self.game.board_width * self.game.board_height)
+        self.move_temperature_init = self.args['move_temperature_init']
+        self.move_temperature_final = self.args['move_temperature_final']
+
 
         self.psw = PolicySurpriseWeighter(
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
@@ -350,8 +353,8 @@ class AlphaZero:
             #     t = self.args['temperature']
 
             current_step = np.count_nonzero(state[-1])
-            max_t = 0.8
-            min_t = 0.2
+            max_t = self.move_temperature_init
+            min_t = self.move_temperature_final
             t = min_t + (max_t - min_t) * (0.5 ** (current_step / self.halflife))
 
             action = np.random.choice(
