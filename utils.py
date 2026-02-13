@@ -226,18 +226,15 @@ def add_dirichlet_noise(policy, alpha, epsilon=0.25):
 
 def root_temperature_transform(policy, current_step, args, board_size):
     decay_factor = math.pow(0.5, current_step / board_size)
-    current_temp = args['root_temperature_end'] + (args['root_temperature_start'] - args['root_temperature_end']) * decay_factor
+    current_temp = args['root_temperature_final'] + (args['root_temperature_init'] - args['root_temperature_final']) * decay_factor
     new_policy = temperature_transform(policy, current_temp)
     return new_policy
 
 
 def add_shaped_dirichlet_noise(policy_t, total_dirichlet_alpha=10.83, epsilon=0.25):
-    # KataGo 动态 Alpha 缩放：总质量 10.83 [1][2]
     nonzero_mask = policy_t > 0
     legal_count = np.sum(nonzero_mask)
 
-    # 塑形逻辑：一半均匀分布，一半按当前先验分布 [1]
-    # 这一步必须用到 policy_t，否则就不是 KataGo 的 Shaped Noise 了
     alpha_weights = 0.5 * (1.0 / legal_count) + 0.5 * (policy_t[nonzero_mask])
     alphas = alpha_weights * total_dirichlet_alpha
 
@@ -247,94 +244,6 @@ def add_shaped_dirichlet_noise(policy_t, total_dirichlet_alpha=10.83, epsilon=0.
     new_policy[nonzero_mask] = (policy_t[nonzero_mask] * (1 - epsilon) + noise * epsilon)
     return new_policy
 
-
-# def temperature_transform(probs: np.ndarray, temperature: float) -> np.ndarray:
-#     """
-#     对概率分布应用温度变换（简化版，低检查，高性能）。
-#
-#     假设:
-#         - probs 是一个 NumPy 一维数组。
-#         - probs 的元素都是非负的。
-#         - temperature 是一个非负浮点数。
-#
-#     参数:
-#         probs (np.ndarray): 一维 NumPy 数组，表示概率分布。可能包含0。
-#         temperature (float): 温度参数 T (T >= 0)。
-#
-#     返回:
-#         np.ndarray: 经过温度变换后的新概率分布数组。
-#                     原始为0的项将保持为0（在数值精度范围内）。
-#     """
-#
-#     # --- T = 0 (极限情况：one-hot 或均分给最大值) ---
-#     if temperature == 0:
-#         # 检查是否全零，如果是则直接返回全零
-#         if np.all(probs == 0):
-#             return np.zeros_like(probs, dtype=float)  # 或者 probs.dtype 如果想保持
-#
-#         max_prob = np.max(probs)
-#         is_max = (probs == max_prob)
-#         num_max = np.sum(is_max)  # 计算有多少个最大值
-#
-#         transformed_probs = np.zeros_like(probs, dtype=float)  # 使用 float 保证能存放 1.0/num_max
-#         transformed_probs[is_max] = 1.0 / num_max
-#         return transformed_probs
-#
-#     # --- T = 1 (分布不变) ---
-#     # 直接比较浮点数可能不精确，但为了效率这里直接比较
-#     # 如果担心 T=1.000000001 的情况，可以用 np.isclose(temperature, 1.0)
-#     if temperature == 1.0:
-#         return probs  # 直接返回原始数组（或 probs.copy() 如果不想被修改）
-#
-#     # --- T > 0 且 T != 1 ---
-#
-#     # 1. 计算 p_i^(1/T)
-#     #    不使用 .astype(np.float64)，使用输入数组的原始类型进行计算
-#     #    这可能更快，但在极端温度下精度较低或更容易溢出/下溢
-#     exponent = 1.0 / temperature
-#     # 使用 errstate 避免打印警告，对性能影响很小
-#     with np.errstate(invalid='ignore'):  # 0^x 可能触发 invalid 但结果是0
-#         powered_probs = np.power(probs, exponent)
-#
-#     # 2. 处理上溢导致的 inf (下溢会自动变0，后续处理)
-#     powered_probs = np.nan_to_num(powered_probs, nan=0.0, posinf=np.inf)  # nan基本不会出现（除非输入有nan）
-#
-#     # 3. 归一化
-#     sum_powered_probs = np.sum(powered_probs)
-#
-#     # 处理和为0（下溢）或无穷大（上溢）的特殊情况
-#     if sum_powered_probs == 0:
-#         # 所有项都下溢为0，行为类似于T=0
-#         # （代码复用 T=0 的逻辑）
-#         if np.all(probs == 0):
-#             return np.zeros_like(probs, dtype=float)
-#         max_prob = np.max(probs)
-#         is_max = (probs == max_prob)
-#         num_max = np.sum(is_max)
-#         transformed_probs = np.zeros_like(probs, dtype=float)
-#         # 防止 num_max 为 0 （虽然理论上如果 probs 不全零，num_max >= 1）
-#         if num_max > 0:
-#             transformed_probs[is_max] = 1.0 / num_max
-#         return transformed_probs
-#
-#     elif np.isinf(sum_powered_probs):
-#         # 存在上溢项
-#         is_inf = np.isinf(powered_probs)
-#         num_inf = np.sum(is_inf)
-#         transformed_probs = np.zeros_like(probs, dtype=float)
-#         if num_inf > 0:
-#             transformed_probs[is_inf] = 1.0 / num_inf
-#         # 如果 sum 是 inf 但没有具体的 inf 项（极不可能），则返回全零
-#         return transformed_probs
-#     else:
-#         # 正常归一化
-#         # 移除了强制置零和二次归一化步骤
-#         transformed_probs = powered_probs / sum_powered_probs
-#         # 注意：极小的浮点误差可能导致原为0的位置出现非常小的非零值
-#         # 如果严格要求0必须是精确的0.0，则需要加回 transformed_probs[probs == 0] = 0.0
-#
-#     return transformed_probs
-#
 
 def temperature_transform(probs, temp):
     probs = np.asarray(probs, dtype=np.float64)

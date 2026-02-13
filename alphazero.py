@@ -191,7 +191,13 @@ class MCTS:
                     desired_visits = int(math.ceil(
                         math.sqrt(forced_playout_coeff * child.prior * total_root_visits)
                     ))
-                    while child.n < desired_visits:
+                    
+                    # 限制强制搜索的最大次数，防止死循环或性能问题
+                    max_forced_steps = self.args.get('max_forced_steps', 1000)
+                    forced_steps = 0
+                    
+                    while child.n < desired_visits and forced_steps < max_forced_steps:
+                        forced_steps += 1
                         node = child
                         while node.is_expanded():
                             node = self.select(node)

@@ -93,7 +93,7 @@ class ParallelReplayBuffer:
                 self.buffer.append(sample)
             else:
                 self.buffer[self.position] = sample
-                self.position = (self.position + 1) % self.window_size
+            self.position = (self.position + 1) % self.window_size
                 
         self.games_count += 1
         return len(game_memory)

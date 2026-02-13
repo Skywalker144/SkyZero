@@ -40,8 +40,8 @@ if __name__ == '__main__':
         'full_search_prob': 0.25,  # 全量搜索的概率
         'c_puct': 1.5,
         'temperature': 1,
-        'root_temperature_start': 1.25,
-        'root_temperature_end': 1.1,
+        'root_temperature_init': 1.25,
+        'root_temperature_final': 1.1,
 
         'zero_t_step': 3,
 

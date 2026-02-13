@@ -14,14 +14,13 @@ if __name__ == '__main__':
         'mode': 'train',
         'num_simulations': 200,
         'fast_simulations': 50,
-        'full_search_prob': 0.25,  # 全量搜索的概率
+        'full_search_prob': 0.25,
         'c_puct': 1.5,
         'temperature': 1.0,
-        'root_temperature_start': 1.25,
-        'root_temperature_end': 1.1,
-
-        'zero_t_step': 3,
-
+        'root_temperature_init': 1.25,
+        'root_temperature_final': 1.1,
+        'move_temperature_init': 0.8,
+        'move_temperature_final': 0.2,
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
@@ -30,9 +29,6 @@ if __name__ == '__main__':
         'min_buffer_size': 500,
 
         'train_steps_per_generation': 5,
-
-        # 'num_games_per_generation': 20,
-
         'target_ReplayRatio': 8,
 
         'forced_playouts': True,

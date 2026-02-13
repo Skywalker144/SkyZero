@@ -176,7 +176,9 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
         
         # Initialize MCTS
         mcts = MCTS(game, local_args, remote_model)
-        
+
+        halflife = np.sqrt(game.board_width * game.board_height)
+
         # Wait for all workers to be ready before starting
         if start_barrier is not None:
             start_barrier.wait()
@@ -212,11 +214,16 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 )
                 memory.append((state, action_probs, to_play, for_train, policy_prior))
                 
-                if len(memory) >= local_args['zero_t_step']:
-                    t = 0.1
-                else:
-                    t = local_args['temperature']
-                
+                # if len(memory) >= local_args['zero_t_step']:
+                #     t = 0.1
+                # else:
+                #     t = local_args['temperature']
+
+                current_step = np.count_nonzero(state[-1])
+                max_t = 0.8
+                min_t = 0.2
+                t = min_t + (max_t - min_t) * (0.5 ** (current_step / halflife))
+
                 action = np.random.choice(
                     game.action_space_size,
                     p=temperature_transform(action_probs, t)

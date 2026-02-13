@@ -31,12 +31,11 @@ if __name__ == '__main__':
     args = {
         'mode': 'train',
         'num_simulations': 600,
+        'fast_simulations': 100,  # 快速搜索的 simulation 数量
+        'full_search_prob': 0.25,  # 全量搜索的概率
         'c_puct': 1.5,
-        'temperature': 1.0,
         
-        'zero_t_step': 10,
-        
-        'dirichlet_alpha': 1.2,
+        'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
         
         'buffer_size': 100000,
@@ -47,10 +46,6 @@ if __name__ == '__main__':
         # 'num_games_per_generation': 20,
 
         'target_ReplayRatio': 6,
-
-        # Playout Cap Randomization (二选一策略)
-        'fast_simulations': 100,  # 快速搜索的 simulation 数量
-        'full_search_prob': 0.25,  # 全量搜索的概率
 
         'forced_playouts': True,
         'forced_playout_coeff': 2.0,
