@@ -143,8 +143,9 @@ def compute_policy_surprise_weights(
     # 只有当 KL 散度非常大时才给予非零权重
     for i in fast_search_indices:
         if kl_divergences[i] >= fast_search_kl_threshold:
-            # KL 散度越大，权重越高，但不超过 1
-            weights[i] = min(1.0, kl_divergences[i] / fast_search_kl_threshold)
+            # KL 散度越大，权重越高
+            # 允许权重 > 1.0，以便非常 surprising 的样本可以被多次采样 (KataGo 方法)
+            weights[i] = kl_divergences[i] / fast_search_kl_threshold
         else:
             weights[i] = 0.0
     
@@ -367,7 +368,11 @@ if __name__ == '__main__':
     print(f"Sum of weights: {sum(weights):.4f}")
     
     # 测试 PSW 管理器
-    weighter = PolicySurpriseWeighter(enabled=True)
+    # 注意: PolicySurpriseWeighter.__init__ 不需要 enabled 参数
+    weighter = PolicySurpriseWeighter(
+        baseline_weight_ratio=0.5,
+        fast_search_kl_threshold=2.0
+    )
     
     weighted_data, stats = weighter.process_game(mock_game_data)
     print(f"\nPSW Stats: {stats}")

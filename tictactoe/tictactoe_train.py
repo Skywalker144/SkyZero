@@ -45,7 +45,7 @@ if __name__ == '__main__':
         'psw_stochastic': True,  # 随机采样
 
         'device': 'cuda',
-        'savetime_interval': 120,
+        'savetime_interval': 60,
         'file_name': 'tictactoe',
     }
 
