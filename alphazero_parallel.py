@@ -194,30 +194,23 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             def get_randomized_simulations(args):
                 """
                 Playout Cap Randomization: 二选一策略
-                返回 (num_simulations, is_full_search) 元组
+                返回 (num_simulations, for_train) 元组
                 """
                 base_simulations = args['num_simulations']
                 fast_simulations = args['fast_simulations']
                 full_search_prob = args.get('full_search_prob', 0.25)
                 
-                is_full_search = np.random.random() < full_search_prob
-                num_simulations = base_simulations if is_full_search else fast_simulations
-                return num_simulations, is_full_search
-            
-            # Whether to use PSW
-            use_psw = local_args.get('policy_surprise_weighting', False)
+                for_train = np.random.random() < full_search_prob
+                num_simulations = base_simulations if for_train else fast_simulations
+                return num_simulations, for_train
 
             while not game.is_terminal(state):
-                num_simulations, is_full_search = get_randomized_simulations(local_args)
-                
-                if use_psw:
-                    action_probs, policy_prior = mcts.search(
-                        state, to_play, num_simulations, return_policy_prior=True
-                    )
-                    memory.append((state, action_probs, to_play, is_full_search, policy_prior))
-                else:
-                    action_probs = mcts.search(state, to_play, num_simulations)
-                    memory.append((state, action_probs, to_play, is_full_search))
+                num_simulations, for_train = get_randomized_simulations(local_args)
+
+                action_probs, policy_prior = mcts.search(
+                    state, to_play, num_simulations, return_policy_prior=True
+                )
+                memory.append((state, action_probs, to_play, for_train, policy_prior))
                 
                 if len(memory) >= local_args['zero_t_step']:
                     t = 0.1
@@ -236,25 +229,15 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             
             # Process memory
             return_memory = []
-            if use_psw:
-                for state, policy_target, to_play, is_full, policy_prior in memory:
-                    outcome = winner * to_play
-                    return_memory.append((
-                        game.encode_state(state, to_play),
-                        policy_target,
-                        outcome,
-                        is_full,  # 布尔值：是否全量搜索
-                        policy_prior
-                    ))
-            else:
-                for state, policy_target, to_play, is_full in memory:
-                    outcome = winner * to_play
-                    return_memory.append((
-                        game.encode_state(state, to_play),
-                        policy_target,
-                        outcome,
-                        is_full  # 布尔值：是否全量搜索
-                    ))
+            for state, policy_target, to_play, for_train, policy_prior in memory:
+                outcome = winner * to_play
+                return_memory.append((
+                    game.encode_state(state, to_play),
+                    policy_target,
+                    outcome,
+                    for_train,  # 布尔值：是否用于训练 Policy
+                    policy_prior
+                ))
             
             # Send result to main process
             result_queue.put((return_memory, winner, final_state))
@@ -293,9 +276,8 @@ class AlphaZeroParallel(AlphaZero):
              self.model_cls = type(model)
         
         # Initialize Policy Surprise Weighting (PSW)
-        psw_enabled = args.get('policy_surprise_weighting', False)
+        self.psw_enabled = args.get('policy_surprise_weighting', False)
         self.psw = PolicySurpriseWeighter(
-            enabled=psw_enabled,
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
             fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),
             min_weight=args.get('psw_min_weight', 0.01)
@@ -465,12 +447,12 @@ class AlphaZeroParallel(AlphaZero):
                         perf_steps_count += steps_count
                         
                         # Apply PSW
-                        if self.psw.enabled:
+                        if self.psw_enabled:
                             weighted_memory, psw_stats = self.psw.process_game(memory)
 
                             # Remove policy_prior from weighted_memory before adding to buffer
-                            # memory format: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
-                            # desired format: (encoded_state, policy_target, outcome, is_full_search)
+                            # memory format: (encoded_state, policy_target, outcome, for_train, policy_prior)
+                            # desired format: (encoded_state, policy_target, outcome, for_train)
                             final_memory = [sample[:4] for sample in weighted_memory]
 
                             # if psw_stats.get('enabled', False):
@@ -507,9 +489,11 @@ class AlphaZeroParallel(AlphaZero):
 
                             print(f"\n[Game {self.game_count}] Winner: {int(winner):+d}, Len: {len(memory)}, Buffer: {len(self.replay_buffer)}, AvgLen: {avg_len:.1f}")
                             print(f'  Speed: {global_steps_per_sec:.1f} steps/s')
-                            print(f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
-                                  f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%), '
-                                  f'Draw: {recent_draw}/{recent_total} ({100 * recent_draw / recent_total:.1f}%)')
+                            print(
+                                f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
+                                f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%), '
+                                f'Draw: {recent_draw}/{recent_total} ({100 * recent_draw / recent_total:.1f}%)'
+                            )
                             
                             # Reset performance counters for next interval
                             perf_start_time = time.time()

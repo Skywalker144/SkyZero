@@ -73,7 +73,7 @@ def compute_policy_surprise_weights(
     计算一局游戏中每个位置的 Policy Surprise Weight
     
     Args:
-        game_data: 一局游戏的数据，每个元素是 tuple: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
+        game_data: 一局游戏的数据，每个元素是 tuple: (encoded_state, policy_target, outcome, for_train, policy_prior)
         baseline_weight_ratio: 均匀分配的权重比例 (默认 0.5，即一半均匀分配)
         fast_search_kl_threshold: fast search 被包含的 KL 散度阈值
         min_weight: 最小权重，防止完全忽略某些样本
@@ -91,10 +91,10 @@ def compute_policy_surprise_weights(
     kl_divergences = []
     
     for i, sample in enumerate(game_data):
-        # 解包数据 - 期望格式: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
+        # 解包数据 - 期望格式: (encoded_state, policy_target, outcome, for_train, policy_prior)
         if len(sample) >= 5:
             policy_target = sample[1]    # 索引 1
-            is_full_search = sample[3]   # 索引 3: 布尔值
+            for_train = sample[3]   # 索引 3: 布尔值
             policy_prior = sample[4]     # 索引 4
         else:
             # 如果没有 policy_prior，跳过 PSW，返回均匀权重
@@ -104,7 +104,7 @@ def compute_policy_surprise_weights(
         kl = compute_kl_divergence(policy_target, policy_prior)
         kl_divergences.append(kl)
         
-        if is_full_search:
+        if for_train:
             full_search_indices.append(i)
         else:
             fast_search_indices.append(i)
@@ -165,19 +165,32 @@ def apply_surprise_weighting_to_game(game_data: List[Tuple], weights: List[float
     注意: 输出保留原始 sample 格式不变（包含 policy_prior）。
     调用方应负责在写入 replay buffer 前移除多余字段。
     
+    *** 修改: 将所有输出样本的 for_train (index 3) 强制设为 True ***
+    因为如果样本被 PSW 选中（即使它原本是 fast search），说明它具有较高的 KL 散度，
+    值得用于策略训练。
+    
     Args:
         game_data: 原始游戏数据
         weights: 每个位置的频率权重
         stochastic: 是否使用随机采样（True）还是简单四舍五入（False）
     
     Returns:
-        按权重重复后的游戏数据
+        按权重重复后的游戏数据，且 for_train=True
     """
     weighted_data = []
     
     for sample, weight in zip(game_data, weights):
         if weight <= 0:
             continue
+        
+        # 强制设置 for_train = True (index 3)
+        # sample 是 tuple，不可变，需要重构
+        # (encoded_state, policy_target, outcome, for_train, policy_prior)
+        if len(sample) >= 4:
+            # 保持前3个元素，替换第4个为 True，保持剩下的
+            sample_to_add = sample[:3] + (True,) + sample[4:]
+        else:
+            sample_to_add = sample
 
         # 计算重复次数
         floor_weight = int(np.floor(weight))
@@ -185,11 +198,11 @@ def apply_surprise_weighting_to_game(game_data: List[Tuple], weights: List[float
         
         # 添加 floor(weight) 次
         for _ in range(floor_weight):
-            weighted_data.append(sample)
+            weighted_data.append(sample_to_add)
 
         # 以weight - floor(weight) 的概率额外添加一次
         if np.random.random() < fractional:
-            weighted_data.append(sample)
+            weighted_data.append(sample_to_add)
     
     return weighted_data
 
@@ -203,7 +216,6 @@ class PolicySurpriseWeighter:
     
     def __init__(
         self,
-        enabled: bool = True,
         baseline_weight_ratio: float = 0.5,
         fast_search_kl_threshold: float = 2.0,
         min_weight: float = 0.01,
@@ -217,7 +229,6 @@ class PolicySurpriseWeighter:
             fast_search_kl_threshold: fast search 的 KL 阈值
             min_weight: 最小权重
         """
-        self.enabled = enabled
         self.baseline_weight_ratio = baseline_weight_ratio
         self.fast_search_kl_threshold = fast_search_kl_threshold
         self.min_weight = min_weight
@@ -238,7 +249,7 @@ class PolicySurpriseWeighter:
         Returns:
             (weighted_data, stats): 加权后的数据和统计信息
         """
-        if not self.enabled or len(game_data) == 0:
+        if len(game_data) == 0:
             return game_data, {'enabled': False}
         
         # 计算权重
@@ -341,7 +352,7 @@ if __name__ == '__main__':
     print(f"KL(p||p) = {kl_same:.4f} (should be ~0)")
     
     # 测试 PSW 权重计算
-    # 模拟游戏数据: (state, policy_target, outcome, is_full_search, policy_prior)
+    # 模拟游戏数据: (state, policy_target, outcome, for_train, policy_prior)
     mock_game_data = [
         (None, np.array([0.9, 0.05, 0.05]), 1, True, np.array([0.3, 0.3, 0.4])),   # full search, 高 surprise
         (None, np.array([0.3, 0.3, 0.4]), 1, True, np.array([0.3, 0.3, 0.4])),     # full search, 低 surprise
@@ -363,3 +374,4 @@ if __name__ == '__main__':
     print(f"Original samples: {len(mock_game_data)}, Weighted samples: {len(weighted_data)}")
     
     print("\nPolicy Surprise Weighting test completed!")
+

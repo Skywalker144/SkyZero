@@ -72,12 +72,15 @@ class MCTS:
         self.minmax_state = MinMaxState(self.args['Q_norm_bounds'])
 
     def select(self, node):
+        # PUCT = Q + U
+        # Q = 归一化后的平均价值估计
+        # U = c_puct * P * (sqrt(N) / (1 + n))
         child_priors = np.array([child.prior for child in node.children])
         child_visit_counts = np.array([child.n for child in node.children])
         child_values = np.array([child.v for child in node.children])
 
         # 对已访问的子节点计算 Q 值，未访问的用 0.5（归一化后的中间值）
-        visited = child_visit_counts > 0
+        visited = child_visit_counts > 0 # visited mask: 已访问节点为 True
         # 用 np.maximum 防止除零（0 的位置后续会被覆盖为 0.5）
         safe_counts = np.maximum(child_visit_counts, 1)
         q_values = -child_values / safe_counts
@@ -117,7 +120,8 @@ class MCTS:
 
         if node.parent is None and self.args['mode'] == 'train':
 
-            current_step = np.count_nonzero(is_legal_actions)
+            # current_step = np.count_nonzero(is_legal_actions) # This was counting available actions (decreasing), but we need moves played (increasing)
+            current_step = np.count_nonzero(node.state[-1]) # Correct: Count stones/tokens on board
             board_size = np.sqrt(self.game.board_width * self.game.board_height)
             policy = root_temperature_transform(policy, current_step, self.args, board_size)
             policy = add_shaped_dirichlet_noise(policy, self.args['total_dirichlet_alpha'], self.args['dirichlet_epsilon'])
@@ -297,9 +301,7 @@ class AlphaZero:
 
         self.halflife = np.sqrt(self.game.board_width * self.game.board_height)
 
-        psw_enabled = args.get('policy_surprise_weighting', False)
         self.psw = PolicySurpriseWeighter(
-            enabled=psw_enabled,
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
             fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),
             min_weight=args.get('psw_min_weight', 0.01)
@@ -308,38 +310,33 @@ class AlphaZero:
     def _get_randomized_simulations(self):
         """
         Playout Cap Randomization: 二选一策略
-        返回 (num_simulations, is_full_search) 元组
+        返回 (num_simulations, for_train) 元组
         """
         base_simulations = self.args['num_simulations']  # 例如 600 或 800
         fast_simulations = self.args['fast_simulations']  # 例如 100，或者 base 的 1/5
         full_search_prob = self.args.get('full_search_prob', 0.25)  # 全量搜索的概率
 
         # 简单的二选一逻辑
-        is_full_search = np.random.random() < full_search_prob
-        num_simulations = base_simulations if is_full_search else fast_simulations
-        return num_simulations, is_full_search
+        # is_full_search 对应 for_train:
+        # True (Full Search) -> 用于训练 Policy
+        # False (Fast Search) -> 仅用于训练 Value (除非被 PSW 提升)
+        for_train = np.random.random() < full_search_prob
+        num_simulations = base_simulations if for_train else fast_simulations
+        return num_simulations, for_train
 
     def selfplay(self):
         memory = []
         to_play = 1
         state = self.game.get_initial_state()
         
-        # 是否启用 PSW（需要收集 policy prior）
-        use_psw = self.psw.enabled
-        
         while not self.game.is_terminal(state):
 
-            num_simulations, is_full_search = self._get_randomized_simulations()
+            num_simulations, for_train = self._get_randomized_simulations()
 
-            if use_psw:
-                # 返回 policy prior 用于 PSW
-                action_probs, policy_prior = self.mcts.search(
-                    state, to_play, num_simulations, return_policy_prior=True
-                )
-                memory.append((state, action_probs, to_play, is_full_search, policy_prior))
-            else:
-                action_probs = self.mcts.search(state, to_play, num_simulations)
-                memory.append((state, action_probs, to_play, is_full_search))
+            action_probs, policy_prior = self.mcts.search(
+                state, to_play, num_simulations, return_policy_prior=True
+            )
+            memory.append((state, action_probs, to_play, for_train, policy_prior))
             
             # if len(memory) >= self.args['zero_t_step']:
             #     t = 0.1
@@ -364,53 +361,42 @@ class AlphaZero:
         # 构建带 outcome 的数据
         raw_memory = []
         for item in memory:
-            if use_psw:
-                state, policy_target, to_play, is_full, policy_prior = item
-                outcome = winner * to_play
-                raw_memory.append((
-                    self.game.encode_state(state, to_play),
-                    policy_target,
-                    outcome,
-                    is_full,  # 布尔值：是否全量搜索
-                    policy_prior,  # 保留 policy prior 用于 PSW 计算
-                ))
-            else:
-                state, policy_target, to_play, is_full = item
-                outcome = winner * to_play
-                raw_memory.append((
-                    self.game.encode_state(state, to_play),
-                    policy_target,
-                    outcome,
-                    is_full,  # 布尔值：是否全量搜索
-                ))
+            state, policy_target, to_play, for_train, policy_prior = item
+            outcome = winner * to_play
+            raw_memory.append((
+                self.game.encode_state(state, to_play),
+                policy_target,
+                outcome,
+                for_train,  # 布尔值：是否用于训练 Policy
+                policy_prior,  # 保留 policy prior 用于 PSW 计算
+            ))
         
         # 应用 Policy Surprise Weighting
-        if use_psw:
-            # PSW 期望格式: (encoded_state, policy_target, outcome, is_full_search, policy_prior)
-            weighted_memory, psw_stats = self.psw.process_game(raw_memory)
-            
-            # 移除 policy_prior，只保留训练需要的数据
-            return_memory = []
-            for sample in weighted_memory:
-                # 取前4个元素: (encoded_state, policy_target, outcome, is_full_search)
-                return_memory.append(sample[:4])
-            
-            # 打印 PSW 统计信息
-            if psw_stats.get('enabled', False):
-                print(f'  [PSW] Before: {psw_stats["samples_before"]}, '
-                      f'After: {psw_stats["samples_after"]}, '
-                      f'Ratio: {psw_stats["expansion_ratio"]:.2f}, '
-                      f'KL_mean: {psw_stats["kl_mean"]:.4f}, '
-                      f'KL_max: {psw_stats["kl_max"]:.4f}')
-        else:
-            return_memory = raw_memory
-        
+        # PSW 期望格式: (encoded_state, policy_target, outcome, for_train, policy_prior)
+        weighted_memory, psw_stats = self.psw.process_game(raw_memory)
+
+        # 移除 policy_prior，只保留训练需要的数据
+        return_memory = []
+        for sample in weighted_memory:
+            # 取前4个元素: (encoded_state, policy_target, outcome, for_train)
+            return_memory.append(sample[:4])
+
+        # 打印 PSW 统计信息
+        if psw_stats.get('enabled', False):
+            print(
+                f'  [PSW] Before: {psw_stats["samples_before"]}, '
+                f'After: {psw_stats["samples_after"]}, '
+                f'Ratio: {psw_stats["expansion_ratio"]:.2f}, '
+                f'KL_mean: {psw_stats["kl_mean"]:.4f}, '
+                f'KL_max: {psw_stats["kl_max"]:.4f}'
+            )
+
         print_board(final_state)
         # 返回: 训练数据, 胜负结果, 实际游戏步数
         return return_memory, self.game.get_winner(final_state), len(raw_memory)
 
     def _train_batch(self, batch):
-        # 根据棋盘形状和动作空间选择数据增强方式
+        # 数据增强
         if self.game.action_space_size != self.game.board_height * self.game.board_width:
             # Connect4等列动作游戏：action_space_size == board_width
             batch = random_augment_batch_connect4(batch)
@@ -421,7 +407,7 @@ class AlphaZero:
             # 非正方形棋盘（动作空间等于棋盘大小）：只使用水平翻转
             batch = random_augment_batch_rect(batch, self.game.board_height, self.game.board_width)
 
-        states, policy_targets, value_targets, is_full_search_list = zip(*batch)
+        states, policy_targets, value_targets, for_train_list = zip(*batch)
 
         states = torch.tensor(np.array(states), dtype=torch.float32, device=self.args['device'])
         policy_targets = torch.tensor(np.array(policy_targets), dtype=torch.float32, device=self.args['device'])
@@ -429,10 +415,10 @@ class AlphaZero:
 
         policy, value = self.model(states)
 
-        # KataGo 论文"二选一"策略：
-        # 只有全量搜索的样本用于 policy 训练
-        # 快速搜索的样本只用于 value 训练
-        policy_mask_tensor = torch.tensor(is_full_search_list, dtype=torch.bool, device=self.args['device'])
+        # PSW 和 Playout Cap Randomization：
+        # 只有全量搜索 或高 surprise 的快速搜索 的样本用于 policy 训练
+        # 普通快速搜索的样本只用于 value 训练
+        policy_mask_tensor = torch.tensor(for_train_list, dtype=torch.bool, device=self.args['device'])
 
         if policy_mask_tensor.sum() > 0:
             policy_loss = F.cross_entropy(
@@ -522,9 +508,11 @@ class AlphaZero:
             current_buffer_size = len(self.replay_buffer)
             print(f'\n[Game {self.game_count}] Winner: {int(winner):+d}, Steps: {game_steps}, Samples: {sample_count}, Buffer: {current_buffer_size}, AvgSteps: {avg_game_steps:.1f}, AvgSamples: {avg_sample_count:.1f}')
             print(f'  Speed: {global_steps_per_sec:.1f} steps/s')
-            print(f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
-                  f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%), '
-                  f'Draw: {recent_draw}/{recent_total} ({100 * recent_draw / recent_total:.1f}%)')
+            print(
+                f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
+                f'Second: {recent_second_win}/{recent_total} ({100 * recent_second_win / recent_total:.1f}%), '
+                f'Draw: {recent_draw}/{recent_total} ({100 * recent_draw / recent_total:.1f}%)'
+            )
             # Reset performance counters for next game
             perf_start_time = time.time()
             perf_steps_count = 0
