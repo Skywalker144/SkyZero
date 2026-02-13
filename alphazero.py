@@ -10,7 +10,8 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from replay_buffer import ReplayBuffer
-from utils import add_dirichlet_noise, print_board, temperature_transform, random_augment_batch, random_augment_batch_rect, random_augment_batch_connect4
+from utils import add_dirichlet_noise, print_board, temperature_transform, random_augment_batch, random_augment_batch_rect, random_augment_batch_connect4, \
+    root_temperature_transform, add_shaped_dirichlet_noise
 from policy_surprise_weighting import (
     PolicySurpriseWeighter,
     extract_policy_prior_from_root,
@@ -115,7 +116,11 @@ class MCTS:
         policy /= policy_sum
 
         if node.parent is None and self.args['mode'] == 'train':
-            policy = add_dirichlet_noise(policy, self.args['dirichlet_alpha'], self.args['dirichlet_epsilon'])
+
+            current_step = np.count_nonzero(is_legal_actions)
+            board_size = np.sqrt(self.game.board_width * self.game.board_height)
+            policy = root_temperature_transform(policy, current_step, self.args, board_size)
+            policy = add_shaped_dirichlet_noise(policy, self.args['total_dirichlet_alpha'], self.args['dirichlet_epsilon'])
 
         for action, prob in enumerate(policy):
             if prob > 0:
@@ -289,8 +294,9 @@ class AlphaZero:
             window_size=buffer_size,
             board_size=game.board_size,
         )
-        
-        # 初始化 Policy Surprise Weighting
+
+        self.halflife = np.sqrt(self.game.board_width * self.game.board_height)
+
         psw_enabled = args.get('policy_surprise_weighting', False)
         self.psw = PolicySurpriseWeighter(
             enabled=psw_enabled,
@@ -335,10 +341,16 @@ class AlphaZero:
                 action_probs = self.mcts.search(state, to_play, num_simulations)
                 memory.append((state, action_probs, to_play, is_full_search))
             
-            if len(memory) >= self.args['zero_t_step']:
-                t = 0.1
-            else:
-                t = self.args['temperature']
+            # if len(memory) >= self.args['zero_t_step']:
+            #     t = 0.1
+            # else:
+            #     t = self.args['temperature']
+
+            current_step = np.count_nonzero(state[-1])
+            max_t = 0.8
+            min_t = 0.2
+            t = min_t + (max_t - min_t) * (0.5 ** (current_step / self.halflife))
+
             action = np.random.choice(
                 self.game.action_space_size,
                 p=temperature_transform(action_probs, t)

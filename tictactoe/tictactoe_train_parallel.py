@@ -40,10 +40,12 @@ if __name__ == '__main__':
         'full_search_prob': 0.25,  # 全量搜索的概率
         'c_puct': 1.5,
         'temperature': 1,
+        'root_temperature_start': 1.25,
+        'root_temperature_end': 1.1,
 
         'zero_t_step': 3,
 
-        'dirichlet_alpha': 1,
+        'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
         'buffer_size': 3000,
@@ -104,6 +106,6 @@ if __name__ == '__main__':
     )
 
     # Try to load existing checkpoint if any
-    alphazero.load_checkpoint()
+    # alphazero.load_checkpoint()
 
     alphazero.learn()

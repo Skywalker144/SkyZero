@@ -2,8 +2,6 @@ import math
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.special import softmax
-from scipy.stats import truncnorm
 
 
 def print_board(board):
@@ -76,21 +74,21 @@ def random_augment_sample(state, action_probs, board_size):
     # 0-3: 旋转 k*90° 不翻转
     # 4-7: 旋转 (k-4)*90° 后翻转
     transform_type = np.random.randint(0, 8)
-    
+
     k = transform_type % 4  # 旋转次数
     do_flip = transform_type >= 4  # 是否翻转
-    
+
     action_probs_2d = action_probs.reshape(board_size, board_size)
-    
+
     # 先旋转
     rot_state = np.rot90(state, k=k, axes=(1, 2))
     rot_probs = np.rot90(action_probs_2d, k=k)
-    
+
     # 再翻转（如果需要）
     if do_flip:
         rot_state = np.flip(rot_state, axis=2)
         rot_probs = np.flip(rot_probs, axis=1)
-    
+
     return rot_state.copy(), rot_probs.flatten().copy()
 
 
@@ -132,7 +130,7 @@ def random_augment_sample_rect(state, action_probs, board_height, board_width):
     """
     # 随机选择是否翻转
     do_flip = np.random.random() < 0.5
-    
+
     if do_flip:
         # 水平翻转
         flip_state = np.flip(state, axis=2)
@@ -177,7 +175,7 @@ def random_augment_sample_connect4(state, action_probs):
         (transformed_state, transformed_probs): 变换后的状态和动作概率
     """
     do_flip = np.random.random() < 0.5
-    
+
     if do_flip:
         # 水平翻转状态
         flip_state = np.flip(state, axis=2)
@@ -226,16 +224,30 @@ def add_dirichlet_noise(policy, alpha, epsilon=0.25):
     return policy
 
 
-def add_dirichlet_noise_sm(policy, epsilon=0.25):
-    nonzero_mask = policy > 0
-    nonzero_count = np.sum(nonzero_mask)
-    alpha = 1 / math.sqrt(nonzero_count)
-    noise = np.random.dirichlet(np.full(nonzero_count, alpha))
-    policy[nonzero_mask] = (policy[nonzero_mask] * (1 - epsilon) + noise * epsilon)
-    return policy
+def root_temperature_transform(policy, current_step, args, board_size):
+    decay_factor = math.pow(0.5, current_step / board_size)
+    current_temp = args['root_temperature_end'] + (args['root_temperature_start'] - args['root_temperature_end']) * decay_factor
+    new_policy = temperature_transform(policy, current_temp)
+    return new_policy
 
 
-#
+def add_shaped_dirichlet_noise(policy_t, total_dirichlet_alpha=10.83, epsilon=0.25):
+    # KataGo 动态 Alpha 缩放：总质量 10.83 [1][2]
+    nonzero_mask = policy_t > 0
+    legal_count = np.sum(nonzero_mask)
+
+    # 塑形逻辑：一半均匀分布，一半按当前先验分布 [1]
+    # 这一步必须用到 policy_t，否则就不是 KataGo 的 Shaped Noise 了
+    alpha_weights = 0.5 * (1.0 / legal_count) + 0.5 * (policy_t[nonzero_mask])
+    alphas = alpha_weights * total_dirichlet_alpha
+
+    noise = np.random.dirichlet(alphas)
+
+    new_policy = policy_t.copy()
+    new_policy[nonzero_mask] = (policy_t[nonzero_mask] * (1 - epsilon) + noise * epsilon)
+    return new_policy
+
+
 # def temperature_transform(probs: np.ndarray, temperature: float) -> np.ndarray:
 #     """
 #     对概率分布应用温度变换（简化版，低检查，高性能）。
