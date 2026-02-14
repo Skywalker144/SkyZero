@@ -5,7 +5,10 @@ import time
 import queue
 import traceback
 import os
-from collections import deque
+import threading
+import itertools
+from concurrent.futures import Future
+from collections import deque, defaultdict
 from alphazero import AlphaZero, MCTS, temperature_transform
 from policy_surprise_weighting import (
     PolicySurpriseWeighter,
@@ -24,12 +27,15 @@ class RemoteModel:
     """
     A proxy class that looks like a PyTorch model but sends requests to a prediction queue.
     Used by Self-Play workers to communicate with the GPU worker.
+    Thread-safe version.
     """
 
-    def __init__(self, rank, request_queue, response_pipe):
+    def __init__(self, rank, request_queue, pending_requests, lock, counter):
         self.rank = rank
         self.request_queue = request_queue
-        self.response_pipe = response_pipe
+        self.pending_requests = pending_requests
+        self.lock = lock
+        self.counter = counter
         self.training = False
 
     def eval(self):
@@ -51,12 +57,26 @@ class RemoteModel:
         # state_tensor is typically (1, C, H, W)
         state_cpu = state_tensor.detach().cpu()
 
-        # Send request: (worker_rank, state_tensor)
-        self.request_queue.put((self.rank, state_cpu))
+        # Generate unique request ID
+        with self.lock:
+            req_id = next(self.counter)
+            future = Future()
+            self.pending_requests[req_id] = future
 
-        # Wait for response from dedicated pipe
+        # Send request: (rank, req_id, state_tensor)
+        self.request_queue.put((self.rank, req_id, state_cpu))
+
+        # Wait for response
         # response is (policy_logits_np, value_np)
-        policy_np, value_np = self.response_pipe.recv()
+        try:
+            policy_np, value_np = future.result()
+        except Exception as e:
+            print(f"Error in RemoteModel future result: {e}")
+            raise e
+        finally:
+            # Cleanup is handled by the receiver thread popping the future, 
+            # but strictly speaking we just consumed the result.
+            pass
 
         # Convert back to tensor to satisfy MCTS interface
         return torch.tensor(policy_np), torch.tensor(value_np)
@@ -65,6 +85,7 @@ class RemoteModel:
 def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, response_pipes, command_queue, args, start_barrier=None):
     """
     The Server process that holds the GPU model and processes batches of requests.
+    Supports batched requests from threaded workers.
     """
     try:
         device = args['device']
@@ -74,14 +95,24 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
         model = model_cls(**model_kwargs).to(device)
         model.load_state_dict(model_state_dict)
         model.eval()
+        if hasattr(torch, 'compile'):
+             try:
+                 model = torch.compile(model)
+                 print("GPU Worker: Model compiled with torch.compile")
+             except Exception as e:
+                 print(f"GPU Worker: Model compilation failed, fallback to eager. {e}")
+        
         print(f"GPU Worker: Model initialized and weights loaded on {device}")
 
         # Wait for all workers to be ready before starting
         if start_barrier is not None:
             start_barrier.wait()
 
-        max_batch_size = len(response_pipes)  # Dynamic batch size up to num_workers
-
+        # Dynamic batch size limits
+        # We want to process as many as possible, but not wait too long.
+        # With threading, we can expect batches of size 100+ easily.
+        max_batch_size = 512 # Increased max batch size
+        
         while True:
             # 1. Check for commands (e.g. update weights)
             try:
@@ -97,7 +128,7 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
 
             # 2. Collect Batch
             batch_states = []
-            batch_ranks = []
+            batch_metadata = [] # (rank, req_id)
 
             # Smarter Batch Collection
             start_time = time.time()
@@ -108,17 +139,17 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
                 try:
                     if len(batch_states) == 0:
                         # Wait for first item (up to 10ms to check command_queue periodically)
-                        rank, state = request_queue.get(timeout=0.01)
+                        rank, req_id, state = request_queue.get(timeout=0.01)
                     else:
                         # We have some items, try to get more but respect the time window
                         remaining = (start_time + max_wait) - time.time()
                         if remaining <= 0:
                             break
                         # Wait for next item up to remaining time
-                        rank, state = request_queue.get(timeout=remaining)
+                        rank, req_id, state = request_queue.get(timeout=remaining)
 
                     batch_states.append(state)
-                    batch_ranks.append(rank)
+                    batch_metadata.append((rank, req_id))
 
                     if len(batch_states) == 1:
                         start_time = time.time()  # Start timer on first item arrival
@@ -148,10 +179,25 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
                 values = values.cpu().numpy()
 
                 # 4. Distribute Results
-                for i, rank in enumerate(batch_ranks):
+                # We need to group results by rank to send efficiently to each worker pipe
+                results_by_rank = defaultdict(list)
+                
+                for i, (rank, req_id) in enumerate(batch_metadata):
                     # policies[i:i+1] keeps the shape (1, Actions)
                     # values[i:i+1] keeps the shape (1, 1)
-                    response_pipes[rank].send((policies[i:i + 1], values[i:i + 1]))
+                    results_by_rank[rank].append((req_id, policies[i:i+1], values[i:i+1]))
+
+                for rank, results in results_by_rank.items():
+                    # results is list of (req_id, policy, value)
+                    # We send: (req_ids_list, policies_batch, values_batch)
+                    req_ids, pols, vals = zip(*results)
+                    # pols is tuple of (1, A) arrays -> stack to (N, A)
+                    # vals is tuple of (1, 1) arrays -> stack to (N, 1)
+                    # Actually, we can just send the list, or stack. Stacking is cleaner.
+                    # But the receiver expects to split them.
+                    # Let's send them as a batch structure.
+                    
+                    response_pipes[rank].send((req_ids, np.concatenate(pols, axis=0), np.concatenate(vals, axis=0)))
 
             except Exception as e:
                 print(f"Error in GPU inference: {e}")
@@ -162,48 +208,32 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
         traceback.print_exc()
 
 
-def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue, seed, start_barrier=None):
+def game_loop(rank, thread_id, game, args, remote_model, result_queue, seed):
     """
-    The Client process that runs the game logic and MCTS.
+    Runs a single game loop.
     """
-    try:
-        # Set seeds
-        np.random.seed(seed)
-        torch.manual_seed(seed)
+    # Set seed unique to rank and thread
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
-        # Modify args for CPU execution in this worker
-        local_args = args.copy()
-        local_args['device'] = 'cpu'
+    # Modify args for CPU execution
+    local_args = args.copy()
+    local_args['device'] = 'cpu'
 
-        # Create proxy model
-        remote_model = RemoteModel(rank, request_queue, response_pipe)
+    # Initialize MCTS
+    mcts = MCTS(game, local_args, remote_model)
+    
+    halflife = np.sqrt(game.board_width * game.board_height)
+    move_temperature_init = args['move_temperature_init']
+    move_temperature_final = args['move_temperature_final']
 
-        # Initialize MCTS
-        mcts = MCTS(game, local_args, remote_model)
-
-        halflife = np.sqrt(game.board_width * game.board_height)
-        move_temperature_init = args['move_temperature_init']
-        move_temperature_final = args['move_temperature_final']
-
-        # Wait for all workers to be ready before starting
-        if start_barrier is not None:
-            start_barrier.wait()
-
-        # Loop to play games continuously
-        while True:
-            # logic similar to AlphaZero.selfplay() but continuous
+    while True:
+        try:
             memory = []
             to_play = 1
             state = game.get_initial_state()
 
-            # Dynamic args fetching could be implemented here if needed
-            # For now we use static args passed at start
-
             def get_randomized_simulations(args):
-                """
-                Playout Cap Randomization: 二选一策略
-                返回 (num_simulations, for_train) 元组
-                """
                 base_simulations = args['num_simulations']
                 fast_simulations = args['fast_simulations']
                 full_search_prob = args.get('full_search_prob', 0.25)
@@ -219,11 +249,6 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     state, to_play, num_simulations, return_policy_prior=True
                 )
                 memory.append((state, action_probs, to_play, for_train, policy_prior))
-
-                # if len(memory) >= local_args['zero_t_step']:
-                #     t = 0.1
-                # else:
-                #     t = local_args['temperature']
 
                 current_step = np.count_nonzero(state[-1])
                 max_t = move_temperature_init
@@ -248,12 +273,75 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     game.encode_state(state, to_play),
                     policy_target,
                     outcome,
-                    for_train,  # 布尔值：是否用于训练 Policy
+                    for_train,
                     policy_prior
                 ))
 
             # Send result to main process
             result_queue.put((return_memory, winner, final_state))
+            
+        except Exception as e:
+            print(f"Error in game loop (Worker {rank}, Thread {thread_id}): {e}")
+            traceback.print_exc()
+            # Important: Don't kill the thread, just restart the game loop
+            time.sleep(1) 
+
+
+def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue, base_seed, start_barrier=None, threads_per_worker=4):
+    """
+    The Client process that runs the game logic and MCTS.
+    Now spawns multiple threads to run parallel games.
+    """
+    try:
+        # Shared state for threads
+        pending_requests = {} # {req_id: Future}
+        lock = threading.Lock()
+        counter = itertools.count()
+        
+        # RemoteModel is shared (thread-safe)
+        remote_model = RemoteModel(rank, request_queue, pending_requests, lock, counter)
+
+        # 1. Start Response Listener Thread
+        def listen():
+            while True:
+                try:
+                    # Expect: (req_ids, policies_batch, values_batch)
+                    req_ids, policies, values = response_pipe.recv()
+                    
+                    with lock:
+                        for i, req_id in enumerate(req_ids):
+                            if req_id in pending_requests:
+                                future = pending_requests.pop(req_id)
+                                future.set_result((policies[i:i+1], values[i:i+1]))
+                except EOFError:
+                    break
+                except Exception as e:
+                    print(f"Error in response listener (Worker {rank}): {e}")
+                    break
+        
+        listener_thread = threading.Thread(target=listen, daemon=True)
+        listener_thread.start()
+
+        # Wait for all workers to be ready before starting
+        if start_barrier is not None:
+            start_barrier.wait()
+
+        # 2. Start Game Threads
+        threads = []
+        for i in range(threads_per_worker):
+            # Each thread gets a unique seed
+            thread_seed = base_seed + (rank * 1000) + i
+            t = threading.Thread(
+                target=game_loop,
+                args=(rank, i, game, args, remote_model, result_queue, thread_seed),
+                daemon=True
+            )
+            t.start()
+            threads.append(t)
+            
+        # Keep main thread alive
+        for t in threads:
+            t.join()
 
     except Exception as e:
         print(f"Worker {rank} failed: {e}")
@@ -261,7 +349,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
 
 class AlphaZeroParallel(AlphaZero):
-    def __init__(self, game, model, optimizer, args, model_cls=None, model_kwargs=None, num_workers=4):
+    def __init__(self, game, model, optimizer, args, model_cls=None, model_kwargs=None, num_workers=4, threads_per_worker=8):
         # We don't initialize super() immediately completely because we manage MCTS differently
         # But we inherit utility methods
         self.game = game
@@ -271,6 +359,7 @@ class AlphaZeroParallel(AlphaZero):
         self.model_cls = model_cls
         self.model_kwargs = model_kwargs
         self.num_workers = num_workers
+        self.threads_per_worker = threads_per_worker
 
         # Initialize other AlphaZero attributes
         self.losses = []
@@ -372,8 +461,9 @@ class AlphaZeroParallel(AlphaZero):
     def learn(self):
         import matplotlib.pyplot as plt
 
-        print(f"Starting Parallel AlphaZero with Batch MCTS")
-        print(f"Workers: {self.num_workers}, Device: {self.args['device']}")
+        print(f"Starting Parallel AlphaZero with Batch MCTS (Threaded)")
+        print(f"Workers: {self.num_workers} x {self.threads_per_worker} threads = {self.num_workers * self.threads_per_worker} parallel games")
+        print(f"Device: {self.args['device']}")
         print(f"Batch Size: {self.args['batch_size']}")
 
         # Barrier to synchronize all workers before starting self-play
@@ -416,7 +506,8 @@ class AlphaZeroParallel(AlphaZero):
                     client_pipe,
                     self.result_queue,
                     base_seed + i,
-                    start_barrier
+                    start_barrier,
+                    self.threads_per_worker # Pass the new argument
                 )
             )
             p.start()
@@ -460,7 +551,7 @@ class AlphaZeroParallel(AlphaZero):
                         perf_steps_count += steps_count
 
                         # Apply PSW
-                        if self.psw_enabled:
+                        if self.args.get('policy_surprise_weighting', False):
                             weighted_memory, psw_stats = self.psw.process_game(memory)
 
                             # Remove policy_prior from weighted_memory before adding to buffer
@@ -472,7 +563,8 @@ class AlphaZeroParallel(AlphaZero):
                             if psw_stats.get('enabled', False) and self.game_count % 10 == 0:
                                 print(f'  [PSW] Ratio: {psw_stats["expansion_ratio"]:.2f}, KL_mean: {psw_stats["kl_mean"]:.4f}, KL_max: {psw_stats["kl_max"]:.4f}')
                         else:
-                            final_memory = memory
+                            final_memory = [sample[:4] for sample in memory]
+                            psw_stats = {'enabled': False}
 
                         # Update stats
                         recent_winners.append(winner)
