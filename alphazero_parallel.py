@@ -290,7 +290,6 @@ class AlphaZeroParallel(AlphaZero):
             self.model_cls = type(model)
 
         # Initialize Policy Surprise Weighting (PSW)
-        self.psw_enabled = args.get('policy_surprise_weighting', False)
         self.psw = PolicySurpriseWeighter(
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
             fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),

@@ -161,7 +161,7 @@ class MCTS:
         self.backpropagate(node, value)
 
     @torch.inference_mode()
-    def search(self, state, to_play, num_simulations=None, process_bar=False, return_policy_prior=False):
+    def search(self, state, to_play, num_simulations=None, return_policy_prior=False):
 
         root = Node(state, to_play)
         self.minmax_state.reset()
@@ -169,8 +169,7 @@ class MCTS:
         if num_simulations is None:
             num_simulations = self.args['num_simulations']
 
-        iterator = tqdm(range(num_simulations), desc='MCTS: ') if process_bar else range(num_simulations)
-        for _ in iterator:
+        for _ in range(num_simulations):
             self._run_simulation(root)
         
         # 提取 policy prior (在 forced playouts 之前)
@@ -284,6 +283,24 @@ class MCTS:
         
         if return_policy_prior:
             return action_probs, policy_prior
+        return action_probs
+
+    def eval_search(self, state, to_play, num_simulations=None):
+        root = Node(state, to_play)
+        self.minmax_state.reset()
+
+        if num_simulations is None:
+            num_simulations = self.args['num_simulations']
+
+        for _ in tqdm(range(num_simulations), desc='MCTS Simulations', unit='sim'):
+            self._run_simulation(root)
+
+        action_probs = np.zeros(self.game.action_space_size)
+        for child in root.children:
+            action_probs[child.action_taken] = child.n
+        action_probs_sum = np.sum(action_probs)
+        if action_probs_sum > 0:
+            action_probs /= action_probs_sum
         return action_probs
 
 
@@ -618,7 +635,7 @@ class AlphaZero:
     @torch.inference_mode()
     def play(self, state, to_play):
         self.model.eval()
-        action_probs = self.mcts.search(state, to_play, process_bar=True)
+        action_probs = self.mcts.eval_search(state, to_play)
         action = np.argmax(action_probs)
         policy, value = self.model(
             torch.tensor(self.game.encode_state(state, to_play), device=self.args['device']).unsqueeze(0)

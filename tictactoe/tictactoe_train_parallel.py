@@ -39,7 +39,6 @@ if __name__ == '__main__':
         'fast_simulations': 50,
         'full_search_prob': 0.25,
         'c_puct': 1.5,
-        'temperature': 1.0,
         'root_temperature_init': 1.25,
         'root_temperature_final': 1.1,
         'move_temperature_init': 0.8,
