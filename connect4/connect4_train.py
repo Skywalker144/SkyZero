@@ -50,7 +50,7 @@ if __name__ == '__main__':
         'psw_min_weight': 0.01,  # 最小权重
 
         'device': 'cuda',
-        'savetime_interval': 3600,
+        'savetime_interval': 7200,
         'file_name': 'connect4',
     }
 
