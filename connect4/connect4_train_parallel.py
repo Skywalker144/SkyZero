@@ -3,6 +3,7 @@ Connect4 Parallel Training Script
 """
 import os
 import sys
+
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import torch.optim as optim
@@ -16,13 +17,14 @@ from nets import ResNet
 if __name__ == '__main__':
     # Fix for potential multiprocessing issues on Windows/CUDA
     import torch.multiprocessing as mp
+
     mp.set_start_method('spawn', force=True)
 
     np.set_printoptions(precision=2, suppress=True)
 
     # Initialize Game
     game = Connect4(history_step=2)
-    
+
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
     model = ResNet(game, num_blocks=4, num_channels=64).to('cuda')
@@ -48,25 +50,20 @@ if __name__ == '__main__':
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,
 
-        'forced_playouts': True,
         'forced_playout_coeff': 2.0,
-
-        'policy_target_pruning': True,
 
         # 'Q_norm_bounds': [-1, 1],
         'Q_norm_bounds': None,
 
-        'policy_surprise_weighting': True,  # 启用PSW
         'psw_baseline_ratio': 0.5,  # 均匀分配的权重比例
         'psw_fast_kl_threshold': 2.0,  # fast search 的 KL 阈值
         'psw_min_weight': 0.01,  # 最小权重
-        'psw_stochastic': True,  # 随机采样
 
         'device': 'cuda',
-        'savetime_interval': 3600,
+        'savetime_interval': 7200,
         'file_name': 'connect4',
     }
-    
+
     print(f"Connect4 AlphaZero Parallel Training")
     print(f"Board Size: {game.board_height} x {game.board_width}")
     print(f"Action Space: {game.action_space_size}")
@@ -85,15 +82,15 @@ if __name__ == '__main__':
     num_workers = 20
 
     alphazero = AlphaZeroParallel(
-        game, 
-        model, 
-        optimizer, 
-        args, 
-        model_cls=model_cls, 
+        game,
+        model,
+        optimizer,
+        args,
+        model_cls=model_cls,
         model_kwargs=model_kwargs,
         num_workers=num_workers
     )
-    
+
     # Try to load existing checkpoint if any
     alphazero.load_checkpoint()
     # alphazero.replay_buffer.clear()

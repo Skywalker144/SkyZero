@@ -173,7 +173,6 @@ def apply_surprise_weighting_to_game(game_data: List[Tuple], weights: List[float
     Args:
         game_data: 原始游戏数据
         weights: 每个位置的频率权重
-        stochastic: 是否使用随机采样（True）还是简单四舍五入（False）
     
     Returns:
         按权重重复后的游戏数据，且 for_train=True

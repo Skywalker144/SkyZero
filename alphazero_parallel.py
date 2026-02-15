@@ -612,6 +612,8 @@ class AlphaZeroParallel(AlphaZero):
         except KeyboardInterrupt:
             print("Stopping...")
         finally:
+            print("Saving checkpoint before exit...")
+            self.save_checkpoint()
             # Cleanup
             self.command_queue.put(('STOP', None))
             gpu_process.join()

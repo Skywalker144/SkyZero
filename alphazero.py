@@ -1,6 +1,7 @@
 import math
 import os
 import time
+import atexit
 from collections import deque
 
 import matplotlib.pyplot as plt
@@ -464,6 +465,8 @@ class AlphaZero:
         return loss.item(), policy_loss.item(), value_loss.item()
 
     def learn(self):
+        atexit.register(self.save_checkpoint)
+
         batch_size = self.args['batch_size']
         min_buffer_size = self.args['min_buffer_size']
         train_steps_per_generation = self.args['train_steps_per_generation']
