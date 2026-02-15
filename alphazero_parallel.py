@@ -99,37 +99,24 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
             batch_states = []
             batch_ranks = []
 
-            # Smarter Batch Collection
-            start_time = time.time()
-            max_wait = 0.005  # 5ms window to batch
-
-            # Try to get as many as possible within window
-            while len(batch_states) < max_batch_size:
-                try:
-                    if len(batch_states) == 0:
-                        # Wait for first item (up to 10ms to check command_queue periodically)
-                        rank, state = request_queue.get(timeout=0.01)
-                    else:
-                        # We have some items, try to get more but respect the time window
-                        remaining = (start_time + max_wait) - time.time()
-                        if remaining <= 0:
-                            break
-                        # Wait for next item up to remaining time
-                        rank, state = request_queue.get(timeout=remaining)
-
+            # Greedy Batch Collection (Low Latency)
+            # 1. Wait for first item (blocking with small timeout to check commands)
+            try:
+                if len(batch_states) == 0:
+                    rank, state = request_queue.get(timeout=0.01)
                     batch_states.append(state)
                     batch_ranks.append(rank)
+            except queue.Empty:
+                continue
 
-                    if len(batch_states) == 1:
-                        start_time = time.time()  # Start timer on first item arrival
-
+            # 2. Collect any other immediately available items (Greedy)
+            while len(batch_states) < max_batch_size:
+                try:
+                    rank, state = request_queue.get_nowait()
+                    batch_states.append(state)
+                    batch_ranks.append(rank)
                 except queue.Empty:
-                    if len(batch_states) > 0:
-                        # Timeout waiting for more items -> process what we have
-                        break
-                    else:
-                        # Timeout waiting for first item -> loop back to check commands
-                        break
+                    break
 
             if not batch_states:
                 continue
@@ -459,20 +446,17 @@ class AlphaZeroParallel(AlphaZero):
                         steps_count = len(memory)
                         perf_steps_count += steps_count
 
-                        # Apply PSW
-                        if self.psw_enabled:
-                            weighted_memory, psw_stats = self.psw.process_game(memory)
+                        weighted_memory, psw_stats = self.psw.process_game(memory)
 
-                            # Remove policy_prior from weighted_memory before adding to buffer
-                            # memory format: (encoded_state, policy_target, outcome, for_train, policy_prior)
-                            # desired format: (encoded_state, policy_target, outcome, for_train)
-                            final_memory = [sample[:4] for sample in weighted_memory]
+                        # Remove policy_prior from weighted_memory before adding to buffer
+                        # memory format: (encoded_state, policy_target, outcome, for_train, policy_prior)
+                        # desired format: (encoded_state, policy_target, outcome, for_train)
+                        final_memory = [sample[:4] for sample in weighted_memory]
 
-                            # if psw_stats.get('enabled', False):
-                            if psw_stats.get('enabled', False) and self.game_count % 10 == 0:
-                                print(f'  [PSW] Ratio: {psw_stats["expansion_ratio"]:.2f}, KL_mean: {psw_stats["kl_mean"]:.4f}, KL_max: {psw_stats["kl_max"]:.4f}')
-                        else:
-                            final_memory = memory
+                        # if psw_stats.get('enabled', False):
+                        if self.game_count % 10 == 0:
+                            print(f'  [PSW] Ratio: {psw_stats["expansion_ratio"]:.2f}, KL_mean: {psw_stats["kl_mean"]:.4f}, KL_max: {psw_stats["kl_max"]:.4f}')
+
 
                         # Update stats
                         recent_winners.append(winner)

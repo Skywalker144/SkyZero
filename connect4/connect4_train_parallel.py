@@ -30,8 +30,8 @@ if __name__ == '__main__':
 
     args = {
         'mode': 'train',
-        'num_simulations': 600,
-        'fast_simulations': 100,
+        'num_simulations': 700,
+        'fast_simulations': 150,
         'full_search_prob': 0.25,
         'c_puct': 1.5,
         'root_temperature_init': 1.25,
@@ -43,7 +43,7 @@ if __name__ == '__main__':
 
         'buffer_size': 100000,
         'batch_size': 1024,
-        'min_buffer_size': 5000,
+        'min_buffer_size': 10000,
 
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,
@@ -82,7 +82,7 @@ if __name__ == '__main__':
         'num_channels': 64
     }
 
-    num_workers = 16
+    num_workers = 20
 
     alphazero = AlphaZeroParallel(
         game, 
@@ -96,5 +96,5 @@ if __name__ == '__main__':
     
     # Try to load existing checkpoint if any
     alphazero.load_checkpoint()
-    # alphazero.replay_buffer.clear()
+    alphazero.replay_buffer.clear()
     alphazero.learn()

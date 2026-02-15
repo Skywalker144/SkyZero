@@ -281,7 +281,6 @@ class PolicySurpriseWeighter:
                 self.total_kl_sum += kl
         
         stats = {
-            'enabled': True,
             'samples_before': len(game_data),
             'samples_after': len(weighted_data),
             'expansion_ratio': len(weighted_data) / max(1, len(game_data)),

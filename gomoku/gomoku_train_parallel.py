@@ -35,8 +35,8 @@ if __name__ == '__main__':
 
     args = {
         'mode': 'train',
-        'num_simulations': 600,
-        'fast_simulations': 100,
+        'num_simulations': 800,
+        'fast_simulations': 200,
         'full_search_prob': 0.25,
         'c_puct': 1.5,
         'root_temperature_init': 1.25,
@@ -48,7 +48,7 @@ if __name__ == '__main__':
 
         'buffer_size': 100000,
         'batch_size': 1024,
-        'min_buffer_size': 5000,
+        'min_buffer_size': 10000,
 
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,
