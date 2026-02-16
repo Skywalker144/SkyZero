@@ -235,7 +235,30 @@ def add_shaped_dirichlet_noise(policy_t, total_dirichlet_alpha=10.83, epsilon=0.
     nonzero_mask = policy_t > 0
     legal_count = np.sum(nonzero_mask)
 
-    alpha_weights = 0.5 * (1.0 / legal_count) + 0.5 * (policy_t[nonzero_mask])
+    if legal_count == 0:
+        return policy_t
+
+    # 1. 计算对数概率，并限制最大值为 0.01 防止极端值
+    # 添加 1e-20 防止 log(0)
+    log_probs = np.log(np.minimum(policy_t[nonzero_mask], 0.01) + 1e-20)
+    log_mean = np.mean(log_probs)
+
+    # 2. 减去均值并截断负值，得到形状
+    alpha_shape = np.maximum(log_probs - log_mean, 0.0)
+    alpha_shape_sum = np.sum(alpha_shape)
+
+    # 3. 计算混合分布：50% 均匀 + 50% 形状
+    uniform = 1.0 / legal_count
+    
+    alpha_weights = np.empty(legal_count)
+    if alpha_shape_sum > 1e-10:
+        # 归一化形状部分并混合
+        alpha_weights = 0.5 * (alpha_shape / alpha_shape_sum) + 0.5 * uniform
+    else:
+        # 如果形状部分全为0（例如所有概率都极小或相等），则退化为均匀分布
+        alpha_weights.fill(uniform)
+
+    # 4. 缩放到总 alpha
     alphas = alpha_weights * total_dirichlet_alpha
 
     noise = np.random.dirichlet(alphas)

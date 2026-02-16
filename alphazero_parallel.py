@@ -178,71 +178,101 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
         if start_barrier is not None:
             start_barrier.wait()
 
-        # Loop to play games continuously
-        while True:
-            # logic similar to AlphaZero.selfplay() but continuous
-            memory = []
-            to_play = 1
-            state = game.get_initial_state()
+            # Loop to play games continuously
+            while True:
+                # logic similar to AlphaZero.selfplay() but continuous
+                memory = []
+                to_play = 1
+                state = game.get_initial_state()
 
-            # Dynamic args fetching could be implemented here if needed
-            # For now we use static args passed at start
+                # Soft Resignation Logic
+                resign_threshold = args.get('resign_threshold', -0.95)
+                soft_resign_playout_prob = args.get('soft_resign_playout_prob', 0.1)
+                in_soft_resignation = False
 
-            def get_randomized_simulations(args):
-                """
-                Playout Cap Randomization: 二选一策略
-                返回 (num_simulations, for_train) 元组
-                """
-                base_simulations = args['num_simulations']
-                fast_simulations = args['fast_simulations']
-                full_search_prob = args.get('full_search_prob', 0.25)
+                # Dynamic args fetching could be implemented here if needed
+                # For now we use static args passed at start
 
-                for_train = np.random.random() < full_search_prob
-                num_simulations = base_simulations if for_train else fast_simulations
-                return num_simulations, for_train
+                def get_randomized_simulations(args):
+                    """
+                    Playout Cap Randomization: 二选一策略
+                    返回 (num_simulations, for_train) 元组
+                    """
+                    base_simulations = args['num_simulations']
+                    fast_simulations = args['fast_simulations']
+                    full_search_prob = args.get('full_search_prob', 0.25)
 
-            while not game.is_terminal(state):
-                num_simulations, for_train = get_randomized_simulations(local_args)
+                    for_train = np.random.random() < full_search_prob
+                    num_simulations = base_simulations if for_train else fast_simulations
+                    return num_simulations, for_train
 
-                action_probs, policy_prior = mcts.search(
-                    state, to_play, num_simulations, return_policy_prior=True
-                )
-                memory.append((state, action_probs, to_play, for_train, policy_prior))
+                while not game.is_terminal(state):
+                    num_simulations, for_train = get_randomized_simulations(local_args)
 
-                # if len(memory) >= local_args['zero_t_step']:
-                #     t = 0.1
-                # else:
-                #     t = local_args['temperature']
+                    if in_soft_resignation:
+                        num_simulations = local_args.get('fast_simulations', 50)
+                        for_train = True
+                        current_sample_weight = 0.01
+                    else:
+                        current_sample_weight = 1.0
 
-                current_step = np.count_nonzero(state[-1])
-                max_t = move_temperature_init
-                min_t = move_temperature_final
-                t = min_t + (max_t - min_t) * (0.5 ** (current_step / halflife))
+                    # Unpack 3 values (updated MCTS interface)
+                    action_probs, policy_prior, root_value = mcts.search(
+                        state, to_play, num_simulations, return_policy_prior=True
+                    )
 
-                action = np.random.choice(
-                    game.action_space_size,
-                    p=temperature_transform(action_probs, t)
-                )
-                state = game.get_next_state(state, action, to_play)
-                to_play = -to_play
+                    # Resignation Check
+                    if not in_soft_resignation and root_value < resign_threshold:
+                        if np.random.random() < soft_resign_playout_prob:
+                            in_soft_resignation = True
+                            current_sample_weight = 0.01
+                        else:
+                            # Resign
+                            break
 
-            final_state = state
-            winner = game.get_winner(final_state)
+                    memory.append((state, action_probs, to_play, for_train, policy_prior, current_sample_weight))
 
-            # Process memory
-            return_memory = []
-            for state, policy_target, to_play, for_train, policy_prior in memory:
-                outcome = winner * to_play
-                return_memory.append((
-                    game.encode_state(state, to_play),
-                    policy_target,
-                    outcome,
-                    for_train,  # 布尔值：是否用于训练 Policy
-                    policy_prior
-                ))
+                    # if len(memory) >= local_args['zero_t_step']:
+                    #     t = 0.1
+                    # else:
+                    #     t = local_args['temperature']
 
-            # Send result to main process
-            result_queue.put((return_memory, winner, final_state))
+                    current_step = np.count_nonzero(state[-1])
+                    max_t = move_temperature_init
+                    min_t = move_temperature_final
+                    t = min_t + (max_t - min_t) * (0.5 ** (current_step / halflife))
+
+                    action = np.random.choice(
+                        game.action_space_size,
+                        p=temperature_transform(action_probs, t)
+                    )
+                    state = game.get_next_state(state, action, to_play)
+                    to_play = -to_play
+
+                if game.is_terminal(state):
+                    final_state = state
+                    winner = game.get_winner(final_state)
+                else:
+                    # Resigned
+                    winner = -to_play
+                    final_state = state
+
+                # Process memory
+                return_memory = []
+                for state, policy_target, to_play, for_train, policy_prior, sample_weight in memory:
+                    outcome = winner * to_play
+                    return_memory.append((
+                        game.encode_state(state, to_play),
+                        policy_target,
+                        outcome,
+                        for_train,  # 布尔值：是否用于训练 Policy
+                        policy_prior,
+                        sample_weight
+                    ))
+
+                # Send result to main process
+                result_queue.put((return_memory, winner, final_state))
+
 
     except Exception as e:
         print(f"Worker {rank} failed: {e}")
@@ -276,7 +306,6 @@ class ParallelAlphaZero(AlphaZero):
         # Initialize Policy Surprise Weighting (PSW)
         self.psw = PolicySurpriseWeighter(
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
-            fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),
             min_weight=args.get('psw_min_weight', 0.01)
         )
 

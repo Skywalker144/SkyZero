@@ -31,7 +31,7 @@ if __name__ == '__main__':
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
     model = ResNet(game, num_blocks=2, num_channels=32).to('cuda')
-    optimizer = optim.AdamW(model.parameters(), lr=0.00001, weight_decay=1e-5)
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-5)
 
     args = {
         'mode': 'train',
@@ -46,20 +46,26 @@ if __name__ == '__main__':
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
-        'buffer_size': 5000,
-        'batch_size': 1024,
-        'min_buffer_size': 2000,
+        'buffer_size': 3000,
+        'batch_size': 128,
+        'min_buffer_size': 500,
 
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,
 
+        'forced_playouts': True,  # 启用强制搜索
         'forced_playout_coeff': 2.0,
+        'policy_target_pruning': True,  # 启用策略目标修剪
+        'noise_prune_utility_scale': 0.15,  # 噪声修剪的效用比例
+
         # 'Q_norm_bounds': [-1, 1],
         'Q_norm_bounds': None,
 
         'psw_baseline_ratio': 0.5,  # 均匀分配的权重比例
-        'psw_fast_kl_threshold': 2.0,  # fast search 的 KL 阈值
         'psw_min_weight': 0.01,  # 最小权重
+
+        'resign_threshold': -0.99,
+        'soft_resign_playout_prob': 0.3,
 
         'device': 'cuda',
         'savetime_interval': 180,
@@ -78,6 +84,6 @@ if __name__ == '__main__':
     alphazero = ParallelAlphaZero(game, model, optimizer, args, num_workers=num_workers)
 
     # Try to load existing checkpoint if any
-    alphazero.load_checkpoint()
+    # alphazero.load_checkpoint()
     # alphazero.replay_buffer.clear()
     alphazero.learn()

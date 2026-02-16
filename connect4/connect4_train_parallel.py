@@ -28,7 +28,7 @@ if __name__ == '__main__':
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
     model = ResNet(game, num_blocks=4, num_channels=64).to('cuda')
-    optimizer = optim.AdamW(model.parameters(), lr=0.0008, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
 
     args = {
         'mode': 'train',
@@ -50,14 +50,19 @@ if __name__ == '__main__':
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,
 
+        'forced_playouts': True,  # 启用强制搜索
         'forced_playout_coeff': 2.0,
+        'policy_target_pruning': True,  # 启用策略目标修剪
+        'noise_prune_utility_scale': 0.15,  # 噪声修剪的效用比例
 
         # 'Q_norm_bounds': [-1, 1],
         'Q_norm_bounds': None,
 
         'psw_baseline_ratio': 0.5,  # 均匀分配的权重比例
-        'psw_fast_kl_threshold': 2.0,  # fast search 的 KL 阈值
         'psw_min_weight': 0.01,  # 最小权重
+
+        'resign_threshold': -0.99,
+        'soft_resign_playout_prob': 0.3,
 
         'device': 'cuda',
         'savetime_interval': 7200,

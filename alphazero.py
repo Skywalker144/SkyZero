@@ -54,6 +54,7 @@ class Node:
         self.children = []
 
         self.v = 0
+        self.v_sq = 0
         self.n = 0
 
     def is_expanded(self):
@@ -61,7 +62,9 @@ class Node:
 
     def update(self, value):
         self.v += value
+        self.v_sq += value ** 2
         self.n += 1
+
 
 
 class MCTS:
@@ -73,6 +76,19 @@ class MCTS:
         self.minmax_state = MinMaxState(self.args['Q_norm_bounds'])
 
     def select(self, node):
+        # === KataGo-style Forced Playouts (Root Only) ===
+        # 如果是根节点，检查是否有子节点因为 policy prior 较高但访问量不足
+        # KataGo 使用 rootDesiredPerChildVisitsCoeff 来确保这一点
+        # 逻辑: if child.n < sqrt(coeff * prior * total_visits), force visit.
+        if node.parent is None and self.args.get('forced_playouts', False):
+            forced_playout_coeff = self.args.get('forced_playout_coeff', 2.0)
+            if forced_playout_coeff > 0 and node.n > 0:
+                for child in node.children:
+                    if child.prior > 0:
+                        target_visits = math.sqrt(forced_playout_coeff * child.prior * node.n)
+                        if child.n < target_visits:
+                            return child
+
         # PUCT = Q + U
         # Q = 归一化后的平均价值估计
         # U = c_puct * P * (sqrt(N) / (1 + n))
@@ -93,9 +109,40 @@ class MCTS:
             q_norm[~visited] = 0.5  # 未访问节点使用中间值
             q_values = q_norm
 
-        u_values = self.args['c_puct'] * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
+        # Dynamic Variance-Scaled cPUCT
+        c_puct = self.args['c_puct']
+        if self.args.get('use_dynamic_cpuct', True):
+            if node.n > 0:
+                # KataGo default parameters
+                stdev_prior = 0.40
+                stdev_prior_weight = 2.0
+                stdev_scale = 0.85
+
+                mean = node.v / node.n
+                sum_sq = node.v_sq
+                
+                # Calculate variance estimate mixing prior and observation
+                # Formula: sqrt( ( (mean^2 + prior^2)*prior_weight + sum_sq ) / (prior_weight + n - 1) - mean^2 )
+                # Note: Uses current mean as approximation for utilitySq in the update formula
+                var_prior_term = (mean**2 + stdev_prior**2) * stdev_prior_weight
+                weighted_avg_sq = (var_prior_term + sum_sq) / (stdev_prior_weight + node.n - 1.0)
+                
+                variance = max(0.0, weighted_avg_sq - mean**2)
+                stdev = math.sqrt(variance)
+                
+                # Scale factor
+                stdev_factor = 1.0 + stdev_scale * (stdev / stdev_prior - 1.0)
+                
+                # KataGo 不对 c_puct 设置硬下限，完全由方差比率控制
+                c_puct = c_puct * stdev_factor
+            else:
+                # Unvisited nodes use the base c_puct (factor=1.0 effectively)
+                pass
+
+        u_values = c_puct * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
 
         puct_scores = q_values + u_values
+
 
         best_child_idx = np.argmax(puct_scores)
         return node.children[best_child_idx]
@@ -173,107 +220,63 @@ class MCTS:
         for _ in range(num_simulations):
             self._run_simulation(root)
         
-        # 提取 policy prior (在 forced playouts 之前)
-        # 这是带有 Dirichlet 噪声的 root policy prior
+        # 提取 policy prior
         policy_prior = None
         if return_policy_prior:
             policy_prior = extract_policy_prior_from_root(root, self.game.action_space_size)
 
-        # === Forced Playouts ===
-        # KataGo 论文中的 Forced Playouts：对于先验概率足够高但访问次数不足的子节点，
-        # 强制给予一定访问量，确保有潜力的动作（不仅仅是噪声）得到充分评估。
-        # 每个子节点的最低强制访问次数 = ceil(sqrt(coeff * prior * total_visits))
-        if self.args.get('forced_playouts', False) and root.is_expanded():
-            forced_playout_coeff = self.args.get('forced_playout_coeff', 2.0)
-            if forced_playout_coeff > 0:
-                total_root_visits = root.n
-                for child in root.children:
-                    desired_visits = int(math.ceil(
-                        math.sqrt(forced_playout_coeff * child.prior * total_root_visits)
-                    ))
-                    
-                    # 限制强制搜索的最大次数，防止死循环或性能问题
-                    max_forced_steps = self.args.get('max_forced_steps', 1000)
-                    forced_steps = 0
-                    
-                    while child.n < desired_visits and forced_steps < max_forced_steps:
-                        forced_steps += 1
-                        node = child
-                        while node.is_expanded():
-                            node = self.select(node)
-                        if self.game.is_terminal(node.state):
-                            value = self.game.get_winner(node.state) * node.to_play
-                        else:
-                            value = self.expand(node)
-                        self.backpropagate(node, value)
-
-        # === Policy Target Pruning (回溯式 PUCT 权重修正) ===
-        # KataGo 论文的核心思想：生成 policy 训练目标时，不直接使用原始访问次数，
-        # 而是对每个非最优子节点进行"回溯修正"——计算如果没有强制访问，
-        # PUCT 公式 "本来会" 给它分配多少访问量，并将其权重降到该值。
-        #
-        # 这样做的效果：
-        # 1. 被强制访问膨胀的动作，其训练权重会被精确地降回"有机"水平
-        # 2. 纯噪声动作（PUCT 不会自然选择的）权重会变得极小或为零
-        # 3. 最优动作保持不变
+        # === Policy Target Pruning (Noise Pruning) ===
+        # KataGo "Prune Noise Weight" 方法:
+        # 如果一个节点的访问量(权重)远超其 Policy 比例，且 Utility 明显低于已处理节点(通常是更好节点)的平均值，
+        # 则按指数衰减其权重。这比回溯 PUCT 更稳健。
         action_probs = np.zeros(self.game.action_space_size)
 
         if self.args.get('policy_target_pruning', False) and root.is_expanded() and len(root.children) > 1:
-            c_puct = self.args['c_puct']
-            children = root.children
+            # 1. 按 Policy Prior 降序排序子节点 (KataGo 逻辑: "Children are normally sorted in policy order")
+            # 只有按 Policy 顺序处理，才能正确判断某个节点是否相对于"更好"的节点表现不佳
+            sorted_children = sorted(root.children, key=lambda c: c.prior, reverse=True)
             
-            # 提取数据
-            child_n = np.array([ch.n for ch in children])
-            child_v = np.array([ch.v for ch in children])
-            child_prior = np.array([ch.prior for ch in children])
-            # 使用 root.n 与 select() 中的 PUCT 公式保持一致
-            total_visits = root.n
-
-            # 计算 Q 值 (注意 select 中的负号逻辑: q = -v / n)
-            # 对已访问节点计算实际 Q 值，未访问节点使用中间值 0.5
-            visited = child_n > 0
-            safe_n = np.maximum(child_n, 1)
-            q_values = -child_v / safe_n
+            utility_sum = 0.0
+            weight_sum = 0.0
+            policy_sum = 0.0
             
-            # 归一化 Q 值 (使用 search 过程中维护的 minmax_state)
-            q_values_norm = np.empty_like(q_values)
-            q_values_norm[visited] = self.minmax_state.normalize(q_values[visited])
-            q_values_norm[~visited] = 0.5
-
-            # 找到最优子节点（访问量最多的）
-            best_idx = np.argmax(child_n)
-
-            # 计算最优子节点的 PUCT 值 (Q_norm + U)
-            best_u = (c_puct * child_prior[best_idx] * math.sqrt(total_visits) / (1 + child_n[best_idx]))
-            best_score = q_values_norm[best_idx] + best_u
-
-            # 对每个子节点计算修正后的权重
-            for i, child in enumerate(children):
-                if i == best_idx:
-                    # 最优子节点保持原始访问量
-                    action_probs[child.action_taken] = child_n[i]
-                else:
-                    # 回溯修正：求解 N_wanted
-                    # 我们希望: Q_norm_i + U_wanted = best_score
-                    # => U_wanted = best_score - Q_norm_i
+            pruning_scale = self.args.get('noise_prune_utility_scale', 0.15)
+            # pruning_cap = 1e50 # KataGo code implies a cap but effectively infinite
+            
+            for child in sorted_children:
+                if child.n > 0:
+                    # Utility relative to root player (root.to_play)
+                    # child.v is from child.to_play perspective (opponent)
+                    utility = -child.v / child.n
+                    weight = float(child.n)
+                    prior = child.prior
                     
-                    required_u = best_score - q_values_norm[i]
+                    new_weight = weight
                     
-                    # 如果 required_u <= 0，说明该节点 Q 值极高（甚至超过 best_score），
-                    # 此时不应通过 U 值来限制它，保留原访问量
-                    if required_u <= 1e-10:
-                        reduced = float(child_n[i])
-                    else:
-                        # U = c * P * sqrt(SumN) / (1 + N)
-                        # => N = c * P * sqrt(SumN) / U - 1
-                        wanted = (c_puct * child_prior[i] * math.sqrt(total_visits) / required_u - 1)
-                        wanted = max(0.0, wanted)
-                        reduced = min(float(child_n[i]), wanted)
+                    # 只有当我们已经积累了一些权重和 policy 时才进行修剪
+                    if weight_sum > 0 and policy_sum > 0:
+                        avg_utility = utility_sum / weight_sum
+                        utility_gap = avg_utility - utility
+                        
+                        # 只有当当前节点比之前的平均水平差时才考虑修剪
+                        if utility_gap > 0:
+                            # 计算基于 raw policy 应该有的权重份额
+                            weight_share = weight_sum * prior / policy_sum
+                            # 宽松界限 (2.0倍)，允许一定的自然波动
+                            lenient_share = 2.0 * weight_share
+                            
+                            if weight > lenient_share:
+                                excess = weight - lenient_share
+                                # 根据 utility gap 指数衰减多余的权重
+                                subtract = excess * (1.0 - math.exp(-utility_gap / pruning_scale))
+                                new_weight = max(0.0, weight - subtract)
                     
-                    # 论文：修正后只剩 <=1 playout 的子节点直接修剪为 0
-                    if reduced <= 1.0:
-                        reduced = 0.0
-                    action_probs[child.action_taken] = reduced
+                    # 更新统计量 (使用修剪后的权重)
+                    utility_sum += utility * new_weight
+                    weight_sum += new_weight
+                    policy_sum += prior
+                    
+                    action_probs[child.action_taken] = new_weight
         else:
             for child in root.children:
                 action_probs[child.action_taken] = child.n
@@ -283,8 +286,9 @@ class MCTS:
             action_probs /= action_probs_sum
         
         if return_policy_prior:
-            return action_probs, policy_prior
-        return action_probs
+            return action_probs, policy_prior, root.v / root.n
+        return action_probs, root.v / root.n
+
 
     def eval_search(self, state, to_play, num_simulations=None):
         root = Node(state, to_play)
@@ -330,7 +334,6 @@ class AlphaZero:
 
         self.psw = PolicySurpriseWeighter(
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
-            fast_search_kl_threshold=args.get('psw_fast_kl_threshold', 2.0),
             min_weight=args.get('psw_min_weight', 0.01)
         )
 
@@ -356,14 +359,50 @@ class AlphaZero:
         to_play = 1
         state = self.game.get_initial_state()
         
+        # Soft Resignation Logic
+        resign_threshold = self.args.get('resign_threshold', -0.95)
+        # Probability to play out the game in soft resignation mode (vs actual resignation)
+        soft_resign_playout_prob = self.args.get('soft_resign_playout_prob', 0.1)
+        in_soft_resignation = False
+        
         while not self.game.is_terminal(state):
 
             num_simulations, for_train = self._get_randomized_simulations()
 
-            action_probs, policy_prior = self.mcts.search(
+            if in_soft_resignation:
+                num_simulations = self.args.get('fast_simulations', 50)
+                # Ensure we capture this data for training but with low weight
+                for_train = True 
+                current_sample_weight = 0.01
+            else:
+                current_sample_weight = 1.0
+
+            action_probs, policy_prior, root_value = self.mcts.search(
                 state, to_play, num_simulations, return_policy_prior=True
             )
-            memory.append((state, action_probs, to_play, for_train, policy_prior))
+            
+            # Check for resignation condition
+            if not in_soft_resignation and root_value < resign_threshold:
+                if np.random.random() < soft_resign_playout_prob:
+                    in_soft_resignation = True
+                    # Update parameters for current step?
+                    # Too late for search, but applies to sample weight
+                    current_sample_weight = 0.01
+                else:
+                    # Actual resignation
+                    # We stop the game here. The winner is the opponent.
+                    # Since we are 'to_play' and resigning, opponent wins.
+                    # Opponent is -to_play.
+                    # So winner is -to_play.
+                    # We need to break loop and set winner manually.
+                    # But wait, final_state logic uses game.get_winner(final_state).
+                    # If we break here, final_state is current state (non-terminal).
+                    # get_winner might return 0 or invalid.
+                    # We should handle resignation outcome explicitly.
+                    # Let's set a flag `resigned = True`.
+                    break
+
+            memory.append((state, action_probs, to_play, for_train, policy_prior, current_sample_weight))
             
             # if len(memory) >= self.args['zero_t_step']:
             #     t = 0.1
@@ -382,13 +421,20 @@ class AlphaZero:
             state = self.game.get_next_state(state, action, to_play)
             to_play = -to_play
 
-        final_state = state
-        winner = self.game.get_winner(final_state)
-        
+        if self.game.is_terminal(state):
+            final_state = state
+            winner = self.game.get_winner(final_state)
+        else:
+            # Resigned
+            # The player 'to_play' resigned. So winner is -to_play.
+            # Wait, the loop breaks when 'to_play' realizes value < threshold.
+            winner = -to_play
+            final_state = state # Just for logging
+
         # 构建带 outcome 的数据
         raw_memory = []
         for item in memory:
-            state, policy_target, to_play, for_train, policy_prior = item
+            state, policy_target, to_play, for_train, policy_prior, sample_weight = item
             outcome = winner * to_play
             raw_memory.append((
                 self.game.encode_state(state, to_play),
@@ -396,7 +442,9 @@ class AlphaZero:
                 outcome,
                 for_train,  # 布尔值：是否用于训练 Policy
                 policy_prior,  # 保留 policy prior 用于 PSW 计算
+                sample_weight, # 样本权重
             ))
+
         
         # 应用 Policy Surprise Weighting
         # PSW 期望格式: (encoded_state, policy_target, outcome, for_train, policy_prior)
@@ -457,7 +505,7 @@ class AlphaZero:
 
         value_loss = F.mse_loss(value, value_targets)
 
-        loss = policy_loss + value_loss
+        loss = policy_loss + 0.6 * value_loss
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
