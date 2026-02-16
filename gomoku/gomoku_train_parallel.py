@@ -46,7 +46,7 @@ if __name__ == '__main__':
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
-        'buffer_size': 70000,
+        'buffer_size': 100000,
         'batch_size': 1024,
         'min_buffer_size': 10000,
 
