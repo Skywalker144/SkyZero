@@ -1,6 +1,12 @@
-*.pth
-/.stfolder/
+__pycache__/
+
+.pth
+
 .idea/
-*.xml
+.vscode/
+
+.DS_Store
 nul
-/KataGo-master
+
+/KataGo-master/
+/.stfolder/
