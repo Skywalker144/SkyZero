@@ -195,10 +195,9 @@ class GomokuGUI:
             messagebox.showinfo("Info", "Cannot undo further.")
 
     def restart_game(self):
-        if messagebox.askyesno("Restart", "Are you sure you want to restart?"):
-            self.init_game()
-            self.draw_board()
-            self.info_label.config(text="Black's Turn")
+        self.init_game()
+        self.draw_board()
+        self.info_label.config(text="Black's Turn")
 
 if __name__ == "__main__":
     root = tk.Tk()

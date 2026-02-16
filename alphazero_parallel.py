@@ -5,6 +5,7 @@ import time
 import queue
 import traceback
 import os
+import copy
 from collections import deque
 from alphazero import AlphaZero, MCTS, temperature_transform
 from policy_surprise_weighting import (
@@ -62,7 +63,7 @@ class RemoteModel:
         return torch.tensor(policy_np), torch.tensor(value_np)
 
 
-def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, response_pipes, command_queue, args, start_barrier=None):
+def gpu_worker(model_instance, model_state_dict, request_queue, response_pipes, command_queue, args, start_barrier=None):
     """
     The Server process that holds the GPU model and processes batches of requests.
     """
@@ -71,7 +72,8 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
         # print(f"GPU Worker started on {device}")
 
         # Initialize model
-        model = model_cls(**model_kwargs).to(device)
+        # model = model_cls(**model_kwargs).to(device)
+        model = model_instance.to(device)
         model.load_state_dict(model_state_dict)
         model.eval()
         print(f"GPU Worker: Model initialized and weights loaded on {device}")
@@ -89,7 +91,7 @@ def gpu_worker(model_cls, model_kwargs, model_state_dict, request_queue, respons
                 if cmd == 'UPDATE':
                     model.load_state_dict(data)
                     model.eval()
-                    # print("GPU Worker: Weights updated")
+                    print("GPU Worker: Weights updated")
                 elif cmd == 'STOP':
                     break
             except queue.Empty:
@@ -247,16 +249,14 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
         traceback.print_exc()
 
 
-class AlphaZeroParallel(AlphaZero):
-    def __init__(self, game, model, optimizer, args, model_cls=None, model_kwargs=None, num_workers=4):
+class ParallelAlphaZero(AlphaZero):
+    def __init__(self, game, model, optimizer, args, num_workers=4):
         # We don't initialize super() immediately completely because we manage MCTS differently
         # But we inherit utility methods
         self.game = game
         self.model = model
         self.optimizer = optimizer
         self.args = args
-        self.model_cls = model_cls
-        self.model_kwargs = model_kwargs
         self.num_workers = num_workers
 
         # Initialize other AlphaZero attributes
@@ -272,9 +272,6 @@ class AlphaZeroParallel(AlphaZero):
             window_size=buffer_size,
             board_size=game.board_size,
         )
-
-        if self.model_cls is None:
-            self.model_cls = type(model)
 
         # Initialize Policy Surprise Weighting (PSW)
         self.psw = PolicySurpriseWeighter(
@@ -373,11 +370,13 @@ class AlphaZeroParallel(AlphaZero):
         # Move state dict to CPU to avoid CUDA pickling issues during spawn
         cpu_state_dict = {k: v.cpu() for k, v in self.model.state_dict().items()}
 
+        # Create a CPU copy of the model structure to pass to worker
+        cpu_model_structure = copy.deepcopy(self.model).to('cpu')
+
         gpu_process = mp.Process(
             target=gpu_worker,
             args=(
-                self.model_cls,
-                self.model_kwargs,
+                cpu_model_structure,
                 cpu_state_dict,
                 self.request_queue,
                 server_pipes,
@@ -409,8 +408,15 @@ class AlphaZeroParallel(AlphaZero):
             p.start()
             worker_processes.append(p)
 
+        # Force initial weight update to ensure synchronization
+        # This fixes the issue where GPU worker might use old weights after checkpoint load
+        print("Sending initial weights to GPU Worker...")
+        cpu_state = {k: v.cpu() for k, v in self.model.state_dict().items()}
+        self.command_queue.put(('UPDATE', cpu_state))
+
         # Wait for all workers to be ready
         print("Waiting for all workers to be ready...")
+
         start_barrier.wait()
         print("All workers ready, starting self-play!")
 

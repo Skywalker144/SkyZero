@@ -59,6 +59,7 @@ if __name__ == '__main__':
     
     color = 1  # 当前落子方
     state = game.get_initial_state()
+    history = []
     print("\n初始棋盘:")
     print_board(state)
     
@@ -70,16 +71,30 @@ if __name__ == '__main__':
             # 人类玩家
             while True:
                 try:
-                    move = input(f"你的回合 (可选列: {legal_cols}): ")
+                    move = input(f"你的回合 (可选列: {legal_cols}, 输入 'undo' 悔棋): ")
+                    if move.lower() == 'undo':
+                        if len(history) >= 2:
+                            state = history[-2]
+                            history = history[:-2]
+                            print("悔棋成功，回退两步...")
+                            print_board(state)
+                            legal_actions = game.get_is_legal_actions(state)
+                            legal_cols = [i for i in range(game.board_width) if legal_actions[i]]
+                            continue
+                        else:
+                            print("无法悔棋！")
+                            continue
+                    
                     col = int(move.strip())
                     if col in legal_cols:
                         break
                     else:
                         print(f"无效列号，请选择: {legal_cols}")
                 except ValueError:
-                    print("请输入有效的列号(0-6)")
+                    print("请输入有效的列号(0-6)或 'undo'")
             
             action = col
+            history.append(state.copy())
             state = game.get_next_state(state, action, color)
             print(f"\n你落子在第 {col} 列")
             
@@ -87,6 +102,7 @@ if __name__ == '__main__':
             # AI玩家
             print(f'AI思考中...')
             action, info = alphazero.play(state, color)
+            history.append(state.copy())
             state = game.get_next_state(state, action, color)
             
             action_probs = info['action_probs']

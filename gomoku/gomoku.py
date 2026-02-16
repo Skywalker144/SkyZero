@@ -1,412 +1,639 @@
-from copy import deepcopy
 
 import numpy as np
-import tkinter as tk
-from tkinter import messagebox
+from copy import deepcopy
+
+C_EMPTY = 0
+C_BLACK = 1
+C_WHITE = 2
+C_WALL = 3
+
+BLACKFIVE = 24
+WHITEFIVE = 25
+BLACKFORBIDDEN = 26
+
+class Rules:
+    BASICRULE_FREESTYLE = 0
+    BASICRULE_STANDARD = 1
+    BASICRULE_RENJU = 2
+    
+    def __init__(self):
+        self.basicRule = self.BASICRULE_RENJU
+        self.maxMoves = 0
+        self.VCNRule = 0
+        self.firstPassWin = False
+
+class ForbiddenPointFinder:
+    def __init__(self, size=15):
+        self.f_boardsize = size
+        self.cBoard = [[C_WALL] * (size + 2) for _ in range(size + 2)]
+        self.Clear()
+
+    def Clear(self):
+        for i in range(self.f_boardsize + 2):
+            self.cBoard[0][i] = C_WALL
+            self.cBoard[self.f_boardsize + 1][i] = C_WALL
+            self.cBoard[i][0] = C_WALL
+            self.cBoard[i][self.f_boardsize + 1] = C_WALL
+        
+        for i in range(1, self.f_boardsize + 1):
+            for j in range(1, self.f_boardsize + 1):
+                self.cBoard[i][j] = C_EMPTY
+
+    def SetStone(self, x, y, cStone):
+        self.cBoard[x + 1][y + 1] = cStone
+
+    def AddStone(self, x, y, cStone):
+        nResult = -1
+        if cStone == C_BLACK:
+            if self.IsFive(x, y, C_BLACK):
+                nResult = BLACKFIVE
+            elif self.isForbidden(x, y):
+                nResult = BLACKFORBIDDEN
+        elif cStone == C_WHITE:
+            if self.IsFive(x, y, C_WHITE):
+                nResult = WHITEFIVE
+        
+        self.SetStone(x, y, cStone)
+        return nResult
+
+    def IsFive(self, x, y, nColor, nDir=None):
+        if self.cBoard[x + 1][y + 1] != C_EMPTY:
+            return False
+
+        if nDir is None:
+            self.SetStone(x, y, nColor)
+            found = False
+            for d in range(1, 5):
+                length = self._check_line_length(x, y, nColor, d)
+                if nColor == C_BLACK:
+                    if length == 5:
+                        found = True
+                        break
+                else:
+                    if length >= 5:
+                        found = True
+                        break
+            self.SetStone(x, y, C_EMPTY)
+            return found
+
+        self.SetStone(x, y, nColor)
+        length = self._check_line_length(x, y, nColor, nDir)
+        self.SetStone(x, y, C_EMPTY)
+        
+        if nColor == C_BLACK:
+            return length == 5
+        else:
+            return length >= 5
+
+    def _check_line_length(self, x, y, nColor, nDir):
+        dx, dy = self._get_dir(nDir)
+        length = 1
+        
+        # Positive direction
+        i, j = x + dx, y + dy
+        while 0 <= i < self.f_boardsize and 0 <= j < self.f_boardsize:
+            if self.cBoard[i + 1][j + 1] == nColor:
+                length += 1
+                i += dx
+                j += dy
+            else:
+                break
+        
+        # Negative direction
+        i, j = x - dx, y - dy
+        while 0 <= i < self.f_boardsize and 0 <= j < self.f_boardsize:
+            if self.cBoard[i + 1][j + 1] == nColor:
+                length += 1
+                i -= dx
+                j -= dy
+            else:
+                break
+        return length
+
+    def _get_dir(self, nDir):
+        if nDir == 1: return (1, 0) # Horizontal
+        if nDir == 2: return (0, 1) # Vertical
+        if nDir == 3: return (1, 1) # Diagonal /
+        if nDir == 4: return (1, -1) # Diagonal \
+        return (0, 0)
+
+    def IsOverline(self, x, y):
+        if self.cBoard[x + 1][y + 1] != C_EMPTY:
+            return False
+        
+        self.SetStone(x, y, C_BLACK)
+        bOverline = False
+        for d in range(1, 5):
+            length = self._check_line_length(x, y, C_BLACK, d)
+            if length == 5:
+                self.SetStone(x, y, C_EMPTY)
+                return False
+            elif length >= 6:
+                bOverline = True
+        self.SetStone(x, y, C_EMPTY)
+        return bOverline
+
+    def IsFour(self, x, y, nColor, nDir):
+        if self.cBoard[x + 1][y + 1] != C_EMPTY: 
+            return False
+        if self.IsFive(x, y, nColor): 
+            return False
+        if nColor == C_BLACK and self.IsOverline(x, y): 
+            return False
+            
+        self.SetStone(x, y, nColor)
+        dx, dy = self._get_dir(nDir)
+        
+        found = False
+        for sign in [1, -1]:
+            curr_dx, curr_dy = dx * sign, dy * sign
+            i, j = x + curr_dx, y + curr_dy
+            while 0 <= i < self.f_boardsize and 0 <= j < self.f_boardsize:
+                c = self.cBoard[i + 1][j + 1]
+                if c == nColor:
+                    i += curr_dx
+                    j += curr_dy
+                elif c == C_EMPTY:
+                    if self.IsFive(i, j, nColor, nDir):
+                        found = True
+                    break
+                else:
+                    break
+            if found: break
+            
+        self.SetStone(x, y, C_EMPTY)
+        return found
+
+    def IsOpenFour(self, x, y, nColor, nDir):
+        if self.cBoard[x + 1][y + 1] != C_EMPTY: 
+            return 0
+        if self.IsFive(x, y, nColor): 
+            return 0
+        if nColor == C_BLACK and self.IsOverline(x, y): 
+            return 0
+            
+        self.SetStone(x, y, nColor)
+        dx, dy = self._get_dir(nDir)
+        nLine = 1
+        
+        # Check negative direction
+        i, j = x - dx, y - dy
+        while True:
+            if not (0 <= i < self.f_boardsize and 0 <= j < self.f_boardsize):
+                self.SetStone(x, y, C_EMPTY)
+                return 0
+            c = self.cBoard[i + 1][j + 1]
+            if c == nColor:
+                nLine += 1
+                i -= dx
+                j -= dy
+            elif c == C_EMPTY:
+                if not self.IsFive(i, j, nColor, nDir):
+                    self.SetStone(x, y, C_EMPTY)
+                    return 0
+                break
+            else: # Wall or opponent
+                self.SetStone(x, y, C_EMPTY)
+                return 0
+        
+        # Check positive direction
+        i, j = x + dx, y + dy
+        while True:
+            if not (0 <= i < self.f_boardsize and 0 <= j < self.f_boardsize):
+                break # Hit wall
+            c = self.cBoard[i + 1][j + 1]
+            if c == nColor:
+                nLine += 1
+                i += dx
+                j += dy
+            elif c == C_EMPTY:
+                if self.IsFive(i, j, nColor, nDir):
+                    self.SetStone(x, y, C_EMPTY)
+                    return 1 if nLine == 4 else 2
+                break
+            else:
+                break
+            
+        self.SetStone(x, y, C_EMPTY)
+        return 0
+
+    def IsDoubleFour(self, x, y):
+        if self.cBoard[x + 1][y + 1] != C_EMPTY: 
+            return False
+        if self.IsFive(x, y, C_BLACK): 
+            return False
+        
+        nFour = 0
+        for d in range(1, 5):
+            ret = self.IsOpenFour(x, y, C_BLACK, d)
+            if ret == 2:
+                nFour += 2
+            elif self.IsFour(x, y, C_BLACK, d):
+                nFour += 1
+                
+        return nFour >= 2
+
+    def IsOpenThree(self, x, y, nColor, nDir):
+        if self.IsFive(x, y, nColor): 
+            return False
+        if nColor == C_BLACK and self.IsOverline(x, y): 
+            return False
+            
+        self.SetStone(x, y, nColor)
+        dx, dy = self._get_dir(nDir)
+        
+        found = False
+        for sign in [1, -1]:
+            curr_dx, curr_dy = dx * sign, dy * sign
+            i, j = x + curr_dx, y + curr_dy
+            while 0 <= i < self.f_boardsize and 0 <= j < self.f_boardsize:
+                c = self.cBoard[i + 1][j + 1]
+                if c == nColor:
+                    i += curr_dx
+                    j += curr_dy
+                elif c == C_EMPTY:
+                    # Check if placing at (i, j) makes an open four that is not a double three/four forbidden point
+                    if self.IsOpenFour(i, j, nColor, nDir) == 1:
+                        if nColor == C_BLACK:
+                            if not self.IsDoubleFour(i, j) and not self.IsDoubleThree(i, j):
+                                found = True
+                        else:
+                            found = True
+                    break
+                else:
+                    break
+            if found: break
+            
+        self.SetStone(x, y, C_EMPTY)
+        return found
+
+    def IsDoubleThree(self, x, y):
+        if self.cBoard[x + 1][y + 1] != C_EMPTY: 
+            return False
+        if self.IsFive(x, y, C_BLACK): 
+            return False
+            
+        nThree = 0
+        for d in range(1, 5):
+            if self.IsOpenThree(x, y, C_BLACK, d):
+                nThree += 1
+                
+        return nThree >= 2
+
+    def isForbidden(self, x, y):
+        if self.cBoard[x + 1][y + 1] != C_EMPTY: 
+            return False
+        
+        nearbyBlack = 0
+        # Check nearby stones to optimize
+        for i in range(max(0, x - 2), min(self.f_boardsize - 1, x + 2) + 1):
+            for j in range(max(0, y - 2), min(self.f_boardsize - 1, y + 2) + 1):
+                if i == x and j == y: continue
+                if self.cBoard[i + 1][j + 1] == C_BLACK:
+                    xd, yd = abs(i - x), abs(j - y)
+                    if (xd + yd) != 3: # Exclude knight's move points as in C++
+                        nearbyBlack += 1
+                        
+        if nearbyBlack < 2: return False
+        return self.isForbiddenNoNearbyCheck(x, y)
+
+    def isForbiddenNoNearbyCheck(self, x, y):
+        if self.IsDoubleThree(x, y) or self.IsDoubleFour(x, y) or self.IsOverline(x, y):
+            return True
+        return False
+
+
+class Board:
+    def __init__(self, size=15):
+        self.x_size = size
+        self.y_size = size
+        self.colors = [C_EMPTY] * (size * size)
+        self.movenum = 0
+        self.blackPassNum = 0
+        self.whitePassNum = 0
+    
+    def isOnBoard(self, loc):
+        return 0 <= loc < self.x_size * self.y_size
+    
+    def isLegal(self, loc, pla):
+        if not self.isOnBoard(loc): return False
+        if self.colors[loc] != C_EMPTY: return False
+        return True
+    
+    def get_xy(self, loc):
+        return loc % self.x_size, loc // self.x_size
+        
+    def get_loc(self, x, y):
+        return y * self.x_size + x
+
+    def isForbidden(self, loc):
+        x, y = self.get_xy(loc)
+        fpf = ForbiddenPointFinder(self.x_size)
+        for i in range(self.x_size * self.y_size):
+            cx, cy = self.get_xy(i)
+            # Ensure we don't count the stone at 'loc' for the forbidden check
+            if i == loc:
+                fpf.SetStone(cx, cy, C_EMPTY)
+            else:
+                fpf.SetStone(cx, cy, self.colors[i])
+        return fpf.isForbidden(x, y)
+
+class GameLogic:
+    MP_ILLEGAL = -1
+    MP_NORMAL = 0
+    MP_MYLIFEFOUR = 1
+    MP_OPPOFOUR = 2
+    MP_FIVE = 3
+    MP_SUDDEN_WIN = 4
+    MP_WINNING = 5
+    MP_ONLY_NONLOSE_MOVES = 6
+    
+    @staticmethod
+    def getOpp(pla):
+        return C_WHITE if pla == C_BLACK else C_BLACK
+
+    @staticmethod
+    def connectionLengthOneDirection(board, pla, isSixWin, loc, adj):
+        tmploc = loc
+        conNum = 0
+        isLife = False
+        
+        while True:
+            tmploc += adj
+            if not board.isOnBoard(tmploc): break
+            if board.colors[tmploc] == pla:
+                conNum += 1
+            elif board.colors[tmploc] == C_EMPTY:
+                isLife = True
+                if not isSixWin:
+                    tmploc2 = tmploc + adj
+                    if board.isOnBoard(tmploc2) and board.colors[tmploc2] == pla:
+                        isLife = False
+                break
+            else:
+                break
+        return conNum, isLife
+
+    @staticmethod
+    def getMovePriorityOneDirection(board, rules, pla, loc, adj):
+        opp = GameLogic.getOpp(pla)
+        isSixWinMe = (rules.basicRule == Rules.BASICRULE_FREESTYLE or 
+                      (rules.basicRule == Rules.BASICRULE_RENJU and pla == C_WHITE))
+        isSixWinOpp = (rules.basicRule == Rules.BASICRULE_FREESTYLE or 
+                       (rules.basicRule == Rules.BASICRULE_RENJU and pla == C_BLACK))
+        
+        myConNum1, myLife1 = GameLogic.connectionLengthOneDirection(board, pla, isSixWinMe, loc, adj)
+        myConNum2, myLife2 = GameLogic.connectionLengthOneDirection(board, pla, isSixWinMe, loc, -adj)
+        myConNum = myConNum1 + myConNum2 + 1
+        
+        oppConNum1, oppLife1 = GameLogic.connectionLengthOneDirection(board, opp, isSixWinOpp, loc, adj)
+        oppConNum2, oppLife2 = GameLogic.connectionLengthOneDirection(board, opp, isSixWinOpp, loc, -adj)
+        oppConNum = oppConNum1 + oppConNum2 + 1
+        
+        if myConNum == 5 or (myConNum > 5 and isSixWinMe):
+            return GameLogic.MP_SUDDEN_WIN
+        if oppConNum == 5 or (oppConNum > 5 and isSixWinOpp):
+            return GameLogic.MP_ONLY_NONLOSE_MOVES
+        if myConNum == 4 and myLife1 and myLife2:
+            return GameLogic.MP_WINNING
+        return GameLogic.MP_NORMAL
+
+    @staticmethod
+    def getMovePriorityAssumeLegal(board, rules, pla, loc):
+        adjs = [1, board.x_size, board.x_size + 1, board.x_size - 1]
+        mp = GameLogic.MP_NORMAL
+        for adj in adjs:
+            tmpMP = GameLogic.getMovePriorityOneDirection(board, rules, pla, loc, adj)
+            if tmpMP > mp: # Higher priority is better
+                mp = tmpMP
+        return mp
+
+    @staticmethod
+    def checkWinnerAfterPlayed(board, rules, pla, loc):
+        if loc == -1: return C_EMPTY
+        
+        if rules.basicRule == Rules.BASICRULE_RENJU and pla == C_BLACK:
+            if board.isForbidden(loc):
+                return GameLogic.getOpp(pla)
+        
+        isSixWinMe = (rules.basicRule == Rules.BASICRULE_FREESTYLE or 
+                      (rules.basicRule == Rules.BASICRULE_RENJU and pla == C_WHITE))
+
+        adjs = [1, board.x_size, board.x_size + 1, board.x_size - 1]
+        for adj in adjs:
+            conNum1, _ = GameLogic.connectionLengthOneDirection(board, pla, isSixWinMe, loc, adj)
+            conNum2, _ = GameLogic.connectionLengthOneDirection(board, pla, isSixWinMe, loc, -adj)
+            total = conNum1 + conNum2 + 1
+            if total == 5 or (total > 5 and isSixWinMe):
+                return pla
+        return C_EMPTY
 
 
 class Gomoku:
-    def __init__(self, board_size=15, history_step=4):  # history_board * (8 - 1) and action_board
-        self.board = np.zeros((history_step, board_size, board_size))
+    def __init__(self, history_step=3, board_size=15, use_renju=True):
         self.board_size = board_size
         self.board_height = board_size
         self.board_width = board_size
         self.action_space_size = board_size * board_size
         self.history_step = history_step
-        # self.num_planes = 2 * history_step
         self.num_planes = 2 * history_step + 1
+        self.use_renju = use_renju
+        self._fpf = ForbiddenPointFinder(board_size)
 
     def get_initial_state(self):
-        return np.zeros((self.history_step, self.board_size, self.board_size))
+        return np.zeros((self.history_step, self.board_height, self.board_width), dtype=np.int8)
 
-    @staticmethod
-    def get_is_legal_actions(board):
-        # board is history stack: (history_step, board_size, board_size)
-        current_board = board[-1]
-        is_legal = (current_board == 0)
+    def get_is_legal_actions(self, state):
+        current_board = state[-1]
+        legal_mask = (current_board.flatten() == 0)
         
-        # Determine current player (Black=1, White=-1)
-        # Assumes Black plays first (when board is empty, sum is 0, so Black's turn)
-        # If sum != 0, we need to count stones.
-        # Black always +1, White -1. Sum = 0 (equal turns) or 1 (Black played).
-        # Wait, if Black=1, White=-1.
-        # 1 stone (Black) -> Sum=1. Next is White.
-        # 2 stones (B, W) -> Sum=0. Next is Black.
-        # So if Sum == 0 -> Black (1). If Sum == 1 -> White (-1).
-        # Actually it's safer to count non-zeros.
+        # Determine current player based on stone count
+        # Black (1) plays first. If counts are equal, it's Black's turn.
+        black_count = np.sum(current_board == 1)
+        white_count = np.sum(current_board == -1)
+        to_play = 1 if black_count == white_count else -1
         
-        stone_count = np.sum(current_board != 0)
-        to_play = 1 if stone_count % 2 == 0 else -1
-        
-        # If it's White's turn (-1), no forbidden moves. Return simple check.
-        if to_play == -1:
-            return is_legal.flatten()
+
+
+
+        # In Renju, only Black (1) has forbidden moves
+        if self.use_renju and to_play == 1:
+            self._fpf.Clear()
+            # Populate FPF board (convert 1/-1 to 1/2)
+            rows, cols = np.where(current_board != 0)
+            for r, c in zip(rows, cols):
+                val = current_board[r, c]
+                stone = C_BLACK if val == 1 else C_WHITE
+                self._fpf.SetStone(r, c, stone)
             
-        # If it's Black's turn (1), mask forbidden moves.
-        # Iterate over all currently legal moves (empty spots)
-        legal_indices = np.argwhere(is_legal)
-        
-        # We need a copy of the board to simulate moves?
-        # Or just pass the board and the move coordinates to a helper that doesn't modify it permanently.
-        # _check_forbidden expects a 2D board (int/float).
-        
-        # Create a working copy of the board
-        work_board = current_board.copy()
-        
-        rows, cols = current_board.shape
-        # Result mask
-        final_legal = is_legal.copy()
-        
-        for idx in legal_indices:
-            r, c = idx[0], idx[1]
-            if Gomoku._check_forbidden(work_board, r, c):
-                final_legal[r, c] = False
-                
-        return final_legal.flatten()
+            # Check forbidden moves for all empty spots
+            # Optimizing: only check indices that are currently legal (empty)
+            indices = np.where(legal_mask)[0]
+            for idx in indices:
+                r, c = idx // self.board_size, idx % self.board_size
+                if self._fpf.isForbidden(r, c):
+                    legal_mask[idx] = False
 
-    @staticmethod
-    def _get_line(board, x, y, dx, dy, radius=6):
-        rows, cols = board.shape
-        values = []
-        BOUNDARY = 2 # Treat boundary as opponent for pattern matching logic if needed
-        
-        # Range -radius to +radius
-        for k in range(-radius, radius + 1):
-            r, c = x + k*dx, y + k*dy
-            if k == 0:
-                center_idx = len(values)
-            
-            if 0 <= r < rows and 0 <= c < cols:
-                values.append(board[r, c])
-            else:
-                values.append(BOUNDARY)
-        return values, center_idx
+                    
+        return legal_mask
 
-    @staticmethod
-    def _is_five_check(board, x, y):
-        rows, cols = board.shape
-        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
-        BLACK = 1
+    def get_next_state(self, state, action, to_play):
+        state = state.copy()
+        current_board = state[-1].copy()
         
-        for dx, dy in directions:
-            count = 1
-            r, c = x + dx, y + dy
-            while 0 <= r < rows and 0 <= c < cols and board[r, c] == BLACK:
-                count += 1
-                r += dx
-                c += dy
-            r, c = x - dx, y - dy
-            while 0 <= r < rows and 0 <= c < cols and board[r, c] == BLACK:
-                count += 1
-                r -= dx
-                c -= dy
-            if count == 5:
-                return True
-        return False
+        row = action // self.board_size
+        col = action % self.board_size
+        
+        current_board[row, col] = to_play
+        
+        state[:-1] = state[1:]
+        state[-1] = current_board
+        
+        return state
 
-    @staticmethod
-    def _is_overline(board, x, y):
-        rows, cols = board.shape
-        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
-        BLACK = 1
-        
-        for dx, dy in directions:
-            count = 1
-            r, c = x + dx, y + dy
-            while 0 <= r < rows and 0 <= c < cols and board[r, c] == BLACK:
-                count += 1
-                r += dx
-                c += dy
-            r, c = x - dx, y - dy
-            while 0 <= r < rows and 0 <= c < cols and board[r, c] == BLACK:
-                count += 1
-                r -= dx
-                c -= dy
-            if count > 5:
-                return True
-        return False
+    def get_winner(self, state):
+        current_board = state[-1]
+        size = self.board_size
 
-    @staticmethod
-    def _count_fours(board, x, y):
-        # Counts "Fours" created by placing Black at (x,y)
-        # A Four is a threat to win (become 5).
-        rows, cols = board.shape
-        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
-        total_fours = 0
-        BLACK = 1
-        EMPTY = 0
-        
-        for dx, dy in directions:
-            line, center = Gomoku._get_line(board, x, y, dx, dy, radius=9)
-            threats_in_line = set()
-            
-            # Iterate windows of length 5
-            for i in range(len(line) - 4):
-                if not (i <= center < i + 5):
-                    continue
-                
-                window = line[i : i+5]
-                black_count = 0
-                empty_count = 0
-                empty_idx = -1
-                boundary = False
-                
+        # Check horizontal
+        for r in range(size):
+            for c in range(size - 4):
+                window = current_board[r, c:c+5]
+                s = np.sum(window)
+                if abs(s) == 5:
+                    return 1 if s > 0 else -1
+
+        # Check vertical
+        for r in range(size - 4):
+            for c in range(size):
+                window = current_board[r:r+5, c]
+                s = np.sum(window)
+                if abs(s) == 5:
+                    return 1 if s > 0 else -1
+
+        # Check diagonal \
+        for r in range(size - 4):
+            for c in range(size - 4):
+                s = 0
                 for k in range(5):
-                    val = window[k]
-                    if val == BLACK:
-                        black_count += 1
-                    elif val == EMPTY:
-                        empty_count += 1
-                        empty_idx = k
-                    else: # White or Boundary
-                        boundary = True
-                        break
-                
-                if boundary:
-                    continue
-                    
-                if black_count == 4 and empty_count == 1:
-                    # Check if filling the empty spot creates Overline (invalid 5)
-                    # We need to simulate filling it in the line
-                    global_empty_idx = i + empty_idx
-                    
-                    # Quick check in the extracted line
-                    temp_line = list(line)
-                    temp_line[global_empty_idx] = BLACK
-                    
-                    # Count consecutive blacks at global_empty_idx
-                    c_idx = global_empty_idx
-                    l = c_idx
-                    while l >= 0 and temp_line[l] == BLACK:
-                        l -= 1
-                    r = c_idx
-                    while r < len(temp_line) and temp_line[r] == BLACK:
-                        r += 1
-                    
-                    consecutive = (r - 1) - (l + 1) + 1
-                    
-                    if consecutive == 5:
-                        threats_in_line.add(global_empty_idx)
-            
-            if len(threats_in_line) > 0:
-                total_fours += 1
-        return total_fours
+                    s += current_board[r+k, c+k]
+                if abs(s) == 5:
+                    return 1 if s > 0 else -1
 
-    @staticmethod
-    def _count_open_threes(board, x, y):
-        rows, cols = board.shape
-        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
-        total_open_threes = 0
-        BLACK = 1
-        EMPTY = 0
+        # Check diagonal /
+        for r in range(size - 4):
+            for c in range(4, size):
+                s = 0
+                for k in range(5):
+                    s += current_board[r+k, c-k]
+                if abs(s) == 5:
+                    return 1 if s > 0 else -1
         
-        for dx, dy in directions:
-            # Need larger radius to check for overlines when validating the "Open" status
-            line, center = Gomoku._get_line(board, x, y, dx, dy, radius=9)
-            found = False
-            
-            # Iterate windows of length 6
-            # Looking for pattern that can become 011110 (Open Four)
-            # Core 111 (or 1011 etc) must be able to become 1111.
-            for i in range(len(line) - 5):
-                if not (i <= center < i + 6):
-                    continue
-                
-                window = line[i : i+6]
-                
-                # Ends must be empty
-                if window[0] != EMPTY or window[5] != EMPTY:
-                    continue
-                
-                core = window[1:5]
-                b_count = 0
-                e_count = 0
-                empty_core_idx = -1
-                
-                for k in range(4):
-                    val = core[k]
-                    if val == BLACK:
-                        b_count += 1
-                    elif val == EMPTY:
-                        e_count += 1
-                        empty_core_idx = k
-                
-                if b_count == 3 and e_count == 1:
-                    # We found a candidate "Open Three" pattern: 0 [B B B .] 0
-                    # But it is only a TRUE Open Three if playing at the empty spot
-                    # creates a LIVE Four (011110).
-                    # A Live Four implies that BOTH ends (window[0] and window[5])
-                    # are valid winning spots (i.e., make 5, not Overline).
-                    
-                    # 1. Simulate playing at the core empty spot to make it a Four
-                    # empty_core_idx is relative to core start (which is window[1])
-                    # Global index in 'line':
-                    fill_idx = i + 1 + empty_core_idx
-                    
-                    # Check if this forms a Live Four
-                    # Left winning spot: i
-                    # Right winning spot: i + 5
-                    
-                    # We need to check if filling 'i' creates exactly 5 (valid win)
-                    # AND filling 'i+5' creates exactly 5 (valid win).
-                    # This must be done assuming 'fill_idx' is ALREADY filled with BLACK.
-                    
-                    temp_line = list(line)
-                    temp_line[fill_idx] = BLACK
-                    
-                    # Check Left End (i)
-                    # Place BLACK at i
-                    l_check = list(temp_line)
-                    l_check[i] = BLACK
-                    
-                    # Count consecutive at i
-                    c_idx = i
-                    l = c_idx
-                    while l >= 0 and l_check[l] == BLACK:
-                        l -= 1
-                    r = c_idx
-                    while r < len(l_check) and l_check[r] == BLACK:
-                        r += 1
-                    len_left = (r - 1) - (l + 1) + 1
-                    
-                    # Check Right End (i+5)
-                    # Place BLACK at i+5
-                    r_check = list(temp_line)
-                    r_check[i+5] = BLACK
-                    
-                    # Count consecutive at i+5
-                    c_idx = i+5
-                    l = c_idx
-                    while l >= 0 and r_check[l] == BLACK:
-                        l -= 1
-                    r = c_idx
-                    while r < len(r_check) and r_check[r] == BLACK:
-                        r += 1
-                    len_right = (r - 1) - (l + 1) + 1
-                    
-                    if len_left == 5 and len_right == 5:
-                        found = True
-                        break
-            
-            if found:
-                total_open_threes += 1
-        return total_open_threes
-
-    @staticmethod
-    def _check_forbidden(board, x, y):
-        # board is a 2D array. (x,y) is the move.
-        # Returns True if forbidden.
-        BLACK = 1
-        EMPTY = 0
-        
-        # Place tentatively
-        board[x, y] = BLACK
-        
-        # 1. Win (5) -> Valid (takes precedence over forbidden)
-        if Gomoku._is_five_check(board, x, y):
-            board[x, y] = EMPTY
-            return False
-            
-        # 2. Overline -> Forbidden
-        if Gomoku._is_overline(board, x, y):
-            board[x, y] = EMPTY
-            return True
-            
-        # 3. Double Four -> Forbidden
-        if Gomoku._count_fours(board, x, y) >= 2:
-            board[x, y] = EMPTY
-            return True
-            
-        # 4. Double Three -> Forbidden
-        if Gomoku._count_open_threes(board, x, y) >= 2:
-            board[x, y] = EMPTY
-            return True
-            
-        board[x, y] = EMPTY
-        return False
-
-    def get_next_state(self, board, action, to_play):
-        board = board.copy()
-
-        current_board = board[-1].copy()
-        x = action // self.board_size
-        y = action % self.board_size
-        current_board[x, y] = to_play
-
-        board[:-1] = board[1:]
-        board[-1] = current_board
-
-        return board
-
-    @staticmethod
-    def _count_consecutive(board_2d, r, c, dr, dc):
-        """沿 (dr,dc) 方向计算从 (r,c) 开始的最大连续同色棋子数（包含自身）"""
-        rows, cols = board_2d.shape
-        player = board_2d[r, c]
-        count = 1
-        # 正方向
-        nr, nc = r + dr, c + dc
-        while 0 <= nr < rows and 0 <= nc < cols and board_2d[nr, nc] == player:
-            count += 1
-            nr += dr
-            nc += dc
-        # 反方向
-        nr, nc = r - dr, c - dc
-        while 0 <= nr < rows and 0 <= nc < cols and board_2d[nr, nc] == player:
-            count += 1
-            nr -= dr
-            nc -= dc
-        return count
-
-    @staticmethod
-    def get_winner(board):
-        current = board[-1]
-        rows, cols = current.shape
-        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
-        BLACK = 1
-
-        for i in range(rows):
-            for j in range(cols):
-                player = current[i, j]
-                if player == 0:
-                    continue
-                for dr, dc in directions:
-                    length = Gomoku._count_consecutive(current, i, j, dr, dc)
-                    if player == BLACK:
-                        # Renju 规则：黑方必须恰好 5 连才算赢，长连不算
-                        if length == 5:
-                            return BLACK
-                    else:
-                        # 白方：5 连及以上都算赢
-                        if length >= 5:
-                            return player
-
-        if np.all(current != 0):
+        if np.all(current_board != 0):
             return 0
+            
         return None
 
     def is_terminal(self, state):
         return self.get_winner(state) is not None
-    
+
     @staticmethod
-    def encode_state(board, to_play):
-        # board.shape = (history_step, board_size, board_size)
-        history_len = board.shape[0]
-        board_size = board.shape[1]
-
-        encoded_state = np.zeros((history_len * 2 + 1, board_size, board_size), dtype=np.float32)
-        # encoded_state = np.zeros((history_len * 2, board_size, board_size), dtype=np.float32)
-
+    def encode_state(state, to_play):
+        history_len = state.shape[0]
+        board_height = state.shape[1]
+        board_width = state.shape[2]
+        
+        encoded_state = np.zeros((history_len * 2 + 1, board_height, board_width), dtype=np.float32)
+        
         for i in range(history_len):
-            encoded_state[2 * i] = (board[i] == to_play)
-            encoded_state[2 * i + 1] = (board[i] == -to_play)
-
-        encoded_state[-1] = (to_play > 0) * np.ones((board_size, board_size), dtype=np.float32)  # to_play
-
+            encoded_state[2 * i] = (state[i] == to_play)
+            encoded_state[2 * i + 1] = (state[i] == -to_play)
+        
+        encoded_state[-1] = (to_play > 0) * np.ones((board_height, board_width), dtype=np.float32)
+        
         return encoded_state
 
+
+def print_board(board):
+    """打印Gomoku棋盘"""
+    current_board = board[-1] if board.ndim == 3 else board
+    rows, cols = current_board.shape
+    
+    # 打印列号 (Tens)
+    print("   ", end="")
+    for col in range(cols):
+        if col >= 10:
+            print(f"{col // 10} ", end="")
+        else:
+            print("  ", end="")
+    print()
+    
+    # 打印列号 (Units)
+    print("   ", end="")
+    for col in range(cols):
+        print(f"{col % 10} ", end="")
+    print()
+    
+    # 打印棋盘
+    for row in range(rows):
+        print(f"{row:2d} ", end="")
+        for col in range(cols):
+            if current_board[row, col] == 1:
+                print("● ", end="")  # Black
+            elif current_board[row, col] == -1:
+                print("○ ", end="")  # White
+            else:
+                print("· ", end="")
+        print()
+
+
 if __name__ == "__main__":
-    game = Gomoku()
-    initial_state = game.get_initial_state()
-    print(f"Initial state shape: {initial_state.shape}")
-    print(f"encode_state shape: {game.encode_state(initial_state, to_play=1).shape}")
+    game = Gomoku(history_step=1, use_renju=True)
+    state = game.get_initial_state()
+    print("Initial State:")
+    print_board(state)
+    
+    # Simulate some moves
+    # Black moves 7,7 (Center)
+    action = 7 * 15 + 7
+    state = game.get_next_state(state, action, 1)
+    
+    # White moves 7,8
+    action = 7 * 15 + 8
+    state = game.get_next_state(state, action, -1)
+    
+    # Black moves 8,8
+    action = 8 * 15 + 8
+    state = game.get_next_state(state, action, 1)
+    
+    print("\nAfter 3 moves:")
+    print_board(state)
+    
+    legal = game.get_is_legal_actions(state)
+    print(f"\nLegal actions count: {np.sum(legal)}")
+    
+    # Test Forbidden point (3-3)
+    # Construct a 3-3 pattern for Black
+    # . . . . .
+    # . . B . .
+    # . . B . .
+    # . B B X .
+    # . . . . .
+    # X should be forbidden
+    
+
+    # Clear board
+    state = game.get_initial_state()
+    moves = [(7,6), (6,7), (7,5), (5,7)]
+    for i, (r, c) in enumerate(moves):
+        state = game.get_next_state(state, r*15+c, 1)
+        # Place corresponding white stone to keep turns balanced
+        state = game.get_next_state(state, 0*15+i, -1) # Place white at row 0, col i
+        
+    print("\nTesting Forbidden Point (3-3) at 7,7:")
+    print_board(state)
+    
+    # Now it should be Black's turn (4 black, 4 white)
+    legal = game.get_is_legal_actions(state)
+    idx_7_7 = 7 * 15 + 7
+    print(f"Is 7,7 legal? {legal[idx_7_7]}")

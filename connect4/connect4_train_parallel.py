@@ -9,8 +9,8 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import torch.optim as optim
 import numpy as np
 
-# Import AlphaZeroParallel
-from alphazero_parallel import AlphaZeroParallel
+# Import ParallelAlphaZero
+from alphazero_parallel import ParallelAlphaZero
 from connect4 import Connect4
 from nets import ResNet
 
@@ -28,7 +28,7 @@ if __name__ == '__main__':
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
     model = ResNet(game, num_blocks=4, num_channels=64).to('cuda')
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0008, weight_decay=1e-4)
 
     args = {
         'mode': 'train',
@@ -38,8 +38,8 @@ if __name__ == '__main__':
         'c_puct': 1.5,
         'root_temperature_init': 1.25,
         'root_temperature_final': 1.1,
-        'move_temperature_init': 0.8,
-        'move_temperature_final': 0.2,
+        'move_temperature_init': 0.4,
+        'move_temperature_final': 0.1,
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
@@ -71,25 +71,9 @@ if __name__ == '__main__':
     print(f"Device: {args['device']}")
     print()
 
-    # Define model_cls and model_kwargs for workers
-    model_cls = ResNet
-    model_kwargs = {
-        'game': game,
-        'num_blocks': 4,
-        'num_channels': 64
-    }
-
     num_workers = 20
 
-    alphazero = AlphaZeroParallel(
-        game,
-        model,
-        optimizer,
-        args,
-        model_cls=model_cls,
-        model_kwargs=model_kwargs,
-        num_workers=num_workers
-    )
+    alphazero = ParallelAlphaZero(game, model, optimizer, args, num_workers=num_workers)
 
     # Try to load existing checkpoint if any
     alphazero.load_checkpoint()

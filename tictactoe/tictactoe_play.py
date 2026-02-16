@@ -41,15 +41,42 @@ if __name__ == '__main__':
     color = 1
     state = game.get_initial_state()
     print_board(state)
+    history = []
+    
     while not game.is_terminal(state):
         if to_play == 1:
-            move = input(f"Human step:")
-            i, j = map(int, move.strip().split())
-            action = i * game.board_size + j
+            while True:
+                move = input(f"Human step (enter 'undo' to take back): ")
+                if move.lower() == 'undo':
+                    if len(history) >= 2:
+                        state = history[-2]
+                        history = history[:-2]
+                        print("Undoing last round...")
+                        print_board(state)
+                        continue
+                    else:
+                        print("Cannot undo further!")
+                        continue
+                
+                try:
+                    i, j = map(int, move.strip().split())
+                    action = i * game.board_size + j
+                    legal_actions = game.get_is_legal_actions(state)
+                    if not legal_actions[action]:
+                        print("Illegal move! Cell is already occupied.")
+                        continue
+                    break
+                except ValueError:
+                    print("Invalid input! Please enter coordinates (e.g., '0 1') or 'undo'.")
+                except IndexError:
+                    print("Coordinates out of bounds!")
+
+            history.append(state.copy())
             state = game.get_next_state(state, action, color)
         elif to_play == -1:
             print(f'AlphaZero step:')
             action, info = alphazero.play(state, color)
+            history.append(state.copy())
             state = game.get_next_state(state, action, color)
             action_probs, policy, value = info['action_probs'], info['policy'], info['value']
             print(action_probs.reshape(3, 3))
