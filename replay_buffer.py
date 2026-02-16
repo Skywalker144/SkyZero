@@ -1,20 +1,19 @@
 """
 Replay Buffer for AlphaZero
 
-AlphaZero使用Replay Buffer存储最近N局游戏的自我对弈数据，
-训练时从整个buffer中随机采样，而不是仅使用最新一局的数据。
+AlphaZero uses Replay Buffer to store self-play data from the last N games,
+sampling randomly from the entire buffer during training, not just the latest game.
 
-主要特性：
-1. 按局数限制容量（window_size），旧数据会被新数据替换
-2. 支持数据增强（棋盘对称变换）
-3. 支持随机采样
-4. 支持保存和加载buffer状态
+Main features:
+1. Capacity limited by sample count (window_size), old data replaced by new
+2. Support for random sampling
+3. Support for saving and loading buffer state
+4. Ring Buffer implementation for O(1) append and O(1) sample
 """
 
 import os
 import pickle
 import random
-from collections import deque
 from typing import List, Tuple, Optional
 
 import numpy as np
@@ -22,121 +21,148 @@ import numpy as np
 
 class ReplayBuffer:
     """
-    Replay Buffer用于存储自我对弈生成的训练数据。
+    Replay Buffer for storing self-play generated training data.
+    
+    Uses Ring Buffer (circular buffer) implementation:
+    - O(1) append complexity
+    - O(batch_size) sample complexity (no O(N) index access like deque)
     
     Args:
-        window_size: 保存最近多少局游戏的数据，旧数据会被移除
-        board_size: 棋盘大小，用于数据增强
+        window_size: Maximum number of samples to keep, old data will be removed
+        board_size: Board size (for potential future use in data augmentation)
     """
     
     def __init__(self, window_size: int = 500000, board_size: int = 9):
         self.window_size = window_size
         self.board_size = board_size
         
-        # 使用deque存储所有样本，自动移除旧数据
-        self.buffer = deque(maxlen=window_size)
+        # Ring buffer: List + position pointer
+        self.buffer: List[Tuple] = []
+        self.position = 0  # Current write position
         
-        # 记录添加的游戏局数
+        # Track number of games added
         self.games_count = 0
         
     def __len__(self) -> int:
-        """返回buffer中的样本数量"""
+        """Return current number of samples in buffer"""
         return len(self.buffer)
+    
+    def is_full(self) -> bool:
+        """Check if buffer has reached capacity"""
+        return len(self.buffer) >= self.window_size
     
     def add_game(self, game_memory: List[Tuple]) -> int:
         """
-        添加一局游戏的数据到buffer中。
-        """
-        for sample in game_memory:
-            self.buffer.append(sample)
+        Add a game's data to the buffer.
+        
+        Args:
+            game_memory: List of samples, each sample is a tuple
             
-        self.games_count += 1
-        return len(game_memory)
-    
-    def sample(self, batch_size: int) -> List[Tuple]:
+        Returns:
+            Number of samples added
         """
-        从buffer中随机采样一个batch。
-        """
-        if len(self.buffer) < batch_size:
-            return list(self.buffer)
-        indices = random.sample(range(len(self.buffer)), batch_size)
-        return [self.buffer[i] for i in indices]
-    
-    def get_all(self) -> List[Tuple]:
-        """获取buffer中的所有数据"""
-        return list(self.buffer)
-    
-    def clear(self):
-        """清空buffer"""
-        self.buffer.clear()
-        self.games_count = 0
-
-class ParallelReplayBuffer:
-    """
-    专为并行训练优化的Replay Buffer。
-    使用List代替Deque以优化随机采样性能（避免O(N)的类型转换）。
-    使用环形缓冲区（Ring Buffer）逻辑管理内存。
-    """
-    def __init__(self, window_size: int = 500000, board_size: int = 9):
-        self.window_size = window_size
-        self.board_size = board_size
-        self.buffer = [] # 使用List
-        self.position = 0 # 当前写入指针
-        self.games_count = 0
-        
-    def __len__(self) -> int:
-        return len(self.buffer)
-        
-    def add_game(self, game_memory: List[Tuple]) -> int:
         for sample in game_memory:
             if len(self.buffer) < self.window_size:
                 self.buffer.append(sample)
             else:
+                # Ring buffer: overwrite oldest data
                 self.buffer[self.position] = sample
             self.position = (self.position + 1) % self.window_size
                 
         self.games_count += 1
         return len(game_memory)
-        
+    
     def sample(self, batch_size: int) -> List[Tuple]:
-        # List采样是高效的，不需要转换
-        if len(self.buffer) < batch_size:
-            return list(self.buffer)
-        return random.sample(self.buffer, batch_size)
+        """
+        Randomly sample a batch from the buffer.
         
+        Args:
+            batch_size: Number of samples to retrieve
+            
+        Returns:
+            List of sampled tuples
+            
+        Raises:
+            ValueError: If buffer has fewer samples than requested
+        """
+        if len(self.buffer) < batch_size:
+            raise ValueError(
+                f"Buffer has only {len(self.buffer)} samples, "
+                f"but batch_size={batch_size} was requested. "
+                f"Wait for more data or reduce min_buffer_size."
+            )
+        return random.sample(self.buffer, batch_size)
+    
+    def get_all(self) -> List[Tuple]:
+        """Get all data in buffer"""
+        return list(self.buffer)
+    
     def clear(self):
+        """Clear the buffer"""
         self.buffer = []
         self.position = 0
         self.games_count = 0
-
-
+    
+    def get_state(self) -> dict:
+        """
+        Get buffer state for serialization.
+        
+        Returns:
+            Dictionary containing all buffer state
+        """
+        return {
+            'buffer': self.buffer,
+            'window_size': self.window_size,
+            'board_size': self.board_size,
+            'position': self.position,
+            'games_count': self.games_count,
+        }
+    
+    def load_state(self, state: dict):
+        """
+        Load buffer state from dictionary.
+        
+        Args:
+            state: Dictionary from get_state()
+        """
+        self.buffer = list(state['buffer'])
+        self.window_size = state['window_size']
+        self.board_size = state['board_size']
+        
+        # Backwards compatibility: Handle missing 'position' field from old checkpoints
+        if 'position' in state:
+            self.position = state['position']
+        else:
+            # Infer position for old checkpoints
+            if len(self.buffer) < self.window_size:
+                self.position = len(self.buffer)
+            else:
+                self.position = 0  # Assume we start overwriting from beginning
+            print(f"Warning: 'position' not found in checkpoint. Inferred position: {self.position}")
+            
+        self.games_count = state.get('games_count', 0)
     
     def save(self, filepath: str):
         """
-        保存buffer到文件。
+        Save buffer to file.
         
         Args:
-            filepath: 保存路径
+            filepath: Path to save
         """
-        data = {
-            'buffer': list(self.buffer),
-            'window_size': self.window_size,
-            'board_size': self.board_size,
-            'games_count': self.games_count,
-        }
+        data = self.get_state()
         with open(filepath, 'wb') as f:
             pickle.dump(data, f)
         print(f"Replay buffer saved to {filepath} ({len(self.buffer)} samples)")
     
     def load(self, filepath: str) -> bool:
         """
-        从文件加载buffer。
+        Load buffer from file.
         
         Args:
-            filepath: 文件路径
+            filepath: Path to load from
             
         Returns:
-            是否加载成功
+            Whether load was successful
         """
         if not os.path.exists(filepath):
             print(f"Buffer file not found: {filepath}")
@@ -144,20 +170,13 @@ class ParallelReplayBuffer:
             
         with open(filepath, 'rb') as f:
             data = pickle.load(f)
-            
-        self.buffer = list(data['buffer'])
-        # 恢复 ring buffer 的 position 指针
-        if len(self.buffer) < self.window_size:
-            self.position = len(self.buffer)
-        else:
-            self.position = 0
-        self.games_count = data.get('games_count', 0)
         
+        self.load_state(data)
         print(f"Replay buffer loaded from {filepath} ({len(self.buffer)} samples, {self.games_count} games)")
         return True
     
     def stats(self) -> dict:
-        """返回buffer的统计信息"""
+        """Return buffer statistics"""
         if len(self.buffer) == 0:
             return {
                 'size': 0,
@@ -172,3 +191,7 @@ class ParallelReplayBuffer:
             'capacity': self.window_size,
             'fill_ratio': len(self.buffer) / self.window_size,
         }
+
+
+# Backward compatibility alias
+ParallelReplayBuffer = ReplayBuffer

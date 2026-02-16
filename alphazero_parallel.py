@@ -366,17 +366,7 @@ class ParallelAlphaZero(AlphaZero):
             print(f"Game count loaded ({self.game_count} games)")
 
         if 'replay_buffer' in checkpoint:
-            buffer_data = checkpoint['replay_buffer']
-            # ParallelReplayBuffer specific loading
-            self.replay_buffer.buffer = list(buffer_data['buffer'])
-            self.replay_buffer.games_count = buffer_data.get('games_count', 0)
-
-            # Recalculate position pointer
-            if len(self.replay_buffer.buffer) < self.replay_buffer.window_size:
-                self.replay_buffer.position = len(self.replay_buffer.buffer)
-            else:
-                self.replay_buffer.position = 0  # Assume full buffer wraps around (approximation)
-
+            self.replay_buffer.load_state(checkpoint['replay_buffer'])
             print(f"Replay buffer loaded ({len(self.replay_buffer)} samples)")
 
         print(f"Checkpoint loaded from {filepath}")

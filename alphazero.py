@@ -729,12 +729,7 @@ class AlphaZero:
             'policy_losses': self.policy_losses,
             'value_losses': self.value_losses,
             'game_count': self.game_count,
-            'replay_buffer': {
-                'buffer': list(self.replay_buffer.buffer),
-                'window_size': self.replay_buffer.window_size,
-                'board_size': self.replay_buffer.board_size,
-                'games_count': self.replay_buffer.games_count,
-            },
+            'replay_buffer': self.replay_buffer.get_state(),
         }
 
         torch.save(checkpoint, filepath)
@@ -744,7 +739,6 @@ class AlphaZero:
         print(f"Checkpoint saved to {filepath} ({size_str})")
 
     def load_checkpoint(self, filepath=None):
-        from collections import deque
         import glob
 
         if filepath is None:
@@ -794,9 +788,7 @@ class AlphaZero:
             print(f"Game count loaded ({self.game_count} games)")
 
         if 'replay_buffer' in checkpoint:
-            buffer_data = checkpoint['replay_buffer']
-            self.replay_buffer.buffer = deque(buffer_data['buffer'], maxlen=self.replay_buffer.window_size)
-            self.replay_buffer.games_count = buffer_data.get('games_count', 0)
+            self.replay_buffer.load_state(checkpoint['replay_buffer'])
             print(f"Replay buffer loaded ({len(self.replay_buffer)} samples)")
 
         print(f"Checkpoint loaded from {filepath}")
