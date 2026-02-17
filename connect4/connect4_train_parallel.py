@@ -38,8 +38,8 @@ if __name__ == '__main__':
         'c_puct': 1.5,
         'root_temperature_init': 1.25,
         'root_temperature_final': 1.1,
-        'move_temperature_init': 0.4,
-        'move_temperature_final': 0.1,
+        'move_temperature_init': 0.8,
+        'move_temperature_final': 0.2,
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
