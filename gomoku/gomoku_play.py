@@ -14,7 +14,7 @@ if __name__ == '__main__':
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=5e-5)
     args = {
         'mode': 'eval',
-        'num_simulations': 800,
+        'num_simulations': 600,
         'c_puct': 1.4,
         'buffer_size': 50000,
         'move_temperature_init': 0.4,

@@ -38,7 +38,7 @@ class ResidualBlock(nn.Module):
 
     结构:
         identity ──────────────────────────────── (+)
-                  └─ BN → Act → Conv3x3                │
+              └─ BN → Act → Conv3x3                │
                             → BN → Act → Conv3x3 ──┘
     """
     def __init__(self, channels):
@@ -56,6 +56,58 @@ class ResidualBlock(nn.Module):
         return x + out
 
 
+class NestedBottleneckResidualBlock(nn.Module):
+    """
+    KataGo 的 Nested Bottleneck Residual Block (论文 Appendix / Gumbel MuZero Appendix)。
+    
+    结构:
+        Input (C)
+          │
+        BN/Act/1x1 (C -> C/2)
+          │
+          ├── ResidualBlock (C/2) [2x 3x3 convs]
+          │
+          ├── ResidualBlock (C/2) [2x 3x3 convs]
+          │
+          ... (n_blocks 个)
+          │
+        BN/Act/1x1 (C/2 -> C)
+          │
+        (+) ──────────────────────> Output
+    """
+    def __init__(self, channels, n_blocks=2):
+        super().__init__()
+        c_internal = channels // 2
+        
+        # Entry 1x1 (Pre-activation: BN -> Act -> Conv)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv1 = nn.Conv2d(channels, c_internal, kernel_size=1, bias=False)
+        
+        # Inner Blocks (Stack of standard ResidualBlocks)
+        # KataGo 默认使用 2 个内部残差块 (共4个3x3卷积)
+        self.inner_blocks = nn.Sequential(*[
+            ResidualBlock(c_internal) for _ in range(n_blocks)
+        ])
+        
+        # Exit 1x1 (Pre-activation: BN -> Act -> Conv)
+        self.bn_out = nn.BatchNorm2d(c_internal)
+        self.conv_out = nn.Conv2d(c_internal, channels, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        # Entry
+        out = F.silu(self.bn1(x))
+        out = self.conv1(out)
+        
+        # Inner Stack
+        out = self.inner_blocks(out)
+        
+        # Exit
+        out = F.silu(self.bn_out(out))
+        out = self.conv_out(out)
+        
+        return x + out
+
+
 class GlobalPoolingResidualBlock(nn.Module):
     """
     KataGo 风格的全局池化 pre-activation 残差块 (论文 Appendix A.3)。
@@ -66,9 +118,9 @@ class GlobalPoolingResidualBlock(nn.Module):
     结构:
         identity ──────────────────────────────────────── (+)
                   └─ BN → Act → Conv3x3 ─┬─ G[:c_pool]    │
-                                          ├─ X[c_pool:] ──(+bias)
-                                          │   ↑ GlobalPoolingBias
-                                          └─ BN → Act → Conv3x3 ─┘
+                                         ├─ X[c_pool:] ──(+bias)
+                                         │   ↑ GlobalPoolingBias
+                                         └─ BN → Act → Conv3x3 ─┘
     """
     def __init__(self, channels, c_pool=None):
         super().__init__()
@@ -98,9 +150,10 @@ class GlobalPoolingResidualBlock(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, game, num_blocks=4, num_channels=128, use_global_pool=True):
+    def __init__(self, game, num_blocks=4, num_channels=128, use_global_pool=True, use_nested_bottleneck=True, use_aux_policy=True):
         super().__init__()
         self.use_global_pool = use_global_pool
+        self.use_aux_policy = use_aux_policy
         self.board_height = game.board_height
         self.board_width = game.board_width
         self.action_space_size = game.action_space_size
@@ -120,40 +173,85 @@ class ResNet(nn.Module):
             if use_global_pool and (i + 1) % 3 == 0:
                 blocks.append(GlobalPoolingResidualBlock(c, c_pool))
             else:
-                blocks.append(ResidualBlock(c))
+                if use_nested_bottleneck:
+                    blocks.append(NestedBottleneckResidualBlock(c))
+                else:
+                    blocks.append(ResidualBlock(c))
         self.backbone = nn.ModuleList(blocks)
 
         # 3. Trunk 末尾 BN + Act (pre-activation 架构需要)
         self.trunk_bn = nn.BatchNorm2d(c)
 
         # 4. Policy Head (论文 Appendix A.4)
-        # 并行两路 1x1 卷积: P 和 G
-        board_cells = self.board_height * self.board_width
-        self.spatial_policy = (self.action_space_size == board_cells)
-        c_head = max(32, c // 4)
-        self.policy_conv_p = nn.Conv2d(c, c_head, kernel_size=1, bias=False)
-        self.policy_conv_g = nn.Conv2d(c, c_head, kernel_size=1, bias=False)
-        # G 通过全局池化 bias 加到 P 上
-        self.policy_pool_bias = GlobalPoolingBias(c_x=c_head, c_g=c_head)
-        self.policy_bn = nn.BatchNorm2d(c_head)
-        if self.spatial_policy:
-            # 纯空间动作: 1x1 卷积输出 1 通道 (棋盘大小无关)
-            self.policy_conv_out = nn.Conv2d(c_head, 1, kernel_size=1)
-        else:
-            # 非纯空间动作 (如 Connect4 只选列): 全局池化后 FC 输出
-            self.policy_fc = nn.Linear(c_head * 2, self.action_space_size)
+        self.policy_head = self._build_policy_head(c)
+        
+        if self.use_aux_policy:
+            self.aux_policy_head = self._build_policy_head(c)
+
+        # Optimistic Policy Head (新增)
+        self.optimistic_policy_head = self._build_policy_head(c)
 
         # 5. Value Head (论文 Appendix A.5)
         # 1x1 卷积 -> 全局池化 -> FC -> FC -> tanh
         c_val_head = max(32, c // 4)
         c_val_hidden = max(64, c)
-        self.value_conv = nn.Conv2d(c, c_val_head, kernel_size=1, bias=False)
-        self.value_bn = nn.BatchNorm2d(c_val_head)
-        # 全局池化 (mean + max) -> 2 * c_val_head 维
-        self.value_fc1 = nn.Linear(c_val_head * 2, c_val_hidden)
-        self.value_fc2 = nn.Linear(c_val_hidden, 1)
+        
+        self.value_head = self._build_value_head(c, c_val_head, c_val_hidden, output_dim=1)
+        
+        # Short-term Value Head (新增, output_dim=3)
+        self.short_term_value_head = self._build_value_head(c, c_val_head, c_val_hidden, output_dim=3)
 
         self._init_weights()
+
+    def _build_policy_head(self, c):
+        # 提取 Policy Head 构建逻辑以便复用
+        # 并行两路 1x1 卷积: P 和 G
+        board_cells = self.board_height * self.board_width
+        spatial_policy = (self.action_space_size == board_cells)
+        c_head = max(32, c // 4)
+        
+        conv_p = nn.Conv2d(c, c_head, kernel_size=1, bias=False)
+        conv_g = nn.Conv2d(c, c_head, kernel_size=1, bias=False)
+        # G 通过全局池化 bias 加到 P 上
+        pool_bias = GlobalPoolingBias(c_x=c_head, c_g=c_head)
+        bn = nn.BatchNorm2d(c_head)
+        
+        conv_out = None
+        fc_out = None
+
+        if spatial_policy:
+            # 纯空间动作: 1x1 卷积输出 1 通道 (棋盘大小无关)
+            conv_out = nn.Conv2d(c_head, 1, kernel_size=1)
+        else:
+            # 非纯空间动作 (如 Connect4 只选列): 全局池化后 FC 输出
+            fc_out = nn.Linear(c_head * 2, self.action_space_size)
+            
+        return nn.ModuleDict({
+            'conv_p': conv_p,
+            'conv_g': conv_g,
+            'pool_bias': pool_bias,
+            'bn': bn,
+            'conv_out': conv_out,
+            'fc_out': fc_out
+        })
+
+    def _build_value_head(self, c, c_val_head, c_val_hidden, output_dim=1):
+        return nn.ModuleDict({
+            'conv': nn.Conv2d(c, c_val_head, kernel_size=1, bias=False),
+            'bn': nn.BatchNorm2d(c_val_head),
+            'fc1': nn.Linear(c_val_head * 2, c_val_hidden),
+            'fc2': nn.Linear(c_val_hidden, output_dim)
+        })
+
+    def _forward_value_head(self, x, head_modules):
+        v = head_modules['conv'](x)
+        v = F.silu(head_modules['bn'](v))
+        v_mean = v.mean(dim=(2, 3))
+        v_max = v.amax(dim=(2, 3))
+        v_pooled = torch.cat([v_mean, v_max], dim=1)
+        v = F.silu(head_modules['fc1'](v_pooled))
+        value = torch.tanh(head_modules['fc2'](v))
+        return value
 
     def _init_weights(self):
         for m in self.modules():
@@ -166,6 +264,26 @@ class ResNet(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+
+
+    def forward_policy_head(self, x, head_modules):
+        p = head_modules['conv_p'](x)
+        g = head_modules['conv_g'](x)
+        p = head_modules['pool_bias'](p, g)
+        p = F.silu(head_modules['bn'](p))
+        
+        if head_modules['conv_out'] is not None:
+            # Spatial Policy
+            policy = head_modules['conv_out'](p)
+            policy = policy.flatten(1)
+        else:
+            # Non-spatial Policy
+            p_mean = p.mean(dim=(2, 3))
+            p_max = p.amax(dim=(2, 3))
+            p_pooled = torch.cat([p_mean, p_max], dim=1)
+            policy = head_modules['fc_out'](p_pooled)
+            
+        return policy
 
     def forward(self, x):
         # x shape: [B, input_channels, H, W]
@@ -181,26 +299,28 @@ class ResNet(nn.Module):
         x = F.silu(self.trunk_bn(x))
 
         # Policy Head
-        p = self.policy_conv_p(x)                          # [B, c_head, H, W]
-        g = self.policy_conv_g(x)                          # [B, c_head, H, W]
-        p = self.policy_pool_bias(p, g)                    # [B, c_head, H, W]
-        p = F.silu(self.policy_bn(p))
-        if self.spatial_policy:
-            policy = self.policy_conv_out(p)               # [B, 1, H, W]
-            policy = policy.flatten(1)                     # [B, H*W]
-        else:
-            # 非空间动作: 全局池化后 FC
-            p_mean = p.mean(dim=(2, 3))                    # [B, c_head]
-            p_max = p.amax(dim=(2, 3))                     # [B, c_head]
-            p_pooled = torch.cat([p_mean, p_max], dim=1)   # [B, 2*c_head]
-            policy = self.policy_fc(p_pooled)              # [B, action_space_size]
+        policy = self.forward_policy_head(x, self.policy_head)
+        
+        # Auxiliary Policy Head
+        aux_policy = None
+        if self.use_aux_policy and self.training:
+            aux_policy = self.forward_policy_head(x, self.aux_policy_head)
+
+        # Optimistic Policy Head
+        optimistic_policy = None
+        if self.training:
+            optimistic_policy = self.forward_policy_head(x, self.optimistic_policy_head)
 
         # Value Head
-        v = F.silu(self.value_bn(self.value_conv(x)))      # [B, c_val_head, H, W]
-        v_mean = v.mean(dim=(2, 3))                        # [B, c_val_head]
-        v_max = v.amax(dim=(2, 3))                         # [B, c_val_head]
-        v_pooled = torch.cat([v_mean, v_max], dim=1)       # [B, 2*c_val_head]
-        v = F.silu(self.value_fc1(v_pooled))               # [B, c_val_hidden]
-        value = torch.tanh(self.value_fc2(v))              # [B, 1]
+        value = self._forward_value_head(x, self.value_head)
 
+        # Short-term Value Head
+        short_term_value = None
+        if self.training:
+            short_term_value = self._forward_value_head(x, self.short_term_value_head)
+
+        if self.training:
+            return policy, value, aux_policy, optimistic_policy, short_term_value
+            
         return policy, value
+

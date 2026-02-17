@@ -402,7 +402,8 @@ class AlphaZero:
                     # Let's set a flag `resigned = True`.
                     break
 
-            memory.append((state, action_probs, to_play, for_train, policy_prior, current_sample_weight))
+            # 记录 root_value 用于 Short-term Value Targets
+            memory.append((state, action_probs, to_play, for_train, policy_prior, current_sample_weight, root_value))
             
             # if len(memory) >= self.args['zero_t_step']:
             #     t = 0.1
@@ -431,11 +432,30 @@ class AlphaZero:
             winner = -to_play
             final_state = state # Just for logging
 
-        # 构建带 outcome 的数据
+        # 构建带 outcome 和 STV 的数据
         raw_memory = []
-        for item in memory:
-            state, policy_target, to_play, for_train, policy_prior, sample_weight = item
+        memory_len = len(memory)
+        stv_steps = [6, 16, 50]  # Short-term Value 预测步数
+        
+        for i in range(memory_len):
+            state, policy_target, to_play, for_train, policy_prior, sample_weight, root_value = memory[i]
             outcome = winner * to_play
+            
+            # 计算 Short-term Value Targets
+            stv_targets = []
+            for k in stv_steps:
+                target_idx = i + k
+                if target_idx < memory_len:
+                    # 获取未来时刻的 root_value
+                    future_root_val = memory[target_idx][6]
+                    # 调整视角：如果步数差是奇数，视角相反，取反
+                    if k % 2 != 0:
+                        future_root_val = -future_root_val
+                    stv_targets.append(future_root_val)
+                else:
+                    # 游戏结束，使用最终 outcome
+                    stv_targets.append(outcome)
+            
             raw_memory.append((
                 self.game.encode_state(state, to_play),
                 policy_target,
@@ -443,6 +463,8 @@ class AlphaZero:
                 for_train,  # 布尔值：是否用于训练 Policy
                 policy_prior,  # 保留 policy prior 用于 PSW 计算
                 sample_weight, # 样本权重
+                root_value,    # 当前局面的 root_value (用于 Optimistic Policy)
+                stv_targets,   # Short-term Value Targets [v_6, v_16, v_50]
             ))
 
         
@@ -453,8 +475,12 @@ class AlphaZero:
         # 移除 policy_prior，只保留训练需要的数据
         return_memory = []
         for sample in weighted_memory:
-            # 取前4个元素: (encoded_state, policy_target, outcome, for_train)
-            return_memory.append(sample[:4])
+            # (encoded_state, policy_target, outcome, for_train, policy_prior, sample_weight, root_value, stv_targets)
+            # drop policy_prior (idx 4)
+            # keep everything else
+            new_sample = list(sample)
+            new_sample.pop(4) 
+            return_memory.append(tuple(new_sample))
 
         # 打印 PSW 统计信息
         if psw_stats.get('enabled', False):
@@ -482,35 +508,111 @@ class AlphaZero:
             # 非正方形棋盘（动作空间等于棋盘大小）：只使用水平翻转
             batch = random_augment_batch_rect(batch, self.game.board_height, self.game.board_width)
 
-        states, policy_targets, value_targets, for_train_list = zip(*batch)
+        states, policy_targets, value_targets, for_train_list, sample_weights, root_values, stv_targets = zip(*batch)
 
         states = torch.tensor(np.array(states), dtype=torch.float32, device=self.args['device'])
         policy_targets = torch.tensor(np.array(policy_targets), dtype=torch.float32, device=self.args['device'])
         value_targets = torch.tensor(np.array(value_targets).reshape(-1, 1), dtype=torch.float32, device=self.args['device'])
+        sample_weights = torch.tensor(np.array(sample_weights), dtype=torch.float32, device=self.args['device'])
+        root_values = torch.tensor(np.array(root_values).reshape(-1, 1), dtype=torch.float32, device=self.args['device'])
+        stv_targets = torch.tensor(np.array(stv_targets), dtype=torch.float32, device=self.args['device'])
 
-        policy, value = self.model(states)
+        outputs = self.model(states)
+        # 解包 outputs (policy, value, aux_policy, optimistic_policy, short_term_value)
+        policy, value, aux_policy, optimistic_policy, short_term_value = outputs
 
         # PSW 和 Playout Cap Randomization：
         # 只有全量搜索 或高 surprise 的快速搜索 的样本用于 policy 训练
         # 普通快速搜索的样本只用于 value 训练
         policy_mask_tensor = torch.tensor(for_train_list, dtype=torch.bool, device=self.args['device'])
 
+        # === 1. Main Policy Loss ===
         if policy_mask_tensor.sum() > 0:
             policy_loss = F.cross_entropy(
                 policy[policy_mask_tensor],
-                policy_targets[policy_mask_tensor]
+                policy_targets[policy_mask_tensor],
+                reduction='none'
             )
+            # 应用 sample_weight (来自 Soft Resignation 等)
+            policy_loss = (policy_loss * sample_weights[policy_mask_tensor]).mean()
         else:
             policy_loss = torch.tensor(0.0, device=self.args['device'])
 
-        value_loss = F.mse_loss(value, value_targets)
+        # === 2. Main Value Loss ===
+        value_loss = F.mse_loss(value, value_targets, reduction='none')
+        value_loss = (value_loss.squeeze() * sample_weights).mean()
 
-        loss = policy_loss + 0.6 * value_loss
+        # === 3. Auxiliary Policy Loss (Soft Target) ===
+        aux_policy_loss = torch.tensor(0.0, device=self.args['device'])
+        if aux_policy is not None and policy_mask_tensor.sum() > 0:
+            # Soft Target Calculation: target^(1/T) normalized
+            # T = 4 (KataGo default)
+            T = 4.0
+            # 只计算有效样本的 soft target
+            targets = policy_targets[policy_mask_tensor]
+            # avoid zero power issues
+            soft_targets = torch.pow(targets + 1e-10, 1.0/T)
+            soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True)
+            
+            # Aux Loss
+            aux_loss = F.cross_entropy(
+                aux_policy[policy_mask_tensor],
+                soft_targets,
+                reduction='none'
+            )
+            # Weighted 8x (KataGo default)
+            aux_policy_loss = (aux_loss * sample_weights[policy_mask_tensor]).mean() * 8.0
+
+        # === 4. Optimistic Policy Loss ===
+        optimistic_loss = torch.tensor(0.0, device=self.args['device'])
+        if optimistic_policy is not None:
+            # 只有当结果比根节点预期好（且是赢棋）时训练
+            # 简单起见：Outcome > Root Value + margin
+            # KataGo 使用更复杂的逻辑 (sigmoid gating)，这里使用硬门控
+            # outcome (value_targets) is [-1, 1], root_values is [-1, 1]
+            
+            # Gate 1: 必须是赢棋 (value_targets > 0.5) 或者是胜率明显提升
+            # Gate 2: 提升幅度超过阈值 (0.05)
+            improvement = value_targets - root_values
+            
+            # KataGo-style Sigmoid Gating (Soft Gate)
+            # 使用 Sigmoid 进行平滑门控：中心点 0.05，缩放系数 10.0
+            opt_gate = torch.sigmoid((improvement - 0.05) * 10.0)
+            
+            # 基础过滤器：
+            # 1. value_targets > -0.9: 不要对必输的局做乐观估计 (保留原有逻辑)
+            # 2. policy_mask_tensor: 只在用于 policy 训练的样本上计算
+            valid_opt_mask = (value_targets > -0.9).squeeze() & policy_mask_tensor
+            
+            if valid_opt_mask.sum() > 0:
+                opt_loss = F.cross_entropy(
+                    optimistic_policy[valid_opt_mask],
+                    policy_targets[valid_opt_mask], # 目标仍然是 MCTS 策略
+                    reduction='none'
+                )
+                
+                # 应用 sample_weights 和 sigmoid gate weights
+                # opt_gate 维度是 [Batch, 1], masking 后为 [N, 1], 需要 squeeze 匹配 loss 维度
+                combined_weights = sample_weights[valid_opt_mask] * opt_gate[valid_opt_mask].squeeze()
+                
+                optimistic_loss = (opt_loss * combined_weights).mean() * 0.5 # 权重 0.5
+
+        # === 5. Short-term Value Loss ===
+        stv_loss = torch.tensor(0.0, device=self.args['device'])
+        if short_term_value is not None:
+            # stv_targets shape: [B, 3]
+            # short_term_value shape: [B, 3]
+            s_loss = F.mse_loss(short_term_value, stv_targets, reduction='none')
+            # 对三个时间点平均
+            s_loss = s_loss.mean(dim=1)
+            stv_loss = (s_loss * sample_weights).mean() * 0.5 # 权重 0.5
+
+        loss = policy_loss + 0.6 * value_loss + aux_policy_loss + optimistic_loss + stv_loss
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        return loss.item(), policy_loss.item(), value_loss.item()
+        return loss.item(), policy_loss.item(), value_loss.item(), aux_policy_loss.item(), optimistic_loss.item(), stv_loss.item()
 
     def learn(self):
         atexit.register(self.save_checkpoint)
@@ -623,7 +725,7 @@ class AlphaZero:
             for step in range(train_steps_per_generation):
                 batch = self.replay_buffer.sample(batch_size)
 
-                loss, policy_loss, value_loss = self._train_batch(batch)
+                loss, policy_loss, value_loss, _, _, _ = self._train_batch(batch)
                 train_losses.append(loss)
                 train_policy_losses.append(policy_loss)
                 train_value_losses.append(value_loss)

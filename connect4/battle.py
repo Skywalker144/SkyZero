@@ -27,15 +27,15 @@ GAME_CONFIGS = {
     'tictactoe': {
         'module': 'tictactoe',
         'class': 'TicTacToe',
-        'blocks': 1,
-        'channels': 64,
+        'blocks': 2,
+        'channels': 32,
         'kwargs': {'history_step': 3}
     },
     'gomoku': {
         'module': 'gomoku',
         'class': 'Gomoku',
-        'blocks': 8,
-        'channels': 256,
+        'blocks': 6,
+        'channels': 128,
         'kwargs': {'board_size': 15, 'history_step': 4}
     }
 }
@@ -139,13 +139,13 @@ def play_match(game, model1, model2, args):
     while not game.is_terminal(state):
         if to_play == 1:
             # Player 1 turn (Model 1)
-            action_probs = mcts1.search(state, to_play)
+            action_probs, _ = mcts1.search(state, to_play)
         else:
             # Player 2 turn (Model 2)
             # MCTS expects to_play relative to the model perspective?
             # MCTS.search takes to_play.
             # In AlphaZero.selfplay: mcts.search(state, to_play)
-            action_probs = mcts2.search(state, to_play)
+            action_probs, _ = mcts2.search(state, to_play)
         
         # Select action (Greedy for evaluation)
         # Can add temperature if needed, but usually battle is deterministic/greedy
@@ -167,7 +167,7 @@ def main():
     config, folder_name = get_game_context()
     
     # Config arguments
-    parser.add_argument('--interval', type=int, default=3600, help='Time interval in seconds to look back for the past model (default: 3600)')
+    parser.add_argument('--interval', type=int, default=14400, help='Time interval in seconds to look back for the past model (default: 3600)')
     parser.add_argument('--games', type=int, default=20, help='Total number of games to play (default: 10)')
     parser.add_argument('--sims', type=int, default=600, help='Number of MCTS simulations per move (default: 100)')
     parser.add_argument('--temp', type=float, default=0.5, help='Temperature for move selection (default: 0.0 for deterministic)')

@@ -131,7 +131,9 @@ def gpu_worker(model_instance, model_state_dict, request_queue, response_pipes, 
                 input_tensor = torch.cat(batch_states, dim=0).to(device)
 
                 with torch.no_grad():
-                    policies, values = model(input_tensor)
+                    outputs = model(input_tensor)
+                    # Handle varying number of outputs (2 or 5)
+                    policies, values = outputs[0], outputs[1]
 
                 policies = policies.cpu().numpy()
                 values = values.cpu().numpy()
@@ -230,7 +232,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                             # Resign
                             break
 
-                    memory.append((state, action_probs, to_play, for_train, policy_prior, current_sample_weight))
+                    memory.append((state, action_probs, to_play, for_train, policy_prior, current_sample_weight, root_value))
 
                     # if len(memory) >= local_args['zero_t_step']:
                     #     t = 0.1
@@ -259,15 +261,43 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 # Process memory
                 return_memory = []
-                for state, policy_target, to_play, for_train, policy_prior, sample_weight in memory:
+                # Short-term Value Targets 预测步数
+                stv_steps = [6, 16, 50]
+                memory_len = len(memory)
+
+                for i in range(memory_len):
+                    state, policy_target, to_play, for_train, policy_prior, sample_weight, root_value = memory[i]
                     outcome = winner * to_play
+                    
+                    # 计算 Short-term Value Targets
+                    stv_targets = []
+                    for k in stv_steps:
+                        target_idx = i + k
+                        if target_idx < memory_len:
+                            # 获取未来时刻的 root_value (item 6)
+                            # memory[target_idx] = (..., to_play, ..., root_value)
+                            next_to_play = memory[target_idx][2]
+                            next_root_value = memory[target_idx][6]
+
+                            # 如果 next_to_play == to_play，则视角相同，直接使用
+                            # 如果 next_to_play != to_play，则视角相反，取反
+                            if next_to_play == to_play:
+                                stv_targets.append(next_root_value)
+                            else:
+                                stv_targets.append(-next_root_value)
+                        else:
+                            # 游戏结束，使用最终 outcome
+                            stv_targets.append(outcome)
+
                     return_memory.append((
                         game.encode_state(state, to_play),
                         policy_target,
                         outcome,
                         for_train,  # 布尔值：是否用于训练 Policy
                         policy_prior,
-                        sample_weight
+                        sample_weight,
+                        root_value,
+                        stv_targets
                     ))
 
                 # Send result to main process
@@ -293,6 +323,9 @@ class ParallelAlphaZero(AlphaZero):
         self.losses = []
         self.policy_losses = []
         self.value_losses = []
+        self.aux_policy_losses = []
+        self.optimistic_losses = []
+        self.stv_losses = []
         self.game_count = 0
 
         # Replay Buffer
@@ -361,12 +394,27 @@ class ParallelAlphaZero(AlphaZero):
         if 'value_losses' in checkpoint:
             self.value_losses = checkpoint['value_losses']
 
+        if 'aux_policy_losses' in checkpoint:
+            self.aux_policy_losses = checkpoint['aux_policy_losses']
+
+        if 'optimistic_losses' in checkpoint:
+            self.optimistic_losses = checkpoint['optimistic_losses']
+
+        if 'stv_losses' in checkpoint:
+            self.stv_losses = checkpoint['stv_losses']
+
         if 'game_count' in checkpoint:
             self.game_count = checkpoint['game_count']
             print(f"Game count loaded ({self.game_count} games)")
 
         if 'replay_buffer' in checkpoint:
             self.replay_buffer.load_state(checkpoint['replay_buffer'])
+            
+            # Check data format compatibility (now requires 7 elements)
+            if len(self.replay_buffer) > 0 and len(self.replay_buffer.buffer[0]) != 7:
+                 print(f"Warning: Replay buffer format mismatch (expected 7, got {len(self.replay_buffer.buffer[0])}). Clearing buffer.")
+                 self.replay_buffer.clear()
+            
             print(f"Replay buffer loaded ({len(self.replay_buffer)} samples)")
 
         print(f"Checkpoint loaded from {filepath}")
@@ -474,9 +522,13 @@ class ParallelAlphaZero(AlphaZero):
                         weighted_memory, psw_stats = self.psw.process_game(memory)
 
                         # Remove policy_prior from weighted_memory before adding to buffer
-                        # memory format: (encoded_state, policy_target, outcome, for_train, policy_prior)
-                        # desired format: (encoded_state, policy_target, outcome, for_train)
-                        final_memory = [sample[:4] for sample in weighted_memory]
+                        # memory format: (encoded_state, policy_target, outcome, for_train, policy_prior, sample_weight, root_value, stv_targets)
+                        # desired format: remove policy_prior (idx 4)
+                        final_memory = []
+                        for sample in weighted_memory:
+                            new_sample = list(sample)
+                            new_sample.pop(4)
+                            final_memory.append(tuple(new_sample))
 
                         # if psw_stats.get('enabled', False):
                         if self.game_count % 10 == 0:
@@ -553,24 +605,35 @@ class ParallelAlphaZero(AlphaZero):
                     train_losses = []
                     train_policy_losses = []
                     train_value_losses = []
+                    train_aux_policy_losses = []
+                    train_optimistic_losses = []
+                    train_stv_losses = []
 
                     # Number of steps
                     steps = self.args['train_steps_per_generation']
 
                     for _ in range(steps):
                         batch = self.replay_buffer.sample(self.args['batch_size'])
-                        loss, p_loss, v_loss = self._train_batch(batch)
+                        loss, p_loss, v_loss, aux_p_loss, opt_loss, stv_loss = self._train_batch(batch)
                         train_losses.append(loss)
                         train_policy_losses.append(p_loss)
                         train_value_losses.append(v_loss)
+                        train_aux_policy_losses.append(aux_p_loss)
+                        train_optimistic_losses.append(opt_loss)
+                        train_stv_losses.append(stv_loss)
                         total_train_steps += 1
 
                     # Update History
                     self.losses.append(np.mean(train_losses))
                     self.policy_losses.append(np.mean(train_policy_losses))
                     self.value_losses.append(np.mean(train_value_losses))
+                    self.aux_policy_losses.append(np.mean(train_aux_policy_losses))
+                    self.optimistic_losses.append(np.mean(train_optimistic_losses))
+                    self.stv_losses.append(np.mean(train_stv_losses))
 
                     print(f"\n[Training] Game {self.game_count}, Steps {steps}, Loss: {np.mean(train_losses):.4f}")
+                    print(f"  P_Loss: {np.mean(train_policy_losses):.4f}, V_Loss: {np.mean(train_value_losses):.4f}")
+                    print(f"  Aux_P: {np.mean(train_aux_policy_losses):.4f}, Opt: {np.mean(train_optimistic_losses):.4f}, STV: {np.mean(train_stv_losses):.4f}")
 
                     # C. Sync Model with GPU Worker
                     # Send new weights to GPU process
@@ -608,22 +671,43 @@ class ParallelAlphaZero(AlphaZero):
                         plt.close()
 
                         # Plotting detailed losses
-                        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+                        fig, axes = plt.subplots(5, 1, figsize=(10, 20))
+                        
+                        # Policy Loss
+                        axes[0].set_yscale('log')
+                        axes[0].set_ylabel('Policy Loss')
+                        axes[0].plot(self.policy_losses, color='blue')
+                        axes[0].set_title(f'Policy Loss')
+                        axes[0].grid(True, alpha=0.3)
+                        
+                        # Value Loss
+                        axes[1].set_yscale('log')
+                        axes[1].set_ylabel('Value Loss')
+                        axes[1].plot(self.value_losses, color='orange')
+                        axes[1].set_title(f'Value Loss')
+                        axes[1].grid(True, alpha=0.3)
 
-                        ax1.set_yscale('log')
-                        ax1.set_xlabel('Training Steps (Generations)')
-                        ax1.set_ylabel('Policy Loss')
-                        ax1.plot(self.policy_losses, color='blue')
-                        ax1.set_title(f'Policy Loss (Game {self.game_count})')
-                        ax1.grid(True, alpha=0.3)
+                        # Aux Policy Loss
+                        axes[2].set_yscale('log')
+                        axes[2].set_ylabel('Aux Policy Loss')
+                        axes[2].plot(self.aux_policy_losses, color='green')
+                        axes[2].set_title(f'Aux Policy Loss')
+                        axes[2].grid(True, alpha=0.3)
 
-                        ax2.set_yscale('log')
-                        ax2.set_xlabel('Training Steps (Generations)')
-                        ax2.set_ylabel('Value Loss')
-                        ax2.plot(self.value_losses, color='orange')
-                        ax2.set_title(f'Value Loss (Game {self.game_count})')
-                        ax2.grid(True, alpha=0.3)
+                        # Optimistic Loss
+                        axes[3].set_yscale('log')
+                        axes[3].set_ylabel('Optimistic Loss')
+                        axes[3].plot(self.optimistic_losses, color='red')
+                        axes[3].set_title(f'Optimistic Loss')
+                        axes[3].grid(True, alpha=0.3)
 
+                        # STV Loss
+                        axes[4].set_yscale('log')
+                        axes[4].set_ylabel('STV Loss')
+                        axes[4].plot(self.stv_losses, color='purple')
+                        axes[4].set_title(f'Short-term Value Loss')
+                        axes[4].grid(True, alpha=0.3)
+                        
                         plt.tight_layout()
                         plt.savefig(f"{self.args['file_name']}_losses_detail.png")
                         plt.close()

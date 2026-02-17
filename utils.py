@@ -98,16 +98,19 @@ def random_augment_batch(batch, board_size):
     每个样本独立地随机选择8种变换中的一种。
     
     Args:
-        batch: 样本列表，每个样本是 (state, action_probs, outcome, for_train) 的元组
+        batch: 样本列表，每个样本是 (state, action_probs, *others) 的元组
         board_size: 棋盘大小（正方形）
         
     Returns:
         增强后的batch（数量不变）
     """
     augmented_batch = []
-    for state, action_probs, outcome, for_train in batch:
+    for item in batch:
+        state = item[0]
+        action_probs = item[1]
+        others = item[2:]
         aug_state, aug_probs = random_augment_sample(state, action_probs, board_size)
-        augmented_batch.append((aug_state, aug_probs, outcome, for_train))
+        augmented_batch.append((aug_state, aug_probs) + others)
     return augmented_batch
 
 
@@ -147,7 +150,7 @@ def random_augment_batch_rect(batch, board_height, board_width):
     每个样本独立地随机选择是否水平翻转。
     
     Args:
-        batch: 样本列表，每个样本是 (state, action_probs, outcome, for_train) 的元组
+        batch: 样本列表，每个样本是 (state, action_probs, *others) 的元组
         board_height: 棋盘高度
         board_width: 棋盘宽度
         
@@ -155,9 +158,12 @@ def random_augment_batch_rect(batch, board_height, board_width):
         增强后的batch（数量不变）
     """
     augmented_batch = []
-    for state, action_probs, outcome, for_train in batch:
+    for item in batch:
+        state = item[0]
+        action_probs = item[1]
+        others = item[2:]
         aug_state, aug_probs = random_augment_sample_rect(state, action_probs, board_height, board_width)
-        augmented_batch.append((aug_state, aug_probs, outcome, for_train))
+        augmented_batch.append((aug_state, aug_probs) + others)
     return augmented_batch
 
 
@@ -191,15 +197,18 @@ def random_augment_batch_connect4(batch):
     对Connect4等列动作游戏的batch进行随机数据增强。
     
     Args:
-        batch: 样本列表，每个样本是 (state, action_probs, outcome, for_train) 的元组
+        batch: 样本列表，每个样本是 (state, action_probs, *others) 的元组
         
     Returns:
         增强后的batch（数量不变）
     """
     augmented_batch = []
-    for state, action_probs, outcome, for_train in batch:
+    for item in batch:
+        state = item[0]
+        action_probs = item[1]
+        others = item[2:]
         aug_state, aug_probs = random_augment_sample_connect4(state, action_probs)
-        augmented_batch.append((aug_state, aug_probs, outcome, for_train))
+        augmented_batch.append((aug_state, aug_probs) + others)
     return augmented_batch
 
 
