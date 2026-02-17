@@ -53,7 +53,7 @@ if __name__ == '__main__':
 
         'min_buffer_size': 10000,
         'max_buffer_size': 200000,
-        'buffer_size_k': 0.7,
+        'buffer_size_k': 0.5,
 
         'forced_playouts': True,  # 启用强制搜索
         'forced_playout_coeff': 2.0,

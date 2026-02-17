@@ -53,7 +53,7 @@ if __name__ == '__main__':
 
         'min_buffer_size': 500,
         'max_buffer_size': 3000,
-        'buffer_size_k': 0.1,
+        'buffer_size_k': 0.3,
 
         'forced_playouts': True,  # 启用强制搜索
         'forced_playout_coeff': 2.0,
@@ -66,7 +66,7 @@ if __name__ == '__main__':
         'psw_baseline_ratio': 0.5,  # 均匀分配的权重比例
         'psw_min_weight': 0.01,  # 最小权重
 
-        'resign_threshold': -0.99,
+        'resign_threshold': -0.95,
         'soft_resign_playout_prob': 0.3,
 
         'device': 'cuda',
