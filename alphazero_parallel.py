@@ -342,6 +342,12 @@ class ParallelAlphaZero(AlphaZero):
             min_weight=args.get('psw_min_weight', 0.01)
         )
 
+        self.win_rate_history = {
+            'black': [],
+            'white': [],
+            'draw': [],
+        }
+
         # Queues and Pipes for Parallel Execution
         self.request_queue = mp.Queue()
         self.result_queue = mp.Queue()
@@ -417,8 +423,42 @@ class ParallelAlphaZero(AlphaZero):
             
             print(f"Replay buffer loaded ({len(self.replay_buffer)} samples)")
 
+        if 'win_rate_history' in checkpoint:
+            self.win_rate_history = checkpoint['win_rate_history']
+            print(f"Win rate history loaded ({len(self.win_rate_history['black'])} data points)")
+
         print(f"Checkpoint loaded from {filepath}")
         return True
+
+    def save_checkpoint(self, filepath=None):
+        from datetime import datetime
+
+        if filepath is None:
+            checkpoint_dir = f"{self.args['file_name']}_checkpoints"
+            os.makedirs(checkpoint_dir, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filepath = os.path.join(checkpoint_dir, f"{os.path.basename(self.args['file_name'])}_checkpoint_{timestamp}.pth")
+
+        checkpoint = {
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'losses': self.losses,
+            'policy_losses': self.policy_losses,
+            'value_losses': self.value_losses,
+            'aux_policy_losses': self.aux_policy_losses,
+            'optimistic_losses': self.optimistic_losses,
+            'stv_losses': self.stv_losses,
+            'game_count': self.game_count,
+            'replay_buffer': self.replay_buffer.get_state(),
+            'win_rate_history': self.win_rate_history,
+        }
+
+        torch.save(checkpoint, filepath)
+
+        file_size = os.path.getsize(filepath)
+        size_str = f"{file_size / 1024 / 1024:.1f}MB" if file_size > 1024 * 1024 else f"{file_size / 1024:.1f}KB"
+        print(f"Checkpoint saved to {filepath} ({size_str})")
 
     def learn(self):
         import matplotlib.pyplot as plt
@@ -561,7 +601,7 @@ class ParallelAlphaZero(AlphaZero):
                             total_window_time = sum(t for t, _ in recent_throughput_measurements)
                             global_steps_per_sec = total_window_steps / total_window_time if total_window_time > 0 else 0
 
-                            print(f"\n[Game {self.game_count}] Winner: {int(winner):+d}, Len: {len(memory)}, Buffer: {len(self.replay_buffer)}, AvgLen: {avg_len:.1f}")
+                            print(f"\n[Game {self.game_count}] [Total Sample Added {self.replay_buffer.total_samples_added}] Winner: {int(winner):+d}, Len: {len(memory)}, Buffer: {len(self.replay_buffer)}, AvgLen: {avg_len:.1f}")
                             print(f'  Speed: {global_steps_per_sec:.1f} steps/s')
                             print(
                                 f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
@@ -630,6 +670,15 @@ class ParallelAlphaZero(AlphaZero):
                     self.aux_policy_losses.append(np.mean(train_aux_policy_losses))
                     self.optimistic_losses.append(np.mean(train_optimistic_losses))
                     self.stv_losses.append(np.mean(train_stv_losses))
+
+                    recent_first_win = sum(1 for w in recent_winners if w == 1)
+                    recent_second_win = sum(1 for w in recent_winners if w == -1)
+                    recent_draw = sum(1 for w in recent_winners if w == 0)
+                    recent_total = len(recent_winners)
+
+                    self.win_rate_history['black'].append(recent_first_win / recent_total if recent_total > 0 else 0)
+                    self.win_rate_history['white'].append(recent_second_win / recent_total if recent_total > 0 else 0)
+                    self.win_rate_history['draw'].append(recent_draw / recent_total if recent_total > 0 else 0)
 
                     print(f"\n[Training] Game {self.game_count}, Steps {steps}, Loss: {np.mean(train_losses):.4f}")
                     print(f"  P_Loss: {np.mean(train_policy_losses):.4f}, V_Loss: {np.mean(train_value_losses):.4f}")
@@ -711,6 +760,23 @@ class ParallelAlphaZero(AlphaZero):
                         plt.tight_layout()
                         plt.savefig(f"{self.args['file_name']}_losses_detail.png")
                         plt.close()
+
+                        # Plotting win rate
+                        if len(self.win_rate_history['black']) > 0:
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            x = range(len(self.win_rate_history['black']))
+                            ax.plot(x, self.win_rate_history['black'], color='black', label='Black (First)', linewidth=2)
+                            ax.plot(x, self.win_rate_history['white'], color='gray', label='White (Second)', linewidth=2)
+                            ax.plot(x, self.win_rate_history['draw'], color='blue', label='Draw', linewidth=2)
+                            ax.set_xlabel('Training Generation')
+                            ax.set_ylabel('Win Rate')
+                            ax.set_title(f'Win Rate History (Recent 100 Games, Game {self.game_count})')
+                            ax.set_ylim(0, 1)
+                            ax.legend()
+                            ax.grid(True, alpha=0.3)
+                            plt.tight_layout()
+                            plt.savefig(f"{self.args['file_name']}_win_rate.png")
+                            plt.close()
                     except Exception as e:
                         print(f"Plotting failed: {e}")
 

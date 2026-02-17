@@ -337,6 +337,12 @@ class AlphaZero:
             min_weight=args.get('psw_min_weight', 0.01)
         )
 
+        self.win_rate_history = {
+            'black': [],
+            'white': [],
+            'draw': [],
+        }
+
     def _get_randomized_simulations(self):
         """
         Playout Cap Randomization: 二选一策略
@@ -566,36 +572,81 @@ class AlphaZero:
         # === 4. Optimistic Policy Loss ===
         optimistic_loss = torch.tensor(0.0, device=self.args['device'])
         if optimistic_policy is not None:
-            # 只有当结果比根节点预期好（且是赢棋）时训练
-            # 简单起见：Outcome > Root Value + margin
-            # KataGo 使用更复杂的逻辑 (sigmoid gating)，这里使用硬门控
-            # outcome (value_targets) is [-1, 1], root_values is [-1, 1]
+            # optimistic_policy shape: [B, 2, ActionSpace] (Output 0: Long-term, Output 1: Short-term)
             
-            # Gate 1: 必须是赢棋 (value_targets > 0.5) 或者是胜率明显提升
-            # Gate 2: 提升幅度超过阈值 (0.05)
+            # --- Long-term Optimistic Policy (Output 0) ---
+            # KataGo Logic:
+            # Weight = win_squared + sigmoid((score_stdevs_excess - 1.5) * 3.0)
+            # win_squared discourages draws.
+            # score_stdevs_excess: how much better the actual score is than expected, in units of predicted stdev.
+            # Simplified here since we don't have score targets/predictions in this code base yet:
+            # Use value (win rate) improvement instead.
+            
+            # value_targets is [-1, 1]. Map to [0, 1] for win probability approx
+            win_prob_target = (value_targets + 1.0) / 2.0
+            root_win_prob = (root_values + 1.0) / 2.0
+            
+            # 1. Win Squared (encourages winning positions)
+            # KataGo: win_squared = (win_prob + 0.5 * no_result)^2. 
+            # Here just win_prob^2
+            win_squared = torch.square(win_prob_target)
+            
+            # 2. Unexpected Improvement (Surprise)
+            # KataGo uses score stdevs. We'll use value improvement.
+            # improvement = actual - expected
             improvement = value_targets - root_values
+            # Heuristic: 0.1 improvement in value ~ 1.5 sigma surprise? (Just a guess without variance head)
+            # Let's map improvement to a "surprise score".
+            # If improvement > 0.2, we want high weight.
+            # Sigmoid((improvement - 0.1) * 20) -> Center at 0.1, scale 20.
+            surprise_weight = torch.sigmoid((improvement - 0.1) * 20.0)
             
-            # KataGo-style Sigmoid Gating (Soft Gate)
-            # 使用 Sigmoid 进行平滑门控：中心点 0.05，缩放系数 10.0
-            opt_gate = torch.sigmoid((improvement - 0.05) * 10.0)
+            target_weight_long = torch.clamp(torch.max(win_squared, surprise_weight), 0.0, 1.0)
             
-            # 基础过滤器：
-            # 1. value_targets > -0.9: 不要对必输的局做乐观估计 (保留原有逻辑)
-            # 2. policy_mask_tensor: 只在用于 policy 训练的样本上计算
+            # Filter: Don't train on lost games (value < -0.9) and only on policy training samples
             valid_opt_mask = (value_targets > -0.9).squeeze() & policy_mask_tensor
             
             if valid_opt_mask.sum() > 0:
-                opt_loss = F.cross_entropy(
-                    optimistic_policy[valid_opt_mask],
-                    policy_targets[valid_opt_mask], # 目标仍然是 MCTS 策略
+                # Long-term policy loss
+                opt_loss_long_vals = F.cross_entropy(
+                    optimistic_policy[valid_opt_mask, 0, :],
+                    policy_targets[valid_opt_mask],
                     reduction='none'
                 )
                 
-                # 应用 sample_weights 和 sigmoid gate weights
-                # opt_gate 维度是 [Batch, 1], masking 后为 [N, 1], 需要 squeeze 匹配 loss 维度
-                combined_weights = sample_weights[valid_opt_mask] * opt_gate[valid_opt_mask].squeeze()
+                # Expand dims for combined_weights to match loss if needed, but cross_entropy returns [N]
+                # sample_weights: [B, 1] or [B] -> [N]
+                # target_weight_long: [B, 1] -> [N]
+                combined_weights_long = sample_weights[valid_opt_mask] * target_weight_long[valid_opt_mask].squeeze()
+                loss_long = (opt_loss_long_vals * combined_weights_long).mean()
                 
-                optimistic_loss = (opt_loss * combined_weights).mean()
+                loss_short = torch.tensor(0.0, device=self.args['device'])
+
+                # --- Short-term Optimistic Policy (Output 1) ---
+                if short_term_value is not None:
+                    # Use the first horizon (6 turns) for short-term surprise
+                    # stv_targets: [B, 3], short_term_value: [B, 3]
+                    stv_actual = stv_targets[:, 0:1] # [B, 1]
+                    stv_pred = short_term_value[:, 0:1].detach() # [B, 1]
+                    
+                    # Positive values mean better for current player
+                    stv_improvement = stv_actual - stv_pred
+                    
+                    # Sigmoid gate for short term
+                    target_weight_short = torch.clamp(torch.sigmoid((stv_improvement - 0.1) * 20.0), 0.0, 1.0)
+                    
+                    opt_loss_short_vals = F.cross_entropy(
+                        optimistic_policy[valid_opt_mask, 1, :],
+                        policy_targets[valid_opt_mask],
+                        reduction='none'
+                    )
+                    
+                    combined_weights_short = sample_weights[valid_opt_mask] * target_weight_short[valid_opt_mask].squeeze()
+                    loss_short = (opt_loss_short_vals * combined_weights_short).mean()
+                    
+                optimistic_loss = 0.1 * loss_long + 0.2 * loss_short
+            else:
+                optimistic_loss = torch.tensor(0.0, device=self.args['device'])
 
         # === 5. Short-term Value Loss ===
         stv_loss = torch.tensor(0.0, device=self.args['device'])
@@ -607,7 +658,7 @@ class AlphaZero:
             s_loss = s_loss.mean(dim=1)
             stv_loss = (s_loss * sample_weights).mean()
 
-        loss = 0.93 * policy_loss + 0.72 * value_loss + 8 * aux_policy_loss + 0.3 * optimistic_loss + 0.72 * stv_loss
+        loss = 0.93 * policy_loss + 0.72 * value_loss + 8 * aux_policy_loss + optimistic_loss + 0.72 * stv_loss
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -646,7 +697,6 @@ class AlphaZero:
         print(f'Save Time Interval: {savetime_interval}s ({savetime_interval / 60:.1f}min)')
         print()
 
-        num_games_per_generation = 20
         init_flag = True
         train_game_count = 0
 
@@ -685,7 +735,7 @@ class AlphaZero:
             global_steps_per_sec = total_window_steps / total_window_time if total_window_time > 0 else 0
 
             current_buffer_size = len(self.replay_buffer)
-            print(f'\n[Game {self.game_count}] Winner: {int(winner):+d}, Steps: {game_steps}, Samples: {sample_count}, Buffer: {current_buffer_size}, AvgSteps: {avg_game_steps:.1f}, AvgSamples: {avg_sample_count:.1f}')
+            print(f'\n[Game {self.game_count}] [Total Samples Added{self.replay_buffer.total_samples_added}] Winner: {int(winner):+d}, Steps: {game_steps}, Samples: {sample_count}, Buffer: {current_buffer_size}, AvgSteps: {avg_game_steps:.1f}, AvgSamples: {avg_sample_count:.1f}')
             print(f'  Speed: {global_steps_per_sec:.1f} steps/s')
             print(
                 f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
@@ -754,6 +804,10 @@ class AlphaZero:
             # print(f'  num_games_per_generation: {num_games_per_generation}')
             print(f'  Total Elapsed: {total_elapsed / 60:.1f}min, Avg/Game: {avg_time_per_game:.2f}s')
 
+            self.win_rate_history['black'].append(recent_first_win / recent_total if recent_total > 0 else 0)
+            self.win_rate_history['white'].append(recent_second_win / recent_total if recent_total > 0 else 0)
+            self.win_rate_history['draw'].append(recent_draw / recent_total if recent_total > 0 else 0)
+
             # 图1：总loss图像
             plt.figure(figsize=(10, 6))
             plt.yscale('log')
@@ -784,6 +838,23 @@ class AlphaZero:
             plt.tight_layout()
             plt.savefig(f"{self.args['file_name']}_losses_detail.png")
             plt.close()
+
+            # 图3：胜率图像
+            if len(self.win_rate_history['black']) > 0:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                x = range(len(self.win_rate_history['black']))
+                ax.plot(x, self.win_rate_history['black'], color='black', label='Black (First)', linewidth=2)
+                ax.plot(x, self.win_rate_history['white'], color='gray', label='White (Second)', linewidth=2)
+                ax.plot(x, self.win_rate_history['draw'], color='blue', label='Draw', linewidth=2)
+                ax.set_xlabel('Training Generation')
+                ax.set_ylabel('Win Rate')
+                ax.set_title(f'Win Rate History (Recent 100 Games, Game {self.game_count})')
+                ax.set_ylim(0, 1)
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+                plt.savefig(f"{self.args['file_name']}_win_rate.png")
+                plt.close()
 
     @torch.inference_mode()
     def play(self, state, to_play):
@@ -832,6 +903,7 @@ class AlphaZero:
             'value_losses': self.value_losses,
             'game_count': self.game_count,
             'replay_buffer': self.replay_buffer.get_state(),
+            'win_rate_history': self.win_rate_history,
         }
 
         torch.save(checkpoint, filepath)
@@ -892,6 +964,10 @@ class AlphaZero:
         if 'replay_buffer' in checkpoint:
             self.replay_buffer.load_state(checkpoint['replay_buffer'])
             print(f"Replay buffer loaded ({len(self.replay_buffer)} samples)")
+
+        if 'win_rate_history' in checkpoint:
+            self.win_rate_history = checkpoint['win_rate_history']
+            print(f"Win rate history loaded ({len(self.win_rate_history['black'])} data points)")
 
         print(f"Checkpoint loaded from {filepath}")
         return True

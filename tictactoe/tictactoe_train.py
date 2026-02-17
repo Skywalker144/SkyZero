@@ -7,8 +7,8 @@ from nets import ResNet
 
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
-    game = TicTacToe(history_step=3)
-    model = ResNet(game, num_blocks=1, num_channels=64).to('cuda')
+    game = TicTacToe(history_step=2)
+    model = ResNet(game, num_blocks=2, num_channels=32).to('cuda')
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
     args = {
         'mode': 'train',
@@ -23,13 +23,14 @@ if __name__ == '__main__':
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
-        'buffer_size': 3000,
-        'batch_size': 128,
-        'min_buffer_size': 500,
-        'buffer_size_k': 1.0,
-
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,
+
+        'batch_size': 128,
+
+        'min_buffer_size': 500,
+        'max_buffer_size': 3000,
+        'buffer_size_k': 0.1,
 
         'forced_playout_coeff': 2.0,
 

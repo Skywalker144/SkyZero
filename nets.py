@@ -188,8 +188,8 @@ class ResNet(nn.Module):
         if self.use_aux_policy:
             self.aux_policy_head = self._build_policy_head(c)
 
-        # Optimistic Policy Head (新增)
-        self.optimistic_policy_head = self._build_policy_head(c)
+        # Optimistic Policy Head (新增, output 2 channels for long/short term)
+        self.optimistic_policy_head = self._build_policy_head(c, output_channels=2)
 
         # 5. Value Head (论文 Appendix A.5)
         # 1x1 卷积 -> 全局池化 -> FC -> FC -> tanh
@@ -203,7 +203,7 @@ class ResNet(nn.Module):
 
         self._init_weights()
 
-    def _build_policy_head(self, c):
+    def _build_policy_head(self, c, output_channels=1):
         # 提取 Policy Head 构建逻辑以便复用
         # 并行两路 1x1 卷积: P 和 G
         board_cells = self.board_height * self.board_width
@@ -220,11 +220,11 @@ class ResNet(nn.Module):
         fc_out = None
 
         if spatial_policy:
-            # 纯空间动作: 1x1 卷积输出 1 通道 (棋盘大小无关)
-            conv_out = nn.Conv2d(c_head, 1, kernel_size=1)
+            # 纯空间动作: 1x1 卷积输出 output_channels 通道
+            conv_out = nn.Conv2d(c_head, output_channels, kernel_size=1)
         else:
             # 非纯空间动作 (如 Connect4 只选列): 全局池化后 FC 输出
-            fc_out = nn.Linear(c_head * 2, self.action_space_size)
+            fc_out = nn.Linear(c_head * 2, self.action_space_size * output_channels)
             
         return nn.ModuleDict({
             'conv_p': conv_p,
@@ -274,14 +274,24 @@ class ResNet(nn.Module):
         
         if head_modules['conv_out'] is not None:
             # Spatial Policy
-            policy = head_modules['conv_out'](p)
-            policy = policy.flatten(1)
+            policy = head_modules['conv_out'](p) # [B, C_out, H, W]
+            B, C_out, H, W = policy.shape
+            # Flatten spatial dimensions: [B, C_out, H*W]
+            policy = policy.reshape(B, C_out, -1)
         else:
             # Non-spatial Policy
             p_mean = p.mean(dim=(2, 3))
             p_max = p.amax(dim=(2, 3))
             p_pooled = torch.cat([p_mean, p_max], dim=1)
-            policy = head_modules['fc_out'](p_pooled)
+            policy = head_modules['fc_out'](p_pooled) # [B, C_out * ActionSpace]
+            B = policy.shape[0]
+            # fc_out 输出是 [B, ActionSpace * C_out]，需要正确 reshape
+            # 先 reshape 为 [B, ActionSpace, C_out] 再 transpose 为 [B, C_out, ActionSpace]
+            policy = policy.reshape(B, self.action_space_size, -1).permute(0, 2, 1)
+        
+        # Squeeze channel dim if it's 1 (standard policy head behavior)
+        if policy.shape[1] == 1:
+            policy = policy.squeeze(1)
             
         return policy
 
