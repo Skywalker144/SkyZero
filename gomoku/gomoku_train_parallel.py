@@ -26,7 +26,7 @@ if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
 
     # Initialize Game
-    game = Gomoku(board_size=15, history_step=3)
+    game = Gomoku(board_size=15, history_step=2)
 
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
@@ -46,12 +46,14 @@ if __name__ == '__main__':
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
-        'buffer_size': 100000,
-        'batch_size': 1024,
-        'min_buffer_size': 10000,
-
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,
+
+        'batch_size': 1024,
+
+        'min_buffer_size': 10000,
+        'max_buffer_size': 200000,
+        'buffer_size_k': 0.7,
 
         'forced_playouts': True,  # 启用强制搜索
         'forced_playout_coeff': 2.0,
@@ -85,6 +87,6 @@ if __name__ == '__main__':
     alphazero = ParallelAlphaZero(game, model, optimizer, args, num_workers=num_workers)
 
     # Try to load existing checkpoint if any
-    alphazero.load_checkpoint()
+    # alphazero.load_checkpoint()
     # alphazero.replay_buffer.clear()
     alphazero.learn()

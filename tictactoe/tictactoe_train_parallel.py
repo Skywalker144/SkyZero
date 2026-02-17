@@ -46,12 +46,14 @@ if __name__ == '__main__':
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0.25,
 
-        'buffer_size': 3000,
-        'batch_size': 128,
-        'min_buffer_size': 500,
-
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,
+
+        'batch_size': 128,
+
+        'min_buffer_size': 500,
+        'max_buffer_size': 3000,
+        'buffer_size_k': 0.1,
 
         'forced_playouts': True,  # 启用强制搜索
         'forced_playout_coeff': 2.0,
@@ -68,7 +70,7 @@ if __name__ == '__main__':
         'soft_resign_playout_prob': 0.3,
 
         'device': 'cuda',
-        'savetime_interval': 180,
+        'savetime_interval': 360,
         'file_name': 'tictactoe',
     }
 

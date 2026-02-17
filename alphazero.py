@@ -321,10 +321,10 @@ class AlphaZero:
         self.value_losses = []
         self.game_count = 0
 
-        buffer_size = args['buffer_size']
         self.replay_buffer = ReplayBuffer(
-            window_size=buffer_size,
-            board_size=game.board_size,
+            min_buffer_size=args['min_buffer_size'],
+            max_buffer_size=args['max_buffer_size'],
+            buffer_size_k=args['buffer_size_k']
         )
 
         self.halflife = np.sqrt(self.game.board_width * self.game.board_height)
@@ -561,7 +561,7 @@ class AlphaZero:
                 reduction='none'
             )
             # Weighted 8x (KataGo default)
-            aux_policy_loss = (aux_loss * sample_weights[policy_mask_tensor]).mean() * 8.0
+            aux_policy_loss = (aux_loss * sample_weights[policy_mask_tensor]).mean()
 
         # === 4. Optimistic Policy Loss ===
         optimistic_loss = torch.tensor(0.0, device=self.args['device'])
@@ -595,7 +595,7 @@ class AlphaZero:
                 # opt_gate 维度是 [Batch, 1], masking 后为 [N, 1], 需要 squeeze 匹配 loss 维度
                 combined_weights = sample_weights[valid_opt_mask] * opt_gate[valid_opt_mask].squeeze()
                 
-                optimistic_loss = (opt_loss * combined_weights).mean() * 0.5 # 权重 0.5
+                optimistic_loss = (opt_loss * combined_weights).mean()
 
         # === 5. Short-term Value Loss ===
         stv_loss = torch.tensor(0.0, device=self.args['device'])
@@ -605,9 +605,9 @@ class AlphaZero:
             s_loss = F.mse_loss(short_term_value, stv_targets, reduction='none')
             # 对三个时间点平均
             s_loss = s_loss.mean(dim=1)
-            stv_loss = (s_loss * sample_weights).mean() * 0.5 # 权重 0.5
+            stv_loss = (s_loss * sample_weights).mean()
 
-        loss = policy_loss + 0.6 * value_loss + aux_policy_loss + optimistic_loss + stv_loss
+        loss = 0.93 * policy_loss + 0.72 * value_loss + 8 * aux_policy_loss + 0.3 * optimistic_loss + 0.72 * stv_loss
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -638,7 +638,7 @@ class AlphaZero:
         last_save_time = time.time()
         savetime_interval = self.args['savetime_interval']
 
-        print(f'Buffer Size: {self.replay_buffer.window_size}')
+        print(f'Buffer Size: {self.replay_buffer.max_buffer_size}')
         print(f'Batch Size: {batch_size}')
         print(f'Min Buffer Size: {min_buffer_size}')
         print(f'Train Steps per Generation: {train_steps_per_generation}')

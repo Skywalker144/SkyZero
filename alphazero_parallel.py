@@ -330,10 +330,10 @@ class ParallelAlphaZero(AlphaZero):
 
         # Replay Buffer
         from replay_buffer import ParallelReplayBuffer
-        buffer_size = args['buffer_size']
         self.replay_buffer = ParallelReplayBuffer(
-            window_size=buffer_size,
-            board_size=game.board_size,
+            min_buffer_size=args['min_buffer_size'],
+            max_buffer_size=args['max_buffer_size'],
+            buffer_size_k=args['buffer_size_k'],
         )
 
         # Initialize Policy Surprise Weighting (PSW)

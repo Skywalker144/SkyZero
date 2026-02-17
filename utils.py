@@ -71,8 +71,8 @@ def random_augment_sample(state, action_probs, board_size):
         (transformed_state, transformed_probs): 变换后的状态和动作概率
     """
     # 随机选择变换类型：0-7
-    # 0-3: 旋转 k*90° 不翻转
-    # 4-7: 旋转 (k-4)*90° 后翻转
+    # 0-3: 旋转 buffer_size_k*90° 不翻转
+    # 4-7: 旋转 (buffer_size_k-4)*90° 后翻转
     transform_type = np.random.randint(0, 8)
 
     k = transform_type % 4  # 旋转次数

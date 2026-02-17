@@ -29,6 +29,7 @@ if __name__ == '__main__':
         'buffer_size': 100000,
         'batch_size': 1024,
         'min_buffer_size': 5000,
+        'buffer_size_k': 1.0,
 
         'train_steps_per_generation': 5,
         'target_ReplayRatio': 8,

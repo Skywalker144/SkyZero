@@ -5,7 +5,7 @@ AlphaZero uses Replay Buffer to store self-play data from the last N games,
 sampling randomly from the entire buffer during training, not just the latest game.
 
 Main features:
-1. Capacity limited by sample count (window_size), old data replaced by new
+1. Capacity limited by sample count (max_buffer_size), old data replaced by new
 2. Support for random sampling
 3. Support for saving and loading buffer state
 4. Ring Buffer implementation for O(1) append and O(1) sample
@@ -28,13 +28,13 @@ class ReplayBuffer:
     - O(batch_size) sample complexity (no O(N) index access like deque)
     
     Args:
-        window_size: Maximum number of samples to keep, old data will be removed
-        board_size: Board size (for potential future use in data augmentation)
+        max_buffer_size: Maximum number of samples to keep, old data will be removed
     """
     
-    def __init__(self, window_size: int = 500000, board_size: int = 9):
-        self.window_size = window_size
-        self.board_size = board_size
+    def __init__(self, max_buffer_size: int = 500000, min_buffer_size: int = 50000, buffer_size_k: float = 1.0):
+        self.max_buffer_size = max_buffer_size
+        self.min_buffer_size = min_buffer_size
+        self.buffer_size_k = buffer_size_k
         
         # Ring buffer: List + position pointer
         self.buffer: List[Tuple] = []
@@ -42,14 +42,33 @@ class ReplayBuffer:
         
         # Track number of games added
         self.games_count = 0
+        self.total_samples_added = 0
+    
+    def _get_window_size(self) -> int:
+        """Calculate dynamic buffer size limit based on samples added beyond min_size."""
+        # If we haven't reached min_buffer_size, dynamic limit is just min_buffer_size
+        # (effectively no limit beyond physical count, as physical count < min_size)
+        if self.total_samples_added < self.min_buffer_size:
+            return self.min_buffer_size
+
+        L = self.max_buffer_size - self.min_buffer_size
         
+        # Prevent division by zero or invalid math
+        if L <= 0 or self.buffer_size_k <= 0:
+            return self.max_buffer_size
+            
+        # Formula: current = Max - (Max - Min) * exp(-x / (buffer_size_k * (Max - Min)))
+        # When x=0 (just reached min_size), exp(0)=1, result = Max - L = Min
+        window_size = self.max_buffer_size - L * np.exp((self.min_buffer_size - self.total_samples_added) / (L / self.buffer_size_k))
+        return int(window_size)
+
     def __len__(self) -> int:
         """Return current number of samples in buffer"""
         return len(self.buffer)
     
     def is_full(self) -> bool:
         """Check if buffer has reached capacity"""
-        return len(self.buffer) >= self.window_size
+        return len(self.buffer) >= self.max_buffer_size
     
     def add_game(self, game_memory: List[Tuple]) -> int:
         """
@@ -62,36 +81,31 @@ class ReplayBuffer:
             Number of samples added
         """
         for sample in game_memory:
-            if len(self.buffer) < self.window_size:
+            if len(self.buffer) < self.max_buffer_size:
                 self.buffer.append(sample)
             else:
                 # Ring buffer: overwrite oldest data
                 self.buffer[self.position] = sample
-            self.position = (self.position + 1) % self.window_size
+            self.position = (self.position + 1) % self.max_buffer_size
                 
         self.games_count += 1
+        self.total_samples_added += len(game_memory)
         return len(game_memory)
     
     def sample(self, batch_size: int) -> List[Tuple]:
-        """
-        Randomly sample a batch from the buffer.
+        current_len = len(self.buffer)
+
+        window_size = self._get_window_size()
         
-        Args:
-            batch_size: Number of samples to retrieve
-            
-        Returns:
-            List of sampled tuples
-            
-        Raises:
-            ValueError: If buffer has fewer samples than requested
-        """
-        if len(self.buffer) < batch_size:
-            raise ValueError(
-                f"Buffer has only {len(self.buffer)} samples, "
-                f"but batch_size={batch_size} was requested. "
-                f"Wait for more data or reduce min_buffer_size."
-            )
-        return random.sample(self.buffer, batch_size)
+        # 1. Sample logical indices (0 = newest, effective_size-1 = oldest in window)
+        logical_indices = random.sample(range(window_size), batch_size)
+        
+        # 2. Map to physical indices in the ring buffer
+        # The newest item is at (self.position - 1) % current_len
+        # The i-th newest is at (self.position - 1 - i) % current_len
+        physical_indices = [(self.position - 1 - i) % current_len for i in logical_indices]
+        
+        return [self.buffer[i] for i in physical_indices]
     
     def get_all(self) -> List[Tuple]:
         """Get all data in buffer"""
@@ -112,10 +126,12 @@ class ReplayBuffer:
         """
         return {
             'buffer': self.buffer,
-            'window_size': self.window_size,
-            'board_size': self.board_size,
+            'max_buffer_size': self.max_buffer_size,
+            'min_buffer_size': self.min_buffer_size,
+            'buffer_size_k': self.buffer_size_k,
             'position': self.position,
             'games_count': self.games_count,
+            'total_samples_added': self.total_samples_added,
         }
     
     def load_state(self, state: dict):
@@ -126,72 +142,12 @@ class ReplayBuffer:
             state: Dictionary from get_state()
         """
         self.buffer = list(state['buffer'])
-        self.window_size = state['window_size']
-        self.board_size = state['board_size']
-        
-        # Backwards compatibility: Handle missing 'position' field from old checkpoints
-        if 'position' in state:
-            self.position = state['position']
-        else:
-            # Infer position for old checkpoints
-            if len(self.buffer) < self.window_size:
-                self.position = len(self.buffer)
-            else:
-                self.position = 0  # Assume we start overwriting from beginning
-            print(f"Warning: 'position' not found in checkpoint. Inferred position: {self.position}")
-            
-        self.games_count = state.get('games_count', 0)
-    
-    def save(self, filepath: str):
-        """
-        Save buffer to file.
-        
-        Args:
-            filepath: Path to save
-        """
-        data = self.get_state()
-        with open(filepath, 'wb') as f:
-            pickle.dump(data, f)
-        print(f"Replay buffer saved to {filepath} ({len(self.buffer)} samples)")
-    
-    def load(self, filepath: str) -> bool:
-        """
-        Load buffer from file.
-        
-        Args:
-            filepath: Path to load from
-            
-        Returns:
-            Whether load was successful
-        """
-        if not os.path.exists(filepath):
-            print(f"Buffer file not found: {filepath}")
-            return False
-            
-        with open(filepath, 'rb') as f:
-            data = pickle.load(f)
-        
-        self.load_state(data)
-        print(f"Replay buffer loaded from {filepath} ({len(self.buffer)} samples, {self.games_count} games)")
-        return True
-    
-    def stats(self) -> dict:
-        """Return buffer statistics"""
-        if len(self.buffer) == 0:
-            return {
-                'size': 0,
-                'games_count': self.games_count,
-                'capacity': self.window_size,
-                'fill_ratio': 0.0,
-            }
-            
-        return {
-            'size': len(self.buffer),
-            'games_count': self.games_count,
-            'capacity': self.window_size,
-            'fill_ratio': len(self.buffer) / self.window_size,
-        }
-
+        self.max_buffer_size = state['max_buffer_size']
+        self.min_buffer_size = state['min_buffer_size']
+        self.buffer_size_k = ['buffer_size_k']
+        self.total_samples_added = ['total_samples_added']
+        self.position = state['position']
+        self.games_count = ['games_count']
 
 # Backward compatibility alias
 ParallelReplayBuffer = ReplayBuffer
