@@ -9,17 +9,24 @@ from utils import print_board
 
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
-    game = Gomoku(board_size=9, history_step=4)
-    model = ResNet(game, num_blocks=6, num_channels=256).to('cuda')
+    game = Gomoku(board_size=15, history_step=2)
+    model = ResNet(game, num_blocks=6, num_channels=128).to('cuda')
     optimizer = optim.Adam(model.parameters(), lr=0.003)
     args = {
         'mode': 'eval',
         'num_simulations': 600,
         'c_puct': 1.4,
-        'temperature': 0.5,
+        'move_temperature_init': 0.4,
+        'move_temperature_final': 0.1,
+        # 'Q_norm_bounds': [-1, 1],
+        'min_buffer_size': 10000,
+        'max_buffer_size': 20000,
+        'buffer_size_k': 0.5,
+        'Q_norm_bounds': None,
         'dirichlet_epsilon': 0,
         'dirichlet_alpha': 0.1,
-        'device': 'cuda'
+        'device': 'cuda',
+        'file_name': 'gomoku',
     }
 
     alphazero = AlphaZero(game, model, optimizer, args)

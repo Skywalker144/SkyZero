@@ -29,14 +29,14 @@ GAME_CONFIGS = {
         'class': 'TicTacToe',
         'blocks': 2,
         'channels': 32,
-        'kwargs': {'history_step': 3}
+        'kwargs': {'history_step': 2}
     },
     'gomoku': {
         'module': 'gomoku',
         'class': 'Gomoku',
         'blocks': 6,
         'channels': 128,
-        'kwargs': {'board_size': 15, 'history_step': 4}
+        'kwargs': {'board_size': 15, 'history_step': 2}
     }
 }
 
@@ -167,7 +167,7 @@ def main():
     config, folder_name = get_game_context()
     
     # Config arguments
-    parser.add_argument('--interval', type=int, default=14400, help='Time interval in seconds to look back for the past model (default: 3600)')
+    parser.add_argument('--interval', type=int, default=3600, help='Time interval in seconds to look back for the past model (default: 3600)')
     parser.add_argument('--games', type=int, default=20, help='Total number of games to play (default: 10)')
     parser.add_argument('--sims', type=int, default=600, help='Number of MCTS simulations per move (default: 100)')
     parser.add_argument('--temp', type=float, default=0.5, help='Temperature for move selection (default: 0.0 for deterministic)')

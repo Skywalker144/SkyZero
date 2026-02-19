@@ -7,7 +7,7 @@ import sys
 # Ensure the script works when run from the root directory, similar to the CLI script
 sys.path.append(os.getcwd())
 
-from gomoku.gomoku import Gomoku
+from gomoku import Gomoku
 
 class GomokuGUI:
     def __init__(self, root):

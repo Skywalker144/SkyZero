@@ -66,7 +66,6 @@ class Node:
         self.n += 1
 
 
-
 class MCTS:
     def __init__(self, game, args, model):
         self.game = game
@@ -96,53 +95,75 @@ class MCTS:
         child_visit_counts = np.array([child.n for child in node.children])
         child_values = np.array([child.v for child in node.children])
 
-        # 对已访问的子节点计算 Q 值，未访问的用 0.5（归一化后的中间值）
-        visited = child_visit_counts > 0 # visited mask: 已访问节点为 True
-        # 用 np.maximum 防止除零（0 的位置后续会被覆盖为 0.5）
+        # 对已访问的子节点计算 Q 值，未访问的用 FPU (First Play Urgency)
+        visited = child_visit_counts > 0
         safe_counts = np.maximum(child_visit_counts, 1)
         q_values = -child_values / safe_counts
 
+        # === KataGo-style Dynamic cPUCT with Log Scaling ===
+        # cPUCT = base_cpuct + log_scale * log((visits + base) / base)
+        # Default KataGo params: base_cpuct=1.0, log_scale=0.45, base=500
+        base_cpuct = self.args.get('cpuct_base', 1.0)
+        cpuct_log_scale = self.args.get('cpuct_log_scale', 0.45)
+        cpuct_log_base = self.args.get('cpuct_log_base', 500.0)
+
+        total_child_weight = float(node.n)
+        cpuct_exploration = base_cpuct + cpuct_log_scale * math.log((total_child_weight + cpuct_log_base) / cpuct_log_base)
+
+        # === Dynamic Variance-Scaled cPUCT ===
+        parent_utility_stdev_factor = 1.0
+        if self.args.get('use_dynamic_cpuct', True) and node.n > 0:
+            stdev_prior = self.args.get('cpuct_utility_stdev_prior', 0.40)
+            stdev_prior_weight = self.args.get('cpuct_utility_stdev_prior_weight', 2.0)
+            stdev_scale = self.args.get('cpuct_utility_stdev_scale', 0.85)
+
+            mean = node.v / node.n
+            sum_sq = node.v_sq
+
+            var_prior_term = (mean ** 2 + stdev_prior ** 2) * stdev_prior_weight
+            weighted_avg_sq = (var_prior_term + sum_sq) / (stdev_prior_weight + node.n - 1.0)
+
+            variance = max(0.0, weighted_avg_sq - mean ** 2)
+            stdev = math.sqrt(variance)
+
+            parent_utility_stdev_factor = 1.0 + stdev_scale * (stdev / stdev_prior - 1.0)
+
+        # Final explore scaling = cpuct * sqrt(visits + tiny_offset) * stdev_factor
+        explore_scaling = cpuct_exploration * math.sqrt(total_child_weight + 0.01) * parent_utility_stdev_factor
+
+        # === FPU (First Play Urgency) Calculation ===
+        # KataGo: FPU = parentUtility - reduction * sqrt(policyProbMassVisited) + lossProp * (lossValue - fpu)
         if len(node.children) > 0:
-            # 归一化：只对已访问节点有效，未访问节点设为 0.5
+            # 计算已访问节点的策略概率总和
+            policy_prob_mass_visited = np.sum(child_priors[visited])
+
+            # 归一化已访问节点的Q值
             q_norm = np.empty_like(q_values)
             q_norm[visited] = self.minmax_state.normalize(q_values[visited])
-            q_norm[~visited] = 0.5  # 未访问节点使用中间值
+
+            # 计算 FPU 值
+            fpu_reduction_max = self.args.get('fpu_reduction_max', 0.2)
+            fpu_loss_prop = self.args.get('fpu_loss_prop', 0.0)
+
+            # Parent utility (from current player's perspective)
+            parent_utility = -node.v / node.n if node.n > 0 else 0.0
+            parent_utility_norm = self.minmax_state.normalize(parent_utility) if node.n > 0 else 0.5
+
+            # FPU reduction based on visited policy mass
+            reduction = fpu_reduction_max * math.sqrt(policy_prob_mass_visited)
+            fpu_value = parent_utility_norm - reduction
+
+            # Optional: blend towards loss value
+            if fpu_loss_prop > 0:
+                loss_value = 0.0  # normalized loss = 0
+                fpu_value = fpu_value + (loss_value - fpu_value) * fpu_loss_prop
+
+            q_norm[~visited] = fpu_value
             q_values = q_norm
 
-        # Dynamic Variance-Scaled cPUCT
-        c_puct = self.args['c_puct']
-        if self.args.get('use_dynamic_cpuct', True):
-            if node.n > 0:
-                # KataGo default parameters
-                stdev_prior = 0.40
-                stdev_prior_weight = 2.0
-                stdev_scale = 0.85
-
-                mean = node.v / node.n
-                sum_sq = node.v_sq
-                
-                # Calculate variance estimate mixing prior and observation
-                # Formula: sqrt( ( (mean^2 + prior^2)*prior_weight + sum_sq ) / (prior_weight + n - 1) - mean^2 )
-                # Note: Uses current mean as approximation for utilitySq in the update formula
-                var_prior_term = (mean**2 + stdev_prior**2) * stdev_prior_weight
-                weighted_avg_sq = (var_prior_term + sum_sq) / (stdev_prior_weight + node.n - 1.0)
-                
-                variance = max(0.0, weighted_avg_sq - mean**2)
-                stdev = math.sqrt(variance)
-                
-                # Scale factor
-                stdev_factor = 1.0 + stdev_scale * (stdev / stdev_prior - 1.0)
-                
-                # KataGo 不对 c_puct 设置硬下限，完全由方差比率控制
-                c_puct = c_puct * stdev_factor
-            else:
-                # Unvisited nodes use the base c_puct (factor=1.0 effectively)
-                pass
-
-        u_values = c_puct * child_priors * (math.sqrt(node.n) / (1 + child_visit_counts))
+        u_values = explore_scaling * child_priors / (1 + child_visit_counts)
 
         puct_scores = q_values + u_values
-
 
         best_child_idx = np.argmax(puct_scores)
         return node.children[best_child_idx]
@@ -151,9 +172,19 @@ class MCTS:
         state = node.state
         to_play = node.to_play
 
-        policy, value = self.model(torch.tensor(
-            self.game.encode_state(state, to_play), device=self.args['device']
-        ).unsqueeze(0))
+        # 在推理时使用 policy_optimism
+        policy_optimism = 0.0
+        if self.args.get('mode') != 'train':
+            if node.parent is None:
+                # 根节点使用较小的optimism (KataGo默认 rootPolicyOptimism = min(policyOptimism, 0.2))
+                policy_optimism = min(self.args.get('policy_optimism', 1.0), self.args.get('root_policy_optimism', 0.2))
+            else:
+                policy_optimism = self.args.get('policy_optimism', 1.0)
+
+        policy, value = self.model(
+            torch.tensor(self.game.encode_state(state, to_play), device=self.args['device']).unsqueeze(0),
+            policy_optimism=policy_optimism
+        )
 
         policy_logits = policy.squeeze(0).cpu().numpy()
 
@@ -167,9 +198,7 @@ class MCTS:
         policy /= policy_sum
 
         if node.parent is None and self.args['mode'] == 'train':
-
-            # current_step = np.count_nonzero(is_legal_actions) # This was counting available actions (decreasing), but we need moves played (increasing)
-            current_step = np.count_nonzero(node.state[-1]) # Correct: Count stones/tokens on board
+            current_step = np.count_nonzero(node.state[-1])
             board_size = np.sqrt(self.game.board_width * self.game.board_height)
             policy = root_temperature_transform(policy, current_step, self.args, board_size)
             policy = add_shaped_dirichlet_noise(policy, self.args['total_dirichlet_alpha'], self.args['dirichlet_epsilon'])
@@ -219,7 +248,7 @@ class MCTS:
 
         for _ in range(num_simulations):
             self._run_simulation(root)
-        
+
         # 提取 policy prior
         policy_prior = None
         if return_policy_prior:
@@ -235,14 +264,14 @@ class MCTS:
             # 1. 按 Policy Prior 降序排序子节点 (KataGo 逻辑: "Children are normally sorted in policy order")
             # 只有按 Policy 顺序处理，才能正确判断某个节点是否相对于"更好"的节点表现不佳
             sorted_children = sorted(root.children, key=lambda c: c.prior, reverse=True)
-            
+
             utility_sum = 0.0
             weight_sum = 0.0
             policy_sum = 0.0
-            
+
             pruning_scale = self.args.get('noise_prune_utility_scale', 0.15)
             # pruning_cap = 1e50 # KataGo code implies a cap but effectively infinite
-            
+
             for child in sorted_children:
                 if child.n > 0:
                     # Utility relative to root player (root.to_play)
@@ -250,32 +279,32 @@ class MCTS:
                     utility = -child.v / child.n
                     weight = float(child.n)
                     prior = child.prior
-                    
+
                     new_weight = weight
-                    
+
                     # 只有当我们已经积累了一些权重和 policy 时才进行修剪
                     if weight_sum > 0 and policy_sum > 0:
                         avg_utility = utility_sum / weight_sum
                         utility_gap = avg_utility - utility
-                        
+
                         # 只有当当前节点比之前的平均水平差时才考虑修剪
                         if utility_gap > 0:
                             # 计算基于 raw policy 应该有的权重份额
                             weight_share = weight_sum * prior / policy_sum
                             # 宽松界限 (2.0倍)，允许一定的自然波动
                             lenient_share = 2.0 * weight_share
-                            
+
                             if weight > lenient_share:
                                 excess = weight - lenient_share
                                 # 根据 utility gap 指数衰减多余的权重
                                 subtract = excess * (1.0 - math.exp(-utility_gap / pruning_scale))
                                 new_weight = max(0.0, weight - subtract)
-                    
+
                     # 更新统计量 (使用修剪后的权重)
                     utility_sum += utility * new_weight
                     weight_sum += new_weight
                     policy_sum += prior
-                    
+
                     action_probs[child.action_taken] = new_weight
         else:
             for child in root.children:
@@ -284,11 +313,10 @@ class MCTS:
         action_probs_sum = np.sum(action_probs)
         if action_probs_sum > 0:
             action_probs /= action_probs_sum
-        
+
         if return_policy_prior:
             return action_probs, policy_prior, root.v / root.n
         return action_probs, root.v / root.n
-
 
     def eval_search(self, state, to_play, num_simulations=None):
         root = Node(state, to_play)
@@ -331,7 +359,6 @@ class AlphaZero:
         self.move_temperature_init = self.args['move_temperature_init']
         self.move_temperature_final = self.args['move_temperature_final']
 
-
         self.psw = PolicySurpriseWeighter(
             baseline_weight_ratio=args.get('psw_baseline_ratio', 0.5),
             min_weight=args.get('psw_min_weight', 0.01)
@@ -345,48 +372,76 @@ class AlphaZero:
 
     def _get_randomized_simulations(self):
         """
-        Playout Cap Randomization: 二选一策略
-        返回 (num_simulations, for_train) 元组
+        Playout Cap Randomization: KataGo风格的三种搜索模式
+        返回 (num_simulations, for_train, target_weight) 元组
+        
+        三种模式:
+        1. Full Search: 用于策略训练, target_weight=1.0
+        2. Cheap Search: 不用于策略训练, target_weight=0.0 (但可能被PSW选中)
+        3. Reduced Search: 部分用于训练, target_weight=0.1 (当游戏局势明显倾斜时)
         """
-        base_simulations = self.args['num_simulations']  # 例如 600 或 800
-        fast_simulations = self.args['fast_simulations']  # 例如 100，或者 base 的 1/5
-        full_search_prob = self.args.get('full_search_prob', 0.25)  # 全量搜索的概率
+        base_simulations = self.args['num_simulations']
+        fast_simulations = self.args['fast_simulations']
+        full_search_prob = self.args.get('full_search_prob', 0.25)
+        cheap_search_prob = self.args.get('cheap_search_prob', 0.75)  # KataGo默认0.75
 
-        # 简单的二选一逻辑
-        # is_full_search 对应 for_train:
-        # True (Full Search) -> 用于训练 Policy
-        # False (Fast Search) -> 仅用于训练 Value (除非被 PSW 提升)
-        for_train = np.random.random() < full_search_prob
-        num_simulations = base_simulations if for_train else fast_simulations
-        return num_simulations, for_train
+        # 决定搜索类型
+        rand_val = np.random.random()
+
+        if rand_val < full_search_prob:
+            # Full Search: 正常训练
+            return base_simulations, True, 1.0
+        else:
+            # Fast/Cheap Search
+            return fast_simulations, False, 0.0
 
     def selfplay(self):
         memory = []
         to_play = 1
         state = self.game.get_initial_state()
-        
+
         # Soft Resignation Logic
         resign_threshold = self.args.get('resign_threshold', -0.95)
         # Probability to play out the game in soft resignation mode (vs actual resignation)
         soft_resign_playout_prob = self.args.get('soft_resign_playout_prob', 0.1)
         in_soft_resignation = False
-        
+
+        # For reduced search based on win rate history (KataGo style)
+        reduce_visits_threshold = self.args.get('reduce_visits_threshold', 0.9)
+        reduced_visits_weight = self.args.get('reduced_visits_weight', 0.1)
+        historical_root_values = []
+
         while not self.game.is_terminal(state):
 
-            num_simulations, for_train = self._get_randomized_simulations()
+            num_simulations, for_train, target_weight = self._get_randomized_simulations()
 
             if in_soft_resignation:
                 num_simulations = self.args.get('fast_simulations', 50)
                 # Ensure we capture this data for training but with low weight
-                for_train = True 
+                for_train = True
                 current_sample_weight = 0.01
             else:
-                current_sample_weight = 1.0
+                # KataGo: Check if we should reduce visits based on win rate history
+                # If game is clearly decided, use reduced visits
+                if len(historical_root_values) >= 3:
+                    recent_extreme = max(abs(v) for v in historical_root_values[-3:])
+                    if recent_extreme > reduce_visits_threshold:
+                        # Game seems decided, reduce visits
+                        proportion_through = (recent_extreme - reduce_visits_threshold) / (1.0 - reduce_visits_threshold)
+                        proportion_through = min(1.0, proportion_through)
+                        current_sample_weight = target_weight + proportion_through * (reduced_visits_weight - target_weight)
+                    else:
+                        current_sample_weight = target_weight
+                else:
+                    current_sample_weight = target_weight
 
             action_probs, policy_prior, root_value = self.mcts.search(
                 state, to_play, num_simulations, return_policy_prior=True
             )
-            
+
+            # Track root values for reduced search decisions
+            historical_root_values.append(root_value)
+
             # Check for resignation condition
             if not in_soft_resignation and root_value < resign_threshold:
                 if np.random.random() < soft_resign_playout_prob:
@@ -410,11 +465,6 @@ class AlphaZero:
 
             # 记录 root_value 用于 Short-term Value Targets
             memory.append((state, action_probs, to_play, for_train, policy_prior, current_sample_weight, root_value))
-            
-            # if len(memory) >= self.args['zero_t_step']:
-            #     t = 0.1
-            # else:
-            #     t = self.args['temperature']
 
             current_step = np.count_nonzero(state[-1])
             max_t = self.move_temperature_init
@@ -436,17 +486,17 @@ class AlphaZero:
             # The player 'to_play' resigned. So winner is -to_play.
             # Wait, the loop breaks when 'to_play' realizes value < threshold.
             winner = -to_play
-            final_state = state # Just for logging
+            final_state = state  # Just for logging
 
         # 构建带 outcome 和 STV 的数据
         raw_memory = []
         memory_len = len(memory)
         stv_steps = [6, 16, 50]  # Short-term Value 预测步数
-        
+
         for i in range(memory_len):
             state, policy_target, to_play, for_train, policy_prior, sample_weight, root_value = memory[i]
             outcome = winner * to_play
-            
+
             # 计算 Short-term Value Targets
             stv_targets = []
             for k in stv_steps:
@@ -461,19 +511,18 @@ class AlphaZero:
                 else:
                     # 游戏结束，使用最终 outcome
                     stv_targets.append(outcome)
-            
+
             raw_memory.append((
                 self.game.encode_state(state, to_play),
                 policy_target,
                 outcome,
                 for_train,  # 布尔值：是否用于训练 Policy
                 policy_prior,  # 保留 policy prior 用于 PSW 计算
-                sample_weight, # 样本权重
-                root_value,    # 当前局面的 root_value (用于 Optimistic Policy)
-                stv_targets,   # Short-term Value Targets [v_6, v_16, v_50]
+                sample_weight,  # 样本权重
+                root_value,  # 当前局面的 root_value (用于 Optimistic Policy)
+                stv_targets,  # Short-term Value Targets [v_6, v_16, v_50]
             ))
 
-        
         # 应用 Policy Surprise Weighting
         # PSW 期望格式: (encoded_state, policy_target, outcome, for_train, policy_prior)
         weighted_memory, psw_stats = self.psw.process_game(raw_memory)
@@ -485,7 +534,7 @@ class AlphaZero:
             # drop policy_prior (idx 4)
             # keep everything else
             new_sample = list(sample)
-            new_sample.pop(4) 
+            new_sample.pop(4)
             return_memory.append(tuple(new_sample))
 
         # 打印 PSW 统计信息
@@ -557,9 +606,9 @@ class AlphaZero:
             # 只计算有效样本的 soft target
             targets = policy_targets[policy_mask_tensor]
             # avoid zero power issues
-            soft_targets = torch.pow(targets + 1e-10, 1.0/T)
+            soft_targets = torch.pow(targets + 1e-10, 1.0 / T)
             soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True)
-            
+
             # Aux Loss
             aux_loss = F.cross_entropy(
                 aux_policy[policy_mask_tensor],
@@ -573,7 +622,7 @@ class AlphaZero:
         optimistic_loss = torch.tensor(0.0, device=self.args['device'])
         if optimistic_policy is not None:
             # optimistic_policy shape: [B, 2, ActionSpace] (Output 0: Long-term, Output 1: Short-term)
-            
+
             # --- Long-term Optimistic Policy (Output 0) ---
             # KataGo Logic:
             # Weight = win_squared + sigmoid((score_stdevs_excess - 1.5) * 3.0)
@@ -581,16 +630,16 @@ class AlphaZero:
             # score_stdevs_excess: how much better the actual score is than expected, in units of predicted stdev.
             # Simplified here since we don't have score targets/predictions in this code base yet:
             # Use value (win rate) improvement instead.
-            
+
             # value_targets is [-1, 1]. Map to [0, 1] for win probability approx
             win_prob_target = (value_targets + 1.0) / 2.0
             root_win_prob = (root_values + 1.0) / 2.0
-            
+
             # 1. Win Squared (encourages winning positions)
             # KataGo: win_squared = (win_prob + 0.5 * no_result)^2. 
             # Here just win_prob^2
             win_squared = torch.square(win_prob_target)
-            
+
             # 2. Unexpected Improvement (Surprise)
             # KataGo uses score stdevs. We'll use value improvement.
             # improvement = actual - expected
@@ -600,12 +649,12 @@ class AlphaZero:
             # If improvement > 0.2, we want high weight.
             # Sigmoid((improvement - 0.1) * 20) -> Center at 0.1, scale 20.
             surprise_weight = torch.sigmoid((improvement - 0.1) * 20.0)
-            
+
             target_weight_long = torch.clamp(torch.max(win_squared, surprise_weight), 0.0, 1.0)
-            
+
             # Filter: Don't train on lost games (value < -0.9) and only on policy training samples
             valid_opt_mask = (value_targets > -0.9).squeeze() & policy_mask_tensor
-            
+
             if valid_opt_mask.sum() > 0:
                 # Long-term policy loss
                 opt_loss_long_vals = F.cross_entropy(
@@ -613,37 +662,37 @@ class AlphaZero:
                     policy_targets[valid_opt_mask],
                     reduction='none'
                 )
-                
+
                 # Expand dims for combined_weights to match loss if needed, but cross_entropy returns [N]
                 # sample_weights: [B, 1] or [B] -> [N]
                 # target_weight_long: [B, 1] -> [N]
                 combined_weights_long = sample_weights[valid_opt_mask] * target_weight_long[valid_opt_mask].squeeze()
                 loss_long = (opt_loss_long_vals * combined_weights_long).mean()
-                
+
                 loss_short = torch.tensor(0.0, device=self.args['device'])
 
                 # --- Short-term Optimistic Policy (Output 1) ---
                 if short_term_value is not None:
                     # Use the first horizon (6 turns) for short-term surprise
                     # stv_targets: [B, 3], short_term_value: [B, 3]
-                    stv_actual = stv_targets[:, 0:1] # [B, 1]
-                    stv_pred = short_term_value[:, 0:1].detach() # [B, 1]
-                    
+                    stv_actual = stv_targets[:, 0:1]  # [B, 1]
+                    stv_pred = short_term_value[:, 0:1].detach()  # [B, 1]
+
                     # Positive values mean better for current player
                     stv_improvement = stv_actual - stv_pred
-                    
+
                     # Sigmoid gate for short term
                     target_weight_short = torch.clamp(torch.sigmoid((stv_improvement - 0.1) * 20.0), 0.0, 1.0)
-                    
+
                     opt_loss_short_vals = F.cross_entropy(
                         optimistic_policy[valid_opt_mask, 1, :],
                         policy_targets[valid_opt_mask],
                         reduction='none'
                     )
-                    
+
                     combined_weights_short = sample_weights[valid_opt_mask] * target_weight_short[valid_opt_mask].squeeze()
                     loss_short = (opt_loss_short_vals * combined_weights_short).mean()
-                    
+
                 optimistic_loss = 0.1 * loss_long + 0.2 * loss_short
             else:
                 optimistic_loss = torch.tensor(0.0, device=self.args['device'])
@@ -709,13 +758,13 @@ class AlphaZero:
             recent_winners.append(winner)
 
             sample_count = len(memory)
-            
+
             # Update Throughput Stats
             perf_steps_count += sample_count
 
             recent_sample_counts.append(sample_count)
             recent_game_steps.append(game_steps)
-            
+
             avg_sample_count = sum(recent_sample_counts) / len(recent_sample_counts)
             avg_game_steps = sum(recent_game_steps) / len(recent_game_steps)
 
@@ -729,13 +778,14 @@ class AlphaZero:
             # Calculate Global Throughput (Sliding Window)
             current_duration = time.time() - perf_start_time
             recent_throughput_measurements.append((current_duration, perf_steps_count))
-            
+
             total_window_steps = sum(s for _, s in recent_throughput_measurements)
             total_window_time = sum(t for t, _ in recent_throughput_measurements)
             global_steps_per_sec = total_window_steps / total_window_time if total_window_time > 0 else 0
 
             current_buffer_size = len(self.replay_buffer)
-            print(f'\n[Game {self.game_count}] [Total Samples Added{self.replay_buffer.total_samples_added}] Winner: {int(winner):+d}, Steps: {game_steps}, Samples: {sample_count}, Buffer: {current_buffer_size}, AvgSteps: {avg_game_steps:.1f}, AvgSamples: {avg_sample_count:.1f}')
+            print(
+                f'\n[Game {self.game_count}] [Total Samples Added{self.replay_buffer.total_samples_added}] Winner: {int(winner):+d}, Steps: {game_steps}, Samples: {sample_count}, Buffer: {current_buffer_size}, AvgSteps: {avg_game_steps:.1f}, AvgSamples: {avg_sample_count:.1f}')
             print(f'  Speed: {global_steps_per_sec:.1f} steps/s')
             print(
                 f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '
@@ -820,21 +870,21 @@ class AlphaZero:
 
             # 图2：分离的policy loss和value loss图像（上下布局）
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-            
+
             ax1.set_yscale('log')
             ax1.set_xlabel('Games')
             ax1.set_ylabel('Policy Loss')
             ax1.plot(self.policy_losses, color='blue')
             ax1.set_title(f'Policy Loss (Game {self.game_count})')
             ax1.grid(True, alpha=0.3)
-            
+
             ax2.set_yscale('log')
             ax2.set_xlabel('Games')
             ax2.set_ylabel('Value Loss')
             ax2.plot(self.value_losses, color='orange')
             ax2.set_title(f'Value Loss (Game {self.game_count})')
             ax2.grid(True, alpha=0.3)
-            
+
             plt.tight_layout()
             plt.savefig(f"{self.args['file_name']}_losses_detail.png")
             plt.close()
@@ -861,22 +911,28 @@ class AlphaZero:
         self.model.eval()
         action_probs = self.mcts.eval_search(state, to_play)
         action = np.argmax(action_probs)
-        policy, value = self.model(
+
+        # 获取模型输出（eval 模式下只返回 policy, value）
+        outputs = self.model(
             torch.tensor(self.game.encode_state(state, to_play), device=self.args['device']).unsqueeze(0)
         )
+        policy, value = outputs[0], outputs[1]
+
+        # policy, value, aux_policy, optimistic_policy, short_term_value = outputs
+
         policy = torch.softmax(policy, dim=1).squeeze(0).cpu().numpy()
         policy *= self.game.get_is_legal_actions(state)
         policy_sum = np.sum(policy)
         if policy_sum > 0:
             policy /= policy_sum
         value = value.item()
-        
+
         # 对于动作空间等于棋盘大小的游戏，按棋盘形状reshape
         # 对于Connect4等动作空间小于棋盘大小的游戏，保持一维
         if self.game.action_space_size == self.game.board_height * self.game.board_width:
             policy = policy.reshape(self.game.board_height, self.game.board_width)
             action_probs = action_probs.reshape(self.game.board_height, self.game.board_width)
-        
+
         info = {
             'action_probs': action_probs,
             'policy': policy,

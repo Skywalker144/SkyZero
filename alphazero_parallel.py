@@ -43,16 +43,19 @@ class RemoteModel:
         # We ignore device movement commands as we run on CPU locally
         return self
 
-    def __call__(self, state_tensor):
+    def __call__(self, state_tensor, policy_optimism=0.0):
         """
         Mimic torch.nn.Module.__call__
         state_tensor: tensor of shape (1, C, H, W) on CPU
+        policy_optimism: float, ignored for parallel inference (optimistic policy not supported in parallel mode)
         """
         # Optimization: Send CPU tensor directly (uses shared memory) instead of numpy
         # state_tensor is typically (1, C, H, W)
         state_cpu = state_tensor.detach().cpu()
 
         # Send request: (worker_rank, state_tensor)
+        # Note: policy_optimism is not passed to GPU worker for simplicity
+        # In parallel mode, optimistic policy is disabled
         self.request_queue.put((self.rank, state_cpu))
 
         # Wait for response from dedicated pipe
@@ -197,31 +200,50 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 def get_randomized_simulations(args):
                     """
-                    Playout Cap Randomization: 二选一策略
-                    返回 (num_simulations, for_train) 元组
+                    Playout Cap Randomization: KataGo风格的三种搜索模式
+                    返回 (num_simulations, for_train, target_weight) 元组
                     """
                     base_simulations = args['num_simulations']
                     fast_simulations = args['fast_simulations']
                     full_search_prob = args.get('full_search_prob', 0.25)
 
-                    for_train = np.random.random() < full_search_prob
-                    num_simulations = base_simulations if for_train else fast_simulations
-                    return num_simulations, for_train
+                    if np.random.random() < full_search_prob:
+                        return base_simulations, True, 1.0
+                    else:
+                        return fast_simulations, False, 0.0
+
+                # For reduced search based on win rate history (KataGo style)
+                reduce_visits_threshold = local_args.get('reduce_visits_threshold', 0.9)
+                reduced_visits_weight = local_args.get('reduced_visits_weight', 0.1)
+                historical_root_values = []
 
                 while not game.is_terminal(state):
-                    num_simulations, for_train = get_randomized_simulations(local_args)
+                    num_simulations, for_train, target_weight = get_randomized_simulations(local_args)
 
                     if in_soft_resignation:
                         num_simulations = local_args.get('fast_simulations', 50)
                         for_train = True
                         current_sample_weight = 0.01
                     else:
-                        current_sample_weight = 1.0
+                        # KataGo: Check if we should reduce visits based on win rate history
+                        if len(historical_root_values) >= 3:
+                            recent_extreme = max(abs(v) for v in historical_root_values[-3:])
+                            if recent_extreme > reduce_visits_threshold:
+                                proportion_through = (recent_extreme - reduce_visits_threshold) / (1.0 - reduce_visits_threshold)
+                                proportion_through = min(1.0, proportion_through)
+                                current_sample_weight = target_weight + proportion_through * (reduced_visits_weight - target_weight)
+                            else:
+                                current_sample_weight = target_weight
+                        else:
+                            current_sample_weight = target_weight
 
                     # Unpack 3 values (updated MCTS interface)
                     action_probs, policy_prior, root_value = mcts.search(
                         state, to_play, num_simulations, return_policy_prior=True
                     )
+
+                    # Track root values for reduced search decisions
+                    historical_root_values.append(root_value)
 
                     # Resignation Check
                     if not in_soft_resignation and root_value < resign_threshold:
@@ -601,7 +623,7 @@ class ParallelAlphaZero(AlphaZero):
                             total_window_time = sum(t for t, _ in recent_throughput_measurements)
                             global_steps_per_sec = total_window_steps / total_window_time if total_window_time > 0 else 0
 
-                            print(f"\n[Game {self.game_count}] [Total Sample Added {self.replay_buffer.total_samples_added}] Winner: {int(winner):+d}, Len: {len(memory)}, Buffer: {len(self.replay_buffer)}, AvgLen: {avg_len:.1f}")
+                            print(f"\n[Game {self.game_count}] Winner: {int(winner):+d}, Len: {len(memory)}, Buffer: {len(self.replay_buffer)}, WindowSize: {self.replay_buffer._get_window_size()}, AvgLen: {avg_len:.1f}")
                             print(f'  Speed: {global_steps_per_sec:.1f} steps/s')
                             print(
                                 f'  Win Rate (Recent {recent_total}) - First: {recent_first_win}/{recent_total} ({100 * recent_first_win / recent_total:.1f}%), '

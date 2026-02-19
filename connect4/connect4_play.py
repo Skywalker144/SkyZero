@@ -27,7 +27,9 @@ if __name__ == '__main__':
         'move_temperature_final': 0.1,
         'total_dirichlet_alpha': 10.83,
         'dirichlet_epsilon': 0,
-        'buffer_size': 10000,
+        'min_buffer_size': 10000,
+        'max_buffer_size': 100000,
+        'buffer_size_k': 0.5,
         'file_name': 'connect4',
         'Q_norm_bounds': [-1, 1],
         'device': 'cuda'

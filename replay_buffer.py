@@ -144,10 +144,10 @@ class ReplayBuffer:
         self.buffer = list(state['buffer'])
         self.max_buffer_size = state['max_buffer_size']
         self.min_buffer_size = state['min_buffer_size']
-        self.buffer_size_k = ['buffer_size_k']
-        self.total_samples_added = ['total_samples_added']
+        self.buffer_size_k = state['buffer_size_k']
+        self.total_samples_added = state['total_samples_added']
         self.position = state['position']
-        self.games_count = ['games_count']
+        self.games_count = state['games_count']
 
 # Backward compatibility alias
 ParallelReplayBuffer = ReplayBuffer

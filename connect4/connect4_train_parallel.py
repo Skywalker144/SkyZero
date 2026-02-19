@@ -28,12 +28,12 @@ if __name__ == '__main__':
     # Initialize Model (Main process)
     # We use this as the master model and for testing/validation if needed
     model = ResNet(game, num_blocks=4, num_channels=64).to('cuda')
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0007, weight_decay=1e-4)
 
     args = {
         'mode': 'train',
-        'num_simulations': 600,
-        'fast_simulations': 150,
+        'num_simulations': 200,
+        'fast_simulations': 50,
         'full_search_prob': 0.25,
         'c_puct': 1.5,
         'root_temperature_init': 1.25,
@@ -44,13 +44,13 @@ if __name__ == '__main__':
         'dirichlet_epsilon': 0.25,
 
         'train_steps_per_generation': 5,
-        'target_ReplayRatio': 8,
+        'target_ReplayRatio': 5,
 
         'batch_size': 1024,
 
         'min_buffer_size': 10000,
         'max_buffer_size': 100000,
-        'buffer_size_k': 0.5,
+        'buffer_size_k': 0.2,
 
         'forced_playouts': True,  # 启用强制搜索
         'forced_playout_coeff': 2.0,
@@ -78,11 +78,11 @@ if __name__ == '__main__':
     print(f"Device: {args['device']}")
     print()
 
-    num_workers = 20
+    num_workers = 18
 
     alphazero = ParallelAlphaZero(game, model, optimizer, args, num_workers=num_workers)
 
     # Try to load existing checkpoint if any
-    # alphazero.load_checkpoint()
+    alphazero.load_checkpoint()
     # alphazero.replay_buffer.clear()
     alphazero.learn()

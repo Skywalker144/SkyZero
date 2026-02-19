@@ -34,9 +34,9 @@ GAME_CONFIGS = {
     'gomoku': {
         'module': 'gomoku',
         'class': 'Gomoku',
-        'blocks': 8,
-        'channels': 256,
-        'kwargs': {'board_size': 15, 'history_step': 4}
+        'blocks': 6,
+        'channels': 128,
+        'kwargs': {'board_size': 15, 'history_step': 2}
     }
 }
 
@@ -169,8 +169,8 @@ def main():
     # Config arguments
     parser.add_argument('--interval', type=int, default=7200, help='Time interval in seconds to look back for the past model (default: 3600)')
     parser.add_argument('--games', type=int, default=10, help='Total number of games to play (default: 10)')
-    parser.add_argument('--sims', type=int, default=100, help='Number of MCTS simulations per move (default: 100)')
-    parser.add_argument('--temp', type=float, default=0.0, help='Temperature for move selection (default: 0.0 for deterministic)')
+    parser.add_argument('--sims', type=int, default=600, help='Number of MCTS simulations per move (default: 100)')
+    parser.add_argument('--temp', type=float, default=0.5, help='Temperature for move selection (default: 0.0 for deterministic)')
     
     # Model override arguments
     defaults = config if config else {'blocks': 0, 'channels': 0, 'kwargs': {}}
@@ -230,6 +230,7 @@ def main():
         'num_simulations': args.sims,
         'c_puct': 1.5, # Standard default
         'device': device,
+        'temperature': 0.5,
         'Q_norm_bounds': [-1, 1], # Assuming standard bounds
         'mode': 'play'
     }

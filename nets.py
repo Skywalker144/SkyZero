@@ -295,8 +295,9 @@ class ResNet(nn.Module):
             
         return policy
 
-    def forward(self, x):
+    def forward(self, x, policy_optimism=0.0):
         # x shape: [B, input_channels, H, W]
+        # policy_optimism: float, 在推理时对logits进行乐观插值的系数 (0.0 = 不插值, 1.0 = 完全乐观)
 
         # 输入层: 5x5 conv (pre-activation 架构下，起始层自带 BN+Act)
         x = F.silu(self.start_bn(self.start_conv(x)))
@@ -320,6 +321,13 @@ class ResNet(nn.Module):
         optimistic_policy = None
         if self.training:
             optimistic_policy = self.forward_policy_head(x, self.optimistic_policy_head)
+        elif policy_optimism > 0.0:
+            # 推理时：在logits层面进行optimistic插值
+            optimistic_policy = self.forward_policy_head(x, self.optimistic_policy_head)
+            # KataGo: policy_logits = policy_logits + optimism * (optimistic_logits - policy_logits)
+            # 注意：policy和optimistic_policy此时已经是logits（未经softmax）
+            # optimistic_policy 有两个通道 [B, 2, ActionSpace]，这里取第 0 个通道 (Long-term)
+            policy = policy + policy_optimism * (optimistic_policy[:, 0, :] - policy)
 
         # Value Head
         value = self._forward_value_head(x, self.value_head)

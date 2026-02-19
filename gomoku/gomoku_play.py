@@ -9,17 +9,19 @@ from utils import print_board
 
 if __name__ == '__main__':
     np.set_printoptions(precision=2, suppress=True)
-    game = Gomoku(board_size=15, history_step=3)
+    game = Gomoku(board_size=15, history_step=2)
     model = ResNet(game, num_blocks=6, num_channels=128).to('cuda')
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=5e-5)
     args = {
         'mode': 'eval',
         'num_simulations': 600,
         'c_puct': 1.4,
-        'buffer_size': 50000,
         'move_temperature_init': 0.4,
         'move_temperature_final': 0.1,
         # 'Q_norm_bounds': [-1, 1],
+        'min_buffer_size': 10000,
+        'max_buffer_size': 20000,
+        'buffer_size_k': 0.5,
         'Q_norm_bounds': None,
         'file_name': 'gomoku',
         'device': 'cuda'
