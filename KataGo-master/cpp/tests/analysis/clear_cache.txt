@@ -1,1 +1,0 @@
-{"id":"foo","action":"clear_cache"}
