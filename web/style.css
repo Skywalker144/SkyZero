@@ -89,13 +89,13 @@ canvas {
 
 .stat-box, .chart-container, .game-controls {
     background-color: var(--accents-1);
-    padding: 12px 20px;
-    border-radius: 16px;
+    padding: 6px 10px;
+    border-radius: 8px;
     border: 1px solid var(--accents-2);
     display: flex;
     flex-direction: column;
     justify-content: center;
-    min-height: 70px;
+    min-height: 120px;
     box-sizing: border-box;
     margin: 0;
 }
@@ -115,7 +115,7 @@ canvas {
 .chart-container {
     flex: 2;
     min-width: 300px;
-    padding: 12px;
+    padding: 6px;
     position: relative;
     overflow: hidden;
     box-shadow: none;
@@ -127,13 +127,14 @@ canvas {
     display: block;
     box-shadow: none;
     border: none;
+    margin-top: 16px;
 }
 
 .chart-title {
     position: absolute;
     top: 8px;
     left: 12px;
-    font-size: 0.75rem;
+    font-size: 0.9rem;
     color: var(--accents-5);
     font-weight: 600;
     pointer-events: none;
@@ -264,11 +265,11 @@ canvas {
     font-size: 0.9rem; 
     letter-spacing: 0.05em;
     color: var(--accents-5); 
-    margin-bottom: 4px;
+    margin-bottom: 2px;
 }
 
 .value { 
-    font-size: 2rem; 
+    font-size: 1.8rem; 
     font-weight: 800; 
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
@@ -364,4 +365,58 @@ button.active {
         min-width: 140px;
         flex: 1 1 auto;
     }
+}
+
+.game-controls .toggle-group {
+    flex-direction: row;
+    align-items: center;
+    gap: 0;
+}
+
+.game-controls .toggle-label {
+    font-size: 0.9rem;
+    margin-right: 8px;
+}
+
+.game-controls .switch-container {
+    padding: 4px;
+    border-radius: 6px;
+}
+
+.game-controls .switch-slider {
+    top: 4px;
+    left: 4px;
+    height: calc(100% - 8px);
+    width: calc(50% - 4px);
+    border-radius: 4px;
+}
+
+.game-controls .switch-container button {
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.game-controls {
+    padding: 0 16px;
+}
+.stat-box {
+    padding: 0 16px;
+}
+.chart-container {
+    padding: 0 10px;
+}
+.stat-content {
+    flex-direction: row;
+    gap: 8px;
+    align-items: baseline;
+}
+.label {
+    margin-bottom: 0;
+}
+
+.stat-box, .chart-container, .game-controls {
+    height: 120px !important;
+    max-height: 120px !important;
+    min-height: 120px !important;
 }
