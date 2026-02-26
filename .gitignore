@@ -1,0 +1,8 @@
+# 排除所有 .pth 文件
+*.pth
+
+# 排除所有名为 __pycache__ 的文件夹及其内容
+**/__pycache__/
+
+# 排除 .vscode 文件夹及其所有内容
+.vscode/

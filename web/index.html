@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SkyZero 五子棋</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="loading-overlay">
+        <div class="loader"></div>
+        <p style="font-size: 1rem; letter-spacing: 0.05em; color: var(--accents-5)">神经网络初始化中</p>
+    </div>
+
+    <div class="container">
+        <h1 class="title">SkyZero</h1>
+        
+        <div class="analysis-container">
+            <div class="stat-box">
+                <div class="stat-content">
+                    <div class="label">SkyZero 胜率</div>
+                    <div id="mcts-value" class="value">50.0%</div>
+                </div>
+            </div>
+            
+            <div class="chart-container">
+                <div class="chart-title">SkyZero胜率图像</div>
+                <canvas id="win-prob-chart"></canvas>
+            </div>
+            
+            <div class="game-controls">
+                <div class="toggle-group">
+                    <span class="toggle-label">执子：</span>
+                    <div class="switch-container">
+                        <div class="switch-slider" id="player-slider"></div>
+                        <button id="pick-black" class="active">黑棋</button>
+                        <button id="pick-white">白棋</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="analysis-bar">
+            <div class="toggle-group horizontal">
+                <span class="toggle-label">分析：</span>
+                <div class="switch-container analysis-switches">
+                    <button id="toggle-mcts">SkyZero策略热力图</button>
+                    <button id="toggle-forbidden">黑方禁手点</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="board-container">
+            <div id="status">轮到黑棋</div>
+            <canvas id="board" width="800" height="800"></canvas>
+        </div>
+
+        <div class="action-buttons">
+            <button id="undo-btn">悔棋</button>
+            <button id="reset-btn">新游戏</button>
+        </div>
+    </div>
+
+    <script src="gomoku.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>

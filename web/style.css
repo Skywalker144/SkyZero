@@ -1,0 +1,367 @@
+:root {
+    --bg: #fafafa;
+    --accents-1: #ffffff;
+    --accents-2: #eaeaea;
+    --accents-3: #999999;
+    --accents-5: #666666;
+    --fg: #000000;
+    --success: #0070f3;
+    --error: #ee0000;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+}
+
+body {
+    background-color: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+.container {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+    width: 100%;
+    max-width: 800px;
+    align-items: center;
+}
+
+.title {
+    font-size: 3.5rem;
+    font-weight: 800;
+    margin: 0;
+    letter-spacing: -0.06em;
+    background: linear-gradient(180deg, #000 0%, #444 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.board-container {
+    position: relative;
+    padding-top: 48px;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+}
+
+canvas {
+    cursor: crosshair;
+    display: block;
+    border-radius: 12px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.15);
+    max-width: 100%;
+    height: auto;
+    border: 1px solid var(--accents-2);
+}
+
+#status {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--accents-5);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    white-space: nowrap;
+    background: var(--accents-1);
+    padding: 4px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--accents-2);
+    z-index: 10;
+}
+
+.analysis-container {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.stat-box, .chart-container, .game-controls {
+    background-color: var(--accents-1);
+    padding: 12px 20px;
+    border-radius: 16px;
+    border: 1px solid var(--accents-2);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 70px;
+    box-sizing: border-box;
+    margin: 0;
+}
+
+.stat-box {
+    flex: 0 0 auto;
+    min-width: 150px;
+    align-items: center;
+}
+
+.stat-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.chart-container {
+    flex: 2;
+    min-width: 300px;
+    padding: 12px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: none;
+}
+
+#win-prob-chart {
+    width: 100%;
+    height: 100%;
+    display: block;
+    box-shadow: none;
+    border: none;
+}
+
+.chart-title {
+    position: absolute;
+    top: 8px;
+    left: 12px;
+    font-size: 0.75rem;
+    color: var(--accents-5);
+    font-weight: 600;
+    pointer-events: none;
+    letter-spacing: 0.05em;
+}
+
+.game-controls {
+    flex: 0 0 auto;
+}
+
+.toggle-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: center;
+}
+
+.toggle-label {
+    font-size: 0.9rem;
+    color: var(--accents-5);
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.switch-container {
+    display: flex;
+    background-color: var(--bg);
+    padding: 4px;
+    border-radius: 10px;
+    border: 1px solid var(--accents-2);
+    position: relative;
+    isolation: isolate;
+}
+
+.switch-container.analysis-switches {
+    gap: 8px;
+    background-color: transparent;
+    border: none;
+    padding: 0;
+}
+
+.switch-container.analysis-switches button {
+    border: 1px solid var(--accents-2);
+    border-radius: 10px;
+    background-color: #e0e0e0;
+    color: var(--fg);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+}
+
+.switch-container.analysis-switches button::after {
+    content: "✕";
+    font-size: 0.8rem;
+    font-weight: 800;
+    color: var(--accents-3);
+}
+
+.switch-container.analysis-switches button:not(.active):hover {
+    border-color: var(--accents-3);
+}
+
+.switch-container.analysis-switches button.active {
+    background-color: var(--fg);
+    color: var(--accents-1);
+    border-color: var(--fg);
+}
+
+.switch-container.analysis-switches button.active::after {
+    content: "✓";
+    color: var(--accents-1);
+}
+
+.analysis-bar {
+    width: 100%;
+    background-color: var(--accents-1);
+    padding: 12px 20px;
+    border-radius: 16px;
+    border: 1px solid var(--accents-2);
+    box-sizing: border-box;
+}
+
+.toggle-group.horizontal {
+    flex-direction: row;
+    justify-content: center;
+    gap: 16px;
+}
+
+.switch-slider {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    height: calc(100% - 8px);
+    width: calc(50% - 4px);
+    background-color: var(--fg);
+    border-radius: 6px;
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    z-index: -1;
+}
+
+.switch-container button {
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 1rem;
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+    transition: color 0.3s ease;
+    flex: 1;
+    white-space: nowrap;
+}
+
+.switch-container button.active {
+    background-color: transparent;
+    color: var(--bg);
+}
+
+.switch-container:not(.analysis-switches) button:not(.active):hover {
+    background-color: transparent;
+    color: var(--fg);
+    opacity: 0.7;
+}
+
+.label { 
+    font-size: 0.9rem; 
+    letter-spacing: 0.05em;
+    color: var(--accents-5); 
+    margin-bottom: 4px;
+}
+
+.value { 
+    font-size: 2rem; 
+    font-weight: 800; 
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    width: 100%;
+}
+
+.action-buttons button {
+    flex: 1;
+    max-width: 150px;
+    height: 44px;
+    font-weight: 600;
+}
+
+button {
+    background-color: transparent;
+    border: 1px solid var(--accents-2);
+    color: var(--fg);
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+button:hover { 
+    background-color: var(--accents-1);
+    border-color: var(--accents-3);
+}
+
+button.active { 
+    background-color: var(--fg);
+    color: var(--bg);
+    border-color: var(--fg);
+}
+
+#undo-btn {
+    background-color: transparent;
+}
+
+#reset-btn { 
+    background-color: var(--fg);
+    color: var(--bg);
+    border-color: var(--fg);
+    text-align: center;
+}
+
+#reset-btn:hover { 
+    background-color: var(--accents-5);
+    border-color: var(--accents-5);
+}
+
+#loading-overlay {
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.loader {
+    width: 40px;
+    height: 40px;
+    border: 2px solid var(--accents-2);
+    border-top: 2px solid var(--fg);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 20px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@media (max-width: 800px) {
+    .container {
+        padding: 12px;
+    }
+    .analysis-container {
+        gap: 8px;
+    }
+    .stat-box, .chart-container, .game-controls {
+        min-width: 140px;
+        flex: 1 1 auto;
+    }
+}
