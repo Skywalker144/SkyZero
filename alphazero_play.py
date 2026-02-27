@@ -125,7 +125,7 @@ class TreeReuseMCTS(MCTS):
         return mcts_policy, nn_policy, nn_value_probs, root.v / root.n
 
     @torch.inference_mode()
-    def eval_search(self, state, to_play, root=None):
+    def eval_search(self, state, to_play, root=None, show_progress_bar=True):
         
         num_simulations = self.args["full_search_num_simulations"]
 
@@ -135,7 +135,47 @@ class TreeReuseMCTS(MCTS):
         _, nn_value, _ = self.root_expand(root)
         self.backpropagate(root, nn_value)
 
-        for _ in tqdm(range(num_simulations), desc="MCTS Evaluating", unit="sim"):
+        if show_progress_bar:
+            iterator = tqdm(range(num_simulations), desc="MCTS Evaluating", unit="sim")
+        else:
+            iterator = range(num_simulations)
+
+        for _ in iterator:
+            node = root
+
+            while node.is_expanded():
+                node = self.select(node, is_full_search=True)
+
+            if self.game.is_terminal(node.state):
+                value = self.game.get_winner(node.state) * node.to_play  # outcome(to_play view)
+            else:
+                value = self.expand(node)  # nn_value
+
+            self.backpropagate(node, value)
+
+        mcts_policy = np.zeros(self.game.board_size**2)
+        for child in root.children:
+            mcts_policy[child.action_taken] = child.n
+        mcts_policy /= np.sum(mcts_policy)
+        return mcts_policy, root.v / root.n, root.n
+
+    @torch.inference_mode()
+    def additive_search(self, state, to_play, root=None, show_progress_bar=True):
+        
+        num_simulations = self.args["full_search_num_simulations"] - root.n
+
+        if root is None:
+            root = TreeReuseNode(state, to_play)
+
+        _, nn_value, _ = self.root_expand(root)
+        self.backpropagate(root, nn_value)
+
+        if show_progress_bar:
+            iterator = tqdm(range(num_simulations), desc="MCTS Evaluating", unit="sim")
+        else:
+            iterator = range(num_simulations)
+
+        for _ in iterator:
             node = root
 
             while node.is_expanded():
@@ -169,14 +209,17 @@ class TreeReuseAlphaZero(AlphaZero):
         return None
 
     @torch.inference_mode()
-    def play(self, state, to_play, root=None):
+    def play(self, state, to_play, root=None, show_progress_bar=True, additive=True):
         self.model.eval()
         
         # 1. MCTS 搜索
         if root is None or not np.array_equal(root.state, state):
             root = TreeReuseNode(state, to_play)
 
-        mcts_policy, root_value, root_n = self.mcts.eval_search(state, to_play, root=root)
+        if additive:
+            mcts_policy, root_value, root_n = self.mcts.additive_search(state, to_play, root=root, show_progress_bar=show_progress_bar)
+        else:
+            mcts_policy, root_value, root_n = self.mcts.eval_search(state, to_play, root=root, show_progress_bar=show_progress_bar)
         action = np.argmax(mcts_policy)
 
         next_root = self.apply_action(root, action)
