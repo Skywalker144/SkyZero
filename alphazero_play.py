@@ -109,7 +109,7 @@ class TreeReuseMCTS(MCTS):
             node = root
 
             while node.is_expanded():
-                node = self.select(node)
+                node = self.select(node, is_full_search=True)
 
             if self.game.is_terminal(node.state):
                 value = self.game.get_winner(node.state) * node.to_play  # outcome(to_play view)
@@ -139,7 +139,7 @@ class TreeReuseMCTS(MCTS):
             node = root
 
             while node.is_expanded():
-                node = self.select(node)
+                node = self.select(node, is_full_search=True)
 
             if self.game.is_terminal(node.state):
                 value = self.game.get_winner(node.state) * node.to_play  # outcome(to_play view)
@@ -193,6 +193,13 @@ class TreeReuseAlphaZero(AlphaZero):
         
         input_tensor = torch.from_numpy(np.stack(aug_list)).to(self.args["device"], dtype=torch.float32)
         nn_output = self.model(input_tensor)
+        # nn_output = {
+        #     'policy_logits': total_policy_logits[:, 0:1, :, :],
+        #     'opponent_policy_logits': total_policy_logits[:, 1:2, :, :],
+        #     'soft_policy_logits': soft_policy_logits,
+        #     'ownership': ownership,
+        #     'value_logits': value_logits,
+        # }
 
         nn_output['ownership'] = torch.tanh(nn_output['ownership'])
         # 3. 处理 Value (标量类)
@@ -241,6 +248,7 @@ class TreeReuseAlphaZero(AlphaZero):
             "opponent_policy": opp_policy.reshape(board_size, board_size),
             "ownership": averaged_results['ownership'].squeeze(),
             "root_n": root_n,
+            "nn_output": nn_output,
         }
 
         return action, info, next_root
