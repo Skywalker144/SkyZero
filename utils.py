@@ -16,20 +16,20 @@ def print_board(board):
     current_board = board[-1] if board.ndim == 3 else board
     rows, cols = current_board.shape
 
-    print("   ", end="")
+    print('   ', end='')
     for col in range(cols):
-        print(f"{col:2d} ", end="")
+        print(f'{col:2d} ', end='')
     print()
 
     for row in range(rows):
-        print(f"{row:2d} ", end="")
+        print(f'{row:2d} ', end='')
         for col in range(cols):
             if current_board[row, col] == 1:
-                print(" × ", end="")
+                print(' × ', end='')
             elif current_board[row, col] == -1:
-                print(" ○ ", end="")
+                print(' ○ ', end='')
             else:
-                print(" · ", end="")
+                print(' · ', end='')
         print()
 
 
@@ -69,9 +69,9 @@ def random_augment_sample(sample, board_size):
 
 
 def random_augment_batch(batch, board_size):
-    """
+    '''
     处理字典列表形式的 batch
-    """
+    '''
     augmented_batch = []
     for sample in batch:
         aug_sample = random_augment_sample(sample, board_size)

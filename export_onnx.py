@@ -49,4 +49,4 @@ if __name__ == '__main__':
 
     onnx_model = onnx.load(onnx_model_name)
     onnx.checker.check_model(onnx_model)
-    print("ONNX 模型结构检查通过")
+    print('ONNX 模型结构检查通过')

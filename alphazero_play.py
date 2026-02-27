@@ -127,7 +127,7 @@ class TreeReuseMCTS(MCTS):
     @torch.inference_mode()
     def eval_search(self, state, to_play, root=None):
         
-        num_simulations = self.args["full_search_num_simulations"]
+        num_simulations = self.args['full_search_num_simulations']
 
         if root is None:
             root = TreeReuseNode(state, to_play)
@@ -135,7 +135,7 @@ class TreeReuseMCTS(MCTS):
         _, nn_value, _ = self.root_expand(root)
         self.backpropagate(root, nn_value)
 
-        for _ in tqdm(range(num_simulations), desc="MCTS Evaluating", unit="sim"):
+        for _ in tqdm(range(num_simulations), desc='MCTS Evaluating', unit='sim'):
             node = root
 
             while node.is_expanded():
@@ -191,7 +191,7 @@ class TreeReuseAlphaZero(AlphaZero):
             if f: img = np.flip(img, axis=2)
             aug_list.append(img)
         
-        input_tensor = torch.from_numpy(np.stack(aug_list)).to(self.args["device"], dtype=torch.float32)
+        input_tensor = torch.from_numpy(np.stack(aug_list)).to(self.args['device'], dtype=torch.float32)
         nn_output = self.model(input_tensor)
         # nn_output = {
         #     'policy_logits': total_policy_logits[:, 0:1, :, :],
@@ -240,15 +240,15 @@ class TreeReuseAlphaZero(AlphaZero):
         # 7. 组装返回
         board_size = self.game.board_size
         info = {
-            "mcts_policy": mcts_policy.reshape(board_size, board_size),
-            "nn_policy": policy.reshape(board_size, board_size),
-            "root_value": root_value,
-            "value_probs": value_probs,
-            "nn_value": value_probs[0] - value_probs[2],
-            "opponent_policy": opp_policy.reshape(board_size, board_size),
-            "ownership": averaged_results['ownership'].squeeze(),
-            "root_n": root_n,
-            "nn_output": nn_output,
+            'mcts_policy': mcts_policy.reshape(board_size, board_size),
+            'nn_policy': policy.reshape(board_size, board_size),
+            'root_value': root_value,
+            'value_probs': value_probs,
+            'nn_value': value_probs[0] - value_probs[2],
+            'opponent_policy': opp_policy.reshape(board_size, board_size),
+            'ownership': averaged_results['ownership'].squeeze(),
+            'root_n': root_n,
+            'nn_output': nn_output,
         }
 
         return action, info, next_root

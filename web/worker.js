@@ -71,7 +71,7 @@ async function init() {
         });
         postMessage({ type: 'ready' });
     } catch (e) {
-        console.error("Failed to load ONNX model:", e);
+        console.error('Failed to load ONNX model:', e);
         postMessage({ type: 'error', message: e.message });
     }
 }

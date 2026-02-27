@@ -34,54 +34,54 @@ class GamePlayer:
             if self.game.is_terminal(state):
                 winner = self.game.get_winner(state)
                 if winner == 1:
-                    print("Black wins!")
+                    print('Black wins!')
                 elif winner == -1:
-                    print("White wins!")
+                    print('White wins!')
                 else:
-                    print("Draw!")
+                    print('Draw!')
                 
-                resp = input("Game Over. 'u' to undo, 'q' to quit: ").strip().lower()
+                resp = input('Game Over. 'u' to undo, 'q' to quit: ').strip().lower()
                 if resp == 'u':
                     if len(history) >= 2:
                         state, to_play, color = history.pop() # State before AI move
                         state, to_play, color = history.pop() # State before Human move
                         mcts_root = None # Reset MCTS tree on undo
-                        print("Undo successful.")
+                        print('Undo successful.')
                         print_board(state)
                         continue
                     else:
-                        print("Nothing to undo.")
+                        print('Nothing to undo.')
                         break
                 else:
                     break
 
             if to_play == 1:
                 while True:
-                    move = input(f"Human step (row col / 'u' for undo / 'q' for quit): ").strip().lower()
+                    move = input(f'Human step (row col / 'u' for undo / 'q' for quit): ').strip().lower()
                     if move == 'u':
                         if len(history) >= 2:
                             state, to_play, color = history.pop()  # Revert to state before AI move
                             state, to_play, color = history.pop()  # Revert to state before Human move
                             mcts_root = None # Reset MCTS tree on undo
-                            print("Undo successful.")
+                            print('Undo successful.')
                             print_board(state)
                             continue
                         else:
-                            print("Nothing to undo.")
+                            print('Nothing to undo.')
                             continue
                     elif move == 'q':
-                        print("Exiting game.")
+                        print('Exiting game.')
                         return
 
                     try:
                         i, j = map(int, move.split())
                         action = i * self.game.board_size + j
                         if not self.game.get_is_legal_actions(state, to_play)[action]:
-                            print(f"Invalid move: ({i}, {j}) is forbidden or occupied.")
+                            print(f'Invalid move: ({i}, {j}) is forbidden or occupied.')
                             continue
                         break
                     except (ValueError, IndexError):
-                        print("Invalid input format. Please enter 'row col' (e.g., '7 7').")
+                        print('Invalid input format. Please enter 'row col' (e.g., '7 7').')
 
                 history.append((state.copy(), to_play, color))
                 mcts_root = alphazero.apply_action(mcts_root, action)
@@ -100,8 +100,8 @@ class GamePlayer:
                     f'Draw Probability: {value_probs[1]:.2f}\n'
                     f'Lose Probability: {value_probs[2]:.2f}'
                 )
-                print(f"root value: {root_value:.2f}")
-                print(f"nn value:   {nn_value:.2f}")
+                print(f'root value: {root_value:.2f}')
+                print(f'nn value:   {nn_value:.2f}')
                 opponent_policy = info['opponent_policy']
                 ownership = info['ownership']
                 print(f'Opponent Policy:\n{opponent_policy}')

@@ -1,4 +1,4 @@
-"""
+'''
 Replay Buffer for AlphaZero
 
 AlphaZero uses Replay Buffer to store self-play data from the last N games,
@@ -9,7 +9,7 @@ Main features:
 2. Support for random sampling
 3. Support for saving and loading buffer state
 4. Ring Buffer implementation for O(1) append and O(1) sample
-"""
+'''
 
 import random
 from typing import List, Tuple
@@ -17,14 +17,14 @@ import numpy as np
 
 
 class ReplayBuffer:
-    """
+    '''
     Replay Buffer for storing self-play generated training data.
     
     Optimized for memory and serialization:
     - Stores data in a list of dictionaries (for flexibility)
     - Uses compact data types (int8 for board states)
     - Provides efficient state for torch.save
-    """
+    '''
 
     def __init__(self, max_buffer_size: int = 500000, min_buffer_size: int = 50000, buffer_size_k: float = 1.0):
         self.max_buffer_size = max_buffer_size
@@ -39,7 +39,7 @@ class ReplayBuffer:
         self.total_samples_added = 0
 
     def get_window_size(self) -> int:
-        """Calculate dynamic buffer size limit based on samples added."""
+        '''Calculate dynamic buffer size limit based on samples added.'''
         if self.total_samples_added < self.min_buffer_size:
             return len(self.buffer)
 
@@ -54,13 +54,13 @@ class ReplayBuffer:
         return len(self.buffer)
 
     def add_game(self, game_memory: List[dict]) -> int:
-        """Add a game's data to the buffer."""
+        '''Add a game's data to the buffer.'''
         for sample in game_memory:
             # Ensure encoded_state is int8 to save 75% memory
-            if "encoded_state" in sample and sample["encoded_state"].dtype != np.int8:
-                sample["encoded_state"] = sample["encoded_state"].astype(np.int8)
-            if "final_state" in sample and sample["final_state"].dtype != np.int8:
-                sample["final_state"] = sample["final_state"].astype(np.int8)
+            if 'encoded_state' in sample and sample['encoded_state'].dtype != np.int8:
+                sample['encoded_state'] = sample['encoded_state'].astype(np.int8)
+            if 'final_state' in sample and sample['final_state'].dtype != np.int8:
+                sample['final_state'] = sample['final_state'].astype(np.int8)
 
             if len(self.buffer) < self.max_buffer_size:
                 self.buffer.append(sample)
@@ -100,10 +100,10 @@ class ReplayBuffer:
         self.total_samples_added = 0
 
     def get_state(self) -> dict:
-        """
+        '''
         Consolidates the buffer into large numpy arrays for efficient storage.
         This avoids the overhead of pickling 100k+ dictionaries.
-        """
+        '''
         if not self.buffer:
             return {'buffer_empty': True}
 
@@ -131,7 +131,7 @@ class ReplayBuffer:
         }
 
     def load_state(self, state: dict):
-        """Loads and de-consolidates the buffer."""
+        '''Loads and de-consolidates the buffer.'''
         if 'buffer_empty' in state:
             self.clear()
             return

@@ -83,8 +83,8 @@ worker.onmessage = function(e) {
         loadingOverlay.style.display = 'none';
         resetGame();
     } else if (data.type === 'error') {
-        loadingOverlay.innerHTML = `<p style="color:red">Error: ${data.message}</p>`;
-        console.error("Worker Error:", data.message);
+        loadingOverlay.innerHTML = `<p style='color:red'>Error: ${data.message}</p>`;
+        console.error('Worker Error:', data.message);
     } else if (data.type === 'progress') {
         // Handle progress bar if needed
     } else if (data.type === 'result') {
@@ -373,7 +373,7 @@ function renderResults(data) {
                 winProbHistory.push(prob);
             }
         } else {
-            document.getElementById('mcts-value').innerText = "50.0%";
+            document.getElementById('mcts-value').innerText = '50.0%';
             // Don't push 50% to history if it's just the default
         }
     }
@@ -428,14 +428,14 @@ function makeMove(action) {
 
     const winner = game.getWinner(state);
     if (winner !== null) {
-        statusEl.innerText = winner === 1 ? "分析完成：黑胜" : (winner === -1 ? "分析完成：白胜" : "分析完成：平局");
+        statusEl.innerText = winner === 1 ? '分析完成：黑胜' : (winner === -1 ? '分析完成：白胜' : '分析完成：平局');
         aiRunning = true; // Block moves
         renderResults(null); // Update win prob to final state
     } else {
         if (toPlay === playerColor) {
-            statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
+            statusEl.innerText = toPlay === 1 ? '轮到黑棋' : '轮到白棋';
         } else {
-            statusEl.innerText = "SkyZero 思考中...";
+            statusEl.innerText = 'SkyZero 思考中...';
             aiRunning = true;
             searchId++;
             worker.postMessage({ type: 'search', simulations: 800, state, toPlay, searchId });
@@ -475,9 +475,9 @@ function resetGame() {
     worker.postMessage({ type: 'reset' });
     
     if (toPlay === playerColor) {
-        statusEl.innerText = "轮到黑棋";
+        statusEl.innerText = '轮到黑棋';
     } else {
-        statusEl.innerText = "SkyZero 思考中...";
+        statusEl.innerText = 'SkyZero 思考中...';
         aiRunning = true;
         worker.postMessage({ type: 'search', simulations: 400, state, toPlay, searchId });
     }
@@ -503,7 +503,7 @@ function undo() {
             renderResults(prev.lastResults);
             drawBoard();
         }
-        statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
+        statusEl.innerText = toPlay === 1 ? '轮到黑棋' : '轮到白棋';
         return;
     }
     
@@ -532,9 +532,9 @@ function undo() {
     aiRunning = false;
     
     if (toPlay === playerColor) {
-        statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
+        statusEl.innerText = toPlay === 1 ? '轮到黑棋' : '轮到白棋';
     } else {
-        statusEl.innerText = "SkyZero 思考中...";
+        statusEl.innerText = 'SkyZero 思考中...';
         // Note: we don't auto-trigger AI move on undo to human turn
     }
     

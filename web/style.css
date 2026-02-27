@@ -188,7 +188,7 @@ canvas {
 }
 
 .switch-container.analysis-switches button::after {
-    content: "✕";
+    content: '✕';
     font-size: 0.8rem;
     font-weight: 800;
     color: var(--accents-3);
@@ -205,7 +205,7 @@ canvas {
 }
 
 .switch-container.analysis-switches button.active::after {
-    content: "✓";
+    content: '✓';
     color: var(--accents-1);
 }
 

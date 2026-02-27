@@ -15,7 +15,7 @@ train_args = {
     'history_step': 2,
     'num_blocks': 2,
     'num_channels': 128,
-    'lr': 0.00001,
+    'lr': 0.0001,
     'weight_decay': 3e-5,
 
     'full_search_num_simulations': 800,
@@ -45,7 +45,7 @@ train_args = {
 
     'fpu_reduction_max': 0.2,
     'root_fpu_reduction_max': 0.0,
-    
+
     'savetime_interval': 7200,
     'file_name': 'gomoku',
     'data_dir': 'data/gomoku',
