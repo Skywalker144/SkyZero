@@ -300,8 +300,8 @@ class AlphaZeroParallel(AlphaZero):
 
     def learn(self):
         print(f"Starting Parallel AlphaZero")
-        print(f"Workers: {self.num_workers}, Device: {self.args["device"]}")
-        print(f"Batch Size: {self.args["batch_size"]}")
+        print(f"Workers: {self.num_workers}, Device: {self.args['device']}")
+        print(f"Batch Size: {self.args['batch_size']}")
 
         # Barrier to synchronize all workers before starting self-play
         # Participants: 1 GPU worker + num_workers self-play workers + 1 main process
@@ -471,9 +471,9 @@ class AlphaZeroParallel(AlphaZero):
                 
                 print(f"  [Training] Full Search Ratio: {np.mean(full_search_ratio_list):.2f}")
                 print(
-                    f"  [Training] Loss: {self.losses_dict["total_loss"][-1]:.2f} | "
-                    f"Policy Loss: {self.losses_dict["policy_loss"][-1]:.2f} | "
-                    f"Value Loss: {self.losses_dict["value_loss"][-1]:.2f}"
+                    f"  [Training] Loss: {self.losses_dict['total_loss'][-1]:.2f} | "
+                    f"Policy Loss: {self.losses_dict['policy_loss'][-1]:.2f} | "
+                    f"Value Loss: {self.losses_dict['value_los'][-1]:.2f}"
                 )
                 print(f"  Next Train after {num_next} games")
 
