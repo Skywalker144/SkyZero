@@ -8,7 +8,7 @@ from tqdm import tqdm
 # Add current directory to path so we can import local modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from alphazero import AlphaZero
+from alphazero_play import TreeReuseAlphaZero
 from nets import ResNet
 from envs.gomoku import Gomoku
 from utils import print_board
@@ -52,15 +52,19 @@ def play_battle(game, model_a, model_b, args, a_starts=True):
     # model_a_color determines which "to_play" value belongs to model_a
     model_a_color = 1 if a_starts else -1
     
+    mcts_root = None
     while not game.is_terminal(state):
         if to_play == model_a_color:
-            action, _ = model_a.play(state, to_play)
+            action, _, mcts_root = model_a.play(state, to_play, mcts_root, show_progress_bar=False)
+            model_a.apply_action(mcts_root, action)
         else:
-            action, _ = model_b.play(state, to_play)
+            action, _, mcts_root = model_b.play(state, to_play, mcts_root, show_progress_bar=False)
+            model_b.apply_action(mcts_root, action)
             
         state = game.get_next_state(state, action, to_play)
+
         to_play = -to_play
-        
+        print_board(state)
     winner = game.get_winner(state)
     if winner == 0:
         return 0
@@ -71,8 +75,8 @@ def main():
     
     # Configuration: Manually set paths and parameters here
     play_script_path = "gomoku/gomoku_play.py"
-    checkpoint_a_path = "data/gomoku/gomoku_checkpoint_2026-02-26_10-33-24.pth"  # Path for Model A (New Model)
-    checkpoint_b_path = "data/gomoku/gomoku_checkpoint_2026-02-26_00-23-54.pth"   # Path for Model B (Old Model)
+    checkpoint_a_path = "data/gomoku/gomoku_checkpoint_2026-02-27_22-27-19.pth"  # Path for Model A (New Model)
+    checkpoint_b_path = "data/gomoku/gomoku_checkpoint_2026-02-26_10-33-24.pth"   # Path for Model B (Old Model)
     num_games = 10                                    # Number of games to play
 
     # Load configuration
@@ -80,7 +84,7 @@ def main():
         eval_args, train_args = load_args_from_path(play_script_path)
         eval_args["device"] = "cuda" if torch.cuda.is_available() else "cpu"
         eval_args["mode"] = "eval"
-        print(f"Config loaded. Device: {eval_args["device"]}")
+        print(f"Config loaded. Device: {eval_args['device']}")
     except Exception as e:
         print(f"Failed to load configuration from {play_script_path}: {e}")
         return
@@ -96,7 +100,7 @@ def main():
     # Initialize Models
     def create_alphazero(checkpoint_path):
         model = ResNet(game, num_blocks=eval_args["num_blocks"], num_channels=eval_args["num_channels"])
-        az = AlphaZero(game, model, None, eval_args)
+        az = TreeReuseAlphaZero(game, model, None, eval_args)
         if not az.load_checkpoint(checkpoint_path):
             raise ValueError(f"Failed to load checkpoint: {checkpoint_path}")
         return az
