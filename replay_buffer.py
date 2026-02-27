@@ -1,4 +1,4 @@
-'''
+"""
 Replay Buffer for AlphaZero
 
 AlphaZero uses Replay Buffer to store self-play data from the last N games,
@@ -9,7 +9,7 @@ Main features:
 2. Support for random sampling
 3. Support for saving and loading buffer state
 4. Ring Buffer implementation for O(1) append and O(1) sample
-'''
+"""
 
 import random
 from typing import List, Tuple
@@ -17,14 +17,14 @@ import numpy as np
 
 
 class ReplayBuffer:
-    '''
+    """
     Replay Buffer for storing self-play generated training data.
     
     Optimized for memory and serialization:
     - Stores data in a list of dictionaries (for flexibility)
     - Uses compact data types (int8 for board states)
     - Provides efficient state for torch.save
-    '''
+    """
 
     def __init__(self, max_buffer_size: int = 500000, min_buffer_size: int = 50000, buffer_size_k: float = 1.0):
         self.max_buffer_size = max_buffer_size
@@ -39,7 +39,7 @@ class ReplayBuffer:
         self.total_samples_added = 0
 
     def get_window_size(self) -> int:
-        '''Calculate dynamic buffer size limit based on samples added.'''
+        """Calculate dynamic buffer size limit based on samples added."""
         if self.total_samples_added < self.min_buffer_size:
             return len(self.buffer)
 
@@ -54,13 +54,13 @@ class ReplayBuffer:
         return len(self.buffer)
 
     def add_game(self, game_memory: List[dict]) -> int:
-        '''Add a game's data to the buffer.'''
+        """Add a game"s data to the buffer."""
         for sample in game_memory:
             # Ensure encoded_state is int8 to save 75% memory
-            if 'encoded_state' in sample and sample['encoded_state'].dtype != np.int8:
-                sample['encoded_state'] = sample['encoded_state'].astype(np.int8)
-            if 'final_state' in sample and sample['final_state'].dtype != np.int8:
-                sample['final_state'] = sample['final_state'].astype(np.int8)
+            if "encoded_state" in sample and sample["encoded_state"].dtype != np.int8:
+                sample["encoded_state"] = sample["encoded_state"].astype(np.int8)
+            if "final_state" in sample and sample["final_state"].dtype != np.int8:
+                sample["final_state"] = sample["final_state"].astype(np.int8)
 
             if len(self.buffer) < self.max_buffer_size:
                 self.buffer.append(sample)
@@ -81,7 +81,7 @@ class ReplayBuffer:
         # Ensure window_size is at least batch_size if we have enough samples
         window_size = min(current_len, window_size)
 
-        # Sample from the most recent 'window_size' samples
+        # Sample from the most recent "window_size" samples
         logical_indices = random.sample(range(window_size), min(batch_size, window_size))
 
         # Map to physical indices in the ring buffer
@@ -100,12 +100,12 @@ class ReplayBuffer:
         self.total_samples_added = 0
 
     def get_state(self) -> dict:
-        '''
+        """
         Consolidates the buffer into large numpy arrays for efficient storage.
         This avoids the overhead of pickling 100k+ dictionaries.
-        '''
+        """
         if not self.buffer:
-            return {'buffer_empty': True}
+            return {"buffer_empty": True}
 
         # Collect keys from the first sample
         keys = self.buffer[0].keys()
@@ -121,29 +121,29 @@ class ReplayBuffer:
                 consolidated_buffer[key] = [sample[key] for sample in self.buffer]
 
         return {
-            'consolidated_buffer': consolidated_buffer,
-            'max_buffer_size': self.max_buffer_size,
-            'min_buffer_size': self.min_buffer_size,
-            'buffer_size_k': self.buffer_size_k,
-            'position': self.position,
-            'games_count': self.games_count,
-            'total_samples_added': self.total_samples_added,
+            "consolidated_buffer": consolidated_buffer,
+            "max_buffer_size": self.max_buffer_size,
+            "min_buffer_size": self.min_buffer_size,
+            "buffer_size_k": self.buffer_size_k,
+            "position": self.position,
+            "games_count": self.games_count,
+            "total_samples_added": self.total_samples_added,
         }
 
     def load_state(self, state: dict):
-        '''Loads and de-consolidates the buffer.'''
-        if 'buffer_empty' in state:
+        """Loads and de-consolidates the buffer."""
+        if "buffer_empty" in state:
             self.clear()
             return
 
-        cb = state['consolidated_buffer']
+        cb = state["consolidated_buffer"]
         num_samples = len(next(iter(cb.values())))
 
 
         # ##############################################################
         # 新增Soft Resign导致的Sample Weight列表
-        if 'sample_weight' not in cb:
-            cb['sample_weight'] = np.ones(num_samples, dtype=np.float32)
+        if "sample_weight" not in cb:
+            cb["sample_weight"] = np.ones(num_samples, dtype=np.float32)
         # ##############################################################
 
 
@@ -162,12 +162,12 @@ class ReplayBuffer:
         if len(self.buffer) < self.max_buffer_size:
             self.position = len(self.buffer)
         else:
-            self.position = state.get('position', 0) % self.max_buffer_size
+            self.position = state.get("position", 0) % self.max_buffer_size
 
-        self.total_samples_added = state.get('total_samples_added', len(self.buffer))
+        self.total_samples_added = state.get("total_samples_added", len(self.buffer))
 
-        saved_total = state.get('total_samples_added', len(self.buffer))
-        old_max = state.get('max_buffer_size')
+        saved_total = state.get("total_samples_added", len(self.buffer))
+        old_max = state.get("max_buffer_size")
 
         if old_max and self.max_buffer_size > old_max:
             M = self.max_buffer_size
@@ -183,7 +183,7 @@ class ReplayBuffer:
         else:
             self.total_samples_added = saved_total
         
-        self.games_count = state.get('games_count', 0)
+        self.games_count = state.get("games_count", 0)
 
 
 # Backward compatibility alias

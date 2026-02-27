@@ -1,9 +1,9 @@
-importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js');
-importScripts('gomoku.js');
-importScripts('mcts.js');
+importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js");
+importScripts("gomoku.js");
+importScripts("mcts.js");
 
 // 强制 ONNX Runtime 从 CDN 加载 WASM 资源，避免 404
-ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
 
 let session = null;
 let game = null;
@@ -66,13 +66,13 @@ async function init() {
     });
     
     try {
-        session = await ort.InferenceSession.create('model.onnx', {
-            executionProviders: ['webgl', 'cpu']
+        session = await ort.InferenceSession.create("model.onnx", {
+            executionProviders: ["webgl", "cpu"]
         });
-        postMessage({ type: 'ready' });
+        postMessage({ type: "ready" });
     } catch (e) {
-        console.error('Failed to load ONNX model:', e);
-        postMessage({ type: 'error', message: e.message });
+        console.error("Failed to load ONNX model:", e);
+        postMessage({ type: "error", message: e.message });
     }
 }
 
@@ -83,16 +83,16 @@ function softmax(logits) {
     return scores.map(s => s / sum);
 }
 
-async function inference(state, toPlay, mode = 'single') {
+async function inference(state, toPlay, mode = "single") {
     const encoded = game.encodeState(state, toPlay);
     const C = game.numPlanes, H = boardSize, W = boardSize;
     
     let batchSize = 1;
     let symmetries = [{ doFlip: false, rot: 0 }];
 
-    if (mode === 'stochastic') {
+    if (mode === "stochastic") {
         symmetries = [{ doFlip: Math.random() < 0.5, rot: Math.floor(Math.random() * 4) }];
-    } else if (mode === 'full') {
+    } else if (mode === "full") {
         batchSize = 8;
         symmetries = [];
         for (let f of [false, true]) {
@@ -106,7 +106,7 @@ async function inference(state, toPlay, mode = 'single') {
         inputData.set(aug, i * C * H * W);
     }
 
-    const input = new ort.Tensor('float32', inputData, [batchSize, C, H, W]);
+    const input = new ort.Tensor("float32", inputData, [batchSize, C, H, W]);
     const results = await session.run({ input: input });
 
     const pLogits = results.policy_logits.data;
@@ -150,12 +150,12 @@ let latestSearchId = 0;
 
 onmessage = async function(e) {
     const data = e.data;
-    if (data.type === 'init') {
+    if (data.type === "init") {
         await init();
-    } else if (data.type === 'reset') {
+    } else if (data.type === "reset") {
         latestSearchId++;
         root = new Node(game.getInitialState(), 1);
-    } else if (data.type === 'move') {
+    } else if (data.type === "move") {
         latestSearchId++;
         // Tree reuse: apply action to root
         if (root) {
@@ -174,7 +174,7 @@ onmessage = async function(e) {
         } else {
             root = new Node(data.nextState, data.nextToPlay);
         }
-    } else if (data.type === 'search') {
+    } else if (data.type === "search") {
         const numSimulations = data.simulations || 600;
         const searchId = data.searchId;
         latestSearchId = searchId;
@@ -202,7 +202,7 @@ onmessage = async function(e) {
                 value = winner * node.toPlay;
             } else {
                 // Root expansion uses full symmetry, others use stochastic
-                const mode = (node === root) ? 'full' : 'stochastic';
+                const mode = (node === root) ? "full" : "stochastic";
                 const { policy, value: v } = await inference(node.state, node.toPlay, mode);
                 
                 // Double check after await
@@ -217,7 +217,7 @@ onmessage = async function(e) {
             mcts.backpropagate(node, value);
 
             if (i % 20 === 0) {
-                postMessage({ type: 'progress', progress: (i / numSimulations) * 100 });
+                postMessage({ type: "progress", progress: (i / numSimulations) * 100 });
             }
         }
 
@@ -225,13 +225,13 @@ onmessage = async function(e) {
 
         const mctsPolicy = mcts.getMCTSPolicy(root);
         // Final result uses full symmetry for best heatmap/eval
-        const { ownership, oppPLogits, value: nnValue } = await inference(root.state, root.toPlay, 'full');
+        const { ownership, oppPLogits, value: nnValue } = await inference(root.state, root.toPlay, "full");
 
         // Final check
         if (latestSearchId !== searchId) return;
 
         postMessage({ 
-            type: 'result', 
+            type: "result", 
             policy: mctsPolicy, 
             rootValue: root.v / root.n,
             rootToPlay: root.toPlay,

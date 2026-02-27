@@ -312,7 +312,7 @@ class ForbiddenPointFinder:
                 if i == x and j == y: continue
                 if self.cBoard[i + 1][j + 1] == C_BLACK:
                     xd, yd = abs(i - x), abs(j - y)
-                    if (xd + yd) != 3:  # Exclude knight's move points as in C++
+                    if (xd + yd) != 3:  # Exclude knight"s move points as in C++
                         nearbyBlack += 1
 
         if nearbyBlack < 2: return False
@@ -352,7 +352,7 @@ class Board:
         fpf = ForbiddenPointFinder(self.x_size)
         for i in range(self.x_size * self.y_size):
             cx, cy = self.get_xy(i)
-            # Ensure we don't count the stone at 'loc' for the forbidden check
+            # Ensure we don"t count the stone at "loc" for the forbidden check
             if i == loc:
                 fpf.SetStone(cx, cy, C_EMPTY)
             else:
@@ -569,10 +569,10 @@ class Gomoku:
         return encoded_state
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     game = Gomoku(history_step=1, use_renju=True)
     state = game.get_initial_state()
-    print('Initial State:')
+    print("Initial State:")
     print_board(state)
 
     # Simulate some moves
@@ -588,11 +588,11 @@ if __name__ == '__main__':
     action = 8 * 15 + 8
     state = game.get_next_state(state, action, 1)
 
-    print('\nAfter 3 moves:')
+    print("\nAfter 3 moves:")
     print_board(state)
 
     legal = game.get_is_legal_actions(state)
-    print(f'\nLegal actions count: {np.sum(legal)}')
+    print(f"\nLegal actions count: {np.sum(legal)}")
 
     # Test Forbidden point (3-3)
     # Construct a 3-3 pattern for Black
@@ -611,10 +611,10 @@ if __name__ == '__main__':
         # Place corresponding white stone to keep turns balanced
         state = game.get_next_state(state, 0 * 15 + i, -1)  # Place white at row 0, col i
 
-    print('\nTesting Forbidden Point (3-3) at 7,7:')
+    print("\nTesting Forbidden Point (3-3) at 7,7:")
     print_board(state)
 
-    # Now it should be Black's turn (4 black, 4 white)
+    # Now it should be Black"s turn (4 black, 4 white)
     legal = game.get_is_legal_actions(state)
     idx_7_7 = 7 * 15 + 7
-    print(f'Is 7,7 legal? {legal[idx_7_7]}')
+    print(f"Is 7,7 legal? {legal[idx_7_7]}")

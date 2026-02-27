@@ -77,7 +77,7 @@ class TicTacToe:
         return encoded_state
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     game = TicTacToe(history_step=2)
     state = game.get_initial_state()
     print_board(state)

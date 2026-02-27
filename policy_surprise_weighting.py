@@ -20,7 +20,7 @@ def compute_policy_surprise_weights(game_data, board_size, policy_surprise_data_
 
     now_factor = 1 / (1 + (board_size ** 2) * 0.016)
 
-    last_outcome = game_data[-1]['outcome']
+    last_outcome = game_data[-1]["outcome"]
     if last_outcome == 1:
         current_target = np.array([1.0, 0.0, 0.0])
     elif last_outcome == 0:
@@ -30,7 +30,7 @@ def compute_policy_surprise_weights(game_data, board_size, policy_surprise_data_
     
     smoothed_targets = [None] * n_positions
     for i in range(n_positions - 1, -1, -1):
-        search_value = game_data[i]['root_value']
+        search_value = game_data[i]["root_value"]
         current_target = current_target + now_factor * (search_value - current_target)
         smoothed_targets[i] = current_target.copy()
     
@@ -40,13 +40,13 @@ def compute_policy_surprise_weights(game_data, board_size, policy_surprise_data_
 
     for i in range(n_positions):
         sample = game_data[i]
-        p_kl = compute_kl_divergence(sample['policy_target'], sample['nn_policy'])
+        p_kl = compute_kl_divergence(sample["policy_target"], sample["nn_policy"])
         policy_surprises.append(p_kl)
 
-        v_kl = compute_kl_divergence(smoothed_targets[i], sample['value_probs'])
+        v_kl = compute_kl_divergence(smoothed_targets[i], sample["value_probs"])
         value_surprises.append(min(v_kl, 1))
 
-        w = 1 if sample['is_full_search'] else 0
+        w = 1 if sample["is_full_search"] else 0
         target_weigts.append(w)
     
     sum_weights = sum(target_weigts)
@@ -108,11 +108,11 @@ def compute_policy_surprise_weights_(game_data, baseline_weight_ratio=0.5, value
 
     for sample in game_data:
         # (final_state, encoded_state, policy_target, nn_policy, value_probs, root_value, outcome, is_full_search)
-        policy_target = sample['policy_target']
-        policy_prior = sample['nn_policy']
-        nn_value_probs = sample['value_probs']
-        outcome = sample['outcome']
-        is_full_search = sample['is_full_search']
+        policy_target = sample["policy_target"]
+        policy_prior = sample["nn_policy"]
+        nn_value_probs = sample["value_probs"]
+        outcome = sample["outcome"]
+        is_full_search = sample["is_full_search"]
 
         w = 1.0 if is_full_search else 0.0
         target_weights.append(w)

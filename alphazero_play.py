@@ -39,9 +39,9 @@ class TreeReuseMCTS(MCTS):
         state = node.state
         to_play = node.to_play
 
-        if self.args.get('enable_stochastic_transform_inference', True):
+        if self.args.get("enable_stochastic_transform_inference", True):
             nn_policy, nn_value, nn_value_probs = self._inference_with_stochastic_transform(state, to_play)
-        elif self.args.get('enable_symmetry_inference_for_child', False):
+        elif self.args.get("enable_symmetry_inference_for_child", False):
             nn_policy, nn_value, nn_value_probs = self._inference_with_symmetry(state, to_play)
         else:
             nn_policy, nn_value, nn_value_probs = self._inference(state, to_play)
@@ -66,7 +66,7 @@ class TreeReuseMCTS(MCTS):
             state = node.state
             to_play = node.to_play
 
-            if self.args.get('enable_symmetry_inference_for_root', False):
+            if self.args.get("enable_symmetry_inference_for_root", False):
                 nn_policy, nn_value, value_probs = self._inference_with_symmetry(state, to_play)
             else:
                 nn_policy, nn_value, value_probs = self._inference(state, to_play)
@@ -127,7 +127,7 @@ class TreeReuseMCTS(MCTS):
     @torch.inference_mode()
     def eval_search(self, state, to_play, root=None):
         
-        num_simulations = self.args['full_search_num_simulations']
+        num_simulations = self.args["full_search_num_simulations"]
 
         if root is None:
             root = TreeReuseNode(state, to_play)
@@ -135,7 +135,7 @@ class TreeReuseMCTS(MCTS):
         _, nn_value, _ = self.root_expand(root)
         self.backpropagate(root, nn_value)
 
-        for _ in tqdm(range(num_simulations), desc='MCTS Evaluating', unit='sim'):
+        for _ in tqdm(range(num_simulations), desc="MCTS Evaluating", unit="sim"):
             node = root
 
             while node.is_expanded():
@@ -191,23 +191,23 @@ class TreeReuseAlphaZero(AlphaZero):
             if f: img = np.flip(img, axis=2)
             aug_list.append(img)
         
-        input_tensor = torch.from_numpy(np.stack(aug_list)).to(self.args['device'], dtype=torch.float32)
+        input_tensor = torch.from_numpy(np.stack(aug_list)).to(self.args["device"], dtype=torch.float32)
         nn_output = self.model(input_tensor)
         # nn_output = {
-        #     'policy_logits': total_policy_logits[:, 0:1, :, :],
-        #     'opponent_policy_logits': total_policy_logits[:, 1:2, :, :],
-        #     'soft_policy_logits': soft_policy_logits,
-        #     'ownership': ownership,
-        #     'value_logits': value_logits,
+        #     "policy_logits": total_policy_logits[:, 0:1, :, :],
+        #     "opponent_policy_logits": total_policy_logits[:, 1:2, :, :],
+        #     "soft_policy_logits": soft_policy_logits,
+        #     "ownership": ownership,
+        #     "value_logits": value_logits,
         # }
 
-        nn_output['ownership'] = torch.tanh(nn_output['ownership'])
+        nn_output["ownership"] = torch.tanh(nn_output["ownership"])
         # 3. 处理 Value (标量类)
-        value_probs = torch.softmax(nn_output['value_logits'], dim=1).mean(dim=0).cpu().numpy()
+        value_probs = torch.softmax(nn_output["value_logits"], dim=1).mean(dim=0).cpu().numpy()
 
         # 4. 统一处理空间/策略类输出 (逆变换 + 平均)
         # 定义需要逆变换的键
-        spatial_keys = ['policy_logits', 'opponent_policy_logits', 'ownership']
+        spatial_keys = ["policy_logits", "opponent_policy_logits", "ownership"]
         averaged_results = {}
 
         for key in spatial_keys:
@@ -230,25 +230,25 @@ class TreeReuseAlphaZero(AlphaZero):
         # 6. 针对性处理各个输出
         # 当前玩家策略
         is_legal = self.game.get_is_legal_actions(state, to_play)
-        policy = get_masked_softmax(averaged_results['policy_logits'], is_legal)
+        policy = get_masked_softmax(averaged_results["policy_logits"], is_legal)
 
         # 对手策略 (基于执行当前 Action 后的状态)
         next_state = self.game.get_next_state(state, action, to_play)
         next_is_legal = self.game.get_is_legal_actions(next_state, -to_play)
-        opp_policy = get_masked_softmax(averaged_results['opponent_policy_logits'], next_is_legal)
+        opp_policy = get_masked_softmax(averaged_results["opponent_policy_logits"], next_is_legal)
 
         # 7. 组装返回
         board_size = self.game.board_size
         info = {
-            'mcts_policy': mcts_policy.reshape(board_size, board_size),
-            'nn_policy': policy.reshape(board_size, board_size),
-            'root_value': root_value,
-            'value_probs': value_probs,
-            'nn_value': value_probs[0] - value_probs[2],
-            'opponent_policy': opp_policy.reshape(board_size, board_size),
-            'ownership': averaged_results['ownership'].squeeze(),
-            'root_n': root_n,
-            'nn_output': nn_output,
+            "mcts_policy": mcts_policy.reshape(board_size, board_size),
+            "nn_policy": policy.reshape(board_size, board_size),
+            "root_value": root_value,
+            "value_probs": value_probs,
+            "nn_value": value_probs[0] - value_probs[2],
+            "opponent_policy": opp_policy.reshape(board_size, board_size),
+            "ownership": averaged_results["ownership"].squeeze(),
+            "root_n": root_n,
+            "nn_output": nn_output,
         }
 
         return action, info, next_root

@@ -16,20 +16,20 @@ def print_board(board):
     current_board = board[-1] if board.ndim == 3 else board
     rows, cols = current_board.shape
 
-    print('   ', end='')
+    print("   ", end="")
     for col in range(cols):
-        print(f'{col:2d} ', end='')
+        print(f"{col:2d} ", end="")
     print()
 
     for row in range(rows):
-        print(f'{row:2d} ', end='')
+        print(f"{row:2d} ", end="")
         for col in range(cols):
             if current_board[row, col] == 1:
-                print(' × ', end='')
+                print(" × ", end="")
             elif current_board[row, col] == -1:
-                print(' ○ ', end='')
+                print(" ○ ", end="")
             else:
-                print(' · ', end='')
+                print(" · ", end="")
         print()
 
 
@@ -39,10 +39,10 @@ def random_augment_sample(sample, board_size):
     k = transform_type % 4
     do_flip = transform_type >= 4
 
-    f_state = sample['final_state']
-    state = sample['encoded_state']
-    p_target = sample['policy_target']
-    opp_p_target = sample['opponent_policy_target']
+    f_state = sample["final_state"]
+    state = sample["encoded_state"]
+    p_target = sample["policy_target"]
+    opp_p_target = sample["opponent_policy_target"]
 
     aug_f_state = np.rot90(f_state, k=k)
     aug_state = np.rot90(state, k=k, axes=(1, 2))
@@ -60,18 +60,18 @@ def random_augment_sample(sample, board_size):
 
     new_sample = sample.copy()
     new_sample.update({
-        'final_state': aug_f_state.copy(),
-        'encoded_state': aug_state.copy(),
-        'policy_target': aug_p_target.copy(),
-        'opponent_policy_target': aug_opp_p_target.copy(),
+        "final_state": aug_f_state.copy(),
+        "encoded_state": aug_state.copy(),
+        "policy_target": aug_p_target.copy(),
+        "opponent_policy_target": aug_opp_p_target.copy(),
     })
     return new_sample
 
 
 def random_augment_batch(batch, board_size):
-    '''
+    """
     处理字典列表形式的 batch
-    '''
+    """
     augmented_batch = []
     for sample in batch:
         aug_sample = random_augment_sample(sample, board_size)
@@ -132,7 +132,7 @@ def add_shaped_dirichlet_noise(policy_t, total_dirichlet_alpha=10.83, epsilon=0.
 
 def root_temperature_transform(policy, current_step, args, board_size):
     decay_factor = math.pow(0.5, current_step / board_size)
-    current_temp = args['root_temperature_final'] + (args['root_temperature_init'] - args['root_temperature_final']) * decay_factor
+    current_temp = args["root_temperature_final"] + (args["root_temperature_init"] - args["root_temperature_final"]) * decay_factor
     new_policy = temperature_transform(policy, current_temp)
     return new_policy
 

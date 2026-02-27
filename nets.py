@@ -149,10 +149,10 @@ class ResNet(nn.Module):
         value_logits = self.value_head(x)  # [B, num_channels, H, W] -> [B, 3] (win, draw, lose)
 
         nn_output = {
-            'policy_logits': total_policy_logits[:, 0:1, :, :],
-            'opponent_policy_logits': total_policy_logits[:, 1:2, :, :],
-            'soft_policy_logits': soft_policy_logits,
-            'ownership': ownership,
-            'value_logits': value_logits,
+            "policy_logits": total_policy_logits[:, 0:1, :, :],
+            "opponent_policy_logits": total_policy_logits[:, 1:2, :, :],
+            "soft_policy_logits": soft_policy_logits,
+            "ownership": ownership,
+            "value_logits": value_logits,
         }
         return nn_output

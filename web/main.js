@@ -1,7 +1,7 @@
-const canvas = document.getElementById('board');
-const ctx = canvas.getContext('2d');
-const statusEl = document.getElementById('status');
-const loadingOverlay = document.getElementById('loading-overlay');
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+const loadingOverlay = document.getElementById("loading-overlay");
 
 const boardSize = 15;
 let cellSize = 0;
@@ -20,9 +20,9 @@ let lastResults = {
     policy: null
 };
 
-const worker = new Worker('worker.js');
-const chartCanvas = document.getElementById('win-prob-chart');
-const chartCtx = chartCanvas.getContext('2d');
+const worker = new Worker("worker.js");
+const chartCanvas = document.getElementById("win-prob-chart");
+const chartCtx = chartCanvas.getContext("2d");
 let winProbHistory = []; // Start empty
 let showHeatmap = false;
 let showForbidden = false;
@@ -38,8 +38,8 @@ function updateCanvasSize() {
     canvas.height = logicalSize * dpr;
     
     // Set display size
-    canvas.style.width = logicalSize + 'px';
-    canvas.style.height = logicalSize + 'px';
+    canvas.style.width = logicalSize + "px";
+    canvas.style.height = logicalSize + "px";
     
     // Scale context for all subsequent drawing
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -63,7 +63,7 @@ function updateChartSize() {
     drawWinProbChart();
 }
 
-window.addEventListener('resize', () => {
+window.addEventListener("resize", () => {
     updateCanvasSize();
     updateChartSize();
 });
@@ -75,19 +75,19 @@ setTimeout(() => {
     updateSlider();
 }, 100);
 
-worker.postMessage({ type: 'init' });
+worker.postMessage({ type: "init" });
 
 worker.onmessage = function(e) {
     const data = e.data;
-    if (data.type === 'ready') {
-        loadingOverlay.style.display = 'none';
+    if (data.type === "ready") {
+        loadingOverlay.style.display = "none";
         resetGame();
-    } else if (data.type === 'error') {
-        loadingOverlay.innerHTML = `<p style='color:red'>Error: ${data.message}</p>`;
-        console.error('Worker Error:', data.message);
-    } else if (data.type === 'progress') {
+    } else if (data.type === "error") {
+        loadingOverlay.innerHTML = `<p style="color:red">Error: ${data.message}</p>`;
+        console.error("Worker Error:", data.message);
+    } else if (data.type === "progress") {
         // Handle progress bar if needed
-    } else if (data.type === 'result') {
+    } else if (data.type === "result") {
         handleAIResult(data);
     }
 };
@@ -98,11 +98,11 @@ function drawBoard() {
     ctx.clearRect(0, 0, logicalSize, logicalSize);
     
     // Draw board background - warm wood tone for better contrast
-    ctx.fillStyle = '#e8d4b8';
+    ctx.fillStyle = "#e8d4b8";
     ctx.fillRect(0, 0, logicalSize, logicalSize);
     
     // Draw grid lines
-    ctx.strokeStyle = '#5a4a3a';
+    ctx.strokeStyle = "#5a4a3a";
     ctx.lineWidth = 1;
     for (let i = 0; i < boardSize; i++) {
         // Vertical
@@ -156,53 +156,53 @@ function drawStone(r, c, color) {
         // Drop shadow
         ctx.beginPath();
         ctx.arc(x + 1, y + 1, radius, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+        ctx.fillStyle = "rgba(0, 0, 0, 0.15)";
         ctx.fill();
         
         // Main body
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         const gradient = ctx.createRadialGradient(x - radius*0.3, y - radius*0.3, 0, x, y, radius);
-        gradient.addColorStop(0, '#3a3a3a');
-        gradient.addColorStop(0.5, '#2a2a2a');
-        gradient.addColorStop(1, '#0a0a0a');
+        gradient.addColorStop(0, "#3a3a3a");
+        gradient.addColorStop(0.5, "#2a2a2a");
+        gradient.addColorStop(1, "#0a0a0a");
         ctx.fillStyle = gradient;
         ctx.fill();
         
         // Top highlight
         ctx.beginPath();
         ctx.arc(x - radius*0.25, y - radius*0.25, radius*0.35, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+        ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
         ctx.fill();
     } else {
         // White stone - enhanced visibility with proper contrast
         // Drop shadow
         ctx.beginPath();
         ctx.arc(x + 1, y + 1, radius, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+        ctx.fillStyle = "rgba(0, 0, 0, 0.2)";
         ctx.fill();
         
         // Main body
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         const gradient = ctx.createRadialGradient(x - radius*0.2, y - radius*0.2, 0, x, y, radius);
-        gradient.addColorStop(0, '#f8f8f8');
-        gradient.addColorStop(0.6, '#f5f5f5');
-        gradient.addColorStop(1, '#e5e5e5');
+        gradient.addColorStop(0, "#f8f8f8");
+        gradient.addColorStop(0.6, "#f5f5f5");
+        gradient.addColorStop(1, "#e5e5e5");
         ctx.fillStyle = gradient;
         ctx.fill();
         
         // Subtle edge definition
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.08)';
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.08)";
         ctx.lineWidth = 1;
         ctx.stroke();
         
         // Inner highlight
         ctx.beginPath();
         ctx.arc(x - radius*0.25, y - radius*0.25, radius*0.3, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
         ctx.fill();
     }
 }
@@ -212,7 +212,7 @@ function drawStarPoints() {
         [3, 3], [3, 11], [7, 7], [11, 3], [11, 11]
     ];
     
-    ctx.fillStyle = '#5a4a3a';
+    ctx.fillStyle = "#5a4a3a";
     for (const [r, c] of starPoints) {
         const x = margin + c * cellSize;
         const y = margin + r * cellSize;
@@ -227,7 +227,7 @@ function drawLastMoveMarker(r, c) {
     const y = margin + r * cellSize;
     const size = cellSize * 0.25;
     
-    ctx.fillStyle = '#e53935';
+    ctx.fillStyle = "#e53935";
     ctx.beginPath();
     ctx.moveTo(x, y);
     ctx.lineTo(x + size, y);
@@ -271,7 +271,7 @@ function drawForbiddenPoints() {
         }
     }
 
-    ctx.strokeStyle = '#e53935';
+    ctx.strokeStyle = "#e53935";
     ctx.lineWidth = 2;
     const size = cellSize * 0.2;
 
@@ -307,15 +307,15 @@ function drawWinProbChart() {
 
     // Create vertical gradient for the curve: red above 50%, green below 50%
     const curveGradient = chartCtx.createLinearGradient(0, 0, 0, h);
-    curveGradient.addColorStop(0, '#ff4d4f');    // Red (Win > 50%)
-    curveGradient.addColorStop(0.48, '#ff4d4f'); 
-    curveGradient.addColorStop(0.5, '#d9d9d9');  // Neutral middle
-    curveGradient.addColorStop(0.52, '#52c41a'); // Green (Win < 50%)
-    curveGradient.addColorStop(1, '#52c41a');
+    curveGradient.addColorStop(0, "#ff4d4f");    // Red (Win > 50%)
+    curveGradient.addColorStop(0.48, "#ff4d4f"); 
+    curveGradient.addColorStop(0.5, "#d9d9d9");  // Neutral middle
+    curveGradient.addColorStop(0.52, "#52c41a"); // Green (Win < 50%)
+    curveGradient.addColorStop(1, "#52c41a");
 
     // Draw grid line for 50%
     chartCtx.beginPath();
-    chartCtx.strokeStyle = 'rgba(0, 0, 0, 0.05)';
+    chartCtx.strokeStyle = "rgba(0, 0, 0, 0.05)";
     chartCtx.setLineDash([5, 5]);
     chartCtx.moveTo(0, h / 2);
     chartCtx.lineTo(w, h / 2);
@@ -326,8 +326,8 @@ function drawWinProbChart() {
     chartCtx.beginPath();
     chartCtx.strokeStyle = curveGradient;
     chartCtx.lineWidth = 3;
-    chartCtx.lineJoin = 'round';
-    chartCtx.lineCap = 'round';
+    chartCtx.lineJoin = "round";
+    chartCtx.lineCap = "round";
 
     if (winProbHistory.length === 1) {
         const y = h - (winProbHistory[0] * h);
@@ -354,7 +354,7 @@ function renderResults(data) {
         const v = data.rootValue;
         const rootToPlay = data.rootToPlay;
         prob = (rootToPlay === aiColor) ? (v + 1) / 2 : 1 - (v + 1) / 2;
-        document.getElementById('mcts-value').innerText = (prob * 100).toFixed(1) + '%';
+        document.getElementById("mcts-value").innerText = (prob * 100).toFixed(1) + "%";
         
         if (winProbHistory.length === history.length + 1) {
             winProbHistory[winProbHistory.length - 1] = prob;
@@ -365,7 +365,7 @@ function renderResults(data) {
         const winner = game.getWinner(state);
         if (winner !== null) {
             prob = (winner === aiColor) ? 1.0 : (winner === 0 ? 0.5 : 0.0);
-            document.getElementById('mcts-value').innerText = (prob * 100).toFixed(1) + '%';
+            document.getElementById("mcts-value").innerText = (prob * 100).toFixed(1) + "%";
             
             if (winProbHistory.length === history.length + 1) {
                 winProbHistory[winProbHistory.length - 1] = prob;
@@ -373,8 +373,8 @@ function renderResults(data) {
                 winProbHistory.push(prob);
             }
         } else {
-            document.getElementById('mcts-value').innerText = '50.0%';
-            // Don't push 50% to history if it's just the default
+            document.getElementById("mcts-value").innerText = "50.0%";
+            // Don"t push 50% to history if it"s just the default
         }
     }
     
@@ -418,7 +418,7 @@ function makeMove(action) {
     
     // Notify worker for tree reuse
     worker.postMessage({ 
-        type: 'move', 
+        type: "move", 
         action: action, 
         nextState: state, 
         nextToPlay: -toPlay 
@@ -428,17 +428,17 @@ function makeMove(action) {
 
     const winner = game.getWinner(state);
     if (winner !== null) {
-        statusEl.innerText = winner === 1 ? '分析完成：黑胜' : (winner === -1 ? '分析完成：白胜' : '分析完成：平局');
+        statusEl.innerText = winner === 1 ? "分析完成：黑胜" : (winner === -1 ? "分析完成：白胜" : "分析完成：平局");
         aiRunning = true; // Block moves
         renderResults(null); // Update win prob to final state
     } else {
         if (toPlay === playerColor) {
-            statusEl.innerText = toPlay === 1 ? '轮到黑棋' : '轮到白棋';
+            statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
         } else {
-            statusEl.innerText = 'SkyZero 思考中...';
+            statusEl.innerText = "SkyZero 思考中...";
             aiRunning = true;
             searchId++;
-            worker.postMessage({ type: 'search', simulations: 800, state, toPlay, searchId });
+            worker.postMessage({ type: "search", simulations: 800, state, toPlay, searchId });
         }
     }
 }
@@ -472,14 +472,14 @@ function resetGame() {
     lastMove = null;
     searchId++;
     renderResults(null);
-    worker.postMessage({ type: 'reset' });
+    worker.postMessage({ type: "reset" });
     
     if (toPlay === playerColor) {
-        statusEl.innerText = '轮到黑棋';
+        statusEl.innerText = "轮到黑棋";
     } else {
-        statusEl.innerText = 'SkyZero 思考中...';
+        statusEl.innerText = "SkyZero 思考中...";
         aiRunning = true;
-        worker.postMessage({ type: 'search', simulations: 400, state, toPlay, searchId });
+        worker.postMessage({ type: "search", simulations: 400, state, toPlay, searchId });
     }
     
     drawBoard();
@@ -492,7 +492,7 @@ function undo() {
     if (aiRunning && !isGameOver) {
         aiRunning = false;
         searchId++;
-        worker.postMessage({ type: 'reset' });
+        worker.postMessage({ type: "reset" });
         
         if (history.length > 0) {
             const prev = history.pop();
@@ -503,7 +503,7 @@ function undo() {
             renderResults(prev.lastResults);
             drawBoard();
         }
-        statusEl.innerText = toPlay === 1 ? '轮到黑棋' : '轮到白棋';
+        statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
         return;
     }
     
@@ -511,11 +511,11 @@ function undo() {
 
     let prev;
     if (toPlay !== playerColor || isGameOver) {
-        // AI's turn or game ended, undo 1 move
+        // AI"s turn or game ended, undo 1 move
         prev = history.pop();
         winProbHistory.pop();
     } else if (history.length >= 2) {
-        // Human's turn, undo 2 moves (AI + Human)
+        // Human"s turn, undo 2 moves (AI + Human)
         history.pop();
         prev = history.pop();
         winProbHistory.pop();
@@ -532,56 +532,56 @@ function undo() {
     aiRunning = false;
     
     if (toPlay === playerColor) {
-        statusEl.innerText = toPlay === 1 ? '轮到黑棋' : '轮到白棋';
+        statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
     } else {
-        statusEl.innerText = 'SkyZero 思考中...';
-        // Note: we don't auto-trigger AI move on undo to human turn
+        statusEl.innerText = "SkyZero 思考中...";
+        // Note: we don"t auto-trigger AI move on undo to human turn
     }
     
-    worker.postMessage({ type: 'reset' });
+    worker.postMessage({ type: "reset" });
     drawBoard();
 }
 
 function updateSlider() {
-    const slider = document.getElementById('player-slider');
+    const slider = document.getElementById("player-slider");
     if (!slider) return;
     if (playerColor === 1) {
-        slider.style.transform = 'translateX(0)';
+        slider.style.transform = "translateX(0)";
     } else {
-        slider.style.transform = 'translateX(100%)';
+        slider.style.transform = "translateX(100%)";
     }
 }
 
-document.getElementById('pick-black').onclick = () => {
+document.getElementById("pick-black").onclick = () => {
     if (playerColor === 1) return;
     playerColor = 1;
-    document.getElementById('pick-black').classList.add('active');
-    document.getElementById('pick-white').classList.remove('active');
+    document.getElementById("pick-black").classList.add("active");
+    document.getElementById("pick-white").classList.remove("active");
     updateSlider();
     resetGame();
 };
 
-document.getElementById('pick-white').onclick = () => {
+document.getElementById("pick-white").onclick = () => {
     if (playerColor === -1) return;
     playerColor = -1;
-    document.getElementById('pick-white').classList.add('active');
-    document.getElementById('pick-black').classList.remove('active');
+    document.getElementById("pick-white").classList.add("active");
+    document.getElementById("pick-black").classList.remove("active");
     updateSlider();
     resetGame();
 };
 
-document.getElementById('reset-btn').onclick = resetGame;
-document.getElementById('undo-btn').onclick = undo;
+document.getElementById("reset-btn").onclick = resetGame;
+document.getElementById("undo-btn").onclick = undo;
 
-document.getElementById('toggle-mcts').onclick = () => {
+document.getElementById("toggle-mcts").onclick = () => {
     showHeatmap = !showHeatmap;
-    document.getElementById('toggle-mcts').classList.toggle('active', showHeatmap);
+    document.getElementById("toggle-mcts").classList.toggle("active", showHeatmap);
     drawBoard();
 };
 
-document.getElementById('toggle-forbidden').onclick = () => {
+document.getElementById("toggle-forbidden").onclick = () => {
     showForbidden = !showForbidden;
-    document.getElementById('toggle-forbidden').classList.toggle('active', showForbidden);
+    document.getElementById("toggle-forbidden").classList.toggle("active", showForbidden);
     drawBoard();
 };
 
