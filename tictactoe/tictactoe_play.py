@@ -29,6 +29,8 @@ eval_args = {
     'fpu_reduction_max': train_args['fpu_reduction_max'],
     'root_fpu_reduction_max': train_args['root_fpu_reduction_max'],
 
+    'enable_forced_playout': False,
+
     'file_name': 'tictactoe',
     'data_dir': 'data/tictactoe',
     'device': 'cuda',
