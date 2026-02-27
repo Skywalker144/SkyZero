@@ -827,7 +827,7 @@ class AlphaZero:
             timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
             filepath = os.path.join(
                 checkpoint_dir,
-                f'{os.path.basename(self.args['file_name'])}_checkpoint_{timestamp}.pth',
+                f'{os.path.basename(self.args["file_name"])}_checkpoint_{timestamp}.pth',
             )
 
         checkpoint = {
@@ -929,7 +929,7 @@ class AlphaZero:
             plt.ylabel('Loss')
             plt.legend()
             plt.grid(True)
-            plt.savefig(os.path.join(data_dir, f'{self.args['file_name']}_total_loss.png'))
+            plt.savefig(os.path.join(data_dir, f'{self.args["file_name"]}_total_loss.png'))
             plt.close()
 
             # 2. Individual Loss Components Image
@@ -943,7 +943,7 @@ class AlphaZero:
             plt.ylabel('Loss')
             plt.legend()
             plt.grid(True)
-            plt.savefig(os.path.join(data_dir, f'{self.args['file_name']}_loss_components.png'))
+            plt.savefig(os.path.join(data_dir, f'{self.args["file_name"]}_loss_components.png'))
             plt.close()
 
             # 3. Win Rate Image
@@ -970,7 +970,7 @@ class AlphaZero:
                 plt.ylim(0, 1)
                 plt.legend()
                 plt.grid(True)
-                plt.savefig(os.path.join(data_dir, f'{self.args['file_name']}_win_rates.png'))
+                plt.savefig(os.path.join(data_dir, f'{self.args["file_name"]}_win_rates.png'))
                 plt.close()
         except Exception as e:
             print(f'Plotting failed: {e}')

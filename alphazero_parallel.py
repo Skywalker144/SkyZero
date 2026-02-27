@@ -300,8 +300,8 @@ class AlphaZeroParallel(AlphaZero):
 
     def learn(self):
         print(f'Starting Parallel AlphaZero')
-        print(f'Workers: {self.num_workers}, Device: {self.args['device']}')
-        print(f'Batch Size: {self.args['batch_size']}')
+        print(f'Workers: {self.num_workers}, Device: {self.args["device"]}')
+        print(f'Batch Size: {self.args["batch_size"]}')
 
         # Barrier to synchronize all workers before starting self-play
         # Participants: 1 GPU worker + num_workers self-play workers + 1 main process
@@ -448,7 +448,7 @@ class AlphaZeroParallel(AlphaZero):
                 batch_loss_dict = {key: [] for key in self.losses_dict.keys()}
                 full_search_ratio_list = []
                 for _ in range(self.args['train_steps_per_generation']):
-                    batch = self.replay_buffer.sample(self.args['batch_size'])
+                    batch = self.replay_buffer.sample(self.args["batch_size"])
                     loss_dic, full_search_ratio = self._train_batch(batch)
                     for key in batch_loss_dict:
                         batch_loss_dict[key].append(loss_dic[key])
@@ -464,16 +464,16 @@ class AlphaZeroParallel(AlphaZero):
                 # Update Schedule
                 avg_sample_len = np.mean(recent_sample_lengths) if recent_game_lengths else 1
                 num_next = int(
-                    self.args['batch_size'] * self.args['train_steps_per_generation'] / avg_sample_len / self.args['target_ReplayRatio']
+                    self.args["batch_size"] * self.args['train_steps_per_generation'] / avg_sample_len / self.args['target_ReplayRatio']
                 )
                 num_next = max(1, num_next)
                 train_game_count = self.game_count + num_next
                 
                 print(f'  [Training] Full Search Ratio: {np.mean(full_search_ratio_list):.2f}')
                 print(
-                    f'  [Training] Loss: {self.losses_dict['total_loss'][-1]:.2f} | '
-                    f'Policy Loss: {self.losses_dict['policy_loss'][-1]:.2f} | '
-                    f'Value Loss: {self.losses_dict['value_loss'][-1]:.2f}'
+                    f'  [Training] Loss: {self.losses_dict["total_loss"][-1]:.2f} | '
+                    f'Policy Loss: {self.losses_dict["policy_loss"][-1]:.2f} | '
+                    f'Value Loss: {self.losses_dict["value_loss"][-1]:.2f}'
                 )
                 print(f'  Next Train after {num_next} games')
 
