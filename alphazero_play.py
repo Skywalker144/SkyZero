@@ -212,7 +212,6 @@ class TreeReuseAlphaZero(AlphaZero):
     def play(self, state, to_play, root=None, show_progress_bar=True, additive=True):
         self.model.eval()
         
-        # 1. MCTS 搜索
         if root is None or not np.array_equal(root.state, state):
             root = TreeReuseNode(state, to_play)
 
@@ -224,9 +223,7 @@ class TreeReuseAlphaZero(AlphaZero):
 
         next_root = self.apply_action(root, action)
         
-        # 2. 准备 8 对称性输入 (向量化处理)
         encoded = self.game.encode_state(state, to_play)
-        # 预计算 8 个对称状态
         symmetries = [(f, r) for f in [False, True] for r in range(4)]
         aug_list = []
         for f, r in symmetries:
@@ -245,11 +242,8 @@ class TreeReuseAlphaZero(AlphaZero):
         # }
 
         nn_output["ownership"] = torch.tanh(nn_output["ownership"])
-        # 3. 处理 Value (标量类)
         value_probs = torch.softmax(nn_output["value_logits"], dim=1).mean(dim=0).cpu().numpy()
 
-        # 4. 统一处理空间/策略类输出 (逆变换 + 平均)
-        # 定义需要逆变换的键
         spatial_keys = ["policy_logits", "opponent_policy_logits", "ownership"]
         averaged_results = {}
 
@@ -258,29 +252,23 @@ class TreeReuseAlphaZero(AlphaZero):
             untransformed = []
             for i, (f, r) in enumerate(symmetries):
                 temp = data[i]
-                # 逆变换：先翻转(如果是True)，再逆旋转
                 if f: temp = np.flip(temp, axis=2)
                 temp = np.rot90(temp, -r, (1, 2))
                 untransformed.append(temp)
             averaged_results[key] = np.mean(untransformed, axis=0)
 
-        # 5. 计算 Masked Softmax 的辅助函数
         def get_masked_softmax(logits, is_legal):
             logits_flat = logits.flatten()
             masked = np.where(is_legal, logits_flat, -1e9)
             return softmax(masked)
 
-        # 6. 针对性处理各个输出
-        # 当前玩家策略
         is_legal = self.game.get_is_legal_actions(state, to_play)
         policy = get_masked_softmax(averaged_results["policy_logits"], is_legal)
 
-        # 对手策略 (基于执行当前 Action 后的状态)
         next_state = self.game.get_next_state(state, action, to_play)
         next_is_legal = self.game.get_is_legal_actions(next_state, -to_play)
         opp_policy = get_masked_softmax(averaged_results["opponent_policy_logits"], next_is_legal)
 
-        # 7. 组装返回
         board_size = self.game.board_size
         info = {
             "mcts_policy": mcts_policy.reshape(board_size, board_size),
