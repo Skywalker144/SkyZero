@@ -15,11 +15,11 @@ train_args = {
     'history_step': 2,
     'num_blocks': 2,
     'num_channels': 128,
-    'lr': 0.0001,
+    'lr': 0.00001,
     'weight_decay': 3e-5,
 
-    'full_search_num_simulations': 720,
-    'fast_search_num_simulations': 120,
+    'full_search_num_simulations': 800,
+    'fast_search_num_simulations': 160,
     'full_search_prob': 0.25,
 
     'c_puct': 1.1,
@@ -27,8 +27,8 @@ train_args = {
     'root_temperature_init': 1.25,
     'root_temperature_final': 1.1,
 
-    'move_temperature_init': 0.9,
-    'move_temperature_final': 0.4,
+    'move_temperature_init': 1,
+    'move_temperature_final': 0.2,
 
     'total_dirichlet_alpha': 10.83,
     'dirichlet_epsilon': 0.25,
