@@ -473,7 +473,7 @@ class AlphaZeroParallel(AlphaZero):
                 print(
                     f"  [Training] Loss: {self.losses_dict['total_loss'][-1]:.2f} | "
                     f"Policy Loss: {self.losses_dict['policy_loss'][-1]:.2f} | "
-                    f"Value Loss: {self.losses_dict['value_los'][-1]:.2f}"
+                    f"Value Loss: {self.losses_dict['value_loss'][-1]:.2f}"
                 )
                 print(f"  Next Train after {num_next} games")
 
