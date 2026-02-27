@@ -214,7 +214,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 if (
                     not in_soft_resign
                     and absmin_root_value >= args.get('soft_resign_threshold', 0.9)
-                    and np.random.rand() < args.get('soft_resign_prob', 0.8)
+                    and np.random.rand() < args.get('soft_resign_prob', 0.7)
                 ):
                     in_soft_resign = True
 
