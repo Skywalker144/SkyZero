@@ -16,7 +16,7 @@ train_args = {
 
     "history_step": 2,
     "num_blocks": 1,
-    "num_channels": 16,
+    "num_channels": 32,
     "lr": 0.001,
     "weight_decay": 3e-5,
 

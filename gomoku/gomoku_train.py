@@ -21,20 +21,20 @@ train_args = {
     "lr": 0.0001,
     "weight_decay": 3e-5,
 
-    "full_search_num_simulations": 800,
-    "fast_search_num_simulations": 160,
+    "full_search_num_simulations": 1000,
+    "fast_search_num_simulations": 200,
     "full_search_prob": 0.25,
 
-    "c_puct": 1.1,
+    "c_puct": 1.5,
 
-    "root_temperature_init": 1.25,
+    "root_temperature_init": 1.3,
     "root_temperature_final": 1.1,
 
     "move_temperature_init": 1,
     "move_temperature_final": 0.2,
 
     "total_dirichlet_alpha": 10.83,
-    "dirichlet_epsilon": 0.25,
+    "dirichlet_epsilon": 0.3,
 
     "batch_size": 128,
     "max_grad_norm": 1,
