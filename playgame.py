@@ -5,31 +5,7 @@ import numpy as np
 from alphazero_play import TreeReuseAlphaZero
 from nets import ResNet
 from utils import print_board
-import matplotlib.pyplot as plt
-import seaborn as sns
 
-
-def plot_heatmaps(board_size, data_dict):
-    """
-    data_dict: 包含 {'MCTS Strategy': array, 'NN Strategy': array, ...} 的字典
-    """
-    num_plots = len(data_dict)
-    fig, axes = plt.subplots(1, num_plots, figsize=(5 * num_plots, 4))
-    
-    if num_plots == 1:
-        axes = [axes]
-    for ax, (title, data) in zip(axes, data_dict.items()):
-        # 将一维的 policy 转换为二维的棋盘形状
-        if data.ndim == 1:
-            heatmap_data = data.reshape(board_size, board_size)
-        else:
-            heatmap_data = data
-            
-        sns.heatmap(heatmap_data, annot=False, cmap="YlGnBu", ax=ax, square=True, cbar=True)
-        ax.set_title(title)
-    plt.tight_layout()
-    plt.show(block=False) # block=False 不会阻塞程序运行
-    plt.pause(0.1) # 给界面一点渲染时间
 
 class GamePlayer:
     def __init__(self, game, args):
