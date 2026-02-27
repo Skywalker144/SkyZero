@@ -1,93 +1,109 @@
-import os, sys
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+import sys
+import os
+import argparse
+import pickle
+import torch
 import torch.optim as optim
-import numpy as np
-from alphazero_play import TreeReuseAlphaZero
+from tqdm import tqdm
+
+# Add the project root to sys.path so envs, nets and other modules can be found
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from envs.gomoku import Gomoku
 from nets import ResNet
-from utils import print_board
-
-
-'''
-蒸馏训练：
-nn_output = {
-    'policy_logits': total_policy_logits[:, 0:1, :, :],
-    'opponent_policy_logits': total_policy_logits[:, 1:2, :, :],
-    'soft_policy_logits': soft_policy_logits,
-    'ownership': ownership,
-    'value_logits': value_logits,
-}
-
-训练目标：
-cee:
-student_nn_policy -> mcts_policy
-student_opponent_policy -> next_mcts_policy
-student_soft_policy -> soft_mcts_policy
-student_ownership -> ownership
-student_nn_value -> mcts_value and outcome
-kl:
-student_nn_policy -> teacher_nn_policy
-student_nn_value -> teacher_nn_value
-student_soft_policy -> teacher_soft_mcts_policy
-student_ownership -> teacher_ownership
-
-SelfPlay保存：
-mcts_policy
-next_mcts_policy
-soft_mcts_policy
-ownership
-mcts_value and outcome
-teacher_nn_policy
-teacher_nn_value
-teacher_soft_mcts_policy
-teacher_ownership
-teacher_mcts_value
-
-'''
+from alphazero import AlphaZero
+from gomoku.gomoku_train import train_args as gomoku_train_args
 
 class DataGenerater:
-    def __init__(self, game, args):
+    def __init__(self, game, model, train_args, dist_args):
         self.game = game
-        self.args = args
-        self.args['mode'] = 'eval'
-        model = ResNet(self.game, num_blocks=self.args['num_blocks'], num_channels=self.args['num_channels']).to(self.args['device'])
-        optimizer = optim.Adam(model.parameters(), lr=self.args['lr'], weight_decay=self.args['weight_decay'])
-        self.alphazero = TreeReuseAlphaZero(self.game, model, optimizer, self.args)
-        self.alphazero.load_checkpoint()
-
-    def eval_selfplay(self):
-        to_play = 1
-        state = self.game.get_initial_state()
-        memory = []
-        mcts_root = None
-
-        while not self.game.is_terminal(state):
-            action, info, mcts_root = self.alphazero.play(state, to_play, root=mcts_root)
-            
-            if len(memory) > 0:
-                memory[-1]["next_mcts_policy"] = info['mcts_policy']
-
-            teacher_nn_output = info['nn_output']
-            memory.append({
-                'encoded_state': self.game.encode_state(state, to_play),
-                'to_play': to_play,
-                'mcts_policy': info['mcts_policy'],
-                'next_mcts_policy': None,
-                "root_value": info['root_value'],
-                'teacher_policy_logits': teacher_nn_output['policy_logits'],
-                'teacher_opponent_policy_logits': teacher_nn_output['opponent_policy_logits'],
-                'teacher_soft_policy_logits': teacher_nn_output['soft_policy_logits'],
-                'teacher_ownership': teacher_nn_output['ownership'],
-                'teacher_value_logits': teacher_nn_output['value_logits'],
-            })
-
-            mcts_root = self.alphazero.apply_action(mcts_root, action)
-            state = self.game.get_next_state(state, action, to_play)
-            to_play = -to_play
+        self.model = model
+        self.train_args = train_args
+        self.dist_args = dist_args
         
-        final_state = state
-        winner = self.game.get_winner(state)
-        return_memory = []
-        for sample in memory:
-            outcome = winner * sample['to_play']
+        # Initialize AlphaZero with Gomoku training parameters
+        self.alphazero = AlphaZero(self.game, self.model, None, self.train_args)
+        
+        # Load teacher model's pre-trained checkpoint to generate data
+        # self.train_args['data_dir'] points to 'data/gomoku', which is correct for loading.
+        if self.alphazero.load_checkpoint():
+            print("Successfully loaded teacher model checkpoint from", self.train_args['data_dir'])
+        else:
+            print("No checkpoint found in", self.train_args['data_dir'], "- using random weights for teacher model.")
+        
+        self.model.eval()
+
+    def generate_and_save(self, num_samples):
+        save_dir = self.dist_args['data_dir']
+        os.makedirs(save_dir, exist_ok=True)
+        
+        all_data = []
+        pbar = tqdm(total=num_samples, desc="Generating Data")
+        
+        with torch.no_grad():
+            while len(all_data) < num_samples:
+                # selfplay() returns (return_memory, winner, memory_len, final_state)
+                memory, _, length, _ = self.alphazero.selfplay()
+                
+                current_len = len(all_data)
+                needed = num_samples - current_len
+                
+                # Check how much to add to not exceed num_samples
+                if length > needed:
+                    all_data.extend(memory[:needed])
+                    pbar.update(needed)
+                else:
+                    all_data.extend(memory)
+                    pbar.update(length)
+                
+        pbar.close()
+        
+        save_path = os.path.join(save_dir, 'distillation_dataset.pkl')
+        with open(save_path, 'wb') as f:
+            pickle.dump(all_data, f)
+        print(f"Successfully generated {num_samples} samples and saved to {save_path}")
 
 
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', type=str, choices=['generate', 'train'], default='generate', help='Mode to run: generate data or train distillation model')
+    parser.add_argument('--num_samples', type=int, default=100000, help='Number of samples to generate')
+    parser.add_argument('--epochs', type=int, default=10, help='Training epochs')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training')
+    
+    cmd_args = parser.parse_args()
+    
+    # Distillation specific arguments
+    dist_args = {
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'data_dir': 'Distillation/dataset',
+        'batch_size': cmd_args.batch_size,
+        'epochs': cmd_args.epochs,
+        'num_workers': 0,
+        'kl_loss_weight': 0.5,
+        'log_interval': 10,
+        'lr': 1e-3,
+        'weight_decay': 1e-4,
+    }
+    
+    # Initialize Gomoku game
+    game = Gomoku(board_size=gomoku_train_args['board_size'], history_step=gomoku_train_args['history_step'])
+    
+    if cmd_args.mode == 'generate':
+        # Instantiate teacher model based on the same config used for training
+        teacher_model = ResNet(
+            game, 
+            num_blocks=gomoku_train_args['num_blocks'], 
+            num_channels=gomoku_train_args['num_channels']
+        ).to(gomoku_train_args['device'])
+        
+        # Generator handles running self-play games and collecting samples
+        generator = DataGenerater(game, teacher_model, gomoku_train_args, dist_args)
+        generator.generate_and_save(cmd_args.num_samples)
+        
+    elif cmd_args.mode == 'train':
+        print("Train mode requires OfflineDistiller which is not fully implemented in this script.")
+        # student_model = ResNet(game, num_blocks=2, num_channels=32).to(dist_args['device'])
+        # optimizer = optim.Adam(student_model.parameters(), lr=dist_args['lr'], weight_decay=dist_args['weight_decay'])
+        # distiller = OfflineDistiller(game, student_model, optimizer, dist_args)
+        # distiller.train()
