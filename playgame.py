@@ -89,7 +89,7 @@ class GamePlayer:
             elif to_play == -1:
                 history.append((state.copy(), to_play, color))
                 print(f"AlphaZero step:")
-                action, info, mcts_root = alphazero.play(state, color, root=mcts_root)
+                action, info, mcts_root = alphazero.play(state, color, root=mcts_root, additive=True)
 
                 state = self.game.get_next_state(state, action, color)
                 mcts_policy, nn_policy, value_probs, root_value, nn_value = info["mcts_policy"], info["nn_policy"], info["value_probs"], info["root_value"], info["nn_value"]
