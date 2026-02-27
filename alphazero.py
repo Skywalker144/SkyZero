@@ -134,7 +134,28 @@ class MCTS:
 
         return policy, value, v_probs
 
-    def select(self, node):
+    def select(self, node, is_full_search=False):
+        
+        if (
+            self.args.get("enable_forced_playout", True)
+            and is_full_search
+            and node.parent is None and node.n > 0
+        ):
+            best_forced_child = None
+            best_prior = -1
+            k = self.args.get("forced_playout_k", 2)
+
+            for child in node.children:
+                if child.prior > 0 and child.n > 0:
+                    sqrt_node_n = math.sqrt(node.n)
+                    target_visits = math.sqrt(k * child.prior) * sqrt_node_n
+
+                    if child.n < target_visits:
+                        if child.prior > best_prior:
+                            best_prior = child.prior
+                            best_forced_child = child
+            if best_forced_child is not None:
+                return best_forced_child
 
         total_child_weight = sum(child.n for child in node.children)
         visited_policy_mass = sum(child.prior for child in node.children if child.n > 0)
@@ -259,7 +280,7 @@ class MCTS:
             node = root
 
             while node.is_expanded():
-                node = self.select(node)
+                node = self.select(node, is_full_search)
 
             if self.game.is_terminal(node.state):
                 value = self.game.get_winner(node.state) * node.to_play  # outcome(to_play view)
@@ -268,10 +289,61 @@ class MCTS:
 
             self.backpropagate(node, value)
 
-        mcts_policy = np.zeros(self.game.board_size**2)
-        for child in root.children:
-            mcts_policy[child.action_taken] = child.n
-        mcts_policy /= np.sum(mcts_policy)
+        if self.args.get("enable_forced_playout", True):
+            mcts_policy = np.zeros(self.game.board_size**2)
+
+            best_child = max(root.children, key=lambda c: c.n)
+
+            total_child_weight = root.n
+            c_puct = self.args.get("c_puct", 1.1)
+            c_puct_log = self.args.get("c_puct_log", 0.45)
+            c_puct_base = self.args.get("c_puct_base", 500)
+
+            if total_child_weight > 0:
+                c_puct = c_puct + c_puct_log * math.log((total_child_weight + c_puct_base) / c_puct_base)
+
+            explore_scaling = c_puct * math.sqrt(total_child_weight + 0.01)
+
+            q_best = -best_child.v / best_child.n if best_child.n > 0 else 0
+            u_best = explore_scaling * best_child.prior * (1 + best_child.n)
+            puct_best = q_best + u_best
+
+            k = self.args.get("forced_playout_k", 2)
+            sqrt_root_n = math.sqrt(root.n)
+
+            for child in root.children:
+                if child == best_child:
+                    mcts_policy[child.action_taken] = puct_best
+                    continue
+
+                target_visits = math.sqrt(k * child.prior) * sqrt_root_n
+
+                q_child = -child.v / child.n if child.n > 0 else 0
+                puct_gap = puct_best - q_child
+                if puct_gap <= 0:
+                    max_subtract = 0
+                else:
+                    min_denominator = (explore_scaling * child.prior) / puct_gap
+                    max_subtract = (1 + child.n) - min_denominator
+                amount_to_subtract = min(target_visits, max(0, max_subtract))
+
+                new_n = child.n - amount_to_subtract
+
+                if new_n <= 1:
+                    new_n = 0
+                
+                mcts_policy[child.action_taken] = max(0, new_n)
+
+            mcts_policy_sum = np.sum(mcts_policy)
+            if mcts_policy_sum > 0:
+                mcts_policy /= mcts_policy_sum
+            else:
+                mcts_policy[best_child.action_taken] = 1
+        else:
+            mcts_policy = np.zeros(self.game.board_size**2)
+            for child in root.children:
+                mcts_policy[child.action_taken] = child.n
+            mcts_policy /= np.sum(mcts_policy)
         return mcts_policy, nn_policy, nn_value_probs, root.v / root.n
 
     @torch.inference_mode()
@@ -288,7 +360,7 @@ class MCTS:
             node = root
 
             while node.is_expanded():
-                node = self.select(node)
+                node = self.select(node, is_full_search=True)
 
             if self.game.is_terminal(node.state):
                 value = self.game.get_winner(node.state) * node.to_play  # outcome(to_play view)
@@ -297,10 +369,61 @@ class MCTS:
 
             self.backpropagate(node, value)
 
-        mcts_policy = np.zeros(self.game.board_size**2)
-        for child in root.children:
-            mcts_policy[child.action_taken] = child.n
-        mcts_policy /= np.sum(mcts_policy)
+        if self.args.get("enable_forced_playout", True):
+            mcts_policy = np.zeros(self.game.board_size**2)
+
+            best_child = max(root.children, key=lambda c: c.n)
+
+            total_child_weight = root.n
+            c_puct = self.args.get("c_puct", 1.1)
+            c_puct_log = self.args.get("c_puct_log", 0.45)
+            c_puct_base = self.args.get("c_puct_base", 500)
+
+            if total_child_weight > 0:
+                c_puct = c_puct + c_puct_log * math.log((total_child_weight + c_puct_base) / c_puct_base)
+
+            explore_scaling = c_puct * math.sqrt(total_child_weight + 0.01)
+
+            q_best = -best_child.v / best_child.n if best_child.n > 0 else 0
+            u_best = explore_scaling * best_child.prior * (1 + best_child.n)
+            puct_best = q_best + u_best
+
+            k = self.args.get("forced_playout_k", 2)
+            sqrt_root_n = math.sqrt(root.n)
+
+            for child in root.children:
+                if child == best_child:
+                    mcts_policy[child.action_taken] = puct_best
+                    continue
+
+                target_visits = math.sqrt(k * child.prior) * sqrt_root_n
+
+                q_child = -child.v / child.n if child.n > 0 else 0
+                puct_gap = puct_best - q_child
+                if puct_gap <= 0:
+                    max_subtract = 0
+                else:
+                    min_denominator = (explore_scaling * child.prior) / puct_gap
+                    max_subtract = (1 + child.n) - min_denominator
+                amount_to_subtract = min(target_visits, max(0, max_subtract))
+
+                new_n = child.n - amount_to_subtract
+
+                if new_n <= 1:
+                    new_n = 0
+                
+                mcts_policy[child.action_taken] = max(0, new_n)
+
+            mcts_policy_sum = np.sum(mcts_policy)
+            if mcts_policy_sum > 0:
+                mcts_policy /= mcts_policy_sum
+            else:
+                mcts_policy[best_child.action_taken] = 1
+        else:
+            mcts_policy = np.zeros(self.game.board_size**2)
+            for child in root.children:
+                mcts_policy[child.action_taken] = child.n
+            mcts_policy /= np.sum(mcts_policy)
         return mcts_policy, root.v / root.n
 
 
