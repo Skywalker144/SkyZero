@@ -31,7 +31,8 @@ class GlobalPoolingBias(nn.Module):
 
     def forward(self, x):
         # x shape: [B, C, H, W]
-        g = F.relu(self.bn(x))
+        # g = F.relu(self.bn(x))
+        g = F.silu(self.bn(x))
         g_avg = torch.mean(g, dim=(2, 3))  # [B, C]
         g_max = torch.amax(g, dim=(2, 3))  # [B, C]
         g = torch.cat([g_avg, g_max], dim=1)  # [B, 2C]
@@ -82,7 +83,8 @@ class PolicyHead(nn.Module):
         g = self.conv_g(x)  # [B, in_channels, H, W] -> [B, head_channels, H, W]
 
         p = p + self.g_pool(g)
-        p = F.relu(self.bn(p))
+        # p = F.relu(self.bn(p))
+        p = F.silu(self.bn(p))
 
         board_logits = self.conv_final(p)  # [B, out_channels, H, W]
 
@@ -99,7 +101,8 @@ class ValueHead(nn.Module):
 
     def forward(self, x):
         v = self.conv_v(x)
-        v = F.relu(v)
+        # v = F.relu(v)
+        v = F.silu(v)
 
         v_pooled = torch.cat([
             torch.mean(v, dim=(2, 3)),
@@ -107,7 +110,8 @@ class ValueHead(nn.Module):
             torch.std(v, dim=(2, 3))
         ], dim=1)
 
-        out = F.relu(self.fc1(v_pooled))
+        # out = F.relu(self.fc1(v_pooled))
+        out = F.silu(self.fc1(v_pooled))
         value_logits = self.fc_value(out)  # [B, 3]
 
         return value_logits
