@@ -12,55 +12,97 @@
 <body>
     <div id="loading-overlay">
         <div class="loader"></div>
-        <p style="font-size: 1rem; letter-spacing: 0.05em; color: var(--accents-5)">神经网络初始化中</p>
+        <div class="loading-text" id="loading-text">权重下载中</div>
+        <div class="loading-progress">
+            <div class="loading-progress-bar" id="loading-progress-bar"></div>
+        </div>
+        <div class="loading-progress-value" id="loading-progress-text">0%</div>
     </div>
 
     <div class="container">
-        <h1 class="title">SkyZero</h1>
-        
-        <div class="analysis-container">
-            <div class="stat-box">
-                <div class="stat-content">
-                    <div class="label">SkyZero 胜率</div>
-                    <div id="mcts-value" class="value">50.0%</div>
+        <div class="layout">
+            <div class="header-area">
+                <h1 class="title">SkyZero</h1>
+            </div>
+
+            <div class="left-panel panel-stack">
+                <div class="game-controls">
+                    <div class="toggle-group">
+                        <span class="toggle-label">玩家执子：</span>
+                        <div class="switch-container">
+                            <div class="switch-slider" id="player-slider"></div>
+                            <button id="pick-black" class="active">黑棋</button>
+                            <button id="pick-white">白棋</button>
+                        </div>
+                    </div>
                 </div>
-            </div>
-            
-            <div class="chart-container">
-                <div class="chart-title">SkyZero胜率图像</div>
-                <canvas id="win-prob-chart"></canvas>
-            </div>
-            
-            <div class="game-controls">
-                <div class="toggle-group">
-                    <span class="toggle-label">执子：</span>
-                    <div class="switch-container">
-                        <div class="switch-slider" id="player-slider"></div>
-                        <button id="pick-black" class="active">黑棋</button>
-                        <button id="pick-white">白棋</button>
+
+                <div id="status">
+                    <div class="status-main">
+                        <div id="status-text" class="status-text">轮到黑棋</div>
+                        <div class="status-meta">
+                            <div class="status-row status-row-progress">
+                                <span class="status-label">搜索进度</span>
+                                <div class="status-progress">
+                                    <div id="status-progress-bar" class="status-progress-bar"></div>
+                                </div>
+                                <span id="status-progress" class="status-value">--</span>
+                            </div>
+                            <div class="status-row">
+                                <span class="status-label">剩余时间</span>
+                                <span id="status-eta" class="status-value">--</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="status-foot" class="status-foot"></div>
+                </div>
+
+                <div class="sim-controls">
+                    <div class="sim-header">
+                        <div class="label">模拟次数</div>
+                        <div id="sim-value" class="value">200</div>
+                    </div>
+                    <input id="sim-slider" type="range" min="100" max="1000" step="50" value="200">
+                    <div class="sim-range">
+                        <span>100</span>
+                        <span>1000</span>
+                    </div>
+                </div>
+
+                <div class="analysis-bar">
+                    <div class="toggle-group">
+                        <span class="toggle-label">分析：</span>
+                        <div class="switch-container analysis-switches">
+                            <button id="toggle-mcts" class="active">SkyZero策略热力图</button>
+                            <button id="toggle-forbidden" class="active">黑方禁手点</button>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <div class="analysis-bar">
-            <div class="toggle-group horizontal">
-                <span class="toggle-label">分析：</span>
-                <div class="switch-container analysis-switches">
-                    <button id="toggle-mcts">SkyZero策略热力图</button>
-                    <button id="toggle-forbidden">黑方禁手点</button>
+            <div class="board-panel">
+                <div class="board-container">
+                    <canvas id="board" width="800" height="800"></canvas>
+                </div>
+                <div class="action-buttons board-actions">
+                    <button id="reset-btn">新游戏</button>
+                    <button id="undo-btn">悔棋</button>
                 </div>
             </div>
-        </div>
 
-        <div class="board-container">
-            <div id="status">轮到黑棋</div>
-            <canvas id="board" width="800" height="800"></canvas>
-        </div>
+            <div class="right-panel panel-stack">
+                <div class="stat-box">
+                    <div class="stat-content">
+                        <div class="label">SkyZero 胜率</div>
+                        <div id="mcts-value" class="value">50.0%</div>
+                    </div>
+                </div>
 
-        <div class="action-buttons">
-            <button id="undo-btn">悔棋</button>
-            <button id="reset-btn">新游戏</button>
+                <div class="chart-container">
+                    <div class="chart-title">SkyZero 胜率图像</div>
+                    <canvas id="win-prob-chart"></canvas>
+                </div>
+            </div>
         </div>
     </div>
 

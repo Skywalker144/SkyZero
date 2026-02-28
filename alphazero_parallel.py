@@ -11,7 +11,6 @@ from alphazero import AlphaZero, MCTS, temperature_transform
 from policy_surprise_weighting import compute_policy_surprise_weights, apply_surprise_weighting_to_game
 from utils import print_board
 
-# Set start method to spawn for CUDA compatibility
 try:
     mp.set_start_method("spawn", force=True)
 except RuntimeError:
@@ -37,7 +36,6 @@ class RemoteModel:
         self.training = True
 
     def to(self, device):
-        # We ignore device movement commands as we run on CPU locally
         return self
 
     def __call__(self, state_tensor):

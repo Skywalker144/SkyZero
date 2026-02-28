@@ -26,10 +26,10 @@ body {
 .container {
     display: flex;
     flex-direction: column;
-    gap: 32px;
+    gap: 24px;
     width: 100%;
-    max-width: 800px;
-    align-items: center;
+    max-width: 1400px;
+    align-items: stretch;
 }
 
 .title {
@@ -40,11 +40,52 @@ body {
     background: linear-gradient(180deg, #000 0%, #444 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
+    text-align: left;
+}
+
+.layout {
+    display: grid;
+    grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 300px);
+    grid-template-rows: auto 1fr;
+    gap: 20px;
+    align-items: start;
+}
+
+.header-area {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.left-panel {
+    grid-column: 1;
+    grid-row: 2;
+}
+
+
+.board-panel {
+    grid-column: 2;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    align-items: center;
+    margin-top: -80px;
+}
+
+.right-panel {
+    grid-column: 3;
+    grid-row: 2;
+}
+
+.panel-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
 }
 
 .board-container {
     position: relative;
-    padding-top: 48px;
+    padding-top: 0;
     width: 100%;
     display: flex;
     justify-content: center;
@@ -53,7 +94,7 @@ body {
 canvas {
     cursor: crosshair;
     display: block;
-    border-radius: 12px;
+    border-radius: 0;
     box-shadow: 0 20px 50px rgba(0,0,0,0.15);
     max-width: 100%;
     height: auto;
@@ -61,33 +102,93 @@ canvas {
 }
 
 #status {
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    transform: translateX(-50%);
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
     font-weight: 700;
-    font-size: 1rem;
+    font-size: 0.95rem;
     color: var(--accents-5);
+    background: var(--accents-1);
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--accents-2);
+    min-height: 96px;
+    box-sizing: border-box;
+    gap: 8px;
+}
+
+.status-main {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.status-text {
     text-transform: uppercase;
     letter-spacing: 0.15em;
+    text-align: center;
     white-space: nowrap;
-    background: var(--accents-1);
-    padding: 4px 12px;
-    border-radius: 20px;
-    border: 1px solid var(--accents-2);
-    z-index: 10;
 }
 
-.analysis-container {
-    width: 100%;
+.status-meta {
     display: flex;
-    justify-content: center;
-    align-items: stretch;
-    gap: 16px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--accents-5);
+    letter-spacing: 0.04em;
 }
 
-.stat-box, .chart-container, .game-controls {
+.status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.status-row-progress {
+    align-items: center;
+}
+
+.status-progress {
+    flex: 1;
+    height: 6px;
+    background: var(--accents-2);
+    border-radius: 999px;
+    overflow: hidden;
+    position: relative;
+}
+
+.status-progress-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #111 0%, #555 100%);
+    transition: width 0.2s ease;
+}
+
+.status-label {
+    font-weight: 600;
+}
+
+.status-value {
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+}
+
+.status-foot {
+    font-size: 0.75rem;
+    color: var(--accents-5);
+    letter-spacing: 0.04em;
+    text-align: center;
+    min-height: 1em;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.stat-box, .chart-container, .game-controls, .sim-controls, .analysis-bar {
     background-color: var(--accents-1);
     padding: 6px 10px;
     border-radius: 8px;
@@ -95,9 +196,81 @@ canvas {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    min-height: 120px;
+    min-height: 96px;
     box-sizing: border-box;
     margin: 0;
+}
+
+.sim-controls {
+    background-color: var(--accents-1);
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--accents-2);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 96px;
+    box-sizing: border-box;
+    gap: 8px;
+}
+
+.analysis-bar {
+    flex: 0 0 auto;
+    min-width: 240px;
+    min-height: 96px;
+}
+
+.sim-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.sim-controls .value {
+    font-size: 1.4rem;
+    font-weight: 700;
+}
+
+.sim-controls input[type="range"] {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #111 0%, #555 100%);
+    outline: none;
+    margin: 4px 0;
+}
+
+.sim-controls input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px solid var(--fg);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+}
+
+.sim-controls input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px solid var(--fg);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+}
+
+.sim-range {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--accents-5);
+    letter-spacing: 0.04em;
 }
 
 .stat-box {
@@ -119,6 +292,7 @@ canvas {
     position: relative;
     overflow: hidden;
     box-shadow: none;
+    min-height: 220px;
 }
 
 #win-prob-chart {
@@ -127,6 +301,7 @@ canvas {
     display: block;
     box-shadow: none;
     border: none;
+    border-radius: 0;
     margin-top: 16px;
 }
 
@@ -145,11 +320,21 @@ canvas {
     flex: 0 0 auto;
 }
 
+.sim-controls {
+    flex: 0 0 auto;
+    min-width: 200px;
+}
+
 .toggle-group {
     display: flex;
     flex-direction: column;
     gap: 6px;
     align-items: center;
+}
+
+.analysis-bar .toggle-group {
+    align-items: flex-start;
+    width: 100%;
 }
 
 .toggle-label {
@@ -174,48 +359,47 @@ canvas {
     background-color: transparent;
     border: none;
     padding: 0;
+    flex-direction: column;
+    width: 100%;
 }
 
 .switch-container.analysis-switches button {
     border: 1px solid var(--accents-2);
     border-radius: 10px;
-    background-color: #e0e0e0;
-    color: var(--fg);
+    background-color: var(--accents-1);
+    color: var(--accents-5);
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-}
-
-.switch-container.analysis-switches button::after {
-    content: "✕";
-    font-size: 0.8rem;
-    font-weight: 800;
-    color: var(--accents-3);
+    opacity: 0.7;
+    width: 100%;
+    justify-content: flex-start;
 }
 
 .switch-container.analysis-switches button:not(.active):hover {
     border-color: var(--accents-3);
+    color: var(--fg);
+    opacity: 0.9;
 }
 
 .switch-container.analysis-switches button.active {
-    background-color: var(--fg);
-    color: var(--accents-1);
-    border-color: var(--fg);
-}
-
-.switch-container.analysis-switches button.active::after {
-    content: "✓";
-    color: var(--accents-1);
+    background-color: var(--accents-2);
+    color: var(--fg);
+    border-color: var(--accents-3);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
+    opacity: 1;
 }
 
 .analysis-bar {
-    width: 100%;
     background-color: var(--accents-1);
-    padding: 12px 20px;
-    border-radius: 16px;
+    padding: 10px 14px;
+    border-radius: 8px;
     border: 1px solid var(--accents-2);
     box-sizing: border-box;
+    min-height: 120px;
+    display: flex;
+    align-items: flex-start;
 }
 
 .toggle-group.horizontal {
@@ -268,6 +452,10 @@ canvas {
     margin-bottom: 2px;
 }
 
+.stat-box .label {
+    font-weight: 600;
+}
+
 .value { 
     font-size: 1.8rem; 
     font-weight: 800; 
@@ -282,11 +470,21 @@ canvas {
     width: 100%;
 }
 
+.board-actions {
+    width: fit-content;
+    align-self: center;
+}
+
 .action-buttons button {
     flex: 1;
     max-width: 150px;
     height: 44px;
     font-weight: 600;
+}
+
+.board-actions button {
+    flex: 0 0 auto;
+    width: 120px;
 }
 
 button {
@@ -339,6 +537,37 @@ button.active {
     z-index: 1000;
 }
 
+.loading-text {
+    font-size: 1rem;
+    letter-spacing: 0.05em;
+    color: var(--accents-5);
+    margin-bottom: 10px;
+}
+
+.loading-progress {
+    width: min(280px, 70vw);
+    height: 8px;
+    background: var(--accents-2);
+    border-radius: 999px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.05);
+}
+
+.loading-progress-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #111 0%, #555 100%);
+    transition: width 0.2s ease;
+}
+
+.loading-progress-value {
+    margin-top: 8px;
+    font-size: 0.9rem;
+    letter-spacing: 0.06em;
+    color: var(--accents-5);
+    font-variant-numeric: tabular-nums;
+}
+
 .loader {
     width: 40px;
     height: 40px;
@@ -354,16 +583,47 @@ button.active {
     100% { transform: rotate(360deg); }
 }
 
-@media (max-width: 800px) {
+@media (max-width: 1024px) {
+    body {
+        padding: 8px;
+    }
     .container {
-        padding: 12px;
+        padding: 6px;
     }
-    .analysis-container {
-        gap: 8px;
+    .layout {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
     }
-    .stat-box, .chart-container, .game-controls {
-        min-width: 140px;
-        flex: 1 1 auto;
+    .header-area,
+    .left-panel,
+    .board-actions,
+    .board-panel,
+    .right-panel {
+        grid-column: auto;
+        grid-row: auto;
+        width: 100%;
+    }
+    .header-area {
+        order: 1;
+    }
+    .board-actions {
+        order: 2;
+    }
+    .board-panel {
+        order: 3;
+    }
+    .left-panel {
+        order: 4;
+    }
+    .right-panel {
+        order: 5;
+    }
+    .panel-stack {
+        gap: 12px;
+    }
+    .chart-container {
+        min-height: 200px;
     }
 }
 
@@ -376,6 +636,14 @@ button.active {
 .game-controls .toggle-label {
     font-size: 0.9rem;
     margin-right: 8px;
+}
+
+.sim-controls .label {
+    font-size: 0.9rem;
+    color: var(--accents-5);
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.05em;
 }
 
 .game-controls .switch-container {
@@ -413,10 +681,4 @@ button.active {
 }
 .label {
     margin-bottom: 0;
-}
-
-.stat-box, .chart-container, .game-controls {
-    height: 120px !important;
-    max-height: 120px !important;
-    min-height: 120px !important;
 }

@@ -120,13 +120,9 @@ def compute_policy_surprise_weights_(game_data, baseline_weight_ratio=0.5, value
         if is_full_search:
             full_search_count += 1
 
-        # 1. Policy Surprise (KL Divergence)
         p_kl = compute_kl_divergence(policy_target, policy_prior)
         policy_surprises.append(p_kl)
 
-        # 2. Value Surprise (KL Divergence or Squared Error)
-        # outcome: 1 (win), 0 (draw), -1 (loss)
-        # target_value_probs: [1, 0, 0] if win, [0, 1, 0] if draw, [0, 0, 1] if loss
         if outcome == 1:
             target_v = np.array([1.0, 0.0, 0.0])
         elif outcome == 0:
@@ -134,9 +130,7 @@ def compute_policy_surprise_weights_(game_data, baseline_weight_ratio=0.5, value
         else:
             target_v = np.array([0.0, 0.0, 1.0])
 
-        # KataGo 使用 KL 对比 NN 输出的 win/loss/draw 分布与最终结果
         v_kl = compute_kl_divergence(target_v, nn_value_probs)
-        # 限制 value surprise 避免极端权重
         value_surprises.append(min(v_kl, 1))
 
     sum_weights = sum(target_weights)
@@ -144,21 +138,17 @@ def compute_policy_surprise_weights_(game_data, baseline_weight_ratio=0.5, value
     if sum_weights <= 1e-8:
         return [0.0] * n_positions
 
-    # 计算平均值
     avg_p_surprise = sum(s * w for s, w in zip(policy_surprises, target_weights)) / sum_weights
     avg_v_surprise = sum(s * w for s, w in zip(value_surprises, target_weights)) / sum_weights
 
-    # 处理 Value Surprise 权重：如果平均惊讶度太低，减小权重以防止噪声放大
     actual_v_weight = value_surprise_data_weight
     if avg_v_surprise < 0.01:
         actual_v_weight *= (avg_v_surprise / 0.01)
 
     p_surprise_weight = 1.0 - baseline_weight_ratio - actual_v_weight
 
-    # Fast Search 的 Policy 阈值
     p_threshold = avg_p_surprise * 1.5
 
-    # 计算 Proportional Values
     p_prop_values = []
     v_prop_values = []
     for i in range(n_positions):

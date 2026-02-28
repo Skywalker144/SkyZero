@@ -69,9 +69,6 @@ def random_augment_sample(sample, board_size):
 
 
 def random_augment_batch(batch, board_size):
-    """
-    处理字典列表形式的 batch
-    """
     augmented_batch = []
     for sample in batch:
         aug_sample = random_augment_sample(sample, board_size)
@@ -100,27 +97,20 @@ def add_shaped_dirichlet_noise(policy_t, total_dirichlet_alpha=10.83, epsilon=0.
     if legal_count == 0:
         return policy_t
 
-    # 1. 计算对数概率，并限制最大值为 0.01 防止极端值
-    # 添加 1e-20 防止 log(0)
     log_probs = np.log(np.minimum(policy_t[nonzero_mask], 0.01) + 1e-20)
     log_mean = np.mean(log_probs)
 
-    # 2. 减去均值并截断负值，得到形状
     alpha_shape = np.maximum(log_probs - log_mean, 0.0)
     alpha_shape_sum = np.sum(alpha_shape)
 
-    # 3. 计算混合分布：50% 均匀 + 50% 形状
     uniform = 1.0 / legal_count
 
     alpha_weights = np.empty(legal_count)
     if alpha_shape_sum > 1e-10:
-        # 归一化形状部分并混合
         alpha_weights = 0.5 * (alpha_shape / alpha_shape_sum) + 0.5 * uniform
     else:
-        # 如果形状部分全为0（例如所有概率都极小或相等），则退化为均匀分布
         alpha_weights.fill(uniform)
 
-    # 4. 缩放到总 alpha
     alphas = alpha_weights * total_dirichlet_alpha
 
     noise = np.random.dirichlet(alphas)
@@ -140,32 +130,22 @@ def root_temperature_transform(policy, current_step, args, board_size):
 def temperature_transform(probs, temp):
     probs = np.asarray(probs, dtype=np.float64)
     
-    # 1. 处理 temp = 0 的特殊情况（Argmax 逻辑）
-    if temp <= 1e-10:  # 使用极小值判断代替精确等于0
+    if temp <= 1e-10:
         max_val = np.max(probs)
         max_mask = (probs == max_val)
         return max_mask.astype(np.float64) / np.sum(max_mask)
-    # 2. 处理 temp = 1 的情况（直接返回，避免计算）
     if abs(temp - 1.0) < 1e-10:
         return probs
-    # 3. 核心计算优化
-    # 只有非零元素参与计算，避免 log(0) 警告
     non_zero_mask = probs > 0
     if not np.any(non_zero_mask):
         return probs
-    # 直接在原空间计算或在对数空间计算
-    # 优化点：如果 temp 不是特别小，直接用幂运算通常比 log-exp 转换快
-    # 但为了数值稳定性，我们采用 log 空间处理
     logits = np.log(probs[non_zero_mask])
     logits /= temp
     
-    # Softmax 技巧：减去最大值防止溢出
     logits -= np.max(logits)
     exp_logits = np.exp(logits)
     
-    # 归一化
     probs_normalized = exp_logits / np.sum(exp_logits)
-    # 填充回原形状
     scaled = np.zeros_like(probs)
     scaled[non_zero_mask] = probs_normalized
     return scaled

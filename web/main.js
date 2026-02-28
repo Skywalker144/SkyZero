@@ -1,7 +1,16 @@
 const canvas = document.getElementById("board");
 const ctx = canvas.getContext("2d");
 const statusEl = document.getElementById("status");
+const statusTextEl = document.getElementById("status-text");
+const statusProgressEl = document.getElementById("status-progress");
+const statusEtaEl = document.getElementById("status-eta");
+const statusFootEl = document.getElementById("status-foot");
+const statusProgressBarEl = document.getElementById("status-progress-bar");
+const undoBtn = document.getElementById("undo-btn");
 const loadingOverlay = document.getElementById("loading-overlay");
+const loadingTextEl = document.getElementById("loading-text");
+const loadingProgressBarEl = document.getElementById("loading-progress-bar");
+const loadingProgressTextEl = document.getElementById("loading-progress-text");
 
 const boardSize = 15;
 let cellSize = 0;
@@ -14,6 +23,9 @@ let playerColor = 1; // 1 for Black, -1 for White
 let history = [];
 let aiRunning = false;
 let lastMove = null; // 记录上一手棋的位置 {r, c}
+let numSimulations = 200;
+const undoLimit = 3;
+let undoCount = 0;
 
 // Heatmap data
 let lastResults = {
@@ -24,14 +36,34 @@ const worker = new Worker("worker.js");
 const chartCanvas = document.getElementById("win-prob-chart");
 const chartCtx = chartCanvas.getContext("2d");
 let winProbHistory = []; // Start empty
-let showHeatmap = false;
-let showForbidden = false;
+let showHeatmap = true;
+let showForbidden = true;
+
+let searchStartTime = 0;
+let lastSearchDuration = null;
+let lastMoveFromAI = false;
+
+const simSlider = document.getElementById("sim-slider");
+const simValueEl = document.getElementById("sim-value");
+
+function updateSimulations(value) {
+    const parsed = parseInt(value, 10);
+    numSimulations = Number.isFinite(parsed) ? parsed : numSimulations;
+    if (simValueEl) simValueEl.textContent = numSimulations;
+}
+
+if (simSlider) {
+    updateSimulations(simSlider.value);
+    simSlider.addEventListener("input", () => {
+        updateSimulations(simSlider.value);
+    });
+}
 
 function updateCanvasSize() {
     const dpr = window.devicePixelRatio || 1;
-    // Logical size: base it on container width but cap at 800
+    // Logical size: base it on container width but cap at 960
     const containerWidth = canvas.parentElement.clientWidth;
-    const logicalSize = Math.min(800, containerWidth);
+    const logicalSize = Math.min(960, containerWidth);
     
     // Set physical size
     canvas.width = logicalSize * dpr;
@@ -45,8 +77,9 @@ function updateCanvasSize() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     
     // Update board constants based on logical size
-    cellSize = logicalSize / (boardSize + 1);
-    margin = cellSize;
+    const marginRatio = 0.7;
+    cellSize = logicalSize / (boardSize - 1 + 2 * marginRatio);
+    margin = cellSize * marginRatio;
     
     drawBoard();
 }
@@ -85,12 +118,127 @@ worker.onmessage = function(e) {
     } else if (data.type === "error") {
         loadingOverlay.innerHTML = `<p style="color:red">Error: ${data.message}</p>`;
         console.error("Worker Error:", data.message);
+    } else if (data.type === "model-progress") {
+        updateLoadingProgress(data);
     } else if (data.type === "progress") {
-        // Handle progress bar if needed
+        if (data.searchId === searchId) {
+            updateSearchProgress(data.progress);
+        }
     } else if (data.type === "result") {
         handleAIResult(data);
     }
 };
+
+function updateLoadingProgress({ percent, loaded, total }) {
+    if (!loadingProgressBarEl || !loadingProgressTextEl) return;
+    if (Number.isFinite(percent)) {
+        const bounded = Math.min(100, Math.max(0, percent));
+        loadingProgressBarEl.style.width = `${bounded}%`;
+        loadingProgressTextEl.textContent = `${Math.round(bounded)}%`;
+        if (loadingTextEl) loadingTextEl.textContent = "权重下载中";
+        return;
+    }
+
+    if (Number.isFinite(loaded) && Number.isFinite(total) && total > 0) {
+        const computed = (loaded / total) * 100;
+        const bounded = Math.min(100, Math.max(0, computed));
+        loadingProgressBarEl.style.width = `${bounded}%`;
+        loadingProgressTextEl.textContent = `${Math.round(bounded)}%`;
+        if (loadingTextEl) loadingTextEl.textContent = "权重下载中";
+        return;
+    }
+
+    loadingProgressBarEl.style.width = "0%";
+    loadingProgressTextEl.textContent = "--%";
+    if (loadingTextEl) loadingTextEl.textContent = "权重下载中";
+}
+
+function setStatusText(text) {
+    if (statusTextEl) {
+        statusTextEl.textContent = text;
+    } else if (statusEl) {
+        statusEl.innerText = text;
+    }
+}
+
+function updateUndoButton() {
+    if (!undoBtn) return;
+    const remaining = Math.max(0, undoLimit - undoCount);
+    undoBtn.disabled = remaining === 0;
+    if (remaining === undoLimit) {
+        undoBtn.textContent = "悔棋";
+    } else {
+        undoBtn.textContent = `悔棋 (剩余${remaining})`;
+    }
+}
+
+function updateStatusFoot() {
+    if (!statusFootEl) return;
+    if (lastSearchDuration === null) {
+        statusFootEl.textContent = "";
+        statusFootEl.style.opacity = "0";
+        return;
+    }
+    statusFootEl.textContent = `思考耗时 ${lastSearchDuration.toFixed(1)} 秒`;
+    statusFootEl.style.opacity = "1";
+}
+
+function clearStatusFoot() {
+    lastSearchDuration = null;
+    updateStatusFoot();
+}
+
+function setStatusProgress(progressPercent, etaSeconds) {
+    if (!statusProgressEl || !statusEtaEl) return;
+    if (!Number.isFinite(progressPercent)) {
+        statusProgressEl.textContent = "--";
+        statusEtaEl.textContent = "--";
+        if (statusProgressBarEl) statusProgressBarEl.style.width = "0%";
+        return;
+    }
+
+    const boundedProgress = Math.min(100, Math.max(0, progressPercent));
+    statusProgressEl.textContent = `${Math.round(boundedProgress)}%`;
+    if (statusProgressBarEl) statusProgressBarEl.style.width = `${boundedProgress}%`;
+    if (Number.isFinite(etaSeconds)) {
+        const boundedEta = Math.max(0, etaSeconds);
+        statusEtaEl.textContent = `${boundedEta.toFixed(1)} 秒`;
+    } else {
+        statusEtaEl.textContent = "--";
+    }
+}
+
+function updateSearchProgress(progressPercent) {
+    if (!Number.isFinite(progressPercent)) return;
+    const now = performance.now();
+    if (!searchStartTime) searchStartTime = now;
+    const elapsed = (now - searchStartTime) / 1000;
+    const ratio = Math.min(1, Math.max(0, progressPercent / 100));
+    const eta = ratio > 0 ? (elapsed * (1 - ratio)) / ratio : null;
+    setStatusProgress(progressPercent, eta);
+}
+
+function startSearchStatus() {
+    searchStartTime = performance.now();
+    clearStatusFoot();
+    setStatusText("SkyZero 思考中...");
+    setStatusProgress(0, null);
+}
+
+function finishSearchStatus() {
+    if (!searchStartTime) return;
+    const elapsed = (performance.now() - searchStartTime) / 1000;
+    lastSearchDuration = elapsed;
+    setStatusProgress(100, 0);
+    updateStatusFoot();
+    searchStartTime = 0;
+}
+
+function setIdleStatus(text, clearFoot = false, clearProgress = false) {
+    setStatusText(text);
+    if (clearProgress) setStatusProgress(null, null);
+    if (clearFoot) clearStatusFoot();
+}
 
 function drawBoard() {
     const dpr = window.devicePixelRatio || 1;
@@ -259,7 +407,7 @@ function drawHeatmap() {
 }
 
 function drawForbiddenPoints() {
-    if (!showForbidden || toPlay !== 1) return;
+    if (!showForbidden) return;
     
     const currentBoard = state[state.length - 1];
     game.fpf.clear();
@@ -305,8 +453,13 @@ function drawWinProbChart() {
 
     if (winProbHistory.length < 1) return;
 
+    const curveLineWidth = 3;
+    const padding = Math.max(2, curveLineWidth / 2 + 1);
+    const innerW = Math.max(0, w - padding * 2);
+    const innerH = Math.max(0, h - padding * 2);
+
     // Create vertical gradient for the curve: red above 50%, green below 50%
-    const curveGradient = chartCtx.createLinearGradient(0, 0, 0, h);
+    const curveGradient = chartCtx.createLinearGradient(0, padding, 0, padding + innerH);
     curveGradient.addColorStop(0, "#ff4d4f");    // Red (Win > 50%)
     curveGradient.addColorStop(0.48, "#ff4d4f"); 
     curveGradient.addColorStop(0.5, "#d9d9d9");  // Neutral middle
@@ -316,27 +469,29 @@ function drawWinProbChart() {
     // Draw grid line for 50%
     chartCtx.beginPath();
     chartCtx.strokeStyle = "rgba(0, 0, 0, 0.05)";
+    chartCtx.lineWidth = 1;
     chartCtx.setLineDash([5, 5]);
-    chartCtx.moveTo(0, h / 2);
-    chartCtx.lineTo(w, h / 2);
+    const midY = padding + innerH / 2;
+    chartCtx.moveTo(padding, midY);
+    chartCtx.lineTo(padding + innerW, midY);
     chartCtx.stroke();
     chartCtx.setLineDash([]);
 
     // Draw win prob curve
     chartCtx.beginPath();
     chartCtx.strokeStyle = curveGradient;
-    chartCtx.lineWidth = 3;
+    chartCtx.lineWidth = curveLineWidth;
     chartCtx.lineJoin = "round";
     chartCtx.lineCap = "round";
 
     if (winProbHistory.length === 1) {
-        const y = h - (winProbHistory[0] * h);
-        chartCtx.moveTo(0, y);
-        chartCtx.lineTo(w, y);
+        const y = padding + innerH - (winProbHistory[0] * innerH);
+        chartCtx.moveTo(padding, y);
+        chartCtx.lineTo(padding + innerW, y);
     } else {
         for (let i = 0; i < winProbHistory.length; i++) {
-            const x = (i / (winProbHistory.length - 1)) * w;
-            const y = h - (winProbHistory[i] * h);
+            const x = padding + (i / (winProbHistory.length - 1)) * innerW;
+            const y = padding + innerH - (winProbHistory[i] * innerH);
             if (i === 0) chartCtx.moveTo(x, y);
             else chartCtx.lineTo(x, y);
         }
@@ -386,6 +541,7 @@ let searchId = 0;
 function handleAIResult(data) {
     if (data.searchId !== searchId) return;
     aiRunning = false;
+    finishSearchStatus();
     renderResults(data);
     
     // Best move
@@ -398,7 +554,9 @@ function handleAIResult(data) {
         }
     }
 
+    lastMoveFromAI = true;
     makeMove(bestAction);
+    lastMoveFromAI = false;
     drawBoard();
 }
 
@@ -428,17 +586,21 @@ function makeMove(action) {
 
     const winner = game.getWinner(state);
     if (winner !== null) {
-        statusEl.innerText = winner === 1 ? "分析完成：黑胜" : (winner === -1 ? "分析完成：白胜" : "分析完成：平局");
+        setIdleStatus(
+            winner === 1 ? "分析完成：黑胜" : (winner === -1 ? "分析完成：白胜" : "分析完成：平局"),
+            !lastMoveFromAI,
+            !lastMoveFromAI
+        );
         aiRunning = true; // Block moves
         renderResults(null); // Update win prob to final state
     } else {
         if (toPlay === playerColor) {
-            statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
+            setIdleStatus(toPlay === 1 ? "轮到黑棋" : "轮到白棋");
         } else {
-            statusEl.innerText = "SkyZero 思考中...";
+            startSearchStatus();
             aiRunning = true;
             searchId++;
-            worker.postMessage({ type: "search", simulations: 800, state, toPlay, searchId });
+            worker.postMessage({ type: "search", simulations: numSimulations, state, toPlay, searchId });
         }
     }
 }
@@ -470,16 +632,18 @@ function resetGame() {
     winProbHistory = []; // Clear history
     aiRunning = false;
     lastMove = null;
+    undoCount = 0;
+    updateUndoButton();
     searchId++;
     renderResults(null);
     worker.postMessage({ type: "reset" });
     
     if (toPlay === playerColor) {
-        statusEl.innerText = "轮到黑棋";
+        setIdleStatus("轮到黑棋", true, true);
     } else {
-        statusEl.innerText = "SkyZero 思考中...";
+        startSearchStatus();
         aiRunning = true;
-        worker.postMessage({ type: "search", simulations: 400, state, toPlay, searchId });
+        worker.postMessage({ type: "search", simulations: numSimulations, state, toPlay, searchId });
     }
     
     drawBoard();
@@ -487,6 +651,10 @@ function resetGame() {
 
 function undo() {
     const isGameOver = game.getWinner(state) !== null;
+    if (undoCount >= undoLimit) {
+        setIdleStatus("本局悔棋次数已用完", true, true);
+        return;
+    }
     
     // Allow undo to interrupt AI search and perform undo
     if (aiRunning && !isGameOver) {
@@ -502,16 +670,30 @@ function undo() {
             lastMove = prev.lastMove;
             renderResults(prev.lastResults);
             drawBoard();
+            undoCount++;
+            updateUndoButton();
         }
-        statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
+        setIdleStatus(toPlay === 1 ? "轮到黑棋" : "轮到白棋", true, true);
         return;
     }
     
     if (history.length === 0) return;
 
     let prev;
-    if (toPlay !== playerColor || isGameOver) {
-        // AI"s turn or game ended, undo 1 move
+    if (isGameOver) {
+        if (toPlay === playerColor && history.length >= 2) {
+            // Game ended on AI move, undo 2 moves to return to human turn
+            history.pop();
+            prev = history.pop();
+            winProbHistory.pop();
+            winProbHistory.pop();
+        } else {
+            // Game ended on human move (or not enough history), undo 1 move
+            prev = history.pop();
+            winProbHistory.pop();
+        }
+    } else if (toPlay !== playerColor) {
+        // AI"s turn, undo 1 move
         prev = history.pop();
         winProbHistory.pop();
     } else if (history.length >= 2) {
@@ -532,14 +714,16 @@ function undo() {
     aiRunning = false;
     
     if (toPlay === playerColor) {
-        statusEl.innerText = toPlay === 1 ? "轮到黑棋" : "轮到白棋";
+        setIdleStatus(toPlay === 1 ? "轮到黑棋" : "轮到白棋", true, true);
     } else {
-        statusEl.innerText = "SkyZero 思考中...";
+        startSearchStatus();
         // Note: we don"t auto-trigger AI move on undo to human turn
     }
     
     worker.postMessage({ type: "reset" });
     drawBoard();
+    undoCount++;
+    updateUndoButton();
 }
 
 function updateSlider() {
@@ -584,5 +768,8 @@ document.getElementById("toggle-forbidden").onclick = () => {
     document.getElementById("toggle-forbidden").classList.toggle("active", showForbidden);
     drawBoard();
 };
+
+document.getElementById("toggle-mcts").classList.toggle("active", showHeatmap);
+document.getElementById("toggle-forbidden").classList.toggle("active", showForbidden);
 
 drawBoard();

@@ -24,7 +24,6 @@ if __name__ == "__main__":
     
     onnx_model_name = "web/model.onnx"
 
-    # 获取模型输出 Key
     output_names = ["policy_logits", "opponent_policy_logits", "soft_policy_logits", "ownership", "value_logits"]
 
     torch.onnx.export(
@@ -49,4 +48,4 @@ if __name__ == "__main__":
 
     onnx_model = onnx.load(onnx_model_name)
     onnx.checker.check_model(onnx_model)
-    print("ONNX 模型结构检查通过")
+    print("ONNX model check passed")

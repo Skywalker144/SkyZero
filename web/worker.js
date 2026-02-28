@@ -13,6 +13,50 @@ let root = null;
 const boardSize = 15;
 const historyStep = 2;
 
+function concatChunks(chunks, total) {
+    const size = total || chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const result = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return result;
+}
+
+async function fetchModelWithProgress(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch model: ${response.status} ${response.statusText}`);
+    }
+
+    const total = Number(response.headers.get("Content-Length")) || 0;
+    if (!response.body) {
+        const buffer = await response.arrayBuffer();
+        postMessage({ type: "model-progress", percent: 100, loaded: buffer.byteLength, total: buffer.byteLength });
+        return new Uint8Array(buffer);
+    }
+
+    const reader = response.body.getReader();
+    const chunks = [];
+    let loaded = 0;
+
+    if (total > 0) {
+        postMessage({ type: "model-progress", percent: 0, loaded: 0, total });
+    }
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        loaded += value.length;
+        const percent = total > 0 ? (loaded / total) * 100 : null;
+        postMessage({ type: "model-progress", percent, loaded, total: total || null });
+    }
+    postMessage({ type: "model-progress", percent: 100, loaded, total: total || loaded });
+    return concatChunks(chunks, total || loaded);
+}
+
 // --- Symmetry Utilities ---
 function rotate90(data, C, H, W) {
     const newData = new Float32Array(data.length);
@@ -62,13 +106,20 @@ async function init() {
         c_puct: 1.1,
         fpu_reduction_max: 0.2,
         root_fpu_reduction_max: 0.0,
-        full_search_num_simulations: 600
+        full_search_num_simulations: 200
     });
     
     try {
-        session = await ort.InferenceSession.create("model.onnx", {
-            executionProviders: ["webgl", "cpu"]
-        });
+        const ua = (self.navigator && self.navigator.userAgent) ? self.navigator.userAgent : "";
+        const isIOS = /iP(hone|ad|od)/.test(ua);
+        const executionProviders = isIOS ? ["wasm", "cpu"] : ["webgl", "cpu"];
+
+        if (isIOS) {
+            session = await ort.InferenceSession.create("model.onnx", { executionProviders });
+        } else {
+            const modelBytes = await fetchModelWithProgress("model.onnx");
+            session = await ort.InferenceSession.create(modelBytes, { executionProviders });
+        }
         postMessage({ type: "ready" });
     } catch (e) {
         console.error("Failed to load ONNX model:", e);
@@ -175,7 +226,7 @@ onmessage = async function(e) {
             root = new Node(data.nextState, data.nextToPlay);
         }
     } else if (data.type === "search") {
-        const numSimulations = data.simulations || 600;
+        const numSimulations = data.simulations || 200;
         const searchId = data.searchId;
         latestSearchId = searchId;
         
@@ -183,8 +234,12 @@ onmessage = async function(e) {
             root = new Node(data.state, data.toPlay);
         }
 
+        const remainingSimulations = Math.max(0, numSimulations - root.n);
+        const totalSimulations = Math.max(1, remainingSimulations);
+        let lastProgressTime = performance.now();
+
         let aborted = false;
-        for (let i = 0; i < numSimulations; i++) {
+        for (let i = 0; i < remainingSimulations; i++) {
             // Check for abortion
             if (latestSearchId !== searchId) {
                 aborted = true;
@@ -216,8 +271,14 @@ onmessage = async function(e) {
             }
             mcts.backpropagate(node, value);
 
-            if (i % 20 === 0) {
-                postMessage({ type: "progress", progress: (i / numSimulations) * 100 });
+            if (remainingSimulations > 0) {
+                const now = performance.now();
+                const shouldReport = (now - lastProgressTime) > 60 || i === remainingSimulations - 1;
+                if (shouldReport) {
+                    lastProgressTime = now;
+                    const progress = ((i + 1) / totalSimulations) * 100;
+                    postMessage({ type: "progress", progress, searchId });
+                }
             }
         }
 
@@ -233,7 +294,7 @@ onmessage = async function(e) {
         postMessage({ 
             type: "result", 
             policy: mctsPolicy, 
-            rootValue: root.v / root.n,
+            rootValue: root.n > 0 ? root.v / root.n : 0,
             rootToPlay: root.toPlay,
             nnValue: nnValue,
             ownership: ownership,
