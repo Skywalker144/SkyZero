@@ -20,6 +20,30 @@ def get_expanded_region_square(state, k=2):
     
     return expanded
 
+def get_expanded_region_circle(state, k=2):
+    current_board = state[-1]
+    board_size = current_board.shape[0]
+    
+    expanded = np.zeros((board_size, board_size), dtype=bool)
+    
+    rows, cols = np.where(current_board != 0)
+    
+    k_sq = k ** 2
+    
+    k_int = math.ceil(k)
+    
+    for r, c in zip(rows, cols):
+        for dr in range(-k_int, k_int + 1):
+            for dc in range(-k_int, k_int + 1):
+                dist_sq = dr**2 + dc**2
+                
+                if dist_sq <= k_sq:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < board_size and 0 <= nc < board_size:
+                        expanded[nr, nc] = True
+    
+    return expanded
+
 
 C_EMPTY = 0
 C_BLACK = 1
@@ -463,14 +487,13 @@ class Gomoku:
         current_board = state[-1]
         legal_mask = (current_board.flatten() == 0)
 
-        black_count = np.sum(current_board == 1)
-
-        if black_count == 0 and self.use_renju:
+        # Heuristic legal action limitation
+        if np.sum(current_board == 1) == 0 and self.use_renju:
             self.center_loc = (self.board_size // 2) * self.board_size + (self.board_size // 2)
             legal_mask[:] = False
             legal_mask[self.center_loc] = True
         else:
-            legal_mask = legal_mask & get_expanded_region_square(state, k=2).flatten()
+            legal_mask = legal_mask & get_expanded_region_circle(state, k=3.5).flatten()
 
         # In Renju, only Black (1) has forbidden moves
         if self.use_renju and to_play == 1:
@@ -567,54 +590,3 @@ class Gomoku:
         encoded_state[-1] = (to_play > 0) * np.ones((board_height, board_width), dtype=np.int8)
 
         return encoded_state
-
-
-if __name__ == "__main__":
-    game = Gomoku(history_step=1, use_renju=True)
-    state = game.get_initial_state()
-    print("Initial State:")
-    print_board(state)
-
-    # Simulate some moves
-    # Black moves 7,7 (Center)
-    action = 7 * 15 + 7
-    state = game.get_next_state(state, action, 1)
-
-    # White moves 7,8
-    action = 7 * 15 + 8
-    state = game.get_next_state(state, action, -1)
-
-    # Black moves 8,8
-    action = 8 * 15 + 8
-    state = game.get_next_state(state, action, 1)
-
-    print("\nAfter 3 moves:")
-    print_board(state)
-
-    legal = game.get_is_legal_actions(state)
-    print(f"\nLegal actions count: {np.sum(legal)}")
-
-    # Test Forbidden point (3-3)
-    # Construct a 3-3 pattern for Black
-    # . . . . .
-    # . . B . .
-    # . . B . .
-    # . B B X .
-    # . . . . .
-    # X should be forbidden
-
-    # Clear board
-    state = game.get_initial_state()
-    moves = [(7, 6), (6, 7), (7, 5), (5, 7)]
-    for i, (r, c) in enumerate(moves):
-        state = game.get_next_state(state, r * 15 + c, 1)
-        # Place corresponding white stone to keep turns balanced
-        state = game.get_next_state(state, 0 * 15 + i, -1)  # Place white at row 0, col i
-
-    print("\nTesting Forbidden Point (3-3) at 7,7:")
-    print_board(state)
-
-    # Now it should be Black"s turn (4 black, 4 white)
-    legal = game.get_is_legal_actions(state)
-    idx_7_7 = 7 * 15 + 7
-    print(f"Is 7,7 legal? {legal[idx_7_7]}")
