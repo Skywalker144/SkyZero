@@ -75,9 +75,10 @@ def main():
     
     # Configuration: Manually set paths and parameters here
     play_script_path = "gomoku/gomoku_play.py"
-    checkpoint_a_path = "data/gomoku/gomoku_checkpoint_2026-02-28_11-16-17.pth"  # Path for Model A (New Model)
-    checkpoint_b_path = "data/gomoku/gomoku_checkpoint_2026-02-26_10-33-24.pth"   # Path for Model B (Old Model)
-    num_games = 10                                    # Number of games to play
+    checkpoint_a_path = "data/gomoku/models/gomoku_model_2026-03-01_19-28-34.pth"
+    # checkpoint_a_path = "data/gomoku/models/gomoku_model_2026-02-28_11-16-17.pth"  # Path for Model A (New Model)
+    checkpoint_b_path = "data/gomoku/models/gomoku_model_2026-02-26_15-42-45.pth"   # Path for Model B (Old Model)
+    num_games = 20                                    # Number of games to play
 
     # Load configuration
     try:
@@ -101,8 +102,8 @@ def main():
     def create_alphazero(checkpoint_path):
         model = ResNet(game, num_blocks=eval_args["num_blocks"], num_channels=eval_args["num_channels"])
         az = TreeReuseAlphaZero(game, model, None, eval_args)
-        if not az.load_checkpoint(checkpoint_path):
-            raise ValueError(f"Failed to load checkpoint: {checkpoint_path}")
+        if not az.load_model(checkpoint_path):
+            raise ValueError(f"Failed to load model: {checkpoint_path}")
         return az
 
     print("Loading models...")

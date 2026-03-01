@@ -803,17 +803,45 @@ class AlphaZero:
 
         return action, info
 
-    def save_checkpoint(self, filepath=None):
+    def save_model(self, filepath=None, timestamp=None):
         from datetime import datetime
 
         if filepath is None:
-            checkpoint_dir = self.args["data_dir"]
+            model_dir = os.path.join(self.args["data_dir"], "models")
+            os.makedirs(model_dir, exist_ok=True)
+
+            if timestamp is None:
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+            filepath = os.path.join(
+                model_dir,
+                f"{os.path.basename(self.args['file_name'])}_model_{timestamp}.pth",
+            )
+
+        torch.save(self.model.state_dict(), filepath)
+
+        file_size = os.path.getsize(filepath)
+        size_str = (
+            f"{file_size / 1024 / 1024:.1f}MB"
+            if file_size > 1024 * 1024
+            else f"{file_size / 1024:.1f}KB"
+        )
+        print(f"Model saved to {filepath} ({size_str})")
+
+    def save_checkpoint(self, filepath=None):
+        from datetime import datetime
+
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        self.save_model(timestamp=timestamp)
+
+        if filepath is None:
+            checkpoint_dir = os.path.join(self.args["data_dir"], "checkpoints")
             os.makedirs(checkpoint_dir, exist_ok=True)
 
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             filepath = os.path.join(
                 checkpoint_dir,
-                f"{os.path.basename(self.args['file_name'])}_checkpoint_{timestamp}.pth",
+                f"{os.path.basename(self.args['file_name'])}_checkpoint_{timestamp}.ckpt",
             )
 
         checkpoint = {
@@ -836,16 +864,46 @@ class AlphaZero:
         )
         print(f"Checkpoint saved to {filepath} ({size_str})")
 
+    def load_model(self, filepath=None):
+        import glob
+
+        if filepath is None:
+            model_dir = os.path.join(self.args["data_dir"], "models")
+            if not os.path.exists(model_dir):
+                print(f"Model directory not found: {model_dir}")
+                return False
+
+            pattern = os.path.join(model_dir, "*.pth")
+            model_files = glob.glob(pattern)
+
+            if not model_files:
+                print(f"No model files found in: {model_dir}")
+                return False
+
+            filepath = max(model_files, key=os.path.getmtime)
+            print(f"Auto-selected latest model: {filepath}")
+
+        if not os.path.exists(filepath):
+            print(f"Model file not found: {filepath}")
+            return False
+
+        state_dict = torch.load(
+            filepath, map_location=self.args["device"], weights_only=False
+        )
+        self.model.load_state_dict(state_dict)
+        print("Model loaded")
+        return True
+
     def load_checkpoint(self, filepath=None):
         import glob
 
         if filepath is None:
-            checkpoint_dir = self.args["data_dir"]
+            checkpoint_dir = os.path.join(self.args["data_dir"], "checkpoints")
             if not os.path.exists(checkpoint_dir):
                 print(f"Checkpoint directory not found: {checkpoint_dir}")
                 return False
 
-            pattern = os.path.join(checkpoint_dir, "*.pth")
+            pattern = os.path.join(checkpoint_dir, "*.ckpt")
             checkpoint_files = glob.glob(pattern)
 
             if not checkpoint_files:

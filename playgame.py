@@ -18,7 +18,7 @@ class GamePlayer:
         model = ResNet(self.game, num_blocks=self.args["num_blocks"], num_channels=self.args["num_channels"]).to(self.args["device"])
         optimizer = optim.Adam(model.parameters(), lr=1e-3)
         alphazero = TreeReuseAlphaZero(self.game, model, optimizer, self.args)
-        alphazero.load_checkpoint()
+        alphazero.load_model()
         to_play = int(input(
             f"1 for the first move and -1 for the second move\n"
             f"The position of the piece needs to be input in coordinate form.\n"
