@@ -1,5 +1,6 @@
 # 排除所有 .pth 文件
 *.pth
+*.ckpt
 
 # 排除所有名为 __pycache__ 的文件夹及其内容
 **/__pycache__/
