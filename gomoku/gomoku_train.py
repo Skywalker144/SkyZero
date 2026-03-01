@@ -12,7 +12,7 @@ from nets import ResNet
 train_args = {
     "mode": "train",
 
-    "num_workers": 16,
+    "num_workers": 19,
 
     "board_size": 15,
     "history_step": 2,
@@ -27,10 +27,10 @@ train_args = {
 
     "c_puct": 1.5,
 
-    "root_temperature_init": 1.3,
+    "root_temperature_init": 1.25,
     "root_temperature_final": 1.1,
 
-    "move_temperature_init": 1,
+    "move_temperature_init": 0.8,
     "move_temperature_final": 0.2,
 
     "total_dirichlet_alpha": 10.83,

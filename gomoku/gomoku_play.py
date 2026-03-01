@@ -13,7 +13,7 @@ eval_args = {
     "lr": train_args["lr"],
     "weight_decay": train_args["weight_decay"],
 
-    "full_search_num_simulations": 400,
+    "full_search_num_simulations": 600,
 
     "c_puct": 1.1,
 
