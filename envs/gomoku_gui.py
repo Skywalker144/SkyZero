@@ -47,6 +47,7 @@ class GomokuGUI:
 
         self.btn_restart = tk.Button(self.btn_frame, text="Restart", command=self.restart_game, font=("Arial", 12))
         self.btn_restart.pack(side=tk.LEFT, padx=10)
+        self.to_play = 1
 
         self.draw_board()
 
@@ -66,7 +67,7 @@ class GomokuGUI:
         stone_count = np.sum(current_board != 0)
         return 1 if stone_count % 2 == 0 else -1
 
-    def draw_board(self):
+    def draw_board_(self):
         self.canvas.delete("all")
         
         # Draw grid lines
@@ -110,6 +111,63 @@ class GomokuGUI:
                 last_r, last_c = indices[0][0], indices[1][0]
                 self.highlight_last_move(last_r, last_c)
 
+    def draw_board(self):
+        self.canvas.delete("all")
+        
+        # 1. 获取当前状态和合法动作
+        current_state = self.get_current_state()
+        current_player = self.get_current_player()
+        # 获取合法动作掩码 (1代表合法, 0代表非法)
+        legal_moves = self.game.get_is_legal_actions(current_state, current_player)
+        # 2. 绘制合法动作的背景色 (启发式区域提示)
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                action_idx = r * self.board_size + c
+                if legal_moves[action_idx]:
+                    # 计算格子区域
+                    x1 = self.margin + c * self.cell_size - self.cell_size // 2
+                    y1 = self.margin + r * self.cell_size - self.cell_size // 2
+                    x2 = x1 + self.cell_size
+                    y2 = y1 + self.cell_size
+                    # 绘制淡蓝色背景（你可以根据喜好修改颜色，如 #E0F0E0 淡绿色）
+                    self.canvas.create_rectangle(x1, y1, x2, y2, fill="#D0E8FF", outline="")
+        # 3. 绘制棋盘线
+        for i in range(self.board_size):
+            # Horizontal
+            start_x = self.margin
+            end_x = self.canvas_size - self.margin
+            y = self.margin + i * self.cell_size
+            self.canvas.create_line(start_x, y, end_x, y)
+            
+            # Vertical
+            start_y = self.margin
+            end_y = self.canvas_size - self.margin
+            x = self.margin + i * self.cell_size
+            self.canvas.create_line(x, start_y, x, end_y)
+        # 4. 绘制星点
+        star_points = [(3, 3), (3, 11), (7, 7), (11, 3), (11, 11)]
+        for r, c in star_points:
+            x = self.margin + c * self.cell_size
+            y = self.margin + r * self.cell_size
+            r_dot = 3
+            self.canvas.create_oval(x - r_dot, y - r_dot, x + r_dot, y + r_dot, fill="black")
+        # 5. 绘制棋子
+        current_board = current_state[-1]
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if current_board[r, c] != 0:
+                    self.draw_stone(r, c, current_board[r, c])
+        
+        # 6. 高亮最后一手
+        if len(self.state_history) > 1:
+            prev_board = self.state_history[-2][-1]
+            curr_board = self.state_history[-1][-1]
+            diff = curr_board - prev_board
+            indices = np.where(diff != 0)
+            if len(indices[0]) > 0:
+                last_r, last_c = indices[0][0], indices[1][0]
+                self.highlight_last_move(last_r, last_c)
+
     def draw_stone(self, row, col, player):
         x = self.margin + col * self.cell_size
         y = self.margin + row * self.cell_size
@@ -145,7 +203,8 @@ class GomokuGUI:
 
         # Check legality
         action = row * self.board_size + col
-        legal_moves = self.game.get_is_legal_actions(state)
+        legal_moves = self.game.get_is_legal_actions(state, self.to_play)
+        self.to_play *= -1
         
         if not legal_moves[action]:
             # Illegal move (e.g. forbidden for Black)
@@ -195,10 +254,9 @@ class GomokuGUI:
             messagebox.showinfo("Info", "Cannot undo further.")
 
     def restart_game(self):
-        if messagebox.askyesno("Restart", "Are you sure you want to restart?"):
-            self.init_game()
-            self.draw_board()
-            self.info_label.config(text="Black's Turn")
+        self.init_game()
+        self.draw_board()
+        self.info_label.config(text="Black's Turn")
 
 if __name__ == "__main__":
     root = tk.Tk()
