@@ -11,6 +11,8 @@ const loadingOverlay = document.getElementById("loading-overlay");
 const loadingTextEl = document.getElementById("loading-text");
 const loadingProgressBarEl = document.getElementById("loading-progress-bar");
 const loadingProgressTextEl = document.getElementById("loading-progress-text");
+const iphoneWarningEl = document.getElementById("iphone-warning");
+const iphoneWarningCloseEl = document.getElementById("iphone-warning-close");
 
 const boardSize = 15;
 let cellSize = 0;
@@ -68,6 +70,40 @@ if (thinkSlider) {
     });
 }
 
+const IPHONE_WARNING_KEY = "skyzero:hide-iphone-warning";
+
+function isIPhoneDevice() {
+    return /iPhone/i.test(navigator.userAgent || "");
+}
+
+function showIPhoneWarning() {
+    if (!iphoneWarningEl) return;
+    iphoneWarningEl.classList.add("is-visible");
+    iphoneWarningEl.setAttribute("aria-hidden", "false");
+}
+
+function hideIPhoneWarning() {
+    if (!iphoneWarningEl) return;
+    iphoneWarningEl.classList.remove("is-visible");
+    iphoneWarningEl.setAttribute("aria-hidden", "true");
+}
+
+function setupIPhoneWarning() {
+    if (!iphoneWarningEl) return;
+    const shouldHide = window.localStorage && localStorage.getItem(IPHONE_WARNING_KEY) === "1";
+    if (isIPhoneDevice() && !shouldHide) {
+        showIPhoneWarning();
+    }
+    if (iphoneWarningCloseEl) {
+        iphoneWarningCloseEl.addEventListener("click", () => {
+            if (window.localStorage) {
+                localStorage.setItem(IPHONE_WARNING_KEY, "1");
+            }
+            hideIPhoneWarning();
+        });
+    }
+}
+
 function updateCanvasSize() {
     const dpr = window.devicePixelRatio || 1;
     // Logical size: base it on container width but cap at 960
@@ -116,6 +152,8 @@ setTimeout(() => {
     updateChartSize();
     updateSlider();
 }, 100);
+
+setupIPhoneWarning();
 
 worker.postMessage({ type: "init" });
 

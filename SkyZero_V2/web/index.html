@@ -100,6 +100,13 @@
             <div class="board-panel">
                 <div class="board-container">
                     <canvas id="board" width="800" height="800"></canvas>
+                    <div id="iphone-warning" class="board-warning" role="dialog" aria-live="polite" aria-hidden="true">
+                        <div class="board-warning-card">
+                            <div class="board-warning-title">iPhone 访问提示</div>
+                            <p class="board-warning-text">iPhone端会出现网页打开30秒左右强制刷新的bug，建议使用电脑访问该网站</p>
+                            <button id="iphone-warning-close" class="board-warning-close" type="button">我知道了</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="action-buttons board-actions">
                     <button id="reset-btn">新游戏</button>
