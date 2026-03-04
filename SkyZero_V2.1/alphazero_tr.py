@@ -64,11 +64,11 @@ class MCTS:
             -np.inf,
         )
 
-        policy = softmax(policy_logits)
+        nn_policy = softmax(policy_logits)
 
-        value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
-        value = value_probs[0] - value_probs[2]  # (赢, 平, 输)
-        return policy, value, value_probs
+        nn_value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
+        nn_value = nn_value_probs[0] - nn_value_probs[2]  # (赢, 平, 输)
+        return nn_policy, nn_value, nn_value_probs
 
     def _inference_with_stochastic_transform(self, state, to_play):
         encoded_state = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -97,11 +97,11 @@ class MCTS:
             -np.inf,
         )
 
-        policy = softmax(policy_logits)
+        nn_policy = softmax(policy_logits)
 
-        value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
-        value = value_probs[0] - value_probs[2]  # (赢, 平, 输)
-        return policy, value, value_probs
+        nn_value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
+        nn_value = nn_value_probs[0] - nn_value_probs[2]  # (赢, 平, 输)
+        return nn_policy, nn_value, nn_value_probs
 
     def _inference_with_symmetry(self, state, to_play):
         encoded = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -117,9 +117,9 @@ class MCTS:
         input_tensor = torch.tensor(np.array(symmetries), dtype=torch.float32, device=self.args["device"])
         nn_output = self.model(input_tensor)
 
-        v_probs = F.softmax(nn_output["value_logits"], dim=1).cpu().numpy()
-        v_probs = v_probs.mean(axis=0)
-        value = v_probs[0] - v_probs[2]
+        nn_value_probs = F.softmax(nn_output["value_logits"], dim=1).cpu().numpy()
+        nn_value_probs = nn_value_probs.mean(axis=0)
+        nn_value = nn_value_probs[0] - nn_value_probs[2]
 
         p_logits = nn_output["policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
         untransformed_p = []
@@ -131,11 +131,11 @@ class MCTS:
             untransformed_p.append(p.flatten())
 
         avg_p_logits = np.mean(untransformed_p, axis=0)
-        is_legal = self.game.get_is_legal_actions(state, to_play)
-        avg_p_logits = np.where(is_legal, avg_p_logits, -np.inf)
-        policy = softmax(avg_p_logits)
+        is_legal_actions = self.game.get_is_legal_actions(state, to_play)
+        avg_p_logits = np.where(is_legal_actions, avg_p_logits, -np.inf)
+        nn_policy = softmax(avg_p_logits)
 
-        return policy, value, v_probs
+        return nn_policy, nn_value, nn_value_probs
 
     def select(self, node, is_full_search=False):
         if (
@@ -211,16 +211,16 @@ class MCTS:
         state = node.state
         to_play = node.to_play
 
-        if self.args.get("enable_stochastic_transform_inference", True):
-            nn_policy, nn_value, value_probs = self._inference_with_stochastic_transform(state, to_play)
+        if self.args.get("enable_stochastic_transform_inference_for_child", True):
+            nn_policy, nn_value, nn_value_probs = self._inference_with_stochastic_transform(state, to_play)
         elif self.args.get("enable_symmetry_inference_for_child", False):
-            nn_policy, nn_value, value_probs = self._inference_with_symmetry(state, to_play)
+            nn_policy, nn_value, nn_value_probs = self._inference_with_symmetry(state, to_play)
         else:
-            nn_policy, nn_value, value_probs = self._inference(state, to_play)
+            nn_policy, nn_value, nn_value_probs = self._inference(state, to_play)
 
         node.nn_value = nn_value
         node.nn_policy = nn_policy.copy()
-        node.nn_value_probs = value_probs.copy() if value_probs is not None else None
+        node.nn_value_probs = nn_value_probs.copy() if nn_value_probs is not None else None
 
         for action, prob in enumerate(nn_policy):
             if prob > 0:
@@ -238,14 +238,16 @@ class MCTS:
         state = node.state
         to_play = node.to_play
 
-        if self.args.get("enable_symmetry_inference_for_root", False):
-            nn_policy, nn_value, value_probs = self._inference_with_symmetry(state, to_play)
+        if self.args.get("enable_stochastic_transform_inference_for_root", True):
+            nn_policy, nn_value, nn_value_probs = self._inference_with_stochastic_transform(state, to_play)
+        elif self.args.get("enable_symmetry_inference_for_root", False):
+            nn_policy, nn_value, nn_value_probs = self._inference_with_symmetry(state, to_play)
         else:
-            nn_policy, nn_value, value_probs = self._inference(state, to_play)
+            nn_policy, nn_value, nn_value_probs = self._inference(state, to_play)
 
         node.nn_value = nn_value
         node.nn_policy = nn_policy.copy()
-        node.nn_value_probs = value_probs.copy() if value_probs is not None else None
+        node.nn_value_probs = nn_value_probs.copy() if nn_value_probs is not None else None
 
         if enable_dirichlet:
             current_step = np.count_nonzero(node.state[-1])
@@ -268,7 +270,7 @@ class MCTS:
                     action_taken=action,
                 )
                 node.children.append(child)
-        return nn_policy, nn_value, value_probs
+        return nn_policy, nn_value, nn_value_probs
 
     def apply_dirichlet_to_root(self, node):
         if node.nn_policy is None:
@@ -401,7 +403,44 @@ class MCTS:
                 mcts_policy /= mcts_policy_sum
             elif len(root.children) > 0:
                 mcts_policy[root.children[0].action_taken] = 1
-        return mcts_policy, nn_policy, nn_value_probs, root.v / root.n
+        return mcts_policy, root.v / root.n, nn_policy, nn_value_probs
+
+    @torch.inference_mode()
+    def eval_search(self, state, to_play, num_simulations, root=None):
+
+        if root is None:
+            root = Node(state, to_play)
+
+        if not root.is_expanded():
+            nn_policy, nn_value, nn_value_probs = self.root_expand(root, enable_dirichlet=False)
+            self.backpropagate(root, nn_value)
+        else:
+            nn_policy = root.nn_policy
+            nn_value_probs = root.nn_value_probs
+
+        for _ in range(num_simulations):
+            node = root
+
+            while node.is_expanded():
+                node = self.select(node, is_full_search=True)
+                assert node is not None
+
+            if self.game.is_terminal(node.state):
+                value = self.game.get_winner(node.state) * node.to_play  # outcome(to_play view)
+            else:
+                value = self.expand(node)  # nn_value
+
+            self.backpropagate(node, value)
+
+        mcts_policy = np.zeros(self.game.board_size**2)
+        for child in root.children:
+            mcts_policy[child.action_taken] = child.n
+        mcts_policy_sum = np.sum(mcts_policy)
+        if mcts_policy_sum > 0:
+            mcts_policy /= mcts_policy_sum
+        elif len(root.children) > 0:
+            mcts_policy[root.children[0].action_taken] = 1
+        return mcts_policy, root.v / root.n, nn_policy, nn_value_probs
 
 
 class AlphaZero:
@@ -458,7 +497,7 @@ class AlphaZero:
             else:
                 num_simulations = self._get_randomized_simulations()
 
-            mcts_policy, nn_policy, value_probs, root_value = self.mcts.search(state, to_play, num_simulations, root=root)
+            mcts_policy, root_value, nn_policy, nn_value_probs = self.mcts.search(state, to_play, num_simulations, root=root)
 
             # Soft Resign
             historical_root_value.append(root_value)
@@ -478,7 +517,7 @@ class AlphaZero:
                 "to_play": to_play,
                 "mcts_policy": mcts_policy,
                 "nn_policy": nn_policy,
-                "value_probs": value_probs,
+                "nn_value_probs": nn_value_probs,
                 "root_value": root_value,
                 "is_full_search": num_simulations == self.args["full_search_num_simulations"],
                 "next_mcts_policy": None,
@@ -532,7 +571,7 @@ class AlphaZero:
                 "remaining_steps": (len(memory) - i - 1) * remaining_steps_weight,
 
                 "nn_policy": sample["nn_policy"],  # for psw
-                "value_probs": sample["value_probs"],  # for psw
+                "nn_value_probs": sample["nn_value_probs"],  # for psw
                 "root_value": sample["root_value"],  # for psw
                 "is_full_search": sample["is_full_search"],
                 "sample_weight": sample["sample_weight"],
@@ -663,7 +702,6 @@ class AlphaZero:
         print(f"Batch Size: {batch_size}")
         print(f"Min Buffer Size: {min_buffer_size}")
         print(f"Train Steps per Generation: {train_steps_per_generation}")
-        # print(f"Games per Train: {num_games_per_generation}")
         print(f"Save Time Interval: {savetime_interval}s ({savetime_interval / 60:.1f}min)")
         print()
 
@@ -769,6 +807,101 @@ class AlphaZero:
                 print("Checkpoint saved. Exiting.")
             else:
                 print("\nKeyboardInterrupt detected. Exiting without saving checkpoint.")
+
+    @torch.inference_mode()
+    def play(self, state, to_play, root=None, show_progress_bar=True, additive=True):
+        self.model.eval()
+
+        if root is None:
+            root = Node(state, to_play)
+
+        actual_num_simulations = self.args["full_search_num_simulations"] - root.n
+
+        mcts_policy, root_value, _, _ = self.mcts.eval_search(state, to_play, actual_num_simulations, root)
+
+        action = np.argmax(mcts_policy)
+
+        # Get symmetry avg outputs
+        encoded = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
+
+        symmetries = []
+        for do_flip in [False, True]:
+            for k in range(4):
+                aug = np.rot90(encoded, k, axes=(1, 2))
+                if do_flip:
+                    aug = np.flip(aug, axis=2)
+                symmetries.append(aug)
+
+        input_tensor = torch.tensor(np.array(symmetries), dtype=torch.float32, device=self.args["device"])
+        nn_output = self.model(input_tensor)
+        
+        # Value:
+        nn_value_probs = F.softmax(nn_output["value_logits"], dim=1).cpu().numpy()
+        nn_value_probs = nn_value_probs.mean(axis=0)
+        nn_value = nn_value_probs[0] - nn_value_probs[2]
+        # Remaining steps:
+        remaining_steps = nn_output["remaining_steps"].cpu().numpy()
+        remaining_steps = remaining_steps * self.game.board_size ** 2
+        remaining_steps = remaining_steps.mean(axis=0)
+        # Policy, Opponent Policy, Win Position:
+        policy_logits = nn_output["policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
+        opponent_policy_logits = nn_output["opponent_policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
+        win_pos_logits = nn_output["win_pos_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
+
+        untransformed_pl = []
+        untransformed_opl = []
+        untransformed_wpl = []
+        for i, (do_flip, k) in enumerate([(f, r) for f in [False, True] for r in range(4)]):
+            pl = policy_logits[i]
+            opl = opponent_policy_logits[i]
+            wpl = win_pos_logits[i]
+            if do_flip:
+                pl = np.flip(pl, axis=1)
+                opl = np.flip(opl, axis=1)
+                wpl = np.flip(wpl, axis=1)
+            pl = np.rot90(pl, k=-k)
+            opl = np.rot90(opl, k=-k)
+            wpl = np.rot90(wpl, k=-k)
+            untransformed_pl.append(pl.flatten())
+            untransformed_opl.append(opl.flatten())
+            untransformed_wpl.append(wpl.flatten())
+        
+        avg_pl = np.mean(untransformed_pl)
+        is_legal_actions = self.game.get_is_legal_actions(state, to_play)
+        avg_pl = np.where(is_legal_actions, avg_pl, -np.inf)
+        nn_policy = softmax(avg_pl)
+
+        avg_opl = np.mean(untransformed_opl)
+        next_is_legal_actions = self.game.get_is_legal_actions(
+            self.game.get_next_state(state, action, to_play),
+            to_play
+        )
+        avg_opl = np.where(next_is_legal_actions, avg_opl, -np.inf)
+        nn_opponent_policy = softmax(avg_opl)
+
+        def stable_sigmoid(x):
+            x = np.atleast_1d(x)
+            return np.where(
+                x >= 0,
+                1 / (1 + np.exp(-x)),
+                np.exp(x) / (1 + np.exp(x))
+            )
+        
+        avg_wpl = np.mean(untransformed_wpl)
+        win_pos = stable_sigmoid(avg_wpl)
+
+        info = {
+            "mcts_policy": mcts_policy,
+            "root_value": root_value,
+            "nn_policy": nn_policy,
+            "nn_opponent_policy": nn_opponent_policy,
+            "nn_value": nn_value,
+            "nn_value_probs": nn_value_probs,
+            "win_pos": win_pos,
+            "remaining_steps": remaining_steps,
+        }
+        
+        return action, info, root
 
     def save_model(self, filepath=None, timestamp=None):
         from datetime import datetime
