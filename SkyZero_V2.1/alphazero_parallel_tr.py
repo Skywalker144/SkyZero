@@ -186,7 +186,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     else:
                         num_simulations = args["fast_search_num_simulations"]
 
-                mcts_policy, nn_policy, value_probs, root_value = mcts.search(state, to_play, num_simulations, root=root)
+                mcts_policy, root_value, nn_policy, nn_value_probs = mcts.search(state, to_play, num_simulations, root=root)
 
                 # Soft Resign
                 historical_root_value.append(root_value)
@@ -206,7 +206,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 "to_play": to_play,
                 "mcts_policy": mcts_policy,
                 "nn_policy": nn_policy,
-                "value_probs": value_probs,
+                "nn_value_probs": nn_value_probs,
                 "root_value": root_value,
                 "is_full_search": num_simulations == args["full_search_num_simulations"],
                 "next_mcts_policy": None,
@@ -258,7 +258,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 "remaining_steps": (len(memory) - i - 1) * remaining_steps_weight,
 
                 "nn_policy": sample["nn_policy"],  # for psw
-                "value_probs": sample["value_probs"],  # for psw
+                "nn_value_probs": sample["nn_value_probs"],  # for psw
                 "root_value": sample["root_value"],  # for psw
                 "is_full_search": sample["is_full_search"],
                 "sample_weight": sample["sample_weight"],
