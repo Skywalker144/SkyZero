@@ -661,12 +661,20 @@ function resetGame() {
     renderResults(null);
     worker.postMessage({ type: "reset" });
     
+    if (playerColor === -1) {
+        const center = Math.floor(boardSize / 2);
+        const centerAction = center * boardSize + center;
+        makeMove(centerAction);
+        drawBoard();
+        return;
+    }
+
     if (toPlay === playerColor) {
         setIdleStatus("轮到黑棋", true, true);
     } else {
         startSearchStatus();
         aiRunning = true;
-        worker.postMessage({ type: "search", thinkTimeMs: getEffectiveThinkTimeMs(), state, toPlay, searchId });
+        worker.postMessage({ type: "search", thinkTimeMs: getEffectiveThinkTimeMs(), state, toPlay, searchId, purpose: "play" });
     }
     
     drawBoard();
