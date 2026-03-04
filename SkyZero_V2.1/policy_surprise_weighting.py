@@ -43,7 +43,7 @@ def compute_policy_surprise_weights(game_data, board_size, policy_surprise_data_
         p_kl = compute_kl_divergence(sample["policy_target"], sample["nn_policy"])
         policy_surprises.append(p_kl)
 
-        v_kl = compute_kl_divergence(smoothed_targets[i], sample["value_probs"])
+        v_kl = compute_kl_divergence(smoothed_targets[i], sample["nn_value_probs"])
         value_surprises.append(min(v_kl, 1))
 
         w = 1 if sample["is_full_search"] else 0
@@ -107,10 +107,10 @@ def compute_policy_surprise_weights_(game_data, baseline_weight_ratio=0.5, value
     full_search_count = 0
 
     for sample in game_data:
-        # (final_state, encoded_state, policy_target, nn_policy, value_probs, root_value, outcome, is_full_search)
+        # (final_state, encoded_state, policy_target, nn_policy, nn_value_probs, root_value, outcome, is_full_search)
         policy_target = sample["policy_target"]
         policy_prior = sample["nn_policy"]
-        nn_value_probs = sample["value_probs"]
+        nn_value_probs = sample["nn_value_probs"]
         outcome = sample["outcome"]
         is_full_search = sample["is_full_search"]
 
