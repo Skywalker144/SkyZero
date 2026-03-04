@@ -108,7 +108,7 @@ class GamePlayer:
                 print()
                 print(f"Actual Search Num: {info['actual_search_num']}")
                 print(f"Win Position:\n{info['win_pos_logits']}")
-                print(f"Remaining Steps: {info['remaining_steps']:.2f}")
+                print(f"Remaining Steps: {(self.game.board_size ** 2) * info['remaining_steps']:.2f}")
 
             to_play = -to_play
             color = -color
