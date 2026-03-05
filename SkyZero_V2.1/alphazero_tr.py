@@ -418,7 +418,7 @@ class MCTS:
             nn_policy = root.nn_policy
             nn_value_probs = root.nn_value_probs
 
-        for _ in range(num_simulations):
+        for _ in tqdm(range(num_simulations), desc="MCTS:", unit="sim"):
             node = root
 
             while node.is_expanded():
@@ -809,7 +809,7 @@ class AlphaZero:
                 print("\nKeyboardInterrupt detected. Exiting without saving checkpoint.")
 
     @torch.inference_mode()
-    def play(self, state, to_play, root=None, show_progress_bar=True, additive=True):
+    def play(self, state, to_play, root=None, show_progress_bar=True):
         self.model.eval()
 
         if root is None:
@@ -820,6 +820,12 @@ class AlphaZero:
         mcts_policy, root_value, _, _ = self.mcts.eval_search(state, to_play, actual_num_simulations, root)
 
         action = np.argmax(mcts_policy)
+
+        if root is not None:
+            for child in root.children:
+                if child.action_taken == action:
+                    child.parent = None
+                    root = child
 
         # Get symmetry avg outputs
         encoded = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -840,9 +846,9 @@ class AlphaZero:
         nn_value_probs = nn_value_probs.mean(axis=0)
         nn_value = nn_value_probs[0] - nn_value_probs[2]
         # Remaining steps:
-        remaining_steps = nn_output["remaining_steps"].cpu().numpy()
+        remaining_steps = nn_output["remaining_steps"].view(8).cpu().numpy()
+        remaining_steps = remaining_steps.mean()
         remaining_steps = remaining_steps * self.game.board_size ** 2
-        remaining_steps = remaining_steps.mean(axis=0)
         # Policy, Opponent Policy, Win Position:
         policy_logits = nn_output["policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
         opponent_policy_logits = nn_output["opponent_policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
@@ -866,12 +872,12 @@ class AlphaZero:
             untransformed_opl.append(opl.flatten())
             untransformed_wpl.append(wpl.flatten())
         
-        avg_pl = np.mean(untransformed_pl)
+        avg_pl = np.mean(untransformed_pl, axis=0)
         is_legal_actions = self.game.get_is_legal_actions(state, to_play)
         avg_pl = np.where(is_legal_actions, avg_pl, -np.inf)
         nn_policy = softmax(avg_pl)
 
-        avg_opl = np.mean(untransformed_opl)
+        avg_opl = np.mean(untransformed_opl, axis=0)
         next_is_legal_actions = self.game.get_is_legal_actions(
             self.game.get_next_state(state, action, to_play),
             to_play
@@ -887,18 +893,19 @@ class AlphaZero:
                 np.exp(x) / (1 + np.exp(x))
             )
         
-        avg_wpl = np.mean(untransformed_wpl)
+        avg_wpl = np.mean(untransformed_wpl, axis=0)
         win_pos = stable_sigmoid(avg_wpl)
 
         info = {
-            "mcts_policy": mcts_policy,
+            "mcts_policy": mcts_policy.reshape(self.game.board_size, self.game.board_size),
             "root_value": root_value,
-            "nn_policy": nn_policy,
-            "nn_opponent_policy": nn_opponent_policy,
+            "nn_policy": nn_policy.reshape(self.game.board_size, self.game.board_size),
+            "nn_opponent_policy": nn_opponent_policy.reshape(self.game.board_size, self.game.board_size),
             "nn_value": nn_value,
             "nn_value_probs": nn_value_probs,
-            "win_pos": win_pos,
+            "win_pos": win_pos.reshape(self.game.board_size, self.game.board_size),
             "remaining_steps": remaining_steps,
+            "actual_search_num": actual_num_simulations,
         }
         
         return action, info, root
