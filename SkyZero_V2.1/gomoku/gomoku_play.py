@@ -2,7 +2,7 @@ import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from gomoku_train import train_args
 from envs.gomoku import Gomoku
-from playgame import GamePlayer
+from playgame_v2 import GamePlayer
 
 
 eval_args = {

@@ -21,8 +21,8 @@ train_args = {
     "lr": 0.0001,
     "weight_decay": 3e-5,
 
-    "full_search_num_simulations": 600,
-    "fast_search_num_simulations": 100,
+    "full_search_num_simulations": 720,
+    "fast_search_num_simulations": 120,
     "full_search_prob": 0.25,
 
     "root_temperature_init": 1.25,
@@ -38,8 +38,8 @@ train_args = {
     "max_grad_norm": 1,
 
     "min_buffer_size": 2048,
-    "linear_threshold": 100000,
-    "alpha": 0.75,
+    "linear_threshold": 200000,
+    "alpha": 0.8,
     "max_physical_limit": 1e7,
 
     "train_steps_per_generation": 5,
@@ -62,5 +62,5 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 
     alphazero = AlphaZeroParallel(game, model, optimizer, train_args)
-    # alphazero.load_checkpoint()
+    alphazero.load_checkpoint()
     alphazero.learn()
