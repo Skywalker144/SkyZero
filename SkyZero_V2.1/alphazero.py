@@ -63,9 +63,9 @@ class MCTS:
 
         policy = softmax(policy_logits)
 
-        value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
-        value = value_probs[0] - value_probs[2]  # (赢, 平, 输)
-        return policy, value, value_probs
+        nn_value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
+        value = nn_value_probs[0] - nn_value_probs[2]  # (赢, 平, 输)
+        return policy, value, nn_value_probs
 
     def _inference_with_stochastic_transform(self, state, to_play):
         encoded_state = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -96,9 +96,9 @@ class MCTS:
 
         policy = softmax(policy_logits)
 
-        value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
-        value = value_probs[0] - value_probs[2]  # (赢, 平, 输)
-        return policy, value, value_probs
+        nn_value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
+        value = nn_value_probs[0] - nn_value_probs[2]  # (赢, 平, 输)
+        return policy, value, nn_value_probs
 
     def _inference_with_symmetry(self, state, to_play):
         encoded = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -234,9 +234,9 @@ class MCTS:
         to_play = node.to_play
 
         if self.args.get("enable_symmetry_inference_for_root", False):
-            nn_policy, nn_value, value_probs = self._inference_with_symmetry(state, to_play)
+            nn_policy, nn_value, nn_value_probs = self._inference_with_symmetry(state, to_play)
         else:
-            nn_policy, nn_value, value_probs = self._inference(state, to_play)
+            nn_policy, nn_value, nn_value_probs = self._inference(state, to_play)
 
         node.nn_value = nn_value
 
@@ -261,7 +261,7 @@ class MCTS:
                     action_taken=action,
                 )
                 node.children.append(child)
-        return nn_policy, nn_value, value_probs
+        return nn_policy, nn_value, nn_value_probs
 
     @staticmethod
     def backpropagate(node, value):
@@ -410,7 +410,7 @@ class AlphaZero:
             else:
                 num_simulations = self._get_randomized_simulations()
 
-            mcts_policy, nn_policy, value_probs, root_value = self.mcts.search(state, to_play, num_simulations)
+            mcts_policy, nn_policy, nn_value_probs, root_value = self.mcts.search(state, to_play, num_simulations)
 
             # Soft Resign
             historical_root_value.append(root_value)
@@ -430,7 +430,7 @@ class AlphaZero:
                 "to_play": to_play,
                 "mcts_policy": mcts_policy,
                 "nn_policy": nn_policy,
-                "value_probs": value_probs,
+                "nn_value_probs": nn_value_probs,
                 "root_value": root_value,
                 "is_full_search": num_simulations == self.args["full_search_num_simulations"],
                 "next_mcts_policy": None,
@@ -471,7 +471,7 @@ class AlphaZero:
                 "remaining_steps": (len(memory) - i - 1) * remaining_steps_weight,
 
                 "nn_policy": sample["nn_policy"],  # for psw
-                "value_probs": sample["value_probs"],  # for psw
+                "nn_value_probs": sample["nn_value_probs"],  # for psw
                 "root_value": sample["root_value"],  # for psw
                 "is_full_search": sample["is_full_search"],
                 "sample_weight": sample["sample_weight"],
