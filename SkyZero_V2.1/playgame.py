@@ -2,7 +2,7 @@ import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import torch.optim as optim
 import numpy as np
-from alphazero_play import TreeReuseAlphaZero
+from alphazero_tr import AlphaZero
 from nets_v2 import ResNet
 from utils import print_board
 
@@ -17,14 +17,15 @@ class GamePlayer:
         np.set_printoptions(precision=2, suppress=True)
         model = ResNet(self.game, num_blocks=self.args["num_blocks"], num_channels=self.args["num_channels"]).to(self.args["device"])
         optimizer = optim.Adam(model.parameters(), lr=1e-3)
-        alphazero = TreeReuseAlphaZero(self.game, model, optimizer, self.args)
+        alphazero = AlphaZero(self.game, model, optimizer, self.args)
         alphazero.load_model()
-        to_play = int(input(
-            f"1 for the first move and -1 for the second move\n"
+        human_side = int(input(
+            f"1 for Human first move and -1 for Human second move\n"
             f"The position of the piece needs to be input in coordinate form.\n"
             f"   (first input the vertical coordinate, then the horizontal coordinate).\n"
             f"Please enter:"
         ))
+        to_play = 1
         color = 1
         state = self.game.get_initial_state()
         history = []
@@ -55,7 +56,7 @@ class GamePlayer:
                 else:
                     break
 
-            if to_play == 1:
+            if to_play == human_side:
                 while True:
                     move = input(f"Human step (row col / 'u' for undo / 'q' for quit): ").strip().lower()
                     if move == "u":
@@ -84,31 +85,42 @@ class GamePlayer:
                         print("Invalid input format. Please enter 'row col' (e.g., '7 7').")
 
                 history.append((state.copy(), to_play, color))
-                mcts_root = alphazero.apply_action(mcts_root, action)
+                
+                # Tree Reuse
+                if mcts_root is not None:
+                    for child in mcts_root.children:
+                        if child.action_taken == action:
+                            child.parent = None
+                            mcts_root = child
+
                 state = self.game.get_next_state(state, action, color)
-            elif to_play == -1:
+            elif to_play == -human_side:
                 history.append((state.copy(), to_play, color))
                 print(f"AlphaZero step:")
-                action, info, mcts_root = alphazero.play(state, color, root=mcts_root, additive=True)
+                action, info, mcts_root = alphazero.play(state, color, root=mcts_root)
+
+                # Tree Reuse
+                if mcts_root is not None:
+                    for child in mcts_root.children:
+                        if child.action_taken == action:
+                            child.parent = None
+                            mcts_root = child
 
                 state = self.game.get_next_state(state, action, color)
-                mcts_policy, nn_policy, value_probs, root_value, nn_value = info["mcts_policy"], info["nn_policy"], info["value_probs"], info["root_value"], info["nn_value"]
-
-                print(f"MCTS Strategy:\n{mcts_policy}")
-                print(f"NN Strategy:\n{nn_policy}")
+                print(f"MCTS Strategy:\n{info['mcts_policy']}")
+                print(f"NN Strategy:\n{info['nn_policy']}")
                 print(
-                    f"Win  Probability: {value_probs[0]:.2f}\n"
-                    f"Draw Probability: {value_probs[1]:.2f}\n"
-                    f"Lose Probability: {value_probs[2]:.2f}"
+                    f"Win  Probability: {info['nn_value_probs'][0]:.2f}\n"
+                    f"Draw Probability: {info['nn_value_probs'][1]:.2f}\n"
+                    f"Lose Probability: {info['nn_value_probs'][2]:.2f}"
                 )
-                print(f"root value: {root_value:.2f}")
-                print(f"nn value:   {nn_value:.2f}")
-                opponent_policy = info["opponent_policy"]
-                print(f"Opponent Policy:\n{opponent_policy}")
+                print(f"root value: {info['root_value']:.2f}")
+                print(f"nn value:   {info['nn_value']:.2f}")
+                print(f"Opponent Policy:\n{info['nn_opponent_policy']}")
                 print()
                 print(f"Actual Search Num: {info['actual_search_num']}")
-                print(f"Win Position:\n{info['win_pos_logits']}")
-                print(f"Remaining Steps: {(self.game.board_size ** 2) * info['remaining_steps']:.2f}")
+                print(f"Win Position:\n{info['win_pos']}")
+                print(f"Remaining Steps: {info['remaining_steps']:.2f}")
 
             to_play = -to_play
             color = -color
