@@ -364,11 +364,6 @@ class AlphaZeroParallel(AlphaZero):
             self._last_plot_game_count = self.game_count
             savetime_interval = self.args["savetime_interval"]
 
-            recent_game_lengths = deque(maxlen=self.args.get("len_statistics_queue_size", 300))
-            recent_sample_lengths = deque(maxlen=self.args.get("len_statistics_queue_size", 300))
-            black_win_counts = deque(maxlen=self.args.get("len_statistics_queue_size", 300))
-            white_win_counts = deque(maxlen=self.args.get("len_statistics_queue_size", 300))
-
             session_start_time = time.time()
             total_samples = 0
 
@@ -385,18 +380,18 @@ class AlphaZeroParallel(AlphaZero):
                         self.game_count += 1
                         games_processed += 1
                         total_samples += len(memory)
-                        recent_game_lengths.append(game_len)
-                        recent_sample_lengths.append(len(memory))
+                        self.recent_game_lengths.append(game_len)
+                        self.recent_sample_lengths.append(len(memory))
 
-                        black_win_counts.append(1 if winner == 1 else 0)
-                        white_win_counts.append(1 if winner == -1 else 0)
+                        self.black_win_counts.append(1 if winner == 1 else 0)
+                        self.white_win_counts.append(1 if winner == -1 else 0)
 
                         # Log stats periodically, but do NOT plot here as it is slow
                         if self.game_count % 10 == 0:
-                            avg_game_len = np.mean(recent_game_lengths)
-                            total_recent = len(black_win_counts)
-                            b_rate = np.sum(black_win_counts) / total_recent
-                            w_rate = np.sum(white_win_counts) / total_recent
+                            avg_game_len = np.mean(self.recent_game_lengths)
+                            total_recent = len(self.black_win_counts)
+                            b_rate = np.sum(self.black_win_counts) / total_recent
+                            w_rate = np.sum(self.white_win_counts) / total_recent
                             d_rate = 1 - b_rate - w_rate
 
                             self.winrate_history.append((self.game_count, b_rate, w_rate, d_rate))
@@ -459,7 +454,7 @@ class AlphaZeroParallel(AlphaZero):
                 self.command_queue.put(("UPDATE", cpu_state))
 
                 # Update Schedule
-                avg_sample_len = np.mean(recent_sample_lengths) if recent_game_lengths else 1
+                avg_sample_len = np.mean(self.recent_sample_lengths) if self.recent_game_lengths else 1
                 num_next = int(
                     self.args["batch_size"] * self.args["train_steps_per_generation"] / avg_sample_len / self.args["target_ReplayRatio"]
                 )

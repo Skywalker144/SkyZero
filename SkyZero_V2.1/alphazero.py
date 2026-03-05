@@ -375,6 +375,12 @@ class AlphaZero:
         self.avg_game_len_history = []
         self.game_count = 0
 
+        len_statistics_queue = args.get("len_statistics_queue_size", 300)
+        self.recent_game_lengths = deque(maxlen=len_statistics_queue)
+        self.recent_sample_lengths = deque(maxlen=len_statistics_queue)
+        self.black_win_counts = deque(maxlen=len_statistics_queue)
+        self.white_win_counts = deque(maxlen=len_statistics_queue)
+
         self.replay_buffer = ReplayBuffer(
             min_buffer_size=args.get("min_buffer_size", 1000),
             linear_threshold=args.get("linear_threshold", args.get("max_buffer_size", 10000)),
@@ -576,13 +582,6 @@ class AlphaZero:
         min_buffer_size = self.args["min_buffer_size"]
         train_steps_per_generation = self.args.get("train_steps_per_generation", 5)
 
-        len_statistics_queue = self.args.get("len_statistics_queue_size", 300)
-
-        recent_game_lengths = deque(maxlen=len_statistics_queue)
-        recent_sample_lengths = deque(maxlen=len_statistics_queue)
-        black_win_counts = deque(maxlen=len_statistics_queue)
-        white_win_counts = deque(maxlen=len_statistics_queue)
-
         last_save_time = time.time()
         savetime_interval = self.args.get("savetime_interval", 3600)
 
@@ -614,21 +613,21 @@ class AlphaZero:
 
                 self.game_count += 1
                 total_samples += len(memory)
-                recent_game_lengths.append(game_len)
-                recent_sample_lengths.append(len(memory))
+                self.recent_game_lengths.append(game_len)
+                self.recent_sample_lengths.append(len(memory))
 
-                black_win_counts.append(1 if winner == 1 else 0)
-                white_win_counts.append(1 if winner == -1 else 0)
+                self.black_win_counts.append(1 if winner == 1 else 0)
+                self.white_win_counts.append(1 if winner == -1 else 0)
 
                 current_buffer_size = len(self.replay_buffer)
 
                 if self.game_count % 10 == 0:
-                    avg_game_len = np.mean(recent_game_lengths)
-                    # avg_sample_len = np.mean(recent_sample_lengths)
+                    avg_game_len = np.mean(self.recent_game_lengths)
+                    # avg_sample_len = np.mean(self.recent_sample_lengths)
 
-                    total_recent = len(black_win_counts)
-                    b_rate = np.sum(black_win_counts) / total_recent
-                    w_rate = np.sum(white_win_counts) / total_recent
+                    total_recent = len(self.black_win_counts)
+                    b_rate = np.sum(self.black_win_counts) / total_recent
+                    w_rate = np.sum(self.white_win_counts) / total_recent
                     d_rate = 1 - b_rate - w_rate
 
                     self.winrate_history.append(
@@ -681,7 +680,7 @@ class AlphaZero:
                     self.losses_dict[key].append(np.mean(batch_loss_dict[key]))
 
                 # calculate train interval by Target Replay Ratio
-                avg_sample_len = np.mean(recent_sample_lengths)
+                avg_sample_len = np.mean(self.recent_sample_lengths)
                 num_next = int(
                     self.args["batch_size"] * self.args["train_steps_per_generation"] / avg_sample_len / self.args["target_ReplayRatio"]
                 )
@@ -752,6 +751,10 @@ class AlphaZero:
             "avg_game_len_history": self.avg_game_len_history,
             "game_count": self.game_count,
             "replay_buffer": self.replay_buffer.get_state(),
+            "recent_game_lengths": self.recent_game_lengths,
+            "recent_sample_lengths": self.recent_sample_lengths,
+            "black_win_counts": self.black_win_counts,
+            "white_win_counts": self.white_win_counts,
         }
 
         torch.save(checkpoint, filepath)
@@ -827,7 +830,10 @@ class AlphaZero:
 
         if "optimizer_state_dict" in checkpoint and self.optimizer is not None:
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            print(f"Optimizer loaded")
+            # Override learning rate from current args
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.args.get("lr", param_group['lr'])
+            print(f"Optimizer loaded (LR overridden to {self.args.get('lr')})")
 
         if "losses_dict" in checkpoint:
             loaded_losses = checkpoint["losses_dict"]
@@ -854,7 +860,19 @@ class AlphaZero:
 
         if "replay_buffer" in checkpoint:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
-            print(f"Replay buffer loaded ({len(self.replay_buffer)} samples)")
+            # Override buffer parameters from current args
+            self.replay_buffer.min_buffer_size = self.args.get("min_buffer_size", self.replay_buffer.min_buffer_size)
+            self.replay_buffer.linear_threshold = self.args.get("linear_threshold", self.replay_buffer.linear_threshold)
+            self.replay_buffer.alpha = self.args.get("alpha", self.replay_buffer.alpha)
+            self.replay_buffer.max_physical_limit = int(self.args.get("max_physical_limit", self.replay_buffer.max_physical_limit))
+            print(f"Replay buffer loaded ({len(self.replay_buffer)} samples, parameters overridden)")
+
+        if "black_win_counts" in checkpoint:
+            self.black_win_counts = checkpoint["black_win_counts"]
+            self.white_win_counts = checkpoint["white_win_counts"]
+            self.recent_game_lengths = checkpoint["recent_game_lengths"]
+            self.recent_sample_lengths = checkpoint["recent_sample_lengths"]
+            print("Statistics queues loaded")
 
         print(f"Checkpoint loaded from {filepath}")
         self.plot_metrics()
