@@ -1,31 +1,9 @@
-"""
-Replay Buffer for AlphaZero
-
-AlphaZero uses Replay Buffer to store self-play data from the last N games,
-sampling randomly from the entire buffer during training, not just the latest game.
-
-Main features:
-1. Capacity limited by sample count (max_physical_limit), old data replaced by new
-2. Support for random sampling
-3. Support for saving and loading buffer state
-4. Ring Buffer implementation for O(1) append and O(1) sample
-"""
-
 import random
 from typing import List, Tuple
 import numpy as np
 
 
 class ReplayBuffer:
-    """
-    Replay Buffer for storing self-play generated training data.
-    
-    Optimized for memory and serialization:
-    - Stores data in a list of dictionaries (for flexibility)
-    - Uses compact data types (int8 for board states)
-    - Provides efficient state for torch.save
-    """
-
     def __init__(self, min_buffer_size=10000, linear_threshold=10000, alpha=0.75, max_physical_limit=3e6):
         self.min_buffer_size = min_buffer_size
         self.linear_threshold = linear_threshold
@@ -46,13 +24,9 @@ class ReplayBuffer:
         return len(self.buffer)
 
     def add_game(self, game_memory: List[dict]) -> int:
-        """Add a game"s data to the buffer."""
-        for sample in game_memory:
-            self.buffer.append(sample)
-
+        self.buffer.extend(game_memory)
         if len(self.buffer) > self.max_physical_limit:
-            excess = len(self.buffer) - self.max_physical_limit
-            self.buffer = self.buffer[excess:]
+            self.buffer = self.buffer[ - self.max_physical_limit:]
 
         self.total_samples_added += len(game_memory)
         self.games_count += 1
@@ -65,7 +39,6 @@ class ReplayBuffer:
             
         window_size = self.get_window_size()
 
-        # Ensure window_size is at least batch_size if we have enough samples
         window_size = min(current_len, window_size)
 
         start_index = current_len - window_size
@@ -90,18 +63,21 @@ class ReplayBuffer:
         if not self.buffer:
             return {"buffer_empty": True}
 
-        # Collect keys from the first sample
-        keys = self.buffer[0].keys()
+        keys = set()
+        for sample in self.buffer[:100]:
+            keys.update(sample.keys())
+        
         consolidated_buffer = {}
         
         for key in keys:
-            # Consolidate each field into a single numpy array
-            # This is much more efficient for torch.save/pickle
             try:
-                consolidated_buffer[key] = np.array([sample[key] for sample in self.buffer])
+                data_list = [sample.get(key) for sample in self.buffer]
+                if any(x is None for x in data_list):
+                    consolidated_buffer[key] = data_list
+                else:
+                    consolidated_buffer[key] = np.array(data_list)
             except Exception as e:
-                # Fallback for non-array types
-                consolidated_buffer[key] = [sample[key] for sample in self.buffer]
+                consolidated_buffer[key] = [sample.get(key) for sample in self.buffer]
 
         return {
             "consolidated_buffer": consolidated_buffer,
@@ -129,7 +105,7 @@ class ReplayBuffer:
 
         self.buffer = []
         
-        keys = cb.keys()
+        keys = list(cb.keys())
         for i in range(num_samples):
             sample = {key: cb[key][i] for key in keys}
             self.buffer.append(sample)
@@ -141,5 +117,3 @@ class ReplayBuffer:
         
         self.games_count = state.get("games_count", 0)
 
-
-ParallelReplayBuffer = ReplayBuffer
