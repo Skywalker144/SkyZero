@@ -25,8 +25,6 @@ class Node:
         self.children = []
         self.v = 0
         self.n = 0
-        self.nn_value = None
-        self.nn_policy = None
 
     def is_expanded(self):
         return len(self.children) > 0
@@ -56,8 +54,6 @@ class MCTS:
         policy_logits = np.where(legal_mask, policy_logits, -1e10)
         policy = softmax(policy_logits)
         
-        node.nn_policy = policy
-        node.nn_value = value
         return policy, value
 
     def select(self, node):
