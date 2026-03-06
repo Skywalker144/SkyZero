@@ -24,7 +24,7 @@ if __name__ == "__main__":
     
     onnx_model_name = "web/model.onnx"
 
-    output_names = ["policy_logits", "opponent_policy_logits", "soft_policy_logits", "soft_opponent_policy_logits", "value_logits"]
+    output_names = ["policy_logits", "opponent_policy_logits", "value_logits"]
 
     torch.onnx.export(
         model,
@@ -39,8 +39,6 @@ if __name__ == "__main__":
             "input": {0: "batch_size"},
             "policy_logits": {0: "batch_size"},
             "opponent_policy_logits": {0: "batch_size"},
-            "soft_policy_logits": {0: "batch_size"},
-            "soft_opponent_policy_logits": {0: "batch_size"},
             "value_logits": {0: "batch_size"}
         },
         dynamo=False 
