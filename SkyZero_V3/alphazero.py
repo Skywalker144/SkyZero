@@ -393,9 +393,7 @@ class AlphaZero:
         self.losses_dict = {
             "total_loss": [],
             "policy_loss": [],
-            "soft_policy_loss": [],
             "opponent_policy_loss": [],
-            "soft_opponent_policy_loss": [],
             "value_loss": [],
         }
 
@@ -410,6 +408,8 @@ class AlphaZero:
         self.white_win_counts = deque(maxlen=len_statistics_queue)
 
         self.replay_buffer = ReplayBuffer(
+            board_size=self.game.board_size,
+            num_planes=self.game.num_planes,
             min_buffer_size=args.get("min_buffer_size", 1000),
             linear_threshold=args.get("linear_threshold", args.get("max_buffer_size", 10000)),
             alpha=args.get("alpha", 0.75),
@@ -491,8 +491,7 @@ class AlphaZero:
 
         
         return_memory = []
-        for i, sample in enumerate(memory):
-
+        for sample in memory:
             outcome = winner * sample["to_play"]
             opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
             sample_data = {
@@ -500,7 +499,6 @@ class AlphaZero:
                 "policy_target": sample["mcts_policy"],
                 "opponent_policy_target": opponent_policy,
                 "outcome": outcome,
-
                 "nn_policy": sample["nn_policy"],  # for psw
                 "nn_value_probs": sample["nn_value_probs"],  # for psw
                 "root_value": sample["root_value"],  # for psw
@@ -522,46 +520,29 @@ class AlphaZero:
     def _train_batch(self, batch):
 
         batch = random_augment_batch(batch, self.game.board_size)
-        batch_size = len(batch)
+        batch_size = len(batch["encoded_state"])
 
-        encoded_states = torch.tensor(np.array([d["encoded_state"] for d in batch]), device=self.args["device"], dtype=torch.float32)
-        policy_targets = torch.tensor(np.array([d["policy_target"] for d in batch]), device=self.args["device"], dtype=torch.float32)
-        opponent_policy_targets = torch.tensor(np.array([d["opponent_policy_target"] for d in batch]), device=self.args["device"], dtype=torch.float32)
-        outcomes = torch.tensor(np.array([d["outcome"] for d in batch]), device=self.args["device"], dtype=torch.float32)
+        encoded_states = torch.as_tensor(batch["encoded_state"], device=self.args["device"], dtype=torch.float32)
+        policy_targets = torch.as_tensor(batch["policy_target"], device=self.args["device"], dtype=torch.float32)
+        opponent_policy_targets = torch.as_tensor(batch["opponent_policy_target"], device=self.args["device"], dtype=torch.float32)
+        outcomes = torch.as_tensor(batch["outcome"], device=self.args["device"], dtype=torch.float32)
 
-
-        is_full_search = torch.tensor(np.array([d["is_full_search"] for d in batch]), device=self.args["device"], dtype=torch.float32)
-        sample_weights = torch.tensor(np.array([d["sample_weight"] for d in batch]), device=self.args["device"], dtype=torch.float32)
-
-        soft_policy_targets = torch.pow(policy_targets, 0.25)
-        soft_policy_targets /= torch.sum(soft_policy_targets, dim=-1, keepdim=True) + 1e-10
-        soft_opponent_policy_targets = torch.pow(opponent_policy_targets, 0.25)
-        soft_opponent_policy_targets /= torch.sum(soft_opponent_policy_targets, dim=-1, keepdim=True) + 1e-10
+        is_full_search = torch.as_tensor(batch["is_full_search"], device=self.args["device"], dtype=torch.float32)
+        sample_weights = torch.as_tensor(batch["sample_weight"], device=self.args["device"], dtype=torch.float32)
 
         self.model.train()
         nn_output = self.model(encoded_states)
 
         policy_logits = nn_output["policy_logits"].view(batch_size, -1)
         opponent_policy_logits = nn_output["opponent_policy_logits"].view(batch_size, -1)
-        soft_policy_logits = nn_output["soft_policy_logits"].view(batch_size, -1)
-        soft_opponent_policy_logits = nn_output["soft_opponent_policy_logits"].view(batch_size, -1)
-
 
         def get_loss(logits, targets, weights):
             loss = -torch.sum(targets * F.log_softmax(logits, dim=-1), dim=-1)
-            weighted_loss = (loss * weights).mean()
-
-            if torch.isnan(weighted_loss) or torch.isinf(weighted_loss):
-                print(f"Nan/Inf detected in loss. logits stats: min={logits.min():.2f}, max={logits.max():.2f}")
-                return torch.tensor(0.0, device=logits.device, requires_grad=True)
-
             return (loss * weights).mean()
 
         # Policy, Soft Policy, Opponent Policy Loss, Soft Opponent Policy Loss
         policy_loss = get_loss(policy_logits, policy_targets, sample_weights)
         opponent_policy_loss = get_loss(opponent_policy_logits, opponent_policy_targets, sample_weights)
-        soft_policy_loss = get_loss(soft_policy_logits, soft_policy_targets, sample_weights)
-        soft_opponent_policy_loss = get_loss(soft_opponent_policy_logits, soft_opponent_policy_targets, sample_weights)
 
         # Value Loss
         # Mix outcome and v_mix for value target
@@ -570,7 +551,7 @@ class AlphaZero:
         
         # Here we map out outcomes to standard 1D values: +1 (win), 0 (draw), -1 (loss)
         # root_value contains v_mix. We'll use 50% outcome, 50% v_mix.
-        root_values = torch.tensor(np.array([d["root_value"] for d in batch]), device=self.args["device"], dtype=torch.float32)
+        root_values = torch.as_tensor(batch["root_value"], device=self.args["device"], dtype=torch.float32)
         mixed_values = 0.5 * outcomes + 0.5 * root_values
         
         # Now convert to probabilities for cross entropy: 
@@ -588,9 +569,7 @@ class AlphaZero:
 
         loss = (
             policy_loss
-            + 0.05 * opponent_policy_loss
-            + 0.05 * soft_policy_loss
-            + 0.05 * soft_opponent_policy_loss
+            + 0.1 * opponent_policy_loss
             + value_loss
         )
 
@@ -604,8 +583,6 @@ class AlphaZero:
             "total_loss": loss.item(),
             "policy_loss": policy_loss.item(),
             "opponent_policy_loss": opponent_policy_loss.item(),
-            "soft_policy_loss": soft_policy_loss.item(),
-            "soft_opponent_policy_loss": soft_opponent_policy_loss.item(),
             "value_loss": value_loss.item(),
         }
         return loss_dict, is_full_search.sum().item() / len(is_full_search)
@@ -803,8 +780,6 @@ class AlphaZero:
         )
         avg_opl = np.where(next_is_legal_actions, avg_opl, -np.inf)
         nn_opponent_policy = softmax(avg_opl)
-
-
 
         info = {
             "mcts_policy": mcts_policy.reshape(self.game.board_size, self.game.board_size),
