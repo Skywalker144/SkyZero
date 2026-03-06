@@ -1,9 +1,9 @@
-importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js");
+importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/ort.min.js");
 importScripts("gomoku.js");
 importScripts("mcts.js");
 
 // 强制 ONNX Runtime 从 CDN 加载 WASM 资源，避免 404
-ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/";
 
 let session = null;
 let game = null;
