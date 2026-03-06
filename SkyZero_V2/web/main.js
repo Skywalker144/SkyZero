@@ -35,7 +35,7 @@ let lastResults = {
     policy: null
 };
 
-const worker = new Worker("worker.js");
+const worker = new Worker("worker.js?v=" + Date.now());
 const chartCanvas = document.getElementById("win-prob-chart");
 const chartCtx = chartCanvas.getContext("2d");
 let winProbHistory = []; // Start empty
