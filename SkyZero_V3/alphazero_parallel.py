@@ -38,14 +38,12 @@ class RemoteModel:
 
         self.request_queue.put((self.rank, state_cpu))
 
-        policy_np, value_np, opponent_policy_np, soft_policy_np, soft_opponent_policy_np = self.response_pipe.recv()
+        policy_np, value_np, opponent_policy_np = self.response_pipe.recv()
 
         return {
             "policy_logits": torch.tensor(policy_np),
             "value_logits": torch.tensor(value_np),
             "opponent_policy_logits": torch.tensor(opponent_policy_np),
-            "soft_policy_logits": torch.tensor(soft_policy_np),
-            "soft_opponent_policy_logits": torch.tensor(soft_opponent_policy_np),
         }
 
 
@@ -109,14 +107,10 @@ def gpu_worker(model_instance, model_state_dict, request_queue, response_pipes, 
                     policies = outputs["policy_logits"]
                     values = outputs["value_logits"]
                     opponent_policies = outputs["opponent_policy_logits"]
-                    soft_policies = outputs["soft_policy_logits"]
-                    soft_opponent_policies = outputs["soft_opponent_policy_logits"]
 
                 policies = policies.cpu().numpy()
                 values = values.cpu().numpy()
                 opponent_policies = opponent_policies.cpu().numpy()
-                soft_policies = soft_policies.cpu().numpy()
-                soft_opponent_policies = soft_opponent_policies.cpu().numpy()
 
                 start_idx = 0
                 for i, rank in enumerate(batch_ranks):
@@ -125,9 +119,7 @@ def gpu_worker(model_instance, model_state_dict, request_queue, response_pipes, 
                     response_pipes[rank].send((
                         policies[start_idx:end_idx],
                         values[start_idx:end_idx],
-                        opponent_policies[start_idx:end_idx],
-                        soft_policies[start_idx:end_idx],
-                        soft_opponent_policies[start_idx:end_idx],
+                        opponent_policies[start_idx:end_idx]
                     ))
                     start_idx = end_idx
 
@@ -228,7 +220,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
             
             return_memory = []
-            for i, sample in enumerate(memory):
+            for sample in memory:
                 outcome = winner * sample["to_play"]
                 opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
                 sample_data = {
@@ -236,7 +228,6 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 "policy_target": sample["mcts_policy"],
                 "opponent_policy_target": opponent_policy,
                 "outcome": outcome,
-
 
                 "nn_policy": sample["nn_policy"],  # for psw
                 "nn_value_probs": sample["nn_value_probs"],  # for psw
