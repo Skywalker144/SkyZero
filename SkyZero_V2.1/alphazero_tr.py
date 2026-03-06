@@ -661,8 +661,8 @@ class AlphaZero:
             + self.args.get("soft_policy_loss_weight", 8) * soft_policy_loss
             + self.args.get("soft_opponent_policy_loss_weight", 0.18) * soft_opponent_policy_loss
             + self.args.get("value_loss_weight", 0.72) * value_loss
-            + self.args.get("win_pos_loss_weight", 0.01) * win_pos_loss
-            + self.args.get("remaining_steps_loss_weight", 0.01) * remaining_steps_loss
+            + self.args.get("win_pos_loss_weight", 0.008) * win_pos_loss
+            + self.args.get("remaining_steps_loss_weight", 0.008) * remaining_steps_loss
         )
 
         self.optimizer.zero_grad()
