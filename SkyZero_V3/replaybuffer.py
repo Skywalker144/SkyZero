@@ -1,16 +1,36 @@
 import random
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import numpy as np
 
 
 class ReplayBuffer:
-    def __init__(self, min_buffer_size=10000, linear_threshold=10000, alpha=0.75, max_physical_limit=3e6):
+    def __init__(self, board_size: int, num_planes: int, min_buffer_size=10000, linear_threshold=10000, alpha=0.75, max_physical_limit=3e6):
         self.min_buffer_size = min_buffer_size
         self.linear_threshold = linear_threshold
         self.alpha = alpha
         self.max_physical_limit = int(max_physical_limit)
 
-        self.buffer: List[dict] = []
+        self.board_size = board_size
+        self.num_planes = num_planes
+
+        self.ptr = 0
+        self.size = 0
+        
+        limit = self.max_physical_limit
+        action_size = board_size * board_size
+
+        self.data = {
+            "encoded_state": np.empty((limit, num_planes, board_size, board_size), dtype=np.float32),
+            "policy_target": np.empty((limit, action_size), dtype=np.float32),
+            "opponent_policy_target": np.empty((limit, action_size), dtype=np.float32),
+            "outcome": np.empty(limit, dtype=np.float32),
+            "nn_policy": np.empty((limit, action_size), dtype=np.float32),
+            "nn_value_probs": np.empty((limit, 3), dtype=np.float32),
+            "root_value": np.empty(limit, dtype=np.float32),
+            "is_full_search": np.empty(limit, dtype=np.bool_),
+            "sample_weight": np.empty(limit, dtype=np.float32),
+        }
+
         self.total_samples_added = 0
         self.games_count = 0
 
@@ -21,66 +41,69 @@ class ReplayBuffer:
         return min(int(window_size), self.max_physical_limit)
 
     def __len__(self) -> int:
-        return len(self.buffer)
+        return self.size
 
     def add_game(self, game_memory: List[dict]) -> int:
-        self.buffer.extend(game_memory)
-        if len(self.buffer) > self.max_physical_limit:
-            self.buffer = self.buffer[ - self.max_physical_limit:]
-
-        self.total_samples_added += len(game_memory)
+        k = len(game_memory)
+        if k == 0:
+            return 0
+        
+        batch_data = {
+            key: np.array([sample[key] for sample in game_memory]) 
+            for key in self.data.keys()
+        }
+        
+        limit = self.max_physical_limit
+        if self.ptr + k <= limit:
+            for key in self.data:
+                self.data[key][self.ptr : self.ptr + k] = batch_data[key]
+        else:
+            part1 = limit - self.ptr
+            part2 = k - part1
+            for key in self.data:
+                self.data[key][self.ptr : limit] = batch_data[key][:part1]
+                self.data[key][0 : part2] = batch_data[key][part1:]
+                
+        self.ptr = (self.ptr + k) % limit
+        self.size = min(limit, self.size + k)
+        
+        self.total_samples_added += k
         self.games_count += 1
-        return len(game_memory)
+        return k
 
-    def sample(self, batch_size: int) -> List[dict]:
-        current_len = len(self.buffer)
-        if current_len < batch_size:
-            return []
+    def sample(self, batch_size: int) -> dict:
+        if self.size < batch_size:
+            return {}
             
-        window_size = self.get_window_size()
+        window_size = min(self.size, self.get_window_size())
 
-        window_size = min(current_len, window_size)
+        start_index = (self.ptr - window_size) % self.max_physical_limit
 
-        start_index = current_len - window_size
+        if start_index < self.ptr:
+            indices = np.random.randint(start_index, self.ptr, size=batch_size)
+        else:
+            valid_indices = np.concatenate([
+                np.arange(start_index, self.max_physical_limit),
+                np.arange(0, self.ptr)
+            ])
+            indices = np.random.choice(valid_indices, size=batch_size, replace=True)
 
-        physical_indices = [random.randint(start_index, current_len - 1) for _ in range(batch_size)]
-
-        return [self.buffer[i] for i in physical_indices]
-
-    def get_all(self) -> List[dict]:
-        return list(self.buffer)
+        return {key: self.data[key][indices] for key in self.data}
 
     def clear(self):
-        self.buffer = []
+        self.ptr = 0
+        self.size = 0
         self.games_count = 0
         self.total_samples_added = 0
 
     def get_state(self) -> dict:
-        """
-        Consolidates the buffer into large numpy arrays for efficient storage.
-        This avoids the overhead of pickling 100k+ dictionaries.
-        """
-        if not self.buffer:
+        if self.size == 0:
             return {"buffer_empty": True}
 
-        keys = set()
-        for sample in self.buffer[:100]:
-            keys.update(sample.keys())
-        
-        consolidated_buffer = {}
-        
-        for key in keys:
-            try:
-                data_list = [sample.get(key) for sample in self.buffer]
-                if any(x is None for x in data_list):
-                    consolidated_buffer[key] = data_list
-                else:
-                    consolidated_buffer[key] = np.array(data_list)
-            except Exception as e:
-                consolidated_buffer[key] = [sample.get(key) for sample in self.buffer]
-
         return {
-            "consolidated_buffer": consolidated_buffer,
+            "data": self.data,
+            "ptr": self.ptr,
+            "size": self.size,
             "min_buffer_size": self.min_buffer_size,
             "linear_threshold": self.linear_threshold,
             "alpha": self.alpha,
@@ -90,7 +113,7 @@ class ReplayBuffer:
         }
 
     def load_state(self, state: dict):
-        """Loads and de-consolidates the buffer."""
+        """Loads the buffer."""
         if "buffer_empty" in state:
             self.clear()
             return
@@ -100,20 +123,32 @@ class ReplayBuffer:
         self.alpha = state.get("alpha", self.alpha)
         self.max_physical_limit = int(state.get("max_physical_limit", self.max_physical_limit))
 
-        cb = state["consolidated_buffer"]
-        num_samples = len(next(iter(cb.values())))
-
-        self.buffer = []
-        
-        keys = list(cb.keys())
-        for i in range(num_samples):
-            sample = {key: cb[key][i] for key in keys}
-            self.buffer.append(sample)
-        
-        if len(self.buffer) > self.max_physical_limit:
-            self.buffer = self.buffer[-self.max_physical_limit:]
-
-        self.total_samples_added = state.get("total_samples_added", len(self.buffer))
-        
+        if "data" in state:
+            self.data = state["data"]
+            self.ptr = state["ptr"]
+            self.size = state["size"]
+        else:
+            # Migration from old format
+            cb = state.get("consolidated_buffer", {})
+            num_samples = len(next(iter(cb.values()))) if cb else 0
+            
+            # Write old data to new format
+            limit = self.max_physical_limit
+            
+            keys = list(cb.keys())
+            if num_samples > limit:
+                # Need to truncate from the end
+                for key in self.data.keys():
+                    if key in cb:
+                        self.data[key][0 : limit] = cb[key][-limit:]
+                self.ptr = 0
+                self.size = limit
+            else:
+                for key in self.data.keys():
+                    if key in cb:
+                        self.data[key][0 : num_samples] = cb[key]
+                self.ptr = num_samples % limit
+                self.size = num_samples
+                
+        self.total_samples_added = state.get("total_samples_added", self.size)
         self.games_count = state.get("games_count", 0)
-
