@@ -182,7 +182,7 @@ class ResNet(nn.Module):
         self.trunk_tip_bn = nn.BatchNorm2d(num_channels)
         self.trunk_tip_act = nn.SiLU(inplace=True)
 
-        self.total_policy_head = PolicyHead(num_channels, 4, self.board_size, head_channels=num_channels // 2)
+        self.total_policy_head = PolicyHead(num_channels, 2, self.board_size, head_channels=num_channels // 2)
         self.value_head = ValueHead(num_channels, 3, head_channels=num_channels // 4, value_channels=num_channels // 2)
 
         self._init_weights()
@@ -205,15 +205,13 @@ class ResNet(nn.Module):
         x = self.trunk_tip_bn(x)
         x = self.trunk_tip_act(x)
 
-        total_policy_logits = self.total_policy_head(x)  # [B, 4, H, W]
+        total_policy_logits = self.total_policy_head(x)  # [B, 2, H, W]
         
         value_logits = self.value_head(x)
 
         nn_output = {
             "policy_logits": total_policy_logits[:, 0:1, :, :],
             "opponent_policy_logits": total_policy_logits[:, 1:2, :, :],
-            "soft_policy_logits": total_policy_logits[:, 2:3, :, :],
-            "soft_opponent_policy_logits": total_policy_logits[:, 3:4, :, :],
             "value_logits": value_logits,
         }
         return nn_output
