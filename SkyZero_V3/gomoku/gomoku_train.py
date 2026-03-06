@@ -21,12 +21,11 @@ train_args = {
     "lr": 0.0001,
     "weight_decay": 3e-5,
 
-    "full_search_num_simulations": 64,
-    "fast_search_num_simulations": 16,
+    "full_search_num_simulations": 128,
+    "fast_search_num_simulations": 32,
     "full_search_prob": 0.25,
 
     "batch_size": 128,
-    "max_grad_norm": 1,
 
     # Gumbel settings
     "gumbel_m": 16,

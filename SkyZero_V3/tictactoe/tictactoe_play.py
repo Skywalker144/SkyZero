@@ -14,7 +14,7 @@ eval_args = {
     "lr": train_args["lr"],
     "weight_decay": train_args["weight_decay"],
 
-    "full_search_num_simulations": 10,
+    "full_search_num_simulations": 64,
     "enable_symmetry_inference_for_root": True,
     "enable_symmetry_inference_for_child": True,
 
@@ -25,7 +25,7 @@ eval_args = {
 
     "file_name": "tictactoe",
     "data_dir": "data/tictactoe",
-    "device": "cuda",
+    "device": "cpu",
 }
 
 if __name__ == "__main__":

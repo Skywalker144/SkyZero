@@ -20,17 +20,19 @@ train_args = {
     "lr": 0.001,
     "weight_decay": 3e-5,
 
-    "full_search_num_simulations": 16,
-    "fast_search_num_simulations": 8,
+    "full_search_num_simulations": 8,
+    "fast_search_num_simulations": 4,
     "full_search_prob": 0.25,
 
     "batch_size": 128,
-    "max_grad_norm": 1,
 
     # Gumbel settings
-    "gumbel_m": 4,
+    "gumbel_m": 2,
     "gumbel_c_visit": 50,
     "gumbel_c_scale": 1.0,
+
+    "enable_stochastic_transform_inference_for_child": True,
+    "enable_stochastic_transform_inference_for_root": True,
 
     "min_buffer_size": 500,
     "linear_threshold": 2048,
