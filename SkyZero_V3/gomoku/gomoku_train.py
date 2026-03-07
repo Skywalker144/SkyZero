@@ -35,7 +35,7 @@ train_args = {
     "min_buffer_size": 2048,
     "linear_threshold": 200000,
     "alpha": 0.8,
-    "max_physical_limit": 1e7,
+    "max_buffer_size": 1e7,
 
     "train_steps_per_generation": 5,
     "target_ReplayRatio": 5,

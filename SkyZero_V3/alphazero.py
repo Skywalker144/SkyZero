@@ -411,9 +411,9 @@ class AlphaZero:
             board_size=self.game.board_size,
             num_planes=self.game.num_planes,
             min_buffer_size=args.get("min_buffer_size", 1000),
-            linear_threshold=args.get("linear_threshold", args.get("max_buffer_size", 10000)),
+            linear_threshold=args.get("linear_threshold", 10000),
             alpha=args.get("alpha", 0.75),
-            max_physical_limit=args.get("max_physical_limit", args.get("max_buffer_size", 3e6)),
+            max_buffer_size=args.get("max_buffer_size", 3e6),
         )
 
     def _get_randomized_simulations(self):
@@ -600,7 +600,7 @@ class AlphaZero:
             f"min={self.replay_buffer.min_buffer_size}, "
             f"threshold={self.replay_buffer.linear_threshold}, "
             f"alpha={self.replay_buffer.alpha}, "
-            f"cap={self.replay_buffer.max_physical_limit}"
+            f"cap={self.replay_buffer.max_buffer_size}"
         )
         print(f"Batch Size: {batch_size}")
         print(f"Min Buffer Size: {min_buffer_size}")
@@ -955,7 +955,7 @@ class AlphaZero:
             self.replay_buffer.min_buffer_size = self.args.get("min_buffer_size", self.replay_buffer.min_buffer_size)
             self.replay_buffer.linear_threshold = self.args.get("linear_threshold", self.replay_buffer.linear_threshold)
             self.replay_buffer.alpha = self.args.get("alpha", self.replay_buffer.alpha)
-            self.replay_buffer.max_physical_limit = int(self.args.get("max_physical_limit", self.replay_buffer.max_physical_limit))
+            self.replay_buffer.max_buffer_size = int(self.args.get("max_buffer_size", self.replay_buffer.max_buffer_size))
             print(f"Replay buffer loaded ({len(self.replay_buffer)} samples, parameters overridden)")
 
         if "black_win_counts" in checkpoint:
