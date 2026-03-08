@@ -536,13 +536,21 @@ class AlphaZero:
         policy_logits = nn_output["policy_logits"].view(batch_size, -1)
         opponent_policy_logits = nn_output["opponent_policy_logits"].view(batch_size, -1)
 
-        def get_loss(logits, targets, weights):
+        def get_loss(logits, targets, weights, mask=None):
             loss = -torch.sum(targets * F.log_softmax(logits, dim=-1), dim=-1)
-            return (loss * weights).mean()
+            if mask is not None:  # For Opponent policy loss (Final state)
+                masked_loss = loss * weights * mask
+                return masked_loss.sum() / (mask.sum() + 1e-8)
+            else:
+                return (loss * weights).mean()
 
-        # Policy, Soft Policy, Opponent Policy Loss, Soft Opponent Policy Loss
+        # Policy Loss
         policy_loss = get_loss(policy_logits, policy_targets, sample_weights)
-        opponent_policy_loss = get_loss(opponent_policy_logits, opponent_policy_targets, sample_weights)
+
+        # Opponent Policy Loss
+        opp_target_sum = opponent_policy_targets.sum(dim=-1)
+        opp_mask = (opp_target_sum > 0.5).float()
+        opponent_policy_loss = get_loss(opponent_policy_logits, opponent_policy_targets, sample_weights, opp_mask)
 
         # Value Loss
         # Mix outcome and v_mix for value target
@@ -567,11 +575,7 @@ class AlphaZero:
         value_loss = -torch.sum(value_probs * F.log_softmax(nn_output["value_logits"], dim=-1), dim=-1)
         value_loss = (value_loss * sample_weights).mean()
 
-        loss = (
-            policy_loss
-            + 0.1 * opponent_policy_loss
-            + value_loss
-        )
+        loss = policy_loss + 0.15 * opponent_policy_loss + value_loss
 
         self.optimizer.zero_grad()
         loss.backward()
