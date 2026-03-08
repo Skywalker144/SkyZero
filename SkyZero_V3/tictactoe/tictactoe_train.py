@@ -59,5 +59,5 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 
     alphazero = AlphaZeroParallel(game, model, optimizer, train_args)
-    # alphazero.load_checkpoint()
+    alphazero.load_checkpoint()
     alphazero.learn()
