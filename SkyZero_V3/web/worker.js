@@ -106,7 +106,7 @@ async function init() {
         c_puct: 1.1,
         fpu_reduction_max: 0.2,
         root_fpu_reduction_max: 0.0,
-        full_search_num_simulations: 200
+        num_simulations: 200
     });
     
     try {
