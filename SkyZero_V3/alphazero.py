@@ -489,7 +489,6 @@ class AlphaZero:
         final_state = state
         winner = self.game.get_winner(final_state)
 
-        
         return_memory = []
         for sample in memory:
             outcome = winner * sample["to_play"]
@@ -915,8 +914,11 @@ class AlphaZero:
             print(f"Checkpoint file not found: {filepath}")
             return False
 
+        # checkpoint = torch.load(
+        #     filepath, map_location=self.args["device"], weights_only=False
+        # )
         checkpoint = torch.load(
-            filepath, map_location=self.args["device"], weights_only=False
+            filepath, map_location="cpu", weights_only=False
         )
 
         if "model_state_dict" in checkpoint:
