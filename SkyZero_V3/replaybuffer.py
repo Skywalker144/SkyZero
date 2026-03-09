@@ -36,7 +36,6 @@ class ReplayBuffer:
             "nn_policy": torch.empty((self.block_size, self.action_size), dtype=torch.float32),
             "nn_value_probs": torch.empty((self.block_size, 3), dtype=torch.float32),
             "root_value": torch.empty(self.block_size, dtype=torch.float32),
-            "is_full_search": torch.empty(self.block_size, dtype=torch.bool),
             "sample_weight": torch.empty(self.block_size, dtype=torch.float32),
         }
 
@@ -56,7 +55,7 @@ class ReplayBuffer:
         
         # Keys to extract from game_memory
         keys = ["encoded_state", "policy_target", "opponent_policy_target", "outcome", 
-                "nn_policy", "nn_value_probs", "root_value", "is_full_search", "sample_weight"]
+                "nn_policy", "nn_value_probs", "root_value", "sample_weight"]
         
         # Prepare data in torch format (on CPU)
         batch_data = {}
@@ -114,7 +113,7 @@ class ReplayBuffer:
         offsets = indices % self.block_size
         
         keys = ["encoded_state", "policy_target", "opponent_policy_target", "outcome", 
-                "nn_policy", "nn_value_probs", "root_value", "is_full_search", "sample_weight"]
+                "nn_policy", "nn_value_probs", "root_value", "sample_weight"]
         
         # Determine output shapes from first block
         sample_block = self.blocks[0]
@@ -150,7 +149,7 @@ class ReplayBuffer:
 
         # Consolidate list of dicts into a dict of lists for fewer pickle objects
         keys = ["encoded_state", "policy_target", "opponent_policy_target", "outcome", 
-                "nn_policy", "nn_value_probs", "root_value", "is_full_search", "sample_weight"]
+                "nn_policy", "nn_value_probs", "root_value", "sample_weight"]
         
         consolidated = {}
         for key in keys:
@@ -187,7 +186,7 @@ class ReplayBuffer:
         self.games_count = state.get("games_count", 0)
 
         keys = ["encoded_state", "policy_target", "opponent_policy_target", "outcome", 
-                "nn_policy", "nn_value_probs", "root_value", "is_full_search", "sample_weight"]
+                "nn_policy", "nn_value_probs", "root_value", "sample_weight"]
 
         raw_tensors = {key: [] for key in keys}
         
