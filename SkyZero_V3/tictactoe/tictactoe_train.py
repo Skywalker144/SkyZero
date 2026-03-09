@@ -22,9 +22,9 @@ train_args = {
 
     "full_search_num_simulations": 8,
     "fast_search_num_simulations": 4,
-    "full_search_prob": 0.25,
+    "full_search_prob": 1,
 
-    "batch_size": 128,
+    "batch_size": 256,
 
     # Gumbel settings
     "gumbel_m": 2,
