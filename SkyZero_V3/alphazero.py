@@ -416,12 +416,6 @@ class AlphaZero:
             max_buffer_size=args.get("max_buffer_size", 3e6),
         )
 
-    def _get_randomized_simulations(self):
-        if np.random.rand() < self.args["full_search_prob"]:
-            return self.args["full_search_num_simulations"]
-        else:
-            return self.args["fast_search_num_simulations"]
-
     @torch.inference_mode()
     def selfplay(self):
         memory = []
@@ -435,10 +429,7 @@ class AlphaZero:
 
         while not self.game.is_terminal(state):
 
-            if in_soft_resign:
-                num_simulations = self.args["fast_search_num_simulations"]
-            else:
-                num_simulations = self._get_randomized_simulations()
+            num_simulations = self.args["num_simulations"]
 
             mcts_policy, root_value, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations, root=root)
 
@@ -462,7 +453,6 @@ class AlphaZero:
                 "nn_policy": nn_policy,
                 "nn_value_probs": nn_value_probs,
                 "root_value": root_value, # Store v_mix as root_value
-                "is_full_search": num_simulations == self.args["full_search_num_simulations"],
                 "next_mcts_policy": None,
                 "sample_weight": 1 if not in_soft_resign else self.args.get("soft_resign_sample_weight", 0.1),
             })
@@ -501,7 +491,6 @@ class AlphaZero:
                 "nn_policy": sample["nn_policy"],  # for psw
                 "nn_value_probs": sample["nn_value_probs"],  # for psw
                 "root_value": sample["root_value"],  # for psw
-                "is_full_search": sample["is_full_search"],
                 "sample_weight": sample["sample_weight"],
             }
             return_memory.append(sample_data)
@@ -526,7 +515,6 @@ class AlphaZero:
         opponent_policy_targets = torch.as_tensor(batch["opponent_policy_target"], device=self.args["device"], dtype=torch.float32)
         outcomes = torch.as_tensor(batch["outcome"], device=self.args["device"], dtype=torch.float32)
 
-        is_full_search = torch.as_tensor(batch["is_full_search"], device=self.args["device"], dtype=torch.float32)
         sample_weights = torch.as_tensor(batch["sample_weight"], device=self.args["device"], dtype=torch.float32)
 
         self.model.train()
@@ -588,7 +576,7 @@ class AlphaZero:
             "opponent_policy_loss": opponent_policy_loss.item(),
             "value_loss": value_loss.item(),
         }
-        return loss_dict, is_full_search.sum().item() / len(is_full_search)
+        return loss_dict
 
     def learn(self):
         batch_size = self.args["batch_size"]
@@ -680,13 +668,11 @@ class AlphaZero:
 
                 self.model.train()
                 batch_loss_dict = {key: [] for key in self.losses_dict.keys()}
-                full_search_ratio_list = []
                 for _ in range(train_steps_per_generation):
                     batch = self.replay_buffer.sample(batch_size)
-                    loss_dic, full_search_ratio = self._train_batch(batch)
+                    loss_dic = self._train_batch(batch)
                     for key in batch_loss_dict:
                         batch_loss_dict[key].append(loss_dic.get(key, 0))
-                    full_search_ratio_list.append(full_search_ratio)
 
                 for key in self.losses_dict:
                     self.losses_dict[key].append(np.mean(batch_loss_dict[key]))
@@ -699,7 +685,6 @@ class AlphaZero:
                 num_next = max(1, num_next)
                 train_game_count = self.game_count + num_next
 
-                print(f"  [Training] Full Search Ratio: {np.mean(full_search_ratio_list):.2f}")
                 print(
                     f"  [Training] Loss: {self.losses_dict['total_loss'][-1]:.2f} | "
                     f"Policy Loss: {self.losses_dict['policy_loss'][-1]:.2f} | "
@@ -721,7 +706,7 @@ class AlphaZero:
         if root is None:
             root = Node(state, to_play)
 
-        actual_num_simulations = self.args["full_search_num_simulations"] - root.n
+        actual_num_simulations = self.args["num_simulations"] - root.n
 
         mcts_policy, root_value, _, _, gumbel_action = self.mcts.eval_search(state, to_play, actual_num_simulations, root)
 

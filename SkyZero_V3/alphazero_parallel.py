@@ -162,13 +162,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
             while not game.is_terminal(state):
 
-                if in_soft_resign:
-                    num_simulations = args["fast_search_num_simulations"]
-                else:
-                    if np.random.rand() < args["full_search_prob"]:
-                        num_simulations = args["full_search_num_simulations"]
-                    else:
-                        num_simulations = args["fast_search_num_simulations"]
+                num_simulations = args["num_simulations"]
 
                 mcts_policy, root_value, nn_policy, nn_value_probs, gumbel_action = mcts.search(state, to_play, num_simulations, root=root)
 
@@ -192,7 +186,6 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 "nn_policy": nn_policy,
                 "nn_value_probs": nn_value_probs,
                 "root_value": root_value,
-                "is_full_search": num_simulations == args["full_search_num_simulations"],
                 "next_mcts_policy": None,
                 "sample_weight": 1 if not in_soft_resign else args.get("soft_resign_sample_weight", 0.1),
             })
@@ -232,7 +225,6 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 "nn_policy": sample["nn_policy"],  # for psw
                 "nn_value_probs": sample["nn_value_probs"],  # for psw
                 "root_value": sample["root_value"],  # for psw
-                "is_full_search": sample["is_full_search"],
                 "sample_weight": sample["sample_weight"],
             }
                 return_memory.append(sample_data)
@@ -410,13 +402,11 @@ class AlphaZeroParallel(AlphaZero):
                 # Train!
                 self.model.train()
                 batch_loss_dict = {key: [] for key in self.losses_dict.keys()}
-                full_search_ratio_list = []
                 for _ in range(self.args["train_steps_per_generation"]):
                     batch = self.replay_buffer.sample(self.args["batch_size"])
-                    loss_dic, full_search_ratio = self._train_batch(batch)
+                    loss_dic = self._train_batch(batch)
                     for key in batch_loss_dict:
                         batch_loss_dict[key].append(loss_dic[key])
-                    full_search_ratio_list.append(full_search_ratio)
 
                 for key in self.losses_dict:
                     self.losses_dict[key].append(np.mean(batch_loss_dict[key]))
@@ -433,7 +423,6 @@ class AlphaZeroParallel(AlphaZero):
                 num_next = max(1, num_next)
                 train_game_count = self.game_count + num_next
                 
-                print(f"  [Training] Full Search Ratio: {np.mean(full_search_ratio_list):.2f}")
                 print(
                     f"  [Training] Loss: {self.losses_dict['total_loss'][-1]:.2f} | "
                     f"Policy Loss: {self.losses_dict['policy_loss'][-1]:.2f} | "
