@@ -485,6 +485,7 @@ class AlphaZero:
             opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
             sample_data = {
                 "encoded_state": self.game.encode_state(sample["state"], sample["to_play"]),
+                "to_play": sample["to_play"],
                 "policy_target": sample["mcts_policy"],
                 "opponent_policy_target": opponent_policy,
                 "outcome": outcome,
