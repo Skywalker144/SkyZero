@@ -20,10 +20,7 @@ train_args = {
     "lr": 0.001,
     "weight_decay": 3e-5,
 
-    "full_search_num_simulations": 8,
-    "fast_search_num_simulations": 4,
-    "full_search_prob": 1,
-
+    "num_simulations": 8,
     "batch_size": 256,
 
     # Gumbel settings
@@ -59,5 +56,5 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 
     alphazero = AlphaZeroParallel(game, model, optimizer, train_args)
-    alphazero.load_checkpoint()
+    # alphazero.load_checkpoint()
     alphazero.learn()
