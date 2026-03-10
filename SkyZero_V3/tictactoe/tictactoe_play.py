@@ -25,7 +25,7 @@ eval_args = {
 
     "file_name": "tictactoe",
     "data_dir": "data/tictactoe",
-    "device": "cpu",
+    "device": "cuda",
 }
 
 if __name__ == "__main__":
