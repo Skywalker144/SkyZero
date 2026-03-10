@@ -149,8 +149,8 @@ class MCTS:
         explore_scaling = (c_puct / 2) * math.sqrt(total_child_weight + 0.01)
 
         # FPU
-        parent_utility = (node.v / node.n + 1) / 2 if node.n > 0 else 0.5
-        nn_utility = (node.nn_value + 1) / 2
+        parent_utility = (node.v / node.n) if node.n > 0 else 0.0
+        nn_utility = node.nn_value
 
         fpu_pow = self.args.get("fpu_pow", 1)
         avg_weight = min(1, math.pow(visited_policy_mass, fpu_pow))
@@ -173,7 +173,7 @@ class MCTS:
             if child.n == 0:
                 q_value = fpu_value
             else:
-                q_value = (-child.v / child.n + 1) / 2
+                q_value = -child.v / child.n
 
             u_value = explore_scaling * child.prior / (1 + child.n)
 
@@ -304,8 +304,8 @@ class MCTS:
                     
                     def eval_action(a):
                         c = next((child for child in root.children if child.action_taken == a), None)
-                        q = ((-c.v / c.n) + 1) / 2 if (c and c.n > 0) else 0.5
-                        return logits[a] + g[a] + (c_visit + max_n) / c_scale * q
+                        q = -c.v / c.n if (c and c.n > 0) else 0.0
+                        return logits[a] + g[a] + (c_visit + max_n) * c_scale * q
                         
                     surviving_actions.sort(key=eval_action, reverse=True)
                     surviving_actions = surviving_actions[:max(1, len(surviving_actions) // 2)]
@@ -314,15 +314,15 @@ class MCTS:
         c_scale = self.args.get("gumbel_c_scale", 1.0)
         max_n = max([c.n for c in root.children]) if root.children else 0
         
-        q_values = np.full(self.game.board_size ** 2, 0.5)
+        q_values = np.zeros(self.game.board_size ** 2)
         n_values = np.zeros(self.game.board_size ** 2)
         for c in root.children:
             if c.n > 0:
-                q_values[c.action_taken] = (-c.v / c.n + 1) / 2
+                q_values[c.action_taken] = -c.v / c.n
                 n_values[c.action_taken] = c.n
                 
         sum_n = np.sum(n_values)
-        nn_value_normalized = (root.nn_value + 1) / 2
+        nn_value_normalized = root.nn_value
         if sum_n > 0:
             weighted_q = np.sum(root.nn_policy * q_values * (n_values > 0)) / (np.sum(root.nn_policy * (n_values > 0)) + 1e-12)
             v_mix_normalized = (nn_value_normalized + sum_n * weighted_q) / (1 + sum_n)
@@ -330,7 +330,7 @@ class MCTS:
             v_mix_normalized = nn_value_normalized
             
         completed_q = np.where(n_values > 0, q_values, v_mix_normalized)
-        sigma_q = (c_visit + max_n) / c_scale * completed_q
+        sigma_q = (c_visit + max_n) * c_scale * completed_q
         
         improved_logits = logits + sigma_q
         improved_logits[~is_legal] = -np.inf
@@ -340,12 +340,13 @@ class MCTS:
         exp_logits = np.exp(improved_logits - max_logit)
         improved_policy = exp_logits / np.sum(exp_logits)
         
-        v_mix = v_mix_normalized * 2 - 1
+        v_mix = v_mix_normalized
         
         def final_eval(a):
             return logits[a] + g[a] + sigma_q[a]
             
-        gumbel_action = max([a for a in range(self.game.board_size**2) if is_legal[a]], key=final_eval)
+        # gumbel_action = max(surviving_actions, key=final_eval)
+        gumbel_action = max(surviving_actions, key=final_eval)
         
         return improved_policy, gumbel_action, v_mix
 
