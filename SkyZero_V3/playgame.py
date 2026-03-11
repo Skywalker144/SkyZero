@@ -29,7 +29,6 @@ class GamePlayer:
         color = 1
         state = self.game.get_initial_state()
         history = []
-        mcts_root = None
         print_board(state)
         while True:
             if self.game.is_terminal(state):
@@ -46,7 +45,6 @@ class GamePlayer:
                     if len(history) >= 2:
                         state, to_play, color = history.pop() # State before AI move
                         state, to_play, color = history.pop() # State before Human move
-                        mcts_root = None # Reset MCTS tree on undo
                         print("Undo successful.")
                         print_board(state)
                         continue
@@ -63,7 +61,6 @@ class GamePlayer:
                         if len(history) >= 2:
                             state, to_play, color = history.pop()  # Revert to state before AI move
                             state, to_play, color = history.pop()  # Revert to state before Human move
-                            mcts_root = None # Reset MCTS tree on undo
                             print("Undo successful.")
                             print_board(state)
                             continue
@@ -86,25 +83,11 @@ class GamePlayer:
 
                 history.append((state.copy(), to_play, color))
                 
-                # Tree Reuse
-                if mcts_root is not None:
-                    for child in mcts_root.children:
-                        if child.action_taken == action:
-                            child.parent = None
-                            mcts_root = child
-
                 state = self.game.get_next_state(state, action, color)
             elif to_play == -human_side:
                 history.append((state.copy(), to_play, color))
                 print(f"AlphaZero step:")
-                action, info, mcts_root = alphazero.play(state, color, root=mcts_root)
-
-                # Tree Reuse
-                if mcts_root is not None:
-                    for child in mcts_root.children:
-                        if child.action_taken == action:
-                            child.parent = None
-                            mcts_root = child
+                action, info = alphazero.play(state, color)
 
                 state = self.game.get_next_state(state, action, color)
                 print(f"MCTS Strategy:\n{info['mcts_policy']}")
@@ -114,11 +97,9 @@ class GamePlayer:
                     f"Draw Probability: {info['nn_value_probs'][1]:.2f}\n"
                     f"Lose Probability: {info['nn_value_probs'][2]:.2f}"
                 )
-                print(f"root value: {info['root_value']:.2f}")
+                print(f"v_mix : {info['v_mix']:.2f}")
                 print(f"nn value:   {info['nn_value']:.2f}")
                 print(f"Opponent Policy:\n{info['nn_opponent_policy']}")
-                print()
-                print(f"Actual Search Num: {info['actual_search_num']}")
 
             to_play = -to_play
             color = -color
