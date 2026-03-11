@@ -45,8 +45,8 @@ def compute_policy_surprise_weights(game_data, board_size, policy_surprise_data_
         if i < n_positions - 1 and game_data[i]["to_play"] != game_data[i+1]["to_play"]:
             current_target = np.array([current_target[2], current_target[1], current_target[0]])
             
-        # Convert scalar root_value (v_mix) to prob vector
-        search_value_vec = scalar_to_probs(game_data[i]["root_value"])
+        # Convert scalar v_mix to prob vector
+        search_value_vec = scalar_to_probs(game_data[i]["v_mix"])
         # Smoothed target update
         current_target = (1.0 - now_factor) * current_target + now_factor * search_value_vec
         smoothed_targets[i] = current_target.copy()
