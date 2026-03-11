@@ -430,22 +430,28 @@ class AlphaZero:
         state = self.game.get_initial_state()
 
         in_soft_resign = False
-        historical_root_value = []
+        historical_v_mix = []
 
         root = Node(state, to_play)
 
         while not self.game.is_terminal(state):
+            
+            if in_soft_resign:
+                num_simulations = max(
+                    self.args["num_simulations"] // 4,
+                    self.args.get("min_simulations_in_soft_resign", 8)
+                )
+            else:
+                num_simulations = self.args["num_simulations"]
 
-            num_simulations = self.args["num_simulations"]
-
-            mcts_policy, root_value, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations, root=root)
+            mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations, root=root)
 
             # Soft Resign
-            historical_root_value.append(root_value)
-            absmin_root_value = min(abs(x) for x in historical_root_value[-self.args.get("soft_resign_step_threshold", 3):])
+            historical_v_mix.append(v_mix)
+            absmin_v_mix = min(abs(x) for x in historical_v_mix[-self.args.get("soft_resign_step_threshold", 3):])
             if (
                 not in_soft_resign
-                and absmin_root_value >= self.args.get("soft_resign_threshold", 0.9)
+                and absmin_v_mix >= self.args.get("soft_resign_threshold", 0.9)
                 and np.random.rand() < self.args.get("soft_resign_prob", 0.7)
             ):
                 in_soft_resign = True
@@ -459,7 +465,7 @@ class AlphaZero:
                 "mcts_policy": mcts_policy,
                 "nn_policy": nn_policy,
                 "nn_value_probs": nn_value_probs,
-                "root_value": root_value, # Store v_mix as root_value
+                "v_mix": v_mix,
                 "next_mcts_policy": None,
                 "sample_weight": 1 if not in_soft_resign else self.args.get("soft_resign_sample_weight", 0.1),
             })
@@ -498,7 +504,7 @@ class AlphaZero:
                 "outcome": outcome,
                 "nn_policy": sample["nn_policy"],  # for psw
                 "nn_value_probs": sample["nn_value_probs"],  # for psw
-                "root_value": sample["root_value"],  # for psw
+                "v_mix": sample["v_mix"],  # for psw
                 "sample_weight": sample["sample_weight"],
             }
             return_memory.append(sample_data)
