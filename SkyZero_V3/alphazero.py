@@ -533,12 +533,10 @@ class AlphaZero:
         opp_mask = (opp_target_sum > 0.5).float()
         opponent_policy_loss = get_loss(opponent_policy_logits, opponent_policy_targets, sample_weights, opp_mask)
 
-        # Value Loss
-        mixed_values = outcomes
-        
+        # Value Loss        
         value_probs = torch.zeros((batch_size, 3), device=self.args["device"])
-        value_probs[:, 0] = F.relu(mixed_values)
-        value_probs[:, 2] = F.relu(-mixed_values)
+        value_probs[:, 0] = F.relu(outcomes)
+        value_probs[:, 2] = F.relu(-outcomes)
         value_probs[:, 1] = 1.0 - value_probs[:, 0] - value_probs[:, 2]
         
         value_loss = -torch.sum(value_probs * F.log_softmax(nn_output["value_logits"], dim=-1), dim=-1)
