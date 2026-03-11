@@ -352,7 +352,6 @@ class MCTS:
         def final_eval(a):
             return logits[a] + g[a] + sigma_q[a]
             
-        # gumbel_action = max(surviving_actions, key=final_eval)
         gumbel_action = max(surviving_actions, key=final_eval)
         
         return improved_policy, gumbel_action, v_mix
@@ -549,23 +548,11 @@ class AlphaZero:
         opponent_policy_loss = get_loss(opponent_policy_logits, opponent_policy_targets, sample_weights, opp_mask)
 
         # Value Loss
-        # Mix outcome and v_mix for value target
-        # Gumbel Zero uses a mix of outcome and MCTS v_mix
-        # Since v_mix is in [-1, 1], we map outcomes to the same scale, then mix them.
+        mixed_values = outcomes
         
-        # Here we map out outcomes to standard 1D values: +1 (win), 0 (draw), -1 (loss)
-        # root_value contains v_mix. We'll use 50% outcome, 50% v_mix.
-        root_values = torch.as_tensor(batch["root_value"], device=self.args["device"], dtype=torch.float32)
-        mixed_values = 0.5 * outcomes + 0.5 * root_values
-        
-        # Now convert to probabilities for cross entropy: 
-        # Win(1), Draw(0), Loss(-1)
         value_probs = torch.zeros((batch_size, 3), device=self.args["device"])
-        # Win mass: max(0, v)
         value_probs[:, 0] = F.relu(mixed_values)
-        # Loss mass: max(0, -v)
         value_probs[:, 2] = F.relu(-mixed_values)
-        # Draw mass: 1 - win_mass - loss_mass
         value_probs[:, 1] = 1.0 - value_probs[:, 0] - value_probs[:, 2]
         
         value_loss = -torch.sum(value_probs * F.log_softmax(nn_output["value_logits"], dim=-1), dim=-1)
