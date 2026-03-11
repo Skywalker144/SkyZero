@@ -260,7 +260,7 @@ class MCTS:
             
         scores = logits + g  # 计算Gumbel分数
         legal_scores = np.where(is_legal, scores, -np.inf)
-        surviving_actions = np.argsort(legal_scores)[-m:]  # 选取分数最高的m个动作
+        surviving_actions = np.argsort(legal_scores)[-m:][::-1]  # 选取分数最高的m个动作
         surviving_actions = [a for a in surviving_actions if is_legal[a]]  # 排除非法动作
         m = len(surviving_actions)  # 最终预选动作
         
@@ -352,38 +352,33 @@ class MCTS:
         def final_eval(a):
             return logits[a] + g[a] + sigma_q[a]
             
-        gumbel_action = max(surviving_actions, key=final_eval)
+        # gumbel_action = max(surviving_actions, key=final_eval)
         
+        max_n_surviving = max([n_values[a] for a in surviving_actions], default=0)
+        most_visited_action = [a for a in surviving_actions if n_values[a] == max_n_surviving]
+
+        gumbel_action = max(most_visited_action, key=final_eval)
+
         return improved_policy, gumbel_action, v_mix
 
     @torch.inference_mode()
-    def search(self, state, to_play, num_simulations, root=None):
+    def search(self, state, to_play, num_simulations):
 
-        if root is None:
-            root = Node(state, to_play)
+        root = Node(state, to_play)
 
-        if not root.is_expanded():
-            nn_policy, nn_value, nn_value_probs = self.root_expand(root)
-            self.backpropagate(root, nn_value)
-        else:
-            nn_policy = root.nn_policy
-            nn_value_probs = root.nn_value_probs
+        nn_policy, nn_value, nn_value_probs = self.root_expand(root)
+        self.backpropagate(root, nn_value)
 
         mcts_policy, gumbel_action, v_mix = self._gumbel_sequential_halving(root, num_simulations, is_eval=False)
         return mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action
 
     @torch.inference_mode()
-    def eval_search(self, state, to_play, num_simulations, root=None):
+    def eval_search(self, state, to_play, num_simulations):
 
-        if root is None:
-            root = Node(state, to_play)
+        root = Node(state, to_play)
 
-        if not root.is_expanded():
-            nn_policy, nn_value, nn_value_probs = self.root_expand(root)
-            self.backpropagate(root, nn_value)
-        else:
-            nn_policy = root.nn_policy
-            nn_value_probs = root.nn_value_probs
+        nn_policy, nn_value, nn_value_probs = self.root_expand(root)
+        self.backpropagate(root, nn_value)
 
         mcts_policy, gumbel_action, v_mix = self._gumbel_sequential_halving(root, num_simulations, is_eval=True)
         return mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action
@@ -432,8 +427,6 @@ class AlphaZero:
         in_soft_resign = False
         historical_v_mix = []
 
-        root = Node(state, to_play)
-
         while not self.game.is_terminal(state):
             
             if in_soft_resign:
@@ -444,7 +437,7 @@ class AlphaZero:
             else:
                 num_simulations = self.args["num_simulations"]
 
-            mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations, root=root)
+            mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations)
 
             # Soft Resign
             historical_v_mix.append(v_mix)
@@ -475,19 +468,6 @@ class AlphaZero:
 
             state = self.game.get_next_state(state, action, to_play)
             to_play = -to_play
-
-            # Tree Advance
-            next_root = None
-            for child in root.children:
-                if child.action_taken == action:
-                    next_root = child
-                    break
-            
-            if next_root is not None:
-                next_root.parent = None
-                root = next_root
-            else:
-                root = Node(state, to_play)
 
         final_state = state
         winner = self.game.get_winner(final_state)
@@ -702,26 +682,10 @@ class AlphaZero:
                 print("\nKeyboardInterrupt detected. Exiting without saving checkpoint.")
 
     @torch.inference_mode()
-    def play(self, state, to_play, root=None, show_progress_bar=True):
+    def play(self, state, to_play, show_progress_bar=True):
         self.model.eval()
 
-        if root is None:
-            root = Node(state, to_play)
-
-        actual_num_simulations = self.args["num_simulations"] - root.n
-
-        mcts_policy, root_value, _, _, gumbel_action = self.mcts.eval_search(state, to_play, actual_num_simulations, root)
-
-        if gumbel_action is not None:
-            action = gumbel_action
-        else:
-            action = np.argmax(mcts_policy)
-
-        if root is not None:
-            for child in root.children:
-                if child.action_taken == action:
-                    child.parent = None
-                    root = child
+        mcts_policy, v_mix, _, _, gumbel_action = self.mcts.eval_search(state, to_play, self.args["num_simulations"])
 
         # Get symmetry avg outputs
         encoded = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -765,7 +729,7 @@ class AlphaZero:
 
         avg_opl = np.mean(untransformed_opl, axis=0)
         next_is_legal_actions = self.game.get_is_legal_actions(
-            self.game.get_next_state(state, action, to_play),
+            self.game.get_next_state(state, gumbel_action, to_play),
             to_play
         )
         avg_opl = np.where(next_is_legal_actions, avg_opl, -np.inf)
@@ -773,15 +737,14 @@ class AlphaZero:
 
         info = {
             "mcts_policy": mcts_policy.reshape(self.game.board_size, self.game.board_size),
-            "root_value": root_value,
+            "v_mix": v_mix,
             "nn_policy": nn_policy.reshape(self.game.board_size, self.game.board_size),
             "nn_opponent_policy": nn_opponent_policy.reshape(self.game.board_size, self.game.board_size),
             "nn_value": nn_value,
             "nn_value_probs": nn_value_probs,
-            "actual_search_num": actual_num_simulations,
         }
         
-        return action, info, root
+        return gumbel_action, info
 
     def save_model(self, filepath=None, timestamp=None):
         from datetime import datetime

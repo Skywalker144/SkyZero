@@ -156,22 +156,26 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             state = game.get_initial_state()
 
             in_soft_resign = False
-            historical_root_value = []
-
-            root = Node(state, to_play)
+            historical_v_mix = []
 
             while not game.is_terminal(state):
 
-                num_simulations = args["num_simulations"]
+                if in_soft_resign:
+                    num_simulations = max(
+                        args["num_simulations"] // 4,
+                        args.get("min_simulations_in_soft_resign", 8)
+                    )
+                else:
+                    num_simulations = args["num_simulations"]
 
-                mcts_policy, root_value, nn_policy, nn_value_probs, gumbel_action = mcts.search(state, to_play, num_simulations, root=root)
+                mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = mcts.search(state, to_play, num_simulations)
 
                 # Soft Resign
-                historical_root_value.append(root_value)
-                absmin_root_value = min(abs(x) for x in historical_root_value[-args.get("soft_resign_step_threshold", 3):])
+                historical_v_mix.append(v_mix)
+                absmin_v_mix = min(abs(x) for x in historical_v_mix[-args.get("soft_resign_step_threshold", 3):])
                 if (
                     not in_soft_resign
-                    and absmin_root_value >= args.get("soft_resign_threshold", 0.9)
+                    and absmin_v_mix >= args.get("soft_resign_threshold", 0.9)
                     and np.random.rand() < args.get("soft_resign_prob", 0.7)
                 ):
                     in_soft_resign = True
@@ -185,7 +189,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 "mcts_policy": mcts_policy,
                 "nn_policy": nn_policy,
                 "nn_value_probs": nn_value_probs,
-                "root_value": root_value,
+                "v_mix": v_mix,
                 "next_mcts_policy": None,
                 "sample_weight": 1 if not in_soft_resign else args.get("soft_resign_sample_weight", 0.1),
             })
@@ -195,23 +199,9 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
 
-                # Tree Advance
-                next_root = None
-                for child in root.children:
-                    if child.action_taken == action:
-                        next_root = child
-                        break
-                
-                if next_root is not None:
-                    next_root.parent = None
-                    root = next_root
-                else:
-                    root = Node(state, to_play)
-
             final_state = state
             winner = game.get_winner(final_state)
 
-            
             return_memory = []
             for sample in memory:
                 outcome = winner * sample["to_play"]
@@ -222,10 +212,9 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 "policy_target": sample["mcts_policy"],
                 "opponent_policy_target": opponent_policy,
                 "outcome": outcome,
-
                 "nn_policy": sample["nn_policy"],  # for psw
                 "nn_value_probs": sample["nn_value_probs"],  # for psw
-                "root_value": sample["root_value"],  # for psw
+                "v_mix": sample["v_mix"],  # for psw
                 "sample_weight": sample["sample_weight"],
             }
                 return_memory.append(sample_data)
