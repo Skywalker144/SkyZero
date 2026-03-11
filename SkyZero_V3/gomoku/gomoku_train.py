@@ -15,13 +15,13 @@ train_args = {
     "num_workers": 19,
 
     "board_size": 15,
-    "history_step": 2,
+    "history_step": 1,
     "num_blocks": 4,
     "num_channels": 128,
     "lr": 0.0001,
     "weight_decay": 3e-5,
 
-    "num_simulations": 32,
+    "num_simulations": 64,
     "batch_size": 256,
 
     # Gumbel settings

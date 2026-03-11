@@ -14,7 +14,7 @@ train_args = {
     
     "num_workers": 19,
 
-    "history_step": 2,
+    "history_step": 1,
     "num_blocks": 2,
     "num_channels": 32,
     "lr": 0.001,

@@ -15,8 +15,6 @@ eval_args = {
 
     "num_simulations": 800,
 
-    "c_puct": 1.1,
-
     "gumbel_m": train_args["gumbel_m"],
 
     "fpu_reduction_max": train_args["fpu_reduction_max"],
