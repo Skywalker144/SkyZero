@@ -27,6 +27,7 @@ class Node:
         self.nn_value = nn_value
         
         self.nn_policy = None
+        self.nn_logits = None
         self.nn_value_probs = None
 
         self.v = 0
@@ -55,17 +56,17 @@ class MCTS:
         policy_logits = nn_output["policy_logits"]
         value_logits = nn_output["value_logits"]
 
-        policy_logits = np.where(
+        masked_logits = np.where(
             self.game.get_is_legal_actions(state, to_play),
             policy_logits.flatten().cpu().numpy(),
             -np.inf,
         )
 
-        nn_policy = softmax(policy_logits)
+        nn_policy = softmax(masked_logits)
 
         nn_value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
         nn_value = nn_value_probs[0] - nn_value_probs[2]  # (赢, 平, 输)
-        return nn_policy, nn_value, nn_value_probs
+        return nn_policy, nn_value, nn_value_probs, masked_logits
 
     def _inference_with_stochastic_transform(self, state, to_play):
         encoded_state = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -88,17 +89,17 @@ class MCTS:
             policy_logits = torch.flip(policy_logits, dims=[3])
         policy_logits = torch.rot90(policy_logits, k=-k, dims=(2, 3))
 
-        policy_logits = np.where(
+        masked_logits = np.where(
             self.game.get_is_legal_actions(state, to_play),
             policy_logits.flatten().cpu().numpy(),
             -np.inf,
         )
 
-        nn_policy = softmax(policy_logits)
+        nn_policy = softmax(masked_logits)
 
         nn_value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
         nn_value = nn_value_probs[0] - nn_value_probs[2]  # (赢, 平, 输)
-        return nn_policy, nn_value, nn_value_probs
+        return nn_policy, nn_value, nn_value_probs, masked_logits
 
     def _inference_with_symmetry(self, state, to_play):
         encoded = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -129,10 +130,10 @@ class MCTS:
 
         avg_p_logits = np.mean(untransformed_p, axis=0)
         is_legal_actions = self.game.get_is_legal_actions(state, to_play)
-        avg_p_logits = np.where(is_legal_actions, avg_p_logits, -np.inf)
-        nn_policy = softmax(avg_p_logits)
+        masked_logits = np.where(is_legal_actions, avg_p_logits, -np.inf)
+        nn_policy = softmax(masked_logits)
 
-        return nn_policy, nn_value, nn_value_probs
+        return nn_policy, nn_value, nn_value_probs, masked_logits
 
     def select(self, node):
 
@@ -188,14 +189,15 @@ class MCTS:
         to_play = node.to_play
 
         if self.args.get("enable_stochastic_transform_inference_for_child", True):
-            nn_policy, nn_value, nn_value_probs = self._inference_with_stochastic_transform(state, to_play)
+            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference_with_stochastic_transform(state, to_play)
         elif self.args.get("enable_symmetry_inference_for_child", False):
-            nn_policy, nn_value, nn_value_probs = self._inference_with_symmetry(state, to_play)
+            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference_with_symmetry(state, to_play)
         else:
-            nn_policy, nn_value, nn_value_probs = self._inference(state, to_play)
+            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference(state, to_play)
 
         node.nn_value = nn_value
         node.nn_policy = nn_policy.copy()
+        node.nn_logits = masked_logits.copy()
         node.nn_value_probs = nn_value_probs.copy() if nn_value_probs is not None else None
 
         for action, prob in enumerate(nn_policy):
@@ -215,14 +217,15 @@ class MCTS:
         to_play = node.to_play
 
         if self.args.get("enable_stochastic_transform_inference_for_root", True):
-            nn_policy, nn_value, nn_value_probs = self._inference_with_stochastic_transform(state, to_play)
+            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference_with_stochastic_transform(state, to_play)
         elif self.args.get("enable_symmetry_inference_for_root", False):
-            nn_policy, nn_value, nn_value_probs = self._inference_with_symmetry(state, to_play)
+            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference_with_symmetry(state, to_play)
         else:
-            nn_policy, nn_value, nn_value_probs = self._inference(state, to_play)
+            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference(state, to_play)
 
         node.nn_value = nn_value
         node.nn_policy = nn_policy.copy()
+        node.nn_logits = masked_logits.copy()
         node.nn_value_probs = nn_value_probs.copy() if nn_value_probs is not None else None
 
         for action, prob in enumerate(nn_policy):
@@ -247,14 +250,13 @@ class MCTS:
     def _gumbel_sequential_halving(self, root, num_simulations, is_eval=False):
 
         m = min(num_simulations, self.args.get("gumbel_m", 16))  # 确定初始候选动作数量m
-        logits = np.log(root.nn_policy + 1e-12)  # 获取神经网络原始logits
+        logits = root.nn_logits.copy()  # 直接使用网络输出的原始logits（已mask非法动作为-inf）
         is_legal = self.game.get_is_legal_actions(root.state, root.to_play)  # 合法动作掩码
-        logits[~is_legal] = -np.inf  # 将非法动作的logit设置为负无穷
         
         if is_eval and not self.args.get("gumbel_stochastic_eval", False):
             g = np.zeros_like(logits)  # 评估模式下不加噪声
         else:
-            g = -np.log(-np.log(np.random.uniform(size=logits.shape) + 1e-12) + 1e-12)  # 采样Gumbel噪声
+            g = np.random.gumbel(size=logits.shape)  # 采样Gumbel(0)噪声
             
         scores = logits + g  # 计算Gumbel分数
         legal_scores = np.where(is_legal, scores, -np.inf)
@@ -263,15 +265,21 @@ class MCTS:
         m = len(surviving_actions)  # 最终预选动作
         
         if m > 0:
-            phases = int(np.ceil(np.log2(m))) if m > 1 else 1  # 计算筛选轮数，m个候选动作没次减半，总共需要log2(m)次减半
-            sims_per_phase = num_simulations // phases  # 每个阶段所分配的模拟次数
+            phases = int(np.ceil(np.log2(m))) if m > 1 else 1  # 计算筛选轮数，m个候选动作每次减半，总共需要log2(m)次减半
             sims_budget = num_simulations  # 总模拟次数
             
             for phase in range(phases):  # 遍历每个阶段
+                if sims_budget <= 0:
+                    break
+                
+                remaining_phases = phases - phase
+                sims_this_phase = sims_budget // remaining_phases  # 动态均分剩余预算给剩余阶段
                 num_actions = len(surviving_actions)
-                sims_per_action = max(1, sims_per_phase // num_actions)
+                sims_per_action = max(1, sims_this_phase // num_actions)
                 
                 for _ in range(sims_per_action):  # 遍历每个阶段的每次模拟
+                    if sims_budget <= 0:
+                        break
                     for action in surviving_actions:
                         if sims_budget <= 0:
                             break
@@ -294,11 +302,13 @@ class MCTS:
                         sims_budget -= 1
                 
                 # 排除掉一半的动作
+                if sims_budget <= 0:
+                    break
                 if phase < phases - 1:
                     # 剔除环节的得分公式：
                     # Score(a) = g(a)   +       logits(a)        + (c_visit     +          max_b N(b))        * c_scale * q(a)
                     #         Gumbel噪声 NN给出的原始策略对数概率 子节点访问次数  访问次数最大的节点的访问次数
-                    max_n = max([c.n for c in root.children]) if root.children else 0
+                    max_n = max([c.n for c in root.children], default=0)
                     c_visit = self.args.get("gumbel_c_visit", 50)
                     c_scale = self.args.get("gumbel_c_scale", 1.0)
                     
@@ -335,10 +345,7 @@ class MCTS:
         improved_logits = logits + sigma_q
         improved_logits[~is_legal] = -np.inf
         
-        # Softmax over legal actions
-        max_logit = np.max(improved_logits)
-        exp_logits = np.exp(improved_logits - max_logit)
-        improved_policy = exp_logits / np.sum(exp_logits)
+        improved_policy = softmax(improved_logits)
         
         v_mix = v_mix_normalized
         
