@@ -92,13 +92,13 @@ class GamePlayer:
                 state = self.game.get_next_state(state, action, color)
                 print(f"MCTS Strategy:\n{info['mcts_policy']}")
                 print(f"NN Strategy:\n{info['nn_policy']}")
+                v_mix_p = info['v_mix_probs']
+                nn_val_p = info['nn_value_probs']
                 print(
-                    f"Win  Probability: {info['nn_value_probs'][0]:.2f}\n"
-                    f"Draw Probability: {info['nn_value_probs'][1]:.2f}\n"
-                    f"Lose Probability: {info['nn_value_probs'][2]:.2f}"
+                    f"          {'Win':>6s}  {'Draw':>6s}  {'Loss':>6s}  {'W-L':>6s}\n"
+                    f"  v_mix:  {v_mix_p[0]:6.2%}  {v_mix_p[1]:6.2%}  {v_mix_p[2]:6.2%}  {info['v_mix']:+.2f}\n"
+                    f"  NN:     {nn_val_p[0]:6.2%}  {nn_val_p[1]:6.2%}  {nn_val_p[2]:6.2%}  {info['nn_value']:+.2f}"
                 )
-                print(f"v_mix : {info['v_mix']:.2f}")
-                print(f"nn value:   {info['nn_value']:.2f}")
                 print(f"Opponent Policy:\n{info['nn_opponent_policy']}")
 
             to_play = -to_play
