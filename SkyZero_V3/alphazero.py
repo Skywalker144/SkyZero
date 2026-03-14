@@ -17,20 +17,21 @@ from utils import (
 
 
 class Node:
-    def __init__(self, state, to_play, prior=0, parent=None, action_taken=None, nn_value=0):
+    _ZERO_WDL = np.zeros(3, dtype=np.float64)
+
+    def __init__(self, state, to_play, prior=0, parent=None, action_taken=None, nn_value=None):
         self.state = state
         self.to_play = to_play
         self.prior = prior
         self.parent = parent
         self.action_taken = action_taken
         self.children = []
-        self.nn_value = nn_value
+        self.nn_value = nn_value if nn_value is not None else Node._ZERO_WDL.copy()  # WDL [win, draw, loss]
         
         self.nn_policy = None
         self.nn_logits = None
-        self.nn_value_probs = None
 
-        self.v = 0
+        self.v = np.zeros(3, dtype=np.float64)  # cumulative WDL sum [win, draw, loss]
         self.n = 0
 
     def is_expanded(self):
@@ -64,9 +65,8 @@ class MCTS:
 
         nn_policy = softmax(masked_logits)
 
-        nn_value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
-        nn_value = nn_value_probs[0] - nn_value_probs[2]  # (赢, 平, 输)
-        return nn_policy, nn_value, nn_value_probs, masked_logits
+        nn_value = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()  # WDL [win, draw, loss]
+        return nn_policy, nn_value, masked_logits
 
     def _inference_with_stochastic_transform(self, state, to_play):
         encoded_state = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -97,9 +97,8 @@ class MCTS:
 
         nn_policy = softmax(masked_logits)
 
-        nn_value_probs = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()
-        nn_value = nn_value_probs[0] - nn_value_probs[2]  # (赢, 平, 输)
-        return nn_policy, nn_value, nn_value_probs, masked_logits
+        nn_value = F.softmax(value_logits, dim=1).squeeze(0).cpu().numpy()  # WDL [win, draw, loss]
+        return nn_policy, nn_value, masked_logits
 
     def _inference_with_symmetry(self, state, to_play):
         encoded = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -115,9 +114,8 @@ class MCTS:
         input_tensor = torch.tensor(np.array(symmetries), dtype=torch.float32, device=self.args["device"])
         nn_output = self.model(input_tensor)
 
-        nn_value_probs = F.softmax(nn_output["value_logits"], dim=1).cpu().numpy()
-        nn_value_probs = nn_value_probs.mean(axis=0)
-        nn_value = nn_value_probs[0] - nn_value_probs[2]
+        nn_value = F.softmax(nn_output["value_logits"], dim=1).cpu().numpy()
+        nn_value = nn_value.mean(axis=0)  # average WDL across 8 symmetries
 
         p_logits = nn_output["policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
         untransformed_p = []
@@ -133,7 +131,7 @@ class MCTS:
         masked_logits = np.where(is_legal_actions, avg_p_logits, -np.inf)
         nn_policy = softmax(masked_logits)
 
-        return nn_policy, nn_value, nn_value_probs, masked_logits
+        return nn_policy, nn_value, masked_logits
 
     def select(self, node):
 
@@ -149,9 +147,10 @@ class MCTS:
 
         explore_scaling = (c_puct / 2) * math.sqrt(total_child_weight + 0.01)
 
-        # FPU
-        parent_utility = (node.v / node.n) if node.n > 0 else 0.0
-        nn_utility = node.nn_value
+        # FPU - derive scalar Q from WDL: Q = W - L
+        parent_q = node.v / node.n if node.n > 0 else np.zeros(3)
+        parent_utility = parent_q[0] - parent_q[2]  # W - L scalar
+        nn_utility = node.nn_value[0] - node.nn_value[2]  # W - L scalar
 
         fpu_pow = self.args.get("fpu_pow", 1)
         avg_weight = min(1, math.pow(visited_policy_mass, fpu_pow))
@@ -174,7 +173,9 @@ class MCTS:
             if child.n == 0:
                 q_value = fpu_value
             else:
-                q_value = -child.v / child.n
+                # Child's WDL is from child's perspective; negate by swapping W and L
+                child_q = child.v / child.n
+                q_value = child_q[2] - child_q[0]  # -(W-L) from child = L-W from child = W-L from parent
 
             u_value = explore_scaling * child.prior / (1 + child.n)
 
@@ -189,16 +190,15 @@ class MCTS:
         to_play = node.to_play
 
         if self.args.get("enable_stochastic_transform_inference_for_child", True):
-            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference_with_stochastic_transform(state, to_play)
+            nn_policy, nn_value, masked_logits = self._inference_with_stochastic_transform(state, to_play)
         elif self.args.get("enable_symmetry_inference_for_child", False):
-            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference_with_symmetry(state, to_play)
+            nn_policy, nn_value, masked_logits = self._inference_with_symmetry(state, to_play)
         else:
-            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference(state, to_play)
+            nn_policy, nn_value, masked_logits = self._inference(state, to_play)
 
-        node.nn_value = nn_value
+        node.nn_value = nn_value.copy()  # WDL [win, draw, loss]
         node.nn_policy = nn_policy.copy()
         node.nn_logits = masked_logits.copy()
-        node.nn_value_probs = nn_value_probs.copy() if nn_value_probs is not None else None
 
         for action, prob in enumerate(nn_policy):
             if prob > 0:
@@ -217,16 +217,15 @@ class MCTS:
         to_play = node.to_play
 
         if self.args.get("enable_stochastic_transform_inference_for_root", True):
-            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference_with_stochastic_transform(state, to_play)
+            nn_policy, nn_value, masked_logits = self._inference_with_stochastic_transform(state, to_play)
         elif self.args.get("enable_symmetry_inference_for_root", False):
-            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference_with_symmetry(state, to_play)
+            nn_policy, nn_value, masked_logits = self._inference_with_symmetry(state, to_play)
         else:
-            nn_policy, nn_value, nn_value_probs, masked_logits = self._inference(state, to_play)
+            nn_policy, nn_value, masked_logits = self._inference(state, to_play)
 
-        node.nn_value = nn_value
+        node.nn_value = nn_value.copy()  # WDL [win, draw, loss]
         node.nn_policy = nn_policy.copy()
         node.nn_logits = masked_logits.copy()
-        node.nn_value_probs = nn_value_probs.copy() if nn_value_probs is not None else None
 
         for action, prob in enumerate(nn_policy):
             if prob > 0:
@@ -238,13 +237,14 @@ class MCTS:
                     action_taken=action,
                 )
                 node.children.append(child)
-        return nn_policy, nn_value, nn_value_probs
+        return nn_policy, nn_value
 
     @staticmethod
     def backpropagate(node, value):
+        """Backpropagate WDL value up the tree. Flips [W,D,L] -> [L,D,W] at each level."""
         while node is not None:
             node.update(value)
-            value = -value
+            value = value[[2, 1, 0]]  # flip perspective: [W,D,L] -> [L,D,W]
             node = node.parent
 
     def _gumbel_sequential_halving(self, root, num_simulations, is_eval=False):
@@ -294,7 +294,14 @@ class MCTS:
                             assert node is not None
                             
                         if self.game.is_terminal(node.state):
-                            value = self.game.get_winner(node.state) * node.to_play
+                            # Terminal value as WDL one-hot
+                            result = self.game.get_winner(node.state) * node.to_play
+                            if result == 1:
+                                value = np.array([1.0, 0.0, 0.0])  # win
+                            elif result == -1:
+                                value = np.array([0.0, 0.0, 1.0])  # loss
+                            else:
+                                value = np.array([0.0, 1.0, 0.0])  # draw
                         else:
                             value = self.expand(node)
                             
@@ -314,7 +321,11 @@ class MCTS:
                     
                     def eval_action(a):
                         c = next((child for child in root.children if child.action_taken == a), None)
-                        q = -c.v / c.n if (c and c.n > 0) else 0.0
+                        if c and c.n > 0:
+                            child_wdl = c.v / c.n
+                            q = child_wdl[2] - child_wdl[0]  # parent's Q = -(child's W - child's L)
+                        else:
+                            q = 0.0
                         return logits[a] + g[a] + (c_visit + max_n) * c_scale * q
                         
                     surviving_actions.sort(key=eval_action, reverse=True)
@@ -324,36 +335,44 @@ class MCTS:
         c_scale = self.args.get("gumbel_c_scale", 1.0)
         max_n = max([c.n for c in root.children]) if root.children else 0
         
-        q_values = np.zeros(self.game.board_size ** 2)
-        n_values = np.zeros(self.game.board_size ** 2)
+        num_actions = self.game.board_size ** 2
+        # WDL Q-values per action: q_wdl[a] = parent-perspective WDL = child's [L, D, W]
+        q_wdl = np.zeros((num_actions, 3))
+        n_values = np.zeros(num_actions)
         for c in root.children:
             if c.n > 0:
-                q_values[c.action_taken] = -c.v / c.n
+                child_wdl = c.v / c.n
+                q_wdl[c.action_taken] = child_wdl[[2, 1, 0]]  # flip to parent perspective
                 n_values[c.action_taken] = c.n
                 
         sum_n = np.sum(n_values)
-        nn_value_normalized = root.nn_value
+        nn_value_wdl = root.nn_value  # WDL [win, draw, loss]
+        visited_mask = (n_values > 0)
         if sum_n > 0:
-            weighted_q = np.sum(root.nn_policy * q_values * (n_values > 0)) / (np.sum(root.nn_policy * (n_values > 0)) + 1e-12)
-            v_mix_normalized = (nn_value_normalized + sum_n * weighted_q) / (1 + sum_n)
+            # Policy-weighted average of visited Q-values (WDL)
+            policy_visited = root.nn_policy * visited_mask
+            policy_visited_sum = np.sum(policy_visited) + 1e-12
+            weighted_q_wdl = np.sum(policy_visited[:, None] * q_wdl, axis=0) / policy_visited_sum
+            v_mix_wdl = (nn_value_wdl + sum_n * weighted_q_wdl) / (1 + sum_n)
         else:
-            v_mix_normalized = nn_value_normalized
+            v_mix_wdl = nn_value_wdl.copy()
             
-        completed_q = np.where(n_values > 0, q_values, v_mix_normalized)
-        sigma_q = (c_visit + max_n) * c_scale * completed_q
+        # completed_q: use actual Q for visited actions, v_mix for unvisited
+        completed_q_wdl = np.where(visited_mask[:, None], q_wdl, v_mix_wdl[None, :])
+        # sigma_q needs scalar per action for adding to logits: use W - L
+        completed_q_scalar = completed_q_wdl[:, 0] - completed_q_wdl[:, 2]
+        sigma_q = (c_visit + max_n) * c_scale * completed_q_scalar
         
         improved_logits = logits + sigma_q
         improved_logits[~is_legal] = -np.inf
         
         improved_policy = softmax(improved_logits)
         
-        v_mix = v_mix_normalized
+        v_mix = v_mix_wdl  # WDL vector
         
         def final_eval(a):
             return logits[a] + g[a] + sigma_q[a]
             
-        # gumbel_action = max(surviving_actions, key=final_eval)
-        
         max_n_surviving = max([n_values[a] for a in surviving_actions], default=0)
         most_visited_action = [a for a in surviving_actions if n_values[a] == max_n_surviving]
 
@@ -366,22 +385,22 @@ class MCTS:
 
         root = Node(state, to_play)
 
-        nn_policy, nn_value, nn_value_probs = self.root_expand(root)
+        nn_policy, nn_value = self.root_expand(root)
         self.backpropagate(root, nn_value)
 
         mcts_policy, gumbel_action, v_mix = self._gumbel_sequential_halving(root, num_simulations, is_eval=False)
-        return mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action
+        return mcts_policy, v_mix, nn_policy, nn_value, gumbel_action
 
     @torch.inference_mode()
     def eval_search(self, state, to_play, num_simulations):
 
         root = Node(state, to_play)
 
-        nn_policy, nn_value, nn_value_probs = self.root_expand(root)
+        nn_policy, nn_value = self.root_expand(root)
         self.backpropagate(root, nn_value)
 
         mcts_policy, gumbel_action, v_mix = self._gumbel_sequential_halving(root, num_simulations, is_eval=True)
-        return mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action
+        return mcts_policy, v_mix, nn_policy, nn_value, gumbel_action
 
 
 class AlphaZero:
@@ -437,10 +456,11 @@ class AlphaZero:
             else:
                 num_simulations = self.args["num_simulations"]
 
-            mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations)
+            mcts_policy, v_mix, nn_policy, nn_value, gumbel_action = self.mcts.search(state, to_play, num_simulations)
 
-            # Soft Resign
-            historical_v_mix.append(v_mix)
+            # Soft Resign - derive scalar from WDL for threshold check
+            v_mix_scalar = v_mix[0] - v_mix[2]  # W - L
+            historical_v_mix.append(v_mix_scalar)
             absmin_v_mix = min(abs(x) for x in historical_v_mix[-self.args.get("soft_resign_step_threshold", 3):])
             if (
                 not in_soft_resign
@@ -457,8 +477,8 @@ class AlphaZero:
                 "to_play": to_play,
                 "mcts_policy": mcts_policy,
                 "nn_policy": nn_policy,
-                "nn_value_probs": nn_value_probs,
-                "v_mix": v_mix,
+                "nn_value_probs": nn_value,  # WDL vector for psw
+                "v_mix": v_mix,  # WDL vector
                 "next_mcts_policy": None,
                 "sample_weight": 1 if not in_soft_resign else self.args.get("soft_resign_sample_weight", 0.1),
             })
@@ -474,27 +494,47 @@ class AlphaZero:
 
         return_memory = []
         for sample in memory:
-            outcome = winner * sample["to_play"]
+            # Outcome as WDL one-hot from this player's perspective
+            result = winner * sample["to_play"]
+            if result == 1:
+                outcome = np.array([1.0, 0.0, 0.0])  # win
+            elif result == -1:
+                outcome = np.array([0.0, 0.0, 1.0])  # loss
+            else:
+                outcome = np.array([0.0, 1.0, 0.0])  # draw
+
             opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
             sample_data = {
                 "encoded_state": self.game.encode_state(sample["state"], sample["to_play"]),
                 "to_play": sample["to_play"],
                 "policy_target": sample["mcts_policy"],
                 "opponent_policy_target": opponent_policy,
-                "outcome": outcome,
+                "outcome": outcome,  # WDL one-hot
                 "nn_policy": sample["nn_policy"],  # for psw
-                "nn_value_probs": sample["nn_value_probs"],  # for psw
-                "v_mix": sample["v_mix"],  # for psw
+                "nn_value_probs": sample["nn_value_probs"],  # WDL vector for psw
+                "v_mix": sample["v_mix"],  # WDL vector for psw and value target mix
                 "sample_weight": sample["sample_weight"],
             }
             return_memory.append(sample_data)
         
+        # Value target construction (KataGo-style TD): recursive exponential weighted average
+        # of search root value (v_mix) and game outcome, with outcome weight increasing near end.
+        # value_target[last] = outcome[last]
+        # value_target[i] = (1 - now_factor) * value_target[i+1]_flipped + now_factor * v_mix[i]
+        now_factor = 1.0 / (1.0 + (self.game.board_size ** 2) * 0.016)
+        return_memory[-1]["value_target"] = return_memory[-1]["outcome"].copy()
+        for i in range(len(return_memory) - 2, -1, -1):
+            next_value_target = return_memory[i+1]["value_target"]
+            next_value_target = next_value_target[[2, 1, 0]]  # flip perspective: [W,D,L] -> [L,D,W]
+            return_memory[i]["value_target"] = (1.0 - now_factor) * next_value_target + now_factor * return_memory[i]["v_mix"]
+
         surprise_weight = compute_policy_surprise_weights(
             return_memory,
             self.game.board_size,
             policy_surprise_data_weight=self.args.get("policy_surprise_data_weight", 0.5),
             value_surprise_data_weight=self.args.get("value_surprise_data_weight", 0.1),
         )
+
         return_memory = apply_surprise_weighting_to_game(return_memory, surprise_weight)
 
         return return_memory, self.game.get_winner(final_state), len(memory), final_state
@@ -507,7 +547,7 @@ class AlphaZero:
         encoded_states = torch.as_tensor(batch["encoded_state"], device=self.args["device"], dtype=torch.float32)
         policy_targets = torch.as_tensor(batch["policy_target"], device=self.args["device"], dtype=torch.float32)
         opponent_policy_targets = torch.as_tensor(batch["opponent_policy_target"], device=self.args["device"], dtype=torch.float32)
-        outcomes = torch.as_tensor(batch["outcome"], device=self.args["device"], dtype=torch.float32)
+        value_targets = torch.as_tensor(batch["value_target"], device=self.args["device"], dtype=torch.float32)
 
         sample_weights = torch.as_tensor(batch["sample_weight"], device=self.args["device"], dtype=torch.float32)
 
@@ -533,13 +573,8 @@ class AlphaZero:
         opp_mask = (opp_target_sum > 0.5).float()
         opponent_policy_loss = get_loss(opponent_policy_logits, opponent_policy_targets, sample_weights, opp_mask)
 
-        # Value Loss        
-        value_probs = torch.zeros((batch_size, 3), device=self.args["device"])
-        value_probs[:, 0] = F.relu(outcomes)
-        value_probs[:, 2] = F.relu(-outcomes)
-        value_probs[:, 1] = 1.0 - value_probs[:, 0] - value_probs[:, 2]
-        
-        value_loss = -torch.sum(value_probs * F.log_softmax(nn_output["value_logits"], dim=-1), dim=-1)
+        # Value Loss - value_targets is already [batch_size, 3] WDL probabilities
+        value_loss = -torch.sum(value_targets * F.log_softmax(nn_output["value_logits"], dim=-1), dim=-1)
         value_loss = (value_loss * sample_weights).mean()
 
         loss = policy_loss + 0.15 * opponent_policy_loss + value_loss
@@ -699,10 +734,10 @@ class AlphaZero:
         input_tensor = torch.tensor(np.array(symmetries), dtype=torch.float32, device=self.args["device"])
         nn_output = self.model(input_tensor)
         
-        # Value:
+        # Value: WDL probabilities averaged across symmetries
         nn_value_probs = F.softmax(nn_output["value_logits"], dim=1).cpu().numpy()
-        nn_value_probs = nn_value_probs.mean(axis=0)
-        nn_value = nn_value_probs[0] - nn_value_probs[2]
+        nn_value_probs = nn_value_probs.mean(axis=0)  # WDL [win, draw, loss]
+        nn_value = nn_value_probs[0] - nn_value_probs[2]  # scalar for display
         # Policy, Opponent Policy:
         policy_logits = nn_output["policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
         opponent_policy_logits = nn_output["opponent_policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
@@ -733,9 +768,13 @@ class AlphaZero:
         avg_opl = np.where(next_is_legal_actions, avg_opl, -np.inf)
         nn_opponent_policy = softmax(avg_opl)
 
+        # v_mix is now a WDL vector; derive scalar for display
+        v_mix_scalar = v_mix[0] - v_mix[2]
+
         info = {
             "mcts_policy": mcts_policy.reshape(self.game.board_size, self.game.board_size),
-            "v_mix": v_mix,
+            "v_mix": v_mix_scalar,
+            "v_mix_probs": v_mix,  # WDL vector
             "nn_policy": nn_policy.reshape(self.game.board_size, self.game.board_size),
             "nn_opponent_policy": nn_opponent_policy.reshape(self.game.board_size, self.game.board_size),
             "nn_value": nn_value,

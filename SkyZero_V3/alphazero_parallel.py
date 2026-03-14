@@ -168,10 +168,11 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 else:
                     num_simulations = args["num_simulations"]
 
-                mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = mcts.search(state, to_play, num_simulations)
+                mcts_policy, v_mix, nn_policy, nn_value, gumbel_action = mcts.search(state, to_play, num_simulations)
 
-                # Soft Resign
-                historical_v_mix.append(v_mix)
+                # Soft Resign - derive scalar from WDL
+                v_mix_scalar = v_mix[0] - v_mix[2]  # W - L
+                historical_v_mix.append(v_mix_scalar)
                 absmin_v_mix = min(abs(x) for x in historical_v_mix[-args.get("soft_resign_step_threshold", 3):])
                 if (
                     not in_soft_resign
@@ -184,15 +185,15 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     memory[-1]["next_mcts_policy"] = mcts_policy
 
                 memory.append({
-                "state": state,
-                "to_play": to_play,
-                "mcts_policy": mcts_policy,
-                "nn_policy": nn_policy,
-                "nn_value_probs": nn_value_probs,
-                "v_mix": v_mix,
-                "next_mcts_policy": None,
-                "sample_weight": 1 if not in_soft_resign else args.get("soft_resign_sample_weight", 0.1),
-            })
+                    "state": state,
+                    "to_play": to_play,
+                    "mcts_policy": mcts_policy,
+                    "nn_policy": nn_policy,
+                    "nn_value_probs": nn_value,  # WDL vector for psw
+                    "v_mix": v_mix,  # WDL vector
+                    "next_mcts_policy": None,
+                    "sample_weight": 1 if not in_soft_resign else args.get("soft_resign_sample_weight", 0.1),
+                })
 
                 # Gumbel Zero selfplay exploration - directly use the action derived from Gumbel-Max trick
                 action = gumbel_action
@@ -204,20 +205,39 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
             return_memory = []
             for sample in memory:
-                outcome = winner * sample["to_play"]
+                # Outcome as WDL one-hot from this player's perspective
+                result = winner * sample["to_play"]
+                if result == 1:
+                    outcome = np.array([1.0, 0.0, 0.0])  # win
+                elif result == -1:
+                    outcome = np.array([0.0, 0.0, 1.0])  # loss
+                else:
+                    outcome = np.array([0.0, 1.0, 0.0])  # draw
+
                 opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
                 sample_data = {
-                "encoded_state": game.encode_state(sample["state"], sample["to_play"]),
-                "to_play": sample["to_play"],
-                "policy_target": sample["mcts_policy"],
-                "opponent_policy_target": opponent_policy,
-                "outcome": outcome,
-                "nn_policy": sample["nn_policy"],  # for psw
-                "nn_value_probs": sample["nn_value_probs"],  # for psw
-                "v_mix": sample["v_mix"],  # for psw
-                "sample_weight": sample["sample_weight"],
-            }
+                    "encoded_state": game.encode_state(sample["state"], sample["to_play"]),
+                    "to_play": sample["to_play"],
+                    "policy_target": sample["mcts_policy"],
+                    "opponent_policy_target": opponent_policy,
+                    "outcome": outcome,  # WDL one-hot
+                    "nn_policy": sample["nn_policy"],  # for psw
+                    "nn_value_probs": sample["nn_value_probs"],  # WDL vector for psw
+                    "v_mix": sample["v_mix"],  # WDL vector for psw and value target mix
+                    "sample_weight": sample["sample_weight"],
+                }
                 return_memory.append(sample_data)
+
+            # Value target construction (KataGo-style TD): recursive exponential weighted average
+            # of search root value (v_mix) and game outcome, with outcome weight increasing near end.
+            # value_target[last] = outcome[last]
+            # value_target[i] = (1 - now_factor) * value_target[i+1]_flipped + now_factor * v_mix[i]
+            now_factor = 1.0 / (1.0 + (game.board_size ** 2) * 0.016)
+            return_memory[-1]["value_target"] = return_memory[-1]["outcome"].copy()
+            for i in range(len(return_memory) - 2, -1, -1):
+                next_value_target = return_memory[i+1]["value_target"]
+                next_value_target = next_value_target[[2, 1, 0]]  # flip perspective: [W,D,L] -> [L,D,W]
+                return_memory[i]["value_target"] = (1.0 - now_factor) * next_value_target + now_factor * return_memory[i]["v_mix"]
 
             surprise_weight = compute_policy_surprise_weights(
                 return_memory,
@@ -225,6 +245,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 policy_surprise_data_weight=args.get("policy_surprise_data_weight", 0.5),
                 value_surprise_data_weight=args.get("value_surprise_data_weight", 0.1),
             )
+            
             return_memory = apply_surprise_weighting_to_game(return_memory, surprise_weight)
             
             result_queue.put((return_memory, winner, len(memory), final_state))

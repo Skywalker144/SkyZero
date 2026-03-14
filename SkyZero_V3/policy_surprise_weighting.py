@@ -13,44 +13,11 @@ def compute_kl_divergence(policy_target, policy_prior, epsilon=1e-10):
     return max(0.0, kl)
 
 
-def scalar_to_probs(v):
-    """Converts a scalar value v in [-1, 1] to a probability distribution [Win, Draw, Loss]."""
-    v_win = max(0.0, v)
-    v_loss = max(0.0, -v)
-    v_draw = max(0.0, 1.0 - (v_win + v_loss))
-    probs = np.array([v_win, v_draw, v_loss])
-    return probs / (np.sum(probs) + 1e-12)
-
-
 def compute_policy_surprise_weights(game_data, board_size, policy_surprise_data_weight=0.5, value_surprise_data_weight=0.1):
     n_positions = len(game_data)
     if n_positions == 0:
         return []
 
-    # Smoothing factor based on board size
-    now_factor = 1.0 / (1.0 + (board_size ** 2) * 0.016)
-
-    # Initialize current_target from the final outcome
-    # alphazero.py: 1=win, 0=draw, -1=loss. Prob index: [0:win, 1:draw, 2:loss]
-    last_outcome = game_data[-1]["outcome"]
-    if last_outcome == 1:
-        current_target = np.array([1.0, 0.0, 0.0])
-    elif last_outcome == 0:
-        current_target = np.array([0.0, 1.0, 0.0])
-    else:  # -1 or other negative
-        current_target = np.array([0.0, 0.0, 1.0])
-    
-    smoothed_targets = [None] * n_positions
-    for i in range(n_positions - 1, -1, -1):
-        if i < n_positions - 1 and game_data[i]["to_play"] != game_data[i+1]["to_play"]:
-            current_target = np.array([current_target[2], current_target[1], current_target[0]])
-            
-        # Convert scalar v_mix to prob vector
-        search_value_vec = scalar_to_probs(game_data[i]["v_mix"])
-        # Smoothed target update
-        current_target = (1.0 - now_factor) * current_target + now_factor * search_value_vec
-        smoothed_targets[i] = current_target.copy()
-    
     target_weights = []
     policy_surprises = []
     value_surprises = []
@@ -62,8 +29,9 @@ def compute_policy_surprise_weights(game_data, board_size, policy_surprise_data_
         p_kl = compute_kl_divergence(sample["policy_target"], sample["nn_policy"])
         policy_surprises.append(p_kl)
 
-        # Value Surprise (KL between smoothed value target and NN value probs)
-        v_kl = compute_kl_divergence(smoothed_targets[i], sample["nn_value_probs"])
+        # Value Surprise (KL between value_target and NN value probs)
+        # value_target is pre-computed as KataGo-style TD target in selfplay
+        v_kl = compute_kl_divergence(sample["value_target"], sample["nn_value_probs"])
         value_surprises.append(min(v_kl, 1.0))
 
         target_weights.append(sample.get("sample_weight", 1.0))
@@ -121,6 +89,13 @@ def apply_surprise_weighting_to_game(game_data, weights):
     rand = np.random.random
     
     for sample, weight in zip(game_data, weights):
+
+        del sample["to_play"]
+        del sample["outcome"]
+        del sample["nn_policy"]
+        del sample["nn_value_probs"]
+        del sample["v_mix"]
+
         if weight <= 0:
             continue
         floor_weight = int(weight)
