@@ -21,8 +21,8 @@ train_args = {
     "lr": 0.0001,
     "weight_decay": 3e-5,
 
-    "full_search_num_simulations": 850,
-    "fast_search_num_simulations": 170,
+    "full_search_num_simulations": 1000,
+    "fast_search_num_simulations": 200,
     "full_search_prob": 0.25,
 
     "root_temperature_init": 1.25,

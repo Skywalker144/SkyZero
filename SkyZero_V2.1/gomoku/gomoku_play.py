@@ -2,7 +2,7 @@ import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from gomoku_train import train_args
 from envs.gomoku import Gomoku
-from playgame_v2 import GamePlayer
+from playgame import GamePlayer
 
 
 eval_args = {
@@ -14,8 +14,6 @@ eval_args = {
     "weight_decay": train_args["weight_decay"],
 
     "full_search_num_simulations": 600,
-
-    "c_puct": 1.1,
 
     "root_temperature_init": 1,
     "root_temperature_final": 0.9,
