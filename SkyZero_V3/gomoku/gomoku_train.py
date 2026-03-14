@@ -29,7 +29,10 @@ train_args = {
     "gumbel_c_visit": 50,
     "gumbel_c_scale": 1.0,
 
-    "min_buffer_size": 2048,
+    "enable_stochastic_transform_inference_for_child": True,
+    "enable_stochastic_transform_inference_for_root": True,
+
+    "min_buffer_size": 20480,
     "linear_threshold": 200000,
     "alpha": 0.8,
     "max_buffer_size": 1e7,

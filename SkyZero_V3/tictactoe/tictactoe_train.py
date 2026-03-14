@@ -24,7 +24,7 @@ train_args = {
     "batch_size": 256,
 
     # Gumbel settings
-    "gumbel_m": 2,
+    "gumbel_m": 4,
     "gumbel_c_visit": 50,
     "gumbel_c_scale": 1.0,
 
@@ -46,7 +46,7 @@ train_args = {
     "file_name": "tictactoe",
     "data_dir": "data/tictactoe",
     "device": "cuda",
-    "save_on_exit": True,
+    "save_on_exit": False,
 }
 
 if __name__ == "__main__":
