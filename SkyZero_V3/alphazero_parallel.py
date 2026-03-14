@@ -132,7 +132,7 @@ def gpu_worker(model_instance, model_state_dict, request_queue, response_pipes, 
         traceback.print_exc()
 
 
-def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue, seed, start_barrier=None):
+def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue, seed, start_barrier=None, stop_event=None):
     """
     The Client process that runs the game logic and MCTS.
     """
@@ -150,15 +150,17 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
         if start_barrier is not None:
             start_barrier.wait()
 
-        while True:
+        while not (stop_event is not None and stop_event.is_set()):
             memory = []
             to_play = 1
             state = game.get_initial_state()
 
             in_soft_resign = False
             historical_v_mix = []
+            last_action = None
+            last_player = None
 
-            while not game.is_terminal(state):
+            while not game.is_terminal(state, last_action, last_player):
 
                 if in_soft_resign:
                     num_simulations = max(
@@ -197,11 +199,13 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 # Gumbel Zero selfplay exploration - directly use the action derived from Gumbel-Max trick
                 action = gumbel_action
+                last_action = action
+                last_player = to_play
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
 
             final_state = state
-            winner = game.get_winner(final_state)
+            winner = game.get_winner(final_state, last_action, last_player)
 
             return_memory = []
             for sample in memory:
@@ -270,6 +274,9 @@ class AlphaZeroParallel(AlphaZero):
         for _ in range(self.num_workers):
             self.worker_pipes.append(mp.Pipe())
 
+        # Shared stop signal for graceful shutdown
+        self.stop_event = mp.Event()
+
     def learn(self):
         print(f"Starting Parallel AlphaZero")
         print(f"Workers: {self.num_workers}, Device: {self.args['device']}")
@@ -317,7 +324,8 @@ class AlphaZeroParallel(AlphaZero):
                     client_pipe,
                     self.result_queue,
                     base_seed + i,
-                    start_barrier
+                    start_barrier,
+                    self.stop_event,
                 )
             )
             p.start()
@@ -447,8 +455,13 @@ class AlphaZeroParallel(AlphaZero):
             if self.args.get("save_on_exit", True):
                 print("Saving checkpoint before exit...")
                 self.save_checkpoint()
-            # Cleanup
-            self.command_queue.put(("STOP", None))
-            gpu_process.join()
+            # Graceful shutdown
+            self.stop_event.set()  # Signal all selfplay workers to stop
+            self.command_queue.put(("STOP", None))  # Signal GPU worker to stop
+            gpu_process.join(timeout=10)
+            if gpu_process.is_alive():
+                gpu_process.terminate()
             for p in worker_processes:
-                p.terminate()
+                p.join(timeout=5)
+                if p.is_alive():
+                    p.terminate()

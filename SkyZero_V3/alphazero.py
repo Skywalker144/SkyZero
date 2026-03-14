@@ -293,9 +293,9 @@ class MCTS:
                             node = self.select(node)
                             assert node is not None
                             
-                        if self.game.is_terminal(node.state):
+                        if self.game.is_terminal(node.state, node.action_taken, -node.to_play):
                             # Terminal value as WDL one-hot
-                            result = self.game.get_winner(node.state) * node.to_play
+                            result = self.game.get_winner(node.state, node.action_taken, -node.to_play) * node.to_play
                             if result == 1:
                                 value = np.array([1.0, 0.0, 0.0])  # win
                             elif result == -1:
@@ -324,8 +324,9 @@ class MCTS:
                         if c and c.n > 0:
                             child_wdl = c.v / c.n
                             q = child_wdl[2] - child_wdl[0]  # parent's Q = -(child's W - child's L)
+                            q = (q + 1) / 2  # normalize to [0, 1]
                         else:
-                            q = 0.0
+                            q = 0.5  # neutral value in [0, 1]
                         return logits[a] + g[a] + (c_visit + max_n) * c_scale * q
                         
                     surviving_actions.sort(key=eval_action, reverse=True)
@@ -359,8 +360,9 @@ class MCTS:
             
         # completed_q: use actual Q for visited actions, v_mix for unvisited
         completed_q_wdl = np.where(visited_mask[:, None], q_wdl, v_mix_wdl[None, :])
-        # sigma_q needs scalar per action for adding to logits: use W - L
-        completed_q_scalar = completed_q_wdl[:, 0] - completed_q_wdl[:, 2]
+        # sigma_q needs scalar per action for adding to logits: use W - L normalized to [0, 1]
+        completed_q_scalar = completed_q_wdl[:, 0] - completed_q_wdl[:, 2]  # [-1, 1]
+        completed_q_scalar = (completed_q_scalar + 1) / 2  # normalize to [0, 1]
         sigma_q = (c_visit + max_n) * c_scale * completed_q_scalar
         
         improved_logits = logits + sigma_q
@@ -445,8 +447,10 @@ class AlphaZero:
 
         in_soft_resign = False
         historical_v_mix = []
+        last_action = None
+        last_player = None
 
-        while not self.game.is_terminal(state):
+        while not self.game.is_terminal(state, last_action, last_player):
             
             if in_soft_resign:
                 num_simulations = max(
@@ -486,11 +490,13 @@ class AlphaZero:
             # Gumbel Zero selfplay exploration - directly use the action derived from Gumbel-Max trick
             action = gumbel_action
 
+            last_action = action
+            last_player = to_play
             state = self.game.get_next_state(state, action, to_play)
             to_play = -to_play
 
         final_state = state
-        winner = self.game.get_winner(final_state)
+        winner = self.game.get_winner(final_state, last_action, last_player)
 
         return_memory = []
         for sample in memory:
@@ -537,7 +543,7 @@ class AlphaZero:
 
         return_memory = apply_surprise_weighting_to_game(return_memory, surprise_weight)
 
-        return return_memory, self.game.get_winner(final_state), len(memory), final_state
+        return return_memory, self.game.get_winner(final_state, last_action, last_player), len(memory), final_state
 
     def _train_batch(self, batch):
 
