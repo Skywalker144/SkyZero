@@ -31,7 +31,7 @@ class TicTacToe:
         return board
 
     @staticmethod
-    def get_winner(state):
+    def get_winner(state, last_action=None, last_player=None):
         # Check rows and columns for a winner
         for i in range(3):
             if np.all(state[-1][i, :] == 1):  # Check rows for player 1
@@ -56,9 +56,9 @@ class TicTacToe:
         # No winner yet
         return None
 
-    def is_terminal(self, state):
+    def is_terminal(self, state, last_action=None, last_player=None):
         return (np.all(state[-1] != 0)
-                or self.get_winner(state) is not None)
+                or self.get_winner(state, last_action, last_player) is not None)
 
     @staticmethod
     def encode_state(board, to_play):

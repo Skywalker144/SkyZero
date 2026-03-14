@@ -3,51 +3,8 @@ from utils import print_board
 import math
 from scipy import ndimage
 
-def get_expanded_region_square(state, k=3):
-    current_board = state[-1]
-    board_size = current_board.shape[0]
-    
-    expanded = np.zeros((board_size, board_size), dtype=bool)
-    
-    rows, cols = np.where(current_board != 0)
-    k = math.ceil(k)
-    
-    for r, c in zip(rows, cols):
-        for dr in range(-k, k + 1):
-            for dc in range(-k, k + 1):
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < board_size and 0 <= nc < board_size:
-                    expanded[nr, nc] = True
-    
-    return expanded
-
-def get_expanded_region_circle_slow(state, k=3.5):
-    current_board = state[-1]
-    board_size = current_board.shape[0]
-    
-    expanded = np.zeros((board_size, board_size), dtype=bool)
-    
-    rows, cols = np.where(current_board != 0)
-    
-    k_sq = k ** 2
-    
-    k_int = math.ceil(k)
-    
-    for r, c in zip(rows, cols):
-        for dr in range(-k_int, k_int + 1):
-            for dc in range(-k_int, k_int + 1):
-                dist_sq = dr**2 + dc**2
-                
-                if dist_sq <= k_sq:
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < board_size and 0 <= nc < board_size:
-                        expanded[nr, nc] = True
-    
-    return expanded
-
 def get_expanded_region_circle(state, k=3.5):
     current_board = state[-1]
-    board_size = current_board.shape[0]
     
     y, x = np.ogrid[-k:k+1, -k:k+1]
     mask = x**2 + y**2 <= k**2
@@ -509,24 +466,6 @@ class Gomoku:
         else:
             legal_mask = legal_mask & get_expanded_region_circle(state, k=3.5).flatten()
 
-        # In Renju, only Black (1) has forbidden moves
-        if self.use_renju and to_play == 1:
-            self._fpf.Clear()
-            # Populate FPF board (convert 1/-1 to 1/2)
-            rows, cols = np.where(current_board != 0)
-            for r, c in zip(rows, cols):
-                val = current_board[r, c]
-                stone = C_BLACK if val == 1 else C_WHITE
-                self._fpf.SetStone(r, c, stone)
-
-            # Check forbidden moves for all empty spots
-            # Optimizing: only check indices that are currently legal (empty)
-            indices = np.where(legal_mask)[0]
-            for idx in indices:
-                r, c = idx // self.board_size, idx % self.board_size
-                if self._fpf.isForbidden(r, c):
-                    legal_mask[idx] = False
-
         return legal_mask
 
     def get_next_state(self, state, action, to_play):
@@ -543,7 +482,7 @@ class Gomoku:
 
         return state
 
-    def get_winner(self, state):
+    def get_winner(self, state, last_action=None, last_player=None):
         current_board = state[-1]
         size = self.board_size
 
@@ -581,13 +520,27 @@ class Gomoku:
                 if abs(s) == 5:
                     return 1 if s > 0 else -1
 
+        # Renju forbidden move check: Black placed on a forbidden point (no five formed) => White wins
+        if self.use_renju and last_action is not None and last_player == 1:
+            row, col = last_action // size, last_action % size
+            self._fpf.Clear()
+            rows, cols = np.where(current_board != 0)
+            for r, c in zip(rows, cols):
+                if r == row and c == col:
+                    continue  # skip the last placed stone to check pre-move board
+                val = current_board[r, c]
+                stone = C_BLACK if val == 1 else C_WHITE
+                self._fpf.SetStone(r, c, stone)
+            if self._fpf.isForbidden(row, col):
+                return -1  # White wins
+
         if np.all(current_board != 0):
             return 0
 
         return None
 
-    def is_terminal(self, state):
-        return self.get_winner(state) is not None
+    def is_terminal(self, state, last_action=None, last_player=None):
+        return self.get_winner(state, last_action, last_player) is not None
 
     def encode_state(self, state, to_play):
         history_len = state.shape[0]
