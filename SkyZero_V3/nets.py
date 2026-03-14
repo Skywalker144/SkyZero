@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 
@@ -188,14 +189,28 @@ class ResNet(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
+        # SiLU gain ~= sqrt(2.35), empirically measured (KataGo uses this for GELU/SiLU-like activations)
+        silu_gain = math.sqrt(2.35)
+        num_blocks = len(self.trunk_blocks)
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                fan_out = m.out_channels * m.kernel_size[0] * m.kernel_size[1]
+                std = silu_gain / math.sqrt(fan_out)
+                nn.init.normal_(m.weight, 0, std)
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, std=0.01)
+
+        # Fixup-style: scale down the last conv in each residual block so that
+        # residual branches start near-zero, stabilizing deep networks
+        fixup_scale = 1.0 / math.sqrt(max(num_blocks, 1))
+        for block in self.trunk_blocks:
+            # NestedBottleneckResBlock: last projection is normactconvq.conv
+            if hasattr(block, 'normactconvq'):
+                nn.init.normal_(block.normactconvq.conv.weight, 0, fixup_scale * 0.01)
 
     def forward(self, x):
         # x shape: [B, input_channels, H, W]
