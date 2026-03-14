@@ -101,8 +101,9 @@ def apply_surprise_weighting_to_game(game_data, weights):
         floor_weight = int(weight)
         
         if floor_weight > 0:
-            weighted_data.extend([sample] * floor_weight)
+            for _ in range(floor_weight):
+                weighted_data.append(sample.copy())
         
         if (weight - floor_weight) > rand():
-            weighted_data.append(sample)
+            weighted_data.append(sample.copy())
     return weighted_data
