@@ -90,7 +90,6 @@ def apply_surprise_weighting_to_game(game_data, weights):
     
     for sample, weight in zip(game_data, weights):
 
-        del sample["to_play"]
         del sample["outcome"]
         del sample["nn_policy"]
         del sample["nn_value_probs"]
