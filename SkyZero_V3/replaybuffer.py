@@ -1,18 +1,16 @@
-import random
-from typing import List, Tuple, Dict
+from typing import List
 import numpy as np
 import torch
 
 
 class ReplayBuffer:
-    def __init__(self, board_size: int, num_planes: int, min_buffer_size=10000, linear_threshold=10000, alpha=0.75, max_buffer_size=3e6):
+    def __init__(self, board_size: int, num_planes: int = None, min_buffer_size=10000, linear_threshold=10000, alpha=0.75, max_buffer_size=3e6):
         self.min_buffer_size = min_buffer_size
         self.linear_threshold = linear_threshold
         self.alpha = alpha
         self.max_buffer_size = int(max_buffer_size)
 
         self.board_size = board_size
-        self.num_planes = num_planes
         self.action_size = board_size * board_size
         
         # Block-based storage using torch tensors for memory efficiency during save
@@ -29,7 +27,8 @@ class ReplayBuffer:
 
     def _create_block(self):
         return {
-            "encoded_state": torch.empty((self.block_size, self.num_planes, self.board_size, self.board_size), dtype=torch.float32),
+            "state": torch.empty((self.block_size, 1, self.board_size, self.board_size), dtype=torch.int8),
+            "to_play": torch.empty(self.block_size, dtype=torch.int8),
             "policy_target": torch.empty((self.block_size, self.action_size), dtype=torch.float32),
             "opponent_policy_target": torch.empty((self.block_size, self.action_size), dtype=torch.float32),
             "value_target": torch.empty((self.block_size, 3), dtype=torch.float32),
@@ -42,6 +41,42 @@ class ReplayBuffer:
         window_size = self.linear_threshold * (self.total_samples_added / self.linear_threshold) ** self.alpha
         return min(int(window_size), self.max_buffer_size)
 
+    def _gc(self):
+        """Release blocks that are entirely outside the sampling window to free memory."""
+        window_size = self.get_window_size()
+        if self.size <= window_size:
+            return
+
+        # Shrink size to window_size
+        self.size = window_size
+
+        # Determine which indices are inside the window: [start_index, ptr)
+        start_index = (self.ptr - window_size) % self.max_buffer_size
+
+        # Release blocks entirely outside the window
+        freed = 0
+        for b_idx in range(len(self.blocks)):
+            if self.blocks[b_idx] is None:
+                continue
+            block_start = b_idx * self.block_size
+            block_end = block_start + self.block_size  # exclusive
+
+            # Check if block has ANY overlap with the window
+            if start_index < self.ptr:
+                # Window is contiguous: [start_index, ptr)
+                has_overlap = (block_end > start_index) and (block_start < self.ptr)
+            else:
+                # Window wraps: [start_index, max_buffer_size) U [0, ptr)
+                has_overlap = (block_end > start_index) or (block_start < self.ptr)
+
+            if not has_overlap:
+                self.blocks[b_idx] = None  # Release memory
+                freed += 1
+
+        if freed > 0:
+            print(f"[ReplayBuffer GC] Freed {freed} blocks ({freed * self.block_size:,} slots), "
+                  f"window_size={window_size:,}, buffer_size={self.size:,}")
+
     def __len__(self) -> int:
         return self.size
 
@@ -51,7 +86,7 @@ class ReplayBuffer:
             return 0
         
         # Keys to extract from game_memory
-        keys = ["encoded_state", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
+        keys = ["state", "to_play", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
         
         # Prepare data in torch format (on CPU)
         batch_data = {}
@@ -65,9 +100,11 @@ class ReplayBuffer:
             b_idx = self.ptr // self.block_size
             b_offset = self.ptr % self.block_size
             
-            # Ensure block exists
+            # Ensure block exists (may have been freed by GC or not yet created)
             while len(self.blocks) <= b_idx:
-                self.blocks.append(self._create_block())
+                self.blocks.append(None)
+            if self.blocks[b_idx] is None:
+                self.blocks[b_idx] = self._create_block()
                 
             can_write = min(k - written, self.block_size - b_offset)
             
@@ -81,6 +118,7 @@ class ReplayBuffer:
         
         self.total_samples_added += k
         self.games_count += 1
+        self._gc()
         return k
 
     def sample(self, batch_size: int) -> dict:
@@ -108,10 +146,10 @@ class ReplayBuffer:
         block_ids = indices // self.block_size
         offsets = indices % self.block_size
         
-        keys = ["encoded_state", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
+        keys = ["state", "to_play", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
         
-        # Determine output shapes from first block
-        sample_block = self.blocks[0]
+        # Determine output shapes from first non-None block
+        sample_block = next(b for b in self.blocks if b is not None)
         result = {}
         for key in keys:
             shape = (batch_size,) + sample_block[key].shape[1:]
@@ -142,16 +180,23 @@ class ReplayBuffer:
         if self.size == 0:
             return {"buffer_empty": True}
 
-        # Consolidate list of dicts into a dict of lists for fewer pickle objects
-        keys = ["encoded_state", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
+        # Consolidate non-None blocks into a dict of lists for fewer pickle objects
+        # Record which block indices are valid (some may have been freed by GC)
+        keys = ["state", "to_play", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
         
-        consolidated = {}
-        for key in keys:
-            consolidated[key] = [b[key] for b in self.blocks]
+        valid_block_indices = []
+        consolidated = {key: [] for key in keys}
+        for b_idx, b in enumerate(self.blocks):
+            if b is not None:
+                valid_block_indices.append(b_idx)
+                for key in keys:
+                    consolidated[key].append(b[key])
 
         return {
             "consolidated_blocks": consolidated,
-            "block_size": self.block_size, # Explicitly save block_size
+            "valid_block_indices": valid_block_indices,  # NEW: track which blocks are non-None
+            "num_total_blocks": len(self.blocks),  # NEW: total block slots (including None)
+            "block_size": self.block_size,
             "ptr": self.ptr,
             "size": self.size,
             "min_buffer_size": self.min_buffer_size,
@@ -163,7 +208,7 @@ class ReplayBuffer:
         }
 
     def load_state(self, state: dict):
-        """Loads the buffer and handles block-size migration."""
+        """Loads the buffer state from a checkpoint."""
         if "buffer_empty" in state:
             self.clear()
             return
@@ -172,87 +217,29 @@ class ReplayBuffer:
         self.linear_threshold = state.get("linear_threshold", self.linear_threshold)
         self.alpha = state.get("alpha", self.alpha)
         self.max_buffer_size = int(state.get("max_buffer_size", self.max_buffer_size))
-        
-        # ptr and size from state
+
         state_ptr = state["ptr"]
         state_size = state["size"]
         self.total_samples_added = state.get("total_samples_added", state_size)
         self.games_count = state.get("games_count", 0)
 
-        keys = ["encoded_state", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
+        keys = ["state", "to_play", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
 
-        raw_tensors = {key: [] for key in keys}
-        
-        if "consolidated_blocks" in state:
-            cb = state["consolidated_blocks"]
-            # Detect loaded block size
-            loaded_block_size = cb[keys[0]][0].shape[0]
-            for key in keys:
-                raw_tensors[key] = cb[key]
-        elif "blocks" in state:
-            blocks = state["blocks"]
-            loaded_block_size = blocks[0][keys[0]].shape[0]
-            for b in blocks:
-                for key in keys:
-                    raw_tensors[key].append(b[key])
-        elif "data" in state or "consolidated_buffer" in state:
-            # Old non-blocked format
-            data = state.get("data", state.get("consolidated_buffer", {}))
-            self.clear()
-            # We can use add_game or a custom loop, but simplest is to just re-import
-            # Let's mock a game_memory structure for a moment or just fill blocks
-            num_samples = state_size
-            self.size = 0
-            self.ptr = 0
-            self.blocks = []
-            
-            # Re-fill using current block size
-            for start_idx in range(0, num_samples, self.block_size):
-                end_idx = min(start_idx + self.block_size, num_samples)
-                n = end_idx - start_idx
-                block = self._create_block()
-                for key in keys:
-                    if key in data:
-                        block[key][0:n] = torch.as_tensor(data[key][start_idx:end_idx])
-                self.blocks.append(block)
-            self.size = num_samples
-            self.ptr = state_ptr % self.max_buffer_size
-            return
-        else:
-            return
+        cb = state["consolidated_blocks"]
+        valid_indices = state["valid_block_indices"]
+        num_total_blocks = state.get("num_total_blocks", max(valid_indices) + 1 if valid_indices else 0)
 
-        # Migration/Re-blocking logic:
-        # If the loaded block size is different from current, we re-block the data
-        # to ensure the ptr/indexing logic remains consistent with self.block_size
-        
-        # Calculate total samples currently held in blocks
-        # Note: the last block might be partially full in the old logic, 
-        # but our new logic assumes blocks are always full except possibly the very last one added.
-        # Actually, circular buffer means ptr is the only thing that matters.
-        
-        # To be safe and simple: concatenate all blocks and re-split
-        # This only happens once during loading.
-        full_data = {}
-        for key in keys:
-            # Only take the part that actually contains data if it's the old format
-            # but wait, the old format had blocks of fixed size. 
-            # The total samples is self.size.
-            concatenated = torch.cat(raw_tensors[key], dim=0)
-            # Truncate to max_buffer_size if needed
-            if concatenated.shape[0] > self.max_buffer_size:
-                concatenated = concatenated[:self.max_buffer_size]
-            full_data[key] = concatenated
-
-        num_samples = full_data[keys[0]].shape[0]
-        self.blocks = []
-        for start_idx in range(0, num_samples, self.block_size):
-            end_idx = min(start_idx + self.block_size, num_samples)
-            n = end_idx - start_idx
+        # Restore sparse block list (with None holes from GC)
+        self.blocks = [None] * num_total_blocks
+        for i, b_idx in enumerate(valid_indices):
             block = self._create_block()
             for key in keys:
-                block[key][0:n] = full_data[key][start_idx:end_idx]
-            self.blocks.append(block)
-        
-        self.size = num_samples
+                block[key][:] = cb[key][i]
+            self.blocks[b_idx] = block
+
+        self.size = state_size
         self.ptr = state_ptr % self.max_buffer_size
         self.max_blocks = (self.max_buffer_size + self.block_size - 1) // self.block_size
+
+        # Run GC after loading to free blocks outside the current window
+        self._gc()
