@@ -8,7 +8,6 @@ from envs.tictactoe import TicTacToe
 
 eval_args = {
     "mode": "eval",
-    "history_step": train_args["history_step"],
     "num_blocks": train_args["num_blocks"],
     "num_channels": train_args["num_channels"],
     "lr": train_args["lr"],
@@ -29,5 +28,5 @@ eval_args = {
 }
 
 if __name__ == "__main__":
-    gp = GamePlayer(TicTacToe(history_step=eval_args["history_step"]), eval_args)
+    gp = GamePlayer(TicTacToe(), eval_args)
     gp.play()

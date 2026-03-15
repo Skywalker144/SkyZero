@@ -14,7 +14,6 @@ train_args = {
     
     "num_workers": 19,
 
-    "history_step": 1,
     "num_blocks": 2,
     "num_channels": 32,
     "lr": 0.001,
@@ -36,7 +35,7 @@ train_args = {
     "alpha": 0.75,
     "max_buffer_size": 100000,
 
-    "train_steps_per_generation": 5,
+    "train_steps_per_generation": 10,
     "target_ReplayRatio": 5,
 
     "fpu_reduction_max": 0.1,
@@ -51,7 +50,7 @@ train_args = {
 
 if __name__ == "__main__":
     np.set_printoptions(precision=2, suppress=True)
-    game = TicTacToe(history_step=train_args["history_step"])
+    game = TicTacToe()
     model = ResNet(game, num_blocks=train_args["num_blocks"], num_channels=train_args["num_channels"]).to(train_args["device"])
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 
