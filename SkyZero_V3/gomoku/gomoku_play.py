@@ -7,7 +7,6 @@ from playgame import GamePlayer
 
 eval_args = {
     "mode": "eval",
-    "history_step": train_args["history_step"],
     "num_blocks": train_args["num_blocks"],
     "num_channels": train_args["num_channels"],
     "lr": train_args["lr"],
