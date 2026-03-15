@@ -35,8 +35,8 @@ train_args = {
     "alpha": 0.75,
     "max_buffer_size": 100000,
 
-    "train_steps_per_generation": 10,
-    "target_ReplayRatio": 5,
+    "train_steps_per_generation": 50,
+    "target_ReplayRatio": 8,
 
     "fpu_reduction_max": 0.1,
     "root_fpu_reduction_max": 0.0,
