@@ -567,6 +567,27 @@ class Gomoku:
 
         return encoded_state
 
+    def encode_state_batch(self, states, to_plays):
+        """Vectorized batch encoding of raw states.
+        
+        Args:
+            states: np.ndarray, shape (B, 1, H, W), dtype int8
+            to_plays: np.ndarray, shape (B,), values in {-1, 1}
+        Returns:
+            np.ndarray, shape (B, num_planes, H, W), dtype int8
+        """
+        B = states.shape[0]
+        H, W = self.board_size, self.board_size
+        tp = to_plays.reshape(B, 1, 1)  # (B, 1, 1) for broadcasting
+
+        encoded = np.zeros((B, self.num_planes, H, W), dtype=np.int8)
+        boards = states[:, 0]  # (B, H, W)
+        encoded[:, 0] = (boards == tp)
+        encoded[:, 1] = (boards == -tp)
+        # Note: enable_forbidden_point_plane is not supported in batch mode
+        encoded[:, -1] = (tp > 0).astype(np.int8) * np.ones((1, H, W), dtype=np.int8)
+        return encoded
+
     def get_win_pos(self, final_state):
         current_board = final_state[-1]
         size = self.board_size
