@@ -220,7 +220,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
                 sample_data = {
-                    "encoded_state": game.encode_state(sample["state"], sample["to_play"]),
+                    "state": sample["state"],
                     "to_play": sample["to_play"],
                     "policy_target": sample["mcts_policy"],
                     "opponent_policy_target": opponent_policy,
@@ -384,7 +384,7 @@ class AlphaZeroParallel(AlphaZero):
                             sps = total_samples / elapsed_time if elapsed_time > 0 else 0
 
                             print(
-                                f"Game: {self.game_count} | Sps: {sps:.1f} | BufferSize: {len(self.replay_buffer)} | "
+                                f"Game: {self.game_count} | Sps: {sps:.1f} | TotalSamples: {self.replay_buffer.total_samples_added} | "
                                 f"WindowSize: {self.replay_buffer.get_window_size()} | "
                                 f"AvgGameLen: {avg_game_len:.2f} | BWD: {b_rate:.2f} {w_rate:.2f} {d_rate:.2f}"
                             )

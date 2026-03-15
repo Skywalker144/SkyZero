@@ -511,7 +511,7 @@ class AlphaZero:
 
             opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
             sample_data = {
-                "encoded_state": self.game.encode_state(sample["state"], sample["to_play"]),
+                "state": sample["state"],
                 "to_play": sample["to_play"],
                 "policy_target": sample["mcts_policy"],
                 "opponent_policy_target": opponent_policy,
@@ -543,9 +543,20 @@ class AlphaZero:
 
         return_memory = apply_surprise_weighting_to_game(return_memory, surprise_weight)
 
+        # return memory:
+        #   state
+        #   to_play
+        #   policy_target
+        #   opponent_policy_target
+        #   value_target
+        #   sample_weight
+
         return return_memory, self.game.get_winner(final_state, last_action, last_player), len(memory), final_state
 
     def _train_batch(self, batch):
+
+        # Encode raw state + to_play into encoded_state for the network
+        batch["encoded_state"] = self.game.encode_state_batch(batch["state"], batch["to_play"])
 
         batch = random_augment_batch(batch, self.game.board_size)
         batch_size = len(batch["encoded_state"])
@@ -660,7 +671,7 @@ class AlphaZero:
                     sps = total_samples / elapsed_time if elapsed_time > 0 else 0
 
                     print(
-                        f"Game: {self.game_count} | Sps: {sps:.1f} | BufferSize: {len(self.replay_buffer)} | "
+                        f"Game: {self.game_count} | Sps: {sps:.1f} | TotalSamples: {self.replay_buffer.total_samples_added} | "
                         f"WindowSize: {self.replay_buffer.get_window_size()} | "
                         f"AvgGameLen: {avg_game_len:.1f} | BWD: {b_rate:.1f} {w_rate:.1f} {d_rate:.1f}"
                     )
