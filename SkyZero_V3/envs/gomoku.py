@@ -270,7 +270,7 @@ class ForbiddenPointFinder:
                     # Check if placing at (i, j) makes an open four that is not a double three/four forbidden point
                     if self.IsOpenFour(i, j, nColor, nDir) == 1:
                         if nColor == C_BLACK:
-                            if not self.IsDoubleFour(i, j) and not self.IsDoubleThree(i, j):
+                            if not self.IsDoubleFour(i, j) and not self.IsDoubleThree(i, j) and not self.IsOverline(i, j):
                                 found = True
                         else:
                             found = True
