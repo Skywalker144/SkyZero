@@ -520,7 +520,8 @@ function renderResults(data) {
     const aiColor = -playerColor;
 
     if (data && data.policy) {
-        const v = data.rootValue;
+        const wdl = data.rootValue; // WDL [win, draw, loss] from rootToPlay's perspective
+        const v = wdl[0] - wdl[2]; // W - L, range [-1, 1]
         const rootToPlay = data.rootToPlay;
         prob = (rootToPlay === aiColor) ? (v + 1) / 2 : 1 - (v + 1) / 2;
         document.getElementById("mcts-value").innerText = (prob * 100).toFixed(1) + "%";
@@ -559,15 +560,8 @@ function handleAIResult(data) {
     finishSearchStatus();
     renderResults(data);
     
-    // Best move
-    let bestAction = 0;
-    let maxN = -1;
-    for (let i = 0; i < data.policy.length; i++) {
-        if (data.policy[i] > maxN) {
-            maxN = data.policy[i];
-            bestAction = i;
-        }
-    }
+    // Best move — use gumbelAction from Gumbel Sequential Halving
+    const bestAction = data.gumbelAction;
 
     lastMoveFromAI = true;
     makeMove(bestAction);
@@ -589,7 +583,7 @@ function makeMove(action) {
     const c = action % boardSize;
     lastMove = { r, c };
     
-    // Notify worker for tree reuse
+    // Notify worker of the move (Gumbel AlphaZero starts fresh each search, no tree reuse)
     worker.postMessage({ 
         type: "move", 
         action: action, 
