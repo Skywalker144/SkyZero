@@ -1,16 +1,17 @@
-importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js");
+importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/ort.min.js");
 importScripts("gomoku.js");
 importScripts("mcts.js");
 
-// Force ONNX Runtime to load WASM from CDN
-ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+// 强制 ONNX Runtime 从 CDN 加载 WASM 资源，避免 404
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/";
+ort.env.wasm.numThreads = 1; // 禁用多线程以避免 CDN Worker 跨域加载失败导致的 TypeError
 
 let session = null;
 let game = null;
 let mcts = null;
+let root = null;
 
 const boardSize = 15;
-const historyStep = 2;
 
 function concatChunks(chunks, total) {
     const size = total || chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -99,15 +100,22 @@ function applyInverseSymmetry(data, C, H, W, doFlip, rot) {
     return res;
 }
 
-function softmax(logits) {
-    const maxLogit = Math.max(...logits);
-    const scores = logits.map(l => Math.exp(l - maxLogit));
-    const sum = scores.reduce((a, b) => a + b);
+function mctsSoftmax(logits) {
+    let maxLogit = -Infinity;
+    for (let i = 0; i < logits.length; i++) {
+        if (logits[i] > maxLogit) maxLogit = logits[i];
+    }
+    const scores = new Array(logits.length);
+    let sum = 0;
+    for (let i = 0; i < logits.length; i++) {
+        scores[i] = Math.exp(logits[i] - maxLogit);
+        sum += scores[i];
+    }
     return scores.map(s => s / sum);
 }
 
 async function init() {
-    game = new Gomoku(boardSize, historyStep, true);
+    game = new Gomoku(boardSize, true);
     mcts = new MCTS(game, {
         c_puct: 1.1,
         c_puct_log: 0.45,
@@ -115,12 +123,12 @@ async function init() {
         fpu_reduction_max: 0.2,
         root_fpu_reduction_max: 0.0,
         fpu_pow: 1.0,
-        // Gumbel parameters
+        fpu_loss_prop: 0.0,
         gumbel_m: 16,
         gumbel_c_visit: 50,
         gumbel_c_scale: 1.0,
     });
-
+    
     try {
         const ua = (self.navigator && self.navigator.userAgent) ? self.navigator.userAgent : "";
         const isIOS = /iP(hone|ad|od)/.test(ua);
@@ -140,21 +148,17 @@ async function init() {
 }
 
 /**
- * Run NN inference.
- * @param {Array} state
- * @param {number} toPlay
- * @param {string} mode - "single", "stochastic", or "full"
- * @returns {{ policy: Float32Array, value: Float64Array, logits: Float32Array, ownership: Float32Array, oppPLogits: Float32Array }}
- *   - policy: softmax probabilities (legal-masked)
- *   - value: WDL [win, draw, loss]
- *   - logits: raw averaged logits (legal-masked, before softmax)
- *   - ownership: averaged ownership map
- *   - oppPLogits: averaged opponent policy logits
+ * Run NN inference with optional symmetry augmentation.
+ * Returns { policy, value, policyLogits, oppPLogits }
+ *   - policy: Float32Array softmax probabilities (boardSize^2)
+ *   - value: Float64Array WDL [win, draw, loss]
+ *   - policyLogits: Float32Array masked logits (boardSize^2)
+ *   - oppPLogits: Float32Array averaged opponent policy logits (boardSize^2)
  */
 async function inference(state, toPlay, mode = "single") {
     const encoded = game.encodeState(state, toPlay);
     const C = game.numPlanes, H = boardSize, W = boardSize;
-
+    
     let batchSize = 1;
     let symmetries = [{ doFlip: false, rot: 0 }];
 
@@ -179,155 +183,184 @@ async function inference(state, toPlay, mode = "single") {
 
     const pLogits = results.policy_logits.data;
     const vLogits = results.value_logits.data;
-    const ownershipData = results.ownership.data;
     const oppPLogitsData = results.opponent_policy_logits.data;
 
-    // Average value logits -> WDL probabilities
+    // Average value logits across symmetries, then softmax to WDL
     const vLogitsAvg = new Float32Array(3).fill(0);
     for (let i = 0; i < batchSize; i++) {
         for (let j = 0; j < 3; j++) vLogitsAvg[j] += vLogits[i * 3 + j] / batchSize;
     }
-    const vProbs = softmax(Array.from(vLogitsAvg));
-    const value = new Float64Array([vProbs[0], vProbs[1], vProbs[2]]);  // WDL
+    const vProbs = mctsSoftmax(Array.from(vLogitsAvg));
+    const value = new Float64Array([vProbs[0], vProbs[1], vProbs[2]]);  // WDL [win, draw, loss]
 
-    // Average policy logits, ownership, opponent policy
+    // Average policy logits & opponent policy logits across symmetries (with inverse transform)
     const avgPLogits = new Float32Array(H * W).fill(0);
     const avgOppPLogits = new Float32Array(H * W).fill(0);
-    const avgOwnership = new Float32Array(H * W).fill(0);
 
     for (let i = 0; i < batchSize; i++) {
         const p = applyInverseSymmetry(pLogits.slice(i * H * W, (i + 1) * H * W), 1, H, W, symmetries[i].doFlip, symmetries[i].rot);
         const oppP = applyInverseSymmetry(oppPLogitsData.slice(i * H * W, (i + 1) * H * W), 1, H, W, symmetries[i].doFlip, symmetries[i].rot);
-        const own = applyInverseSymmetry(ownershipData.slice(i * H * W, (i + 1) * H * W), 1, H, W, symmetries[i].doFlip, symmetries[i].rot);
-
+        
         for (let j = 0; j < H * W; j++) {
             avgPLogits[j] += p[j] / batchSize;
             avgOppPLogits[j] += oppP[j] / batchSize;
-            avgOwnership[j] += own[j] / batchSize;
         }
     }
 
-    // Legal mask + softmax for policy probabilities
+    // Mask illegal moves and compute softmax policy
     const legalMask = game.getLegalActions(state, toPlay);
     const maskedLogits = new Float32Array(H * W);
     for (let i = 0; i < H * W; i++) {
         maskedLogits[i] = legalMask[i] ? avgPLogits[i] : -1e9;
     }
-    const policy = softmax(Array.from(maskedLogits));
+    const policy = new Float32Array(mctsSoftmax(Array.from(maskedLogits)));
 
-    return {
-        policy: new Float32Array(policy),
-        value,
-        logits: maskedLogits,       // raw masked logits (for Gumbel algorithm)
-        ownership: avgOwnership,
-        oppPLogits: avgOppPLogits,
-    };
+    return { policy, value, policyLogits: maskedLogits, oppPLogits: avgOppPLogits };
 }
 
 let latestSearchId = 0;
-const MAX_SEARCH_ITERATIONS = 1600;
+
+// Track inference speed for time-to-simulations estimation
+let inferenceTimeEma = null;  // Exponential moving average of single inference time (ms)
 
 onmessage = async function(e) {
+  try {
     const data = e.data;
     if (data.type === "init") {
         await init();
     } else if (data.type === "reset") {
         latestSearchId++;
+        root = new Node(game.getInitialState(), 1);
     } else if (data.type === "move") {
         latestSearchId++;
-        // No tree reuse in Gumbel AlphaZero — each search starts fresh
+        // No tree reuse for Gumbel search — each search creates a fresh root
+        // (consistent with Python backend behavior)
+        root = new Node(data.nextState, data.nextToPlay);
     } else if (data.type === "search") {
         const thinkTimeMs = Number.isFinite(data.thinkTimeMs) ? data.thinkTimeMs : 3000;
         const searchId = data.searchId;
         latestSearchId = searchId;
+        
+        // Always create a fresh root for Gumbel search (no tree reuse)
+        root = new Node(data.state, data.toPlay);
 
-        const state = data.state;
-        const toPlay = data.toPlay;
+        const searchStartTime = performance.now();
 
-        const startTime = performance.now();
-        const timeBudget = Math.max(0, thinkTimeMs);
-        const deadline = startTime + timeBudget;
+        // === Step 1: Root expand (full symmetry inference) ===
+        const rootInfStart = performance.now();
+        const { policy: rootPolicy, value: rootValue, policyLogits: rootLogits, oppPLogits } =
+            await inference(root.state, root.toPlay, "full");
+        const rootInfTime = performance.now() - rootInfStart;
 
-        // --- 1. Create fresh root and expand with full symmetry ---
-        const root = new Node(state, toPlay);
-        const rootInf = await inference(state, toPlay, "full");
-
+        // Check for abortion after async
         if (latestSearchId !== searchId) return;
 
-        mcts.expand(root, rootInf.policy, rootInf.value, rootInf.logits);
-        mcts.backpropagate(root, [rootInf.value[0], rootInf.value[1], rootInf.value[2]]);
+        // Expand root
+        mcts.expand(root, rootPolicy, rootValue, rootLogits);
 
-        // --- 2. Calculate simulation budget from time ---
-        // Estimate iterations from time budget: we use time-based adaptive budget
-        // Start with a conservative budget, can be adjusted
-        let numSimulations = MAX_SEARCH_ITERATIONS;
+        // Backpropagate root NN value
+        mcts.backpropagate(root, rootValue);
 
-        // --- 3. Run Gumbel Sequential Halving ---
-        let aborted = false;
-        let totalIterations = 0;
-        let lastProgressTime = startTime;
+        // === Step 2: Estimate simulation budget from remaining time ===
+        // Update inference time EMA (child inference uses stochastic mode = ~1/8 of full)
+        const singleInfEstimate = rootInfTime / 8;  // Approximate stochastic inference time
+        if (inferenceTimeEma === null) {
+            inferenceTimeEma = singleInfEstimate;
+        } else {
+            inferenceTimeEma = 0.7 * inferenceTimeEma + 0.3 * singleInfEstimate;
+        }
 
-        const inferFn = async (nodeState, nodeToPlay) => {
-            // Check abortion before inference
-            if (latestSearchId !== searchId) {
-                aborted = true;
-                // Return dummy to avoid crash — caller should check aborted
-                return {
-                    policy: new Float32Array(boardSize * boardSize),
-                    value: new Float64Array([0, 1, 0]),
-                    logits: new Float32Array(boardSize * boardSize),
-                };
+        const elapsed = performance.now() - searchStartTime;
+        const remainingTime = Math.max(0, thinkTimeMs - elapsed);
+        // Each simulation = 1 inference (approximately). Reserve some time for final computation.
+        const reservedTime = Math.min(200, remainingTime * 0.05);
+        let numSimulations = Math.max(1, Math.floor((remainingTime - reservedTime) / Math.max(1, inferenceTimeEma)));
+        // Cap simulations
+        numSimulations = Math.min(numSimulations, 1600);
+
+        // === Step 3: Run Gumbel Sequential Halving ===
+        let lastProgressTime = performance.now();
+        let totalSims = 0;
+
+        const simulateOne = async (action) => {
+            // Find the child for this action
+            const child = root.children.find(c => c.actionTaken === action);
+            if (!child) return;
+
+            // Select down from child
+            let node = child;
+            while (node.isExpanded()) {
+                node = mcts.select(node);
+                if (!node) return;
             }
-            // Non-root nodes use stochastic single-symmetry (matching Python behavior)
-            const result = await inference(nodeState, nodeToPlay, "stochastic");
-            if (latestSearchId !== searchId) {
-                aborted = true;
-            }
-            return result;
-        };
 
-        const progressFn = (simsUsed, totalBudget) => {
-            totalIterations = simsUsed;
+            // Evaluate leaf
+            // node.toPlay is who plays NEXT; the last player was -node.toPlay
+            const winner = game.getWinner(node.state, node.actionTaken, -node.toPlay);
+            let value;
+            if (winner !== null) {
+                // Terminal: WDL one-hot from this node's perspective
+                const result = winner * node.toPlay;
+                if (result === 1) {
+                    value = new Float64Array([1.0, 0.0, 0.0]);  // win
+                } else if (result === -1) {
+                    value = new Float64Array([0.0, 0.0, 1.0]);  // loss
+                } else {
+                    value = new Float64Array([0.0, 1.0, 0.0]);  // draw
+                }
+            } else {
+                // NN inference (stochastic symmetry for non-root)
+                const infStart = performance.now();
+                const { policy, value: v, policyLogits } = await inference(node.state, node.toPlay, "stochastic");
+                const infTime = performance.now() - infStart;
+
+                // Update inference time EMA
+                inferenceTimeEma = 0.7 * inferenceTimeEma + 0.3 * infTime;
+
+                // Check abortion after async
+                if (latestSearchId !== searchId) return;
+
+                mcts.expand(node, policy, v, policyLogits);
+                value = v;
+            }
+
+            mcts.backpropagate(node, value);
+            totalSims++;
+
+            // Report progress periodically
             const now = performance.now();
-
-            // Time-based abort: if we exceed the deadline, we let the current phase finish
-            // but signal that we should stop (the search naturally stops when budget is exhausted)
-
             if (now - lastProgressTime > 60) {
                 lastProgressTime = now;
-                const timeProgress = timeBudget > 0
-                    ? Math.min(100, ((now - startTime) / timeBudget) * 100)
-                    : 100;
-                const simProgress = (simsUsed / totalBudget) * 100;
-                const progress = Math.max(timeProgress, simProgress);
+                const progress = Math.min(100, ((now - searchStartTime) / thinkTimeMs) * 100);
                 postMessage({ type: "progress", progress, searchId });
             }
         };
 
-        const { improvedPolicy, gumbelAction, vMix } = await mcts.gumbelSequentialHalving(
-            root, numSimulations, inferFn, progressFn
-        );
+        const { improvedPolicy, gumbelAction, vMix } =
+            await mcts.gumbelSequentialHalving(root, numSimulations, /* isEval */ true, simulateOne);
 
-        if (aborted || latestSearchId !== searchId) return;
+        // Final abortion check
+        if (latestSearchId !== searchId) return;
 
         postMessage({ type: "progress", progress: 100, searchId });
 
-        // --- 4. Get auxiliary outputs for display ---
-        const { ownership, oppPLogits } = await inference(root.state, root.toPlay, "full");
-
-        if (latestSearchId !== searchId) return;
+        // Compute scalar root value from vMix WDL: W - L
+        const rootValueScalar = vMix[0] - vMix[2];
 
         postMessage({
             type: "result",
             policy: improvedPolicy,
             gumbelAction: gumbelAction,
-            rootValue: Array.from(vMix),          // WDL [win, draw, loss]
+            rootValue: rootValueScalar,
             rootToPlay: root.toPlay,
-            nnValue: Array.from(rootInf.value),   // WDL from raw NN
-            ownership: ownership,
+            nnValue: rootValue[0] - rootValue[2],  // scalar NN value for display
             oppPLogits: oppPLogits,
-            iterations: totalIterations + 1,       // +1 for root expansion
-            searchId: searchId,
+            iterations: totalSims,
+            searchId: searchId
         });
     }
+  } catch (err) {
+    console.error("Worker error:", err);
+    postMessage({ type: "error", message: err.message || String(err) });
+  }
 };

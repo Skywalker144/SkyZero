@@ -11,6 +11,8 @@ const loadingOverlay = document.getElementById("loading-overlay");
 const loadingTextEl = document.getElementById("loading-text");
 const loadingProgressBarEl = document.getElementById("loading-progress-bar");
 const loadingProgressTextEl = document.getElementById("loading-progress-text");
+const iphoneWarningEl = document.getElementById("iphone-warning");
+const iphoneWarningCloseEl = document.getElementById("iphone-warning-close");
 
 const boardSize = 15;
 let cellSize = 0;
@@ -19,8 +21,9 @@ let margin = 0;
 let game = new Gomoku(boardSize, 2, true);
 let state = game.getInitialState();
 let toPlay = 1; // 1 for Black, -1 for White
-let playerColor = 1; // 1 for Black, -1 for White
+let playerColor = -1; // 1 for Black, -1 for White
 let history = [];
+let moveHistory = [];
 let aiRunning = false;
 let lastMove = null; // 记录上一手棋的位置 {r, c}
 let thinkTimeMs = 3000;
@@ -32,12 +35,13 @@ let lastResults = {
     policy: null
 };
 
-const worker = new Worker("worker.js");
+const worker = new Worker("worker.js?v=" + Date.now());
 const chartCanvas = document.getElementById("win-prob-chart");
 const chartCtx = chartCanvas.getContext("2d");
 let winProbHistory = []; // Start empty
 let showHeatmap = true;
 let showForbidden = true;
+let showMoveNumbers = false;
 
 let searchStartTime = 0;
 let lastSearchDuration = null;
@@ -64,6 +68,40 @@ if (thinkSlider) {
     thinkSlider.addEventListener("input", () => {
         updateThinkTime(thinkSlider.value);
     });
+}
+
+const IPHONE_WARNING_KEY = "skyzero:hide-iphone-warning";
+
+function isIPhoneDevice() {
+    return /iPhone/i.test(navigator.userAgent || "");
+}
+
+function showIPhoneWarning() {
+    if (!iphoneWarningEl) return;
+    iphoneWarningEl.classList.add("is-visible");
+    iphoneWarningEl.setAttribute("aria-hidden", "false");
+}
+
+function hideIPhoneWarning() {
+    if (!iphoneWarningEl) return;
+    iphoneWarningEl.classList.remove("is-visible");
+    iphoneWarningEl.setAttribute("aria-hidden", "true");
+}
+
+function setupIPhoneWarning() {
+    if (!iphoneWarningEl) return;
+    const shouldHide = window.localStorage && localStorage.getItem(IPHONE_WARNING_KEY) === "1";
+    if (isIPhoneDevice() && !shouldHide) {
+        showIPhoneWarning();
+    }
+    if (iphoneWarningCloseEl) {
+        iphoneWarningCloseEl.addEventListener("click", () => {
+            if (window.localStorage) {
+                localStorage.setItem(IPHONE_WARNING_KEY, "1");
+            }
+            hideIPhoneWarning();
+        });
+    }
 }
 
 function updateCanvasSize() {
@@ -114,6 +152,8 @@ setTimeout(() => {
     updateChartSize();
     updateSlider();
 }, 100);
+
+setupIPhoneWarning();
 
 worker.postMessage({ type: "init" });
 
@@ -301,10 +341,14 @@ function drawBoard() {
             drawStone(r, c, currentBoard[i]);
         }
     }
-    
+
     // Draw last move marker
     if (lastMove) {
         drawLastMoveMarker(lastMove.r, lastMove.c);
+    }
+
+    if (showMoveNumbers) {
+        drawMoveNumbers(currentBoard);
     }
 }
 
@@ -520,8 +564,7 @@ function renderResults(data) {
     const aiColor = -playerColor;
 
     if (data && data.policy) {
-        const wdl = data.rootValue; // WDL [win, draw, loss] from rootToPlay's perspective
-        const v = wdl[0] - wdl[2]; // W - L, range [-1, 1]
+        const v = data.rootValue;
         const rootToPlay = data.rootToPlay;
         prob = (rootToPlay === aiColor) ? (v + 1) / 2 : 1 - (v + 1) / 2;
         document.getElementById("mcts-value").innerText = (prob * 100).toFixed(1) + "%";
@@ -532,7 +575,9 @@ function renderResults(data) {
             winProbHistory.push(prob);
         }
     } else {
-        const winner = game.getWinner(state);
+        const lastAct = moveHistory.length > 0 ? moveHistory[moveHistory.length - 1] : null;
+        const lastPlr = moveHistory.length > 0 ? -toPlay : null;  // toPlay already flipped, so last player is -toPlay
+        const winner = game.getWinner(state, lastAct, lastPlr);
         if (winner !== null) {
             prob = (winner === aiColor) ? 1.0 : (winner === 0 ? 0.5 : 0.0);
             document.getElementById("mcts-value").innerText = (prob * 100).toFixed(1) + "%";
@@ -560,8 +605,8 @@ function handleAIResult(data) {
     finishSearchStatus();
     renderResults(data);
     
-    // Best move — use gumbelAction from Gumbel Sequential Halving
-    const bestAction = data.gumbelAction;
+    // Use gumbelAction directly from Gumbel Sequential Halving
+    const bestAction = Number.isFinite(data.gumbelAction) ? data.gumbelAction : 0;
 
     lastMoveFromAI = true;
     makeMove(bestAction);
@@ -576,14 +621,16 @@ function makeMove(action) {
         lastResults: lastResults,
         lastMove: lastMove ? { ...lastMove } : null
     });
+    const movingPlayer = toPlay;
     state = game.getNextState(state, action, toPlay);
+    moveHistory.push(action);
     
     // Record last move
     const r = Math.floor(action / boardSize);
     const c = action % boardSize;
     lastMove = { r, c };
     
-    // Notify worker of the move (Gumbel AlphaZero starts fresh each search, no tree reuse)
+    // Notify worker
     worker.postMessage({ 
         type: "move", 
         action: action, 
@@ -593,7 +640,7 @@ function makeMove(action) {
 
     toPlay = -toPlay;
 
-    const winner = game.getWinner(state);
+    const winner = game.getWinner(state, action, movingPlayer);
     if (winner !== null) {
         setIdleStatus(
             winner === 1 ? "分析完成：黑胜" : (winner === -1 ? "分析完成：白胜" : "分析完成：平局"),
@@ -638,6 +685,7 @@ function resetGame() {
     state = game.getInitialState();
     toPlay = 1;
     history = [];
+    moveHistory = [];
     winProbHistory = []; // Clear history
     aiRunning = false;
     lastMove = null;
@@ -647,23 +695,35 @@ function resetGame() {
     renderResults(null);
     worker.postMessage({ type: "reset" });
     
+    if (playerColor === -1) {
+        const center = Math.floor(boardSize / 2);
+        const centerAction = center * boardSize + center;
+        makeMove(centerAction);
+        drawBoard();
+        return;
+    }
+
     if (toPlay === playerColor) {
         setIdleStatus("轮到黑棋", true, true);
     } else {
         startSearchStatus();
         aiRunning = true;
-        worker.postMessage({ type: "search", thinkTimeMs: getEffectiveThinkTimeMs(), state, toPlay, searchId });
+        worker.postMessage({ type: "search", thinkTimeMs: getEffectiveThinkTimeMs(), state, toPlay, searchId, purpose: "play" });
     }
     
     drawBoard();
 }
 
 function undo() {
-    const isGameOver = game.getWinner(state) !== null;
+    const lastAct = moveHistory.length > 0 ? moveHistory[moveHistory.length - 1] : null;
+    const lastPlr = moveHistory.length > 0 ? -toPlay : null;
+    const isGameOver = game.getWinner(state, lastAct, lastPlr) !== null;
     if (undoCount >= undoLimit) {
         setIdleStatus("本局悔棋次数已用完", true, true);
         return;
     }
+
+    let movesToUndo = 0;
     
     // Allow undo to interrupt AI search and perform undo
     if (aiRunning && !isGameOver) {
@@ -673,6 +733,7 @@ function undo() {
         
         if (history.length > 0) {
             const prev = history.pop();
+            movesToUndo = 1;
             winProbHistory.pop();
             state = prev.state;
             toPlay = prev.toPlay;
@@ -682,6 +743,7 @@ function undo() {
             undoCount++;
             updateUndoButton();
         }
+        if (movesToUndo > 0) popMoveHistory(movesToUndo);
         setIdleStatus(toPlay === 1 ? "轮到黑棋" : "轮到白棋", true, true);
         return;
     }
@@ -694,21 +756,25 @@ function undo() {
             // Game ended on AI move, undo 2 moves to return to human turn
             history.pop();
             prev = history.pop();
+            movesToUndo = 2;
             winProbHistory.pop();
             winProbHistory.pop();
         } else {
             // Game ended on human move (or not enough history), undo 1 move
             prev = history.pop();
+            movesToUndo = 1;
             winProbHistory.pop();
         }
     } else if (toPlay !== playerColor) {
         // AI"s turn, undo 1 move
         prev = history.pop();
+        movesToUndo = 1;
         winProbHistory.pop();
     } else if (history.length >= 2) {
         // Human"s turn, undo 2 moves (AI + Human)
         history.pop();
         prev = history.pop();
+        movesToUndo = 2;
         winProbHistory.pop();
         winProbHistory.pop();
     } else {
@@ -718,6 +784,7 @@ function undo() {
     state = prev.state;
     toPlay = prev.toPlay;
     lastMove = prev.lastMove;
+    popMoveHistory(movesToUndo);
     searchId++;
     renderResults(prev.lastResults);
     aiRunning = false;
@@ -733,6 +800,14 @@ function undo() {
     drawBoard();
     undoCount++;
     updateUndoButton();
+}
+
+function popMoveHistory(count) {
+    if (!Number.isFinite(count) || count <= 0) return;
+    for (let i = 0; i < count; i++) {
+        if (moveHistory.length === 0) break;
+        moveHistory.pop();
+    }
 }
 
 function updateSlider() {
@@ -766,19 +841,84 @@ document.getElementById("pick-white").onclick = () => {
 document.getElementById("reset-btn").onclick = resetGame;
 document.getElementById("undo-btn").onclick = undo;
 
-document.getElementById("toggle-mcts").onclick = () => {
-    showHeatmap = !showHeatmap;
-    document.getElementById("toggle-mcts").classList.toggle("active", showHeatmap);
-    drawBoard();
-};
+const mctsToggle = document.getElementById("toggle-mcts");
+const forbiddenToggle = document.getElementById("toggle-forbidden");
+const moveNumbersToggle = document.getElementById("toggle-move-numbers");
 
-document.getElementById("toggle-forbidden").onclick = () => {
-    showForbidden = !showForbidden;
-    document.getElementById("toggle-forbidden").classList.toggle("active", showForbidden);
-    drawBoard();
-};
+function syncAnalysisToggleState() {
+    if (mctsToggle) {
+        showHeatmap = mctsToggle.checked;
+        mctsToggle.setAttribute("aria-checked", String(showHeatmap));
+    }
+    if (forbiddenToggle) {
+        showForbidden = forbiddenToggle.checked;
+        forbiddenToggle.setAttribute("aria-checked", String(showForbidden));
+    }
+    if (moveNumbersToggle) {
+        showMoveNumbers = moveNumbersToggle.checked;
+        moveNumbersToggle.setAttribute("aria-checked", String(showMoveNumbers));
+    }
+}
 
-document.getElementById("toggle-mcts").classList.toggle("active", showHeatmap);
-document.getElementById("toggle-forbidden").classList.toggle("active", showForbidden);
+function drawMoveNumbers(currentBoard) {
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const fontSize = Math.max(10, cellSize * 0.36);
+    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+
+    for (let i = 0; i < moveHistory.length; i++) {
+        const action = moveHistory[i];
+        if (!Number.isFinite(action)) continue;
+        if (currentBoard[action] === 0) continue;
+        const r = Math.floor(action / boardSize);
+        const c = action % boardSize;
+        drawMoveNumber(r, c, i + 1, currentBoard[action]);
+    }
+
+    ctx.restore();
+}
+
+function drawMoveNumber(r, c, number, stoneColor) {
+    const x = margin + c * cellSize;
+    const y = margin + r * cellSize;
+    const text = String(number);
+    const outlineWidth = Math.max(1, cellSize * 0.06);
+
+    if (stoneColor === 1) {
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.35)";
+        ctx.fillStyle = "#f6f1e6";
+    } else {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
+        ctx.fillStyle = "#1f1f1f";
+    }
+
+    ctx.lineWidth = outlineWidth;
+    ctx.strokeText(text, x, y);
+    ctx.fillText(text, x, y);
+}
+
+if (mctsToggle) {
+    mctsToggle.addEventListener("change", () => {
+        syncAnalysisToggleState();
+        drawBoard();
+    });
+}
+
+if (forbiddenToggle) {
+    forbiddenToggle.addEventListener("change", () => {
+        syncAnalysisToggleState();
+        drawBoard();
+    });
+}
+
+if (moveNumbersToggle) {
+    moveNumbersToggle.addEventListener("change", () => {
+        syncAnalysisToggleState();
+        drawBoard();
+    });
+}
+
+syncAnalysisToggleState();
 
 drawBoard();

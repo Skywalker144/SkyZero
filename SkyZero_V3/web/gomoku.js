@@ -226,20 +226,24 @@ class ForbiddenPointFinder {
 }
 
 class Gomoku {
-    constructor(boardSize = 15, historyStep = 2, useRenju = true) {
+    constructor(boardSize = 15, useRenju = true) {
         this.boardSize = boardSize;
-        this.historyStep = historyStep;
         this.useRenju = useRenju;
-        this.numPlanes = 2 * historyStep + 1;
+        this.numPlanes = 3;  // my stones, opponent stones, color-to-play
         this.fpf = new ForbiddenPointFinder(boardSize);
     }
 
+    /**
+     * State is a single-element array containing one Int8Array board.
+     * state[0] is the flat board of size boardSize*boardSize.
+     * Values: 1 = black, -1 = white, 0 = empty.
+     */
     getInitialState() {
-        return Array.from({ length: this.historyStep }, () => new Int8Array(this.boardSize * this.boardSize).fill(0));
+        return [new Int8Array(this.boardSize * this.boardSize)];
     }
 
     getExpandedRegion(state, k = 2) {
-        const currentBoard = state[state.length - 1];
+        const currentBoard = state[0];
         const expanded = new Uint8Array(this.boardSize * this.boardSize).fill(0);
         let hasStone = false;
 
@@ -262,7 +266,7 @@ class Gomoku {
     }
 
     getLegalActions(state, toPlay, restricted = true) {
-        const currentBoard = state[state.length - 1];
+        const currentBoard = state[0];
         const { expanded, hasStone } = this.getExpandedRegion(state, 2);
         const legalMask = new Uint8Array(this.boardSize * this.boardSize).fill(0);
 
@@ -296,17 +300,39 @@ class Gomoku {
     }
 
     getNextState(state, action, toPlay) {
-        const nextState = state.map(layer => new Int8Array(layer));
-        const currentBoard = new Int8Array(nextState[nextState.length - 1]);
-        currentBoard[action] = toPlay;
-        nextState.shift();
-        nextState.push(currentBoard);
-        return nextState;
+        const newBoard = new Int8Array(state[0]);
+        newBoard[action] = toPlay;
+        return [newBoard];
     }
 
-    getWinner(state) {
-        const board = state[state.length - 1];
+    /**
+     * Check for winner.
+     * @param {Array} state - single-frame state [Int8Array]
+     * @param {number|null} lastAction - last placed action index (for Renju forbidden check)
+     * @param {number|null} lastPlayer - last player who moved (1 or -1)
+     * @returns {number|null} 1=black wins, -1=white wins, 0=draw, null=ongoing
+     */
+    getWinner(state, lastAction = null, lastPlayer = null) {
+        const board = state[0];
         const size = this.boardSize;
+
+        // Renju forbidden move check: if Black just played on a forbidden point, White wins.
+        if (this.useRenju && lastAction !== null && lastPlayer === 1) {
+            const row = Math.floor(lastAction / size);
+            const col = lastAction % size;
+            this.fpf.clear();
+            for (let i = 0; i < board.length; i++) {
+                if (board[i] !== 0) {
+                    const r = Math.floor(i / size);
+                    const c = i % size;
+                    if (r === row && c === col) continue;  // skip last placed stone
+                    this.fpf.setStone(r, c, board[i] === 1 ? C_BLACK : C_WHITE);
+                }
+            }
+            if (this.fpf.isForbidden(row, col)) {
+                return -1;  // White wins
+            }
+        }
 
         const check = (r, c, dr, dc) => {
             const color = board[r * size + c];
@@ -330,20 +356,22 @@ class Gomoku {
         return null;
     }
 
+    /**
+     * Encode state for NN input: 3 planes [my_stones, opp_stones, color_plane].
+     * Returns Float32Array of length 3 * boardSize * boardSize.
+     */
     encodeState(state, toPlay) {
-        const shape = [this.numPlanes, this.boardSize, this.boardSize];
-        const encoded = new Float32Array(shape[0] * shape[1] * shape[2]);
         const layerSize = this.boardSize * this.boardSize;
+        const encoded = new Float32Array(3 * layerSize);
+        const board = state[0];
 
-        for (let i = 0; i < this.historyStep; i++) {
-            const layer = state[i];
-            for (let j = 0; j < layerSize; j++) {
-                if (layer[j] === toPlay) encoded[2 * i * layerSize + j] = 1;
-                else if (layer[j] === -toPlay) encoded[(2 * i + 1) * layerSize + j] = 1;
-            }
+        for (let j = 0; j < layerSize; j++) {
+            if (board[j] === toPlay) encoded[j] = 1;                       // plane 0: current player's stones
+            else if (board[j] === -toPlay) encoded[layerSize + j] = 1;     // plane 1: opponent's stones
         }
+        // plane 2: 1 if current player is Black
         if (toPlay > 0) {
-            for (let j = 0; j < layerSize; j++) encoded[(this.numPlanes - 1) * layerSize + j] = 1;
+            for (let j = 0; j < layerSize; j++) encoded[2 * layerSize + j] = 1;
         }
         return encoded;
     }
