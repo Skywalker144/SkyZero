@@ -18,33 +18,21 @@ def compute_policy_surprise_weights(game_data, board_size, policy_surprise_data_
     if n_positions == 0:
         return []
 
-    now_factor = 1 / (1 + (board_size ** 2) * 0.016)
-
-    last_outcome = game_data[-1]["outcome"]
-    if last_outcome == 1:
-        current_target = np.array([1.0, 0.0, 0.0])
-    elif last_outcome == 0:
-        current_target = np.array([0.0, 1.0, 0.0])
-    else:
-        current_target = np.array([0.0, 0.0, 1.0])
-    
-    smoothed_targets = [None] * n_positions
-    for i in range(n_positions - 1, -1, -1):
-        search_value = game_data[i]["root_value"]
-        current_target = current_target + now_factor * (search_value - current_target)
-        smoothed_targets[i] = current_target.copy()
-    
     target_weigts = []
     policy_surprises = []
     value_surprises = []
 
     for i in range(n_positions):
         sample = game_data[i]
+
+        # Policy Surprise (KL between search policy and NN prior)
         p_kl = compute_kl_divergence(sample["policy_target"], sample["nn_policy"])
         policy_surprises.append(p_kl)
 
-        v_kl = compute_kl_divergence(smoothed_targets[i], sample["nn_value_probs"])
-        value_surprises.append(min(v_kl, 1))
+        # Value Surprise (KL between value_target and NN value probs)
+        # value_target is pre-computed as KataGo-style TD target in selfplay
+        v_kl = compute_kl_divergence(sample["value_target"], sample["nn_value_probs"])
+        value_surprises.append(min(v_kl, 1.0))
 
         w = 1 if sample["is_full_search"] else 0
         target_weigts.append(w)
@@ -203,13 +191,20 @@ def apply_surprise_weighting_to_game(game_data, weights):
     rand = np.random.random
     
     for sample, weight in zip(game_data, weights):
+        # Remove intermediate fields not needed by ReplayBuffer
+        del sample["outcome"]
+        del sample["nn_policy"]
+        del sample["nn_value_probs"]
+        del sample["root_value"]
+
         if weight <= 0:
             continue
         floor_weight = int(weight)
         
         if floor_weight > 0:
-            weighted_data.extend([sample] * floor_weight)
+            for _ in range(floor_weight):
+                weighted_data.append(sample.copy())
         
         if (weight - floor_weight) > rand():
-            weighted_data.append(sample)
+            weighted_data.append(sample.copy())
     return weighted_data
