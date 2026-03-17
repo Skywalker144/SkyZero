@@ -520,10 +520,12 @@ class AlphaZero:
 
         in_soft_resign = False
         historical_root_value = []
+        last_action = None
+        last_player = None
 
         root = Node(state, to_play)
 
-        while not self.game.is_terminal(state):
+        while not self.game.is_terminal(state, last_action, last_player):
 
             if in_soft_resign:
                 num_simulations = self.args["fast_search_num_simulations"]
@@ -568,6 +570,8 @@ class AlphaZero:
                 p=temperature_transform(mcts_policy, t)
             )
 
+            last_action = action
+            last_player = to_play
             state = self.game.get_next_state(state, action, to_play)
             to_play = -to_play
 
@@ -585,7 +589,7 @@ class AlphaZero:
                 root = Node(state, to_play)
 
         final_state = state
-        winner = self.game.get_winner(final_state)
+        winner = self.game.get_winner(final_state, last_action, last_player)
 
         return_memory = []
         for i, sample in enumerate(memory):

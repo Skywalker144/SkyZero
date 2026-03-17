@@ -165,10 +165,12 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
             in_soft_resign = False
             historical_root_value = []
+            last_action = None
+            last_player = None
 
             root = Node(state, to_play)
 
-            while not game.is_terminal(state):
+            while not game.is_terminal(state, last_action, last_player):
 
                 if in_soft_resign:
                     num_simulations = args["fast_search_num_simulations"]
@@ -215,6 +217,8 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     game.board_size**2,
                     p=temperature_transform(mcts_policy, t)
                 )
+                last_action = action
+                last_player = to_play
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
 
@@ -232,7 +236,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     root = Node(state, to_play)
 
             final_state = state
-            winner = game.get_winner(final_state)
+            winner = game.get_winner(final_state, last_action, last_player)
             
             return_memory = []
             for i, sample in enumerate(memory):
@@ -263,7 +267,8 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             
             # Value target construction (KataGo-style TD): recursive exponential weighted average
             # of search root value (root_value) and game outcome, with outcome weight increasing near end.
-            now_factor = 1.0 / (1.0 + (game.board_size ** 2) * 0.016)
+            naw_factor_constant = args.get("value_target_mix_now_factor_constant", 0.2)
+            now_factor = 1.0 / (1.0 + (game.board_size ** 2) * naw_factor_constant)
             return_memory[-1]["value_target"] = return_memory[-1]["outcome"].copy()
             for i in range(len(return_memory) - 2, -1, -1):
                 next_value_target = return_memory[i + 1]["value_target"]
