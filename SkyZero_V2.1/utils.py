@@ -33,49 +33,39 @@ def print_board(board):
         print()
 
 
-def random_augment_sample(sample, board_size):
-    # game_data: dictionary (encoded_state, final_state, policy_target, opponent_policy, value_variance, outcome)
-    transform_type = np.random.randint(0, 8)
-    k = transform_type % 4
-    do_flip = transform_type >= 4
-
-    state = sample["encoded_state"]
-    p_target = sample["policy_target"]
-    opp_p_target = sample["opponent_policy_target"]
-    win_pos_target = sample["win_pos_target"]
-
-    aug_state = np.rot90(state, k=k, axes=(1, 2))
-    p_2d = p_target.reshape(board_size, board_size)
-    opp_p_2d = opp_p_target.reshape(board_size, board_size)
-    win_pos_2d = win_pos_target.reshape(board_size, board_size)
-    aug_p_2d = np.rot90(p_2d, k=k)
-    aug_opp_p_2d = np.rot90(opp_p_2d, k=k)
-    aug_win_pos_2d = np.rot90(win_pos_2d, k=k)
-    if do_flip:
-        aug_state = np.flip(aug_state, axis=2)
-        aug_p_2d = np.flip(aug_p_2d, axis=1)
-        aug_opp_p_2d = np.flip(aug_opp_p_2d, axis=1)
-        aug_win_pos_2d = np.flip(aug_win_pos_2d, axis=1)
-    aug_p_target = aug_p_2d.flatten()
-    aug_opp_p_target = aug_opp_p_2d.flatten()
-    aug_win_pos_2d = aug_win_pos_2d.flatten()
-
-    new_sample = sample.copy()
-    new_sample.update({
-        "encoded_state": aug_state.copy(),
-        "policy_target": aug_p_target.copy(),
-        "opponent_policy_target": aug_opp_p_target.copy(),
-        "win_pos_target": aug_win_pos_2d.copy()
-    })
-    return new_sample
-
-
 def random_augment_batch(batch, board_size):
-    augmented_batch = []
-    for sample in batch:
-        aug_sample = random_augment_sample(sample, board_size)
-        augmented_batch.append(aug_sample)
-    return augmented_batch
+    # batch is { "encoded_state": np.ndarray(B, C, H, W), ... }
+    if not batch:
+        return batch
+
+    batch_size = len(batch["encoded_state"])
+
+    # In-place modify Numpy arrays for fast augmentation
+    for i in range(batch_size):
+        transform_type = np.random.randint(0, 8)
+        k = transform_type % 4
+        do_flip = transform_type >= 4
+
+        if k == 0 and not do_flip:
+            continue
+
+        batch["encoded_state"][i] = np.rot90(batch["encoded_state"][i], k=k, axes=(1, 2))
+
+        p_2d = batch["policy_target"][i].reshape(board_size, board_size)
+        opp_p_2d = batch["opponent_policy_target"][i].reshape(board_size, board_size)
+
+        aug_p_2d = np.rot90(p_2d, k=k)
+        aug_opp_p_2d = np.rot90(opp_p_2d, k=k)
+
+        if do_flip:
+            batch["encoded_state"][i] = np.flip(batch["encoded_state"][i], axis=2)
+            aug_p_2d = np.flip(aug_p_2d, axis=1)
+            aug_opp_p_2d = np.flip(aug_opp_p_2d, axis=1)
+
+        batch["policy_target"][i] = aug_p_2d.flatten()
+        batch["opponent_policy_target"][i] = aug_opp_p_2d.flatten()
+
+    return batch
 
 
 def drop_last(memory, batch_size):
