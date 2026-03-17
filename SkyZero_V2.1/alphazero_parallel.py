@@ -38,16 +38,14 @@ class RemoteModel:
 
         self.request_queue.put((self.rank, state_cpu))
 
-        policy_np, value_np, opponent_policy_np, soft_policy_np, soft_opponent_policy_np, win_pos_np, remaining_steps_np = self.response_pipe.recv()
+        policy_np, value_np, opponent_policy_np, soft_policy_np, soft_opponent_policy_np = self.response_pipe.recv()
 
         return {
             "policy_logits": torch.tensor(policy_np),
             "value_logits": torch.tensor(value_np),
             "opponent_policy_logits": torch.tensor(opponent_policy_np),
             "soft_policy_logits": torch.tensor(soft_policy_np),
-            "soft_opponent_policy_logits": torch.tensor(soft_opponent_policy_np),
-            "win_pos_logits": torch.tensor(win_pos_np),
-            "remaining_steps": torch.tensor(remaining_steps_np)
+            "soft_opponent_policy_logits": torch.tensor(soft_opponent_policy_np)
         }
 
 
@@ -113,16 +111,12 @@ def gpu_worker(model_instance, model_state_dict, request_queue, response_pipes, 
                     opponent_policies = outputs["opponent_policy_logits"]
                     soft_policies = outputs["soft_policy_logits"]
                     soft_opponent_policies = outputs["soft_opponent_policy_logits"]
-                    win_poses = outputs["win_pos_logits"]
-                    remaining_steps = outputs["remaining_steps"]
 
                 policies = policies.cpu().numpy()
                 values = values.cpu().numpy()
                 opponent_policies = opponent_policies.cpu().numpy()
                 soft_policies = soft_policies.cpu().numpy()
                 soft_opponent_policies = soft_opponent_policies.cpu().numpy()
-                win_poses = win_poses.cpu().numpy()
-                remaining_steps = remaining_steps.cpu().numpy()
 
                 start_idx = 0
                 for i, rank in enumerate(batch_ranks):
@@ -134,8 +128,6 @@ def gpu_worker(model_instance, model_state_dict, request_queue, response_pipes, 
                         opponent_policies[start_idx:end_idx],
                         soft_policies[start_idx:end_idx],
                         soft_opponent_policies[start_idx:end_idx],
-                        win_poses[start_idx:end_idx],
-                        remaining_steps[start_idx:end_idx],
                     ))
                     start_idx = end_idx
 
@@ -188,8 +180,9 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 mcts_policy, root_value, nn_policy, nn_value_probs = mcts.search(state, to_play, num_simulations, root=root)
 
-                # Soft Resign
-                historical_root_value.append(root_value)
+                # Soft Resign - derive scalar from WDL for threshold check
+                root_value_scalar = root_value[0] - root_value[2]  # W - L
+                historical_root_value.append(root_value_scalar)
                 absmin_root_value = min(abs(x) for x in historical_root_value[-args.get("soft_resign_step_threshold", 3):])
                 if (
                     not in_soft_resign
@@ -202,16 +195,16 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     memory[-1]["next_mcts_policy"] = mcts_policy
 
                 memory.append({
-                "state": state,
-                "to_play": to_play,
-                "mcts_policy": mcts_policy,
-                "nn_policy": nn_policy,
-                "nn_value_probs": nn_value_probs,
-                "root_value": root_value,
-                "is_full_search": num_simulations == args["full_search_num_simulations"],
-                "next_mcts_policy": None,
-                "sample_weight": 1 if not in_soft_resign else args.get("soft_resign_sample_weight", 0.1),
-            })
+                    "state": state,
+                    "to_play": to_play,
+                    "mcts_policy": mcts_policy,
+                    "nn_policy": nn_policy,
+                    "nn_value_probs": nn_value_probs,
+                    "root_value": root_value,
+                    "is_full_search": num_simulations == args["full_search_num_simulations"],
+                    "next_mcts_policy": None,
+                    "sample_weight": 1 if not in_soft_resign else args.get("soft_resign_sample_weight", 0.1),
+                })
 
                 current_step = len(memory)
                 max_t = args.get("move_temperature_init", 0.8)
@@ -240,39 +233,51 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
             final_state = state
             winner = game.get_winner(final_state)
-            win_pos = game.get_win_pos(final_state)
-
-            remaining_steps_weight = 1 / game.board_size ** 2
             
             return_memory = []
             for i, sample in enumerate(memory):
-                outcome = winner * sample["to_play"]
+
+                # Outcome as WDL one-hot from this player's perspective
+                result = winner * sample["to_play"]
+                if result == 1:
+                    outcome = np.array([1.0, 0.0, 0.0])  # win
+                elif result == -1:
+                    outcome = np.array([0.0, 0.0, 1.0])  # loss
+                else:
+                    outcome = np.array([0.0, 1.0, 0.0])  # draw
+
                 opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
                 sample_data = {
-                "encoded_state": game.encode_state(sample["state"], sample["to_play"]),
-                "policy_target": sample["mcts_policy"],
-                "opponent_policy_target": opponent_policy,
-                "outcome": outcome,
-
-                "win_pos_target": win_pos,
-                "remaining_steps": (len(memory) - i - 1) * remaining_steps_weight,
-
-                "nn_policy": sample["nn_policy"],  # for psw
-                "nn_value_probs": sample["nn_value_probs"],  # for psw
-                "root_value": sample["root_value"],  # for psw
-                "is_full_search": sample["is_full_search"],
-                "sample_weight": sample["sample_weight"],
-            }
+                    "state": sample["state"],
+                    "to_play": sample["to_play"],
+                    "policy_target": sample["mcts_policy"],
+                    "opponent_policy_target": opponent_policy,
+                    "outcome": outcome,  # WDL one-hot
+                    "nn_policy": sample["nn_policy"],  # for psw
+                    "nn_value_probs": sample["nn_value_probs"],  # for psw
+                    "root_value": sample["root_value"],  # WDL vector, for psw and value target
+                    "is_full_search": sample["is_full_search"],
+                    "sample_weight": sample["sample_weight"],
+                }
                 return_memory.append(sample_data)
+            
+            # Value target construction (KataGo-style TD): recursive exponential weighted average
+            # of search root value (root_value) and game outcome, with outcome weight increasing near end.
+            now_factor = 1.0 / (1.0 + (game.board_size ** 2) * 0.016)
+            return_memory[-1]["value_target"] = return_memory[-1]["outcome"].copy()
+            for i in range(len(return_memory) - 2, -1, -1):
+                next_value_target = return_memory[i + 1]["value_target"]
+                next_value_target = next_value_target[[2, 1, 0]]  # flip perspective: [W,D,L] -> [L,D,W]
+                return_memory[i]["value_target"] = (1.0 - now_factor) * next_value_target + now_factor * return_memory[i]["root_value"]
 
             surprise_weight = compute_policy_surprise_weights(
                 return_memory,
-                board_size=game.board_size,
+                game.board_size,
                 policy_surprise_data_weight=args.get("policy_surprise_data_weight", 0.5),
                 value_surprise_data_weight=args.get("value_surprise_data_weight", 0.1),
             )
             return_memory = apply_surprise_weighting_to_game(return_memory, surprise_weight)
-            
+
             result_queue.put((return_memory, winner, len(memory), final_state))
 
     except Exception as e:
