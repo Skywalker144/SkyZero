@@ -2,8 +2,8 @@ import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import torch.optim as optim
 import numpy as np
-from alphazero_tr import AlphaZero
-from nets_v2 import ResNet
+from alphazero import AlphaZero
+from nets import ResNet
 from utils import print_board
 
 

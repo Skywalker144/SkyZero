@@ -8,8 +8,8 @@ from tqdm import tqdm
 # Add current directory to path so we can import local modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from alphazero_play import TreeReuseAlphaZero
-from nets_v2 import ResNet
+from alphazero import TreeReuseAlphaZero
+from nets import ResNet
 from envs.gomoku import Gomoku
 from utils import print_board
 
@@ -37,9 +37,8 @@ def load_args_from_path(args_path):
     return getattr(module, "eval_args"), getattr(module, "train_args")
 
 def get_game_instance(eval_args, train_args):
-    history_step = eval_args.get("history_step", 2)
     board_size = train_args.get("board_size", 15)
-    return Gomoku(board_size=board_size, history_step=history_step)
+    return Gomoku(board_size=board_size)
 
 def play_battle(game, model_a, model_b, args, a_starts=True):
     """

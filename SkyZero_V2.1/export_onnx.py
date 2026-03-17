@@ -7,12 +7,12 @@ import torch.optim as optim
 from alphazero import AlphaZero
 from envs.gomoku import Gomoku
 from gomoku.gomoku_train import train_args
-from nets_v2 import ResNet
+from nets import ResNet
 import onnx
 
 if __name__ == "__main__":
 
-    game = Gomoku(board_size=train_args["board_size"], history_step=train_args["history_step"])
+    game = Gomoku(board_size=train_args["board_size"])
     model = ResNet(game, num_blocks=train_args["num_blocks"], num_channels=train_args["num_channels"]).to(train_args["device"])
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 
