@@ -7,7 +7,7 @@ import traceback
 import os
 import copy
 from collections import deque
-from alphazero import AlphaZero, MCTS, temperature_transform
+from alphazero import AlphaZero, MCTS, temperature_transform, Node
 from policy_surprise_weighting import compute_policy_surprise_weights, apply_surprise_weighting_to_game
 from utils import print_board
 
@@ -174,6 +174,8 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             in_soft_resign = False
             historical_root_value = []
 
+            root = Node(state, to_play)
+
             while not game.is_terminal(state):
 
                 if in_soft_resign:
@@ -184,7 +186,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     else:
                         num_simulations = args["fast_search_num_simulations"]
 
-                mcts_policy, nn_policy, nn_value_probs, root_value = mcts.search(state, to_play, num_simulations)
+                mcts_policy, root_value, nn_policy, nn_value_probs = mcts.search(state, to_play, num_simulations, root=root)
 
                 # Soft Resign
                 historical_root_value.append(root_value)
@@ -223,9 +225,24 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
 
+                # Tree Advance
+                next_root = None
+                for child in root.children:
+                    if child.action_taken == action:
+                        next_root = child
+                        break
+                
+                if next_root is not None:
+                    next_root.parent = None
+                    root = next_root
+                else:
+                    root = Node(state, to_play)
+
             final_state = state
             winner = game.get_winner(final_state)
             win_pos = game.get_win_pos(final_state)
+
+            remaining_steps_weight = 1 / game.board_size ** 2
             
             return_memory = []
             for i, sample in enumerate(memory):
@@ -238,7 +255,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 "outcome": outcome,
 
                 "win_pos_target": win_pos,
-                "remaining_steps": len(memory) - i - 1,
+                "remaining_steps": (len(memory) - i - 1) * remaining_steps_weight,
 
                 "nn_policy": sample["nn_policy"],  # for psw
                 "nn_value_probs": sample["nn_value_probs"],  # for psw
