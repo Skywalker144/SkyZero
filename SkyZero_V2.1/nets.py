@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 
@@ -129,30 +130,32 @@ class PolicyHead(nn.Module):
         p = self.p_act(p)
         return self.conv_final(p)
 
-
 class ValueHead(nn.Module):
     def __init__(self, in_channels, out_channels=3, head_channels=32, value_channels=64):
         super().__init__()
         self.conv_v = nn.Conv2d(in_channels, head_channels, kernel_size=1, bias=False)
         self.v_bn = nn.BatchNorm2d(head_channels)
         self.v_act = nn.SiLU(inplace=True)
+        
         self.gpool = KataGPool()
+        
         self.fc1 = nn.Linear(head_channels * 2, value_channels, bias=True)
         self.act2 = nn.SiLU(inplace=True)
+        
         self.fc_value = nn.Linear(value_channels, out_channels, bias=True)
 
     def forward(self, x):
         v = self.conv_v(x)
         v = self.v_bn(v)
-        v = self.v_act(v)
-
+        v = self.v_act(v)  # [B, 1, H, W]
+        
         v_pooled = self.gpool(v)
         out = self.act2(self.fc1(v_pooled))
+        
         value_logits = self.fc_value(out)
-
         return value_logits
-
-
+    
+    
 class ResNet(nn.Module):
     def __init__(self, game, num_blocks=6, num_channels=128):
         super().__init__()
@@ -177,7 +180,6 @@ class ResNet(nn.Module):
                     use_gpool=use_gpool,
                 )
             )
-
         self.trunk_tip_bn = nn.BatchNorm2d(num_channels)
         self.trunk_tip_act = nn.SiLU(inplace=True)
 
@@ -187,31 +189,45 @@ class ResNet(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
+        # SiLU gain ~= sqrt(2.35), empirically measured (KataGo uses this for GELU/SiLU-like activations)
+        silu_gain = math.sqrt(2.35)
+        num_blocks = len(self.trunk_blocks)
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                fan_out = m.out_channels * m.kernel_size[0] * m.kernel_size[1]
+                std = silu_gain / math.sqrt(fan_out)
+                nn.init.normal_(m.weight, 0, std)
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, std=0.01)
 
+        # Fixup-style: scale down the last conv in each residual block so that
+        # residual branches start near-zero, stabilizing deep networks
+        fixup_scale = 1.0 / math.sqrt(max(num_blocks, 1))
+        for block in self.trunk_blocks:
+            # NestedBottleneckResBlock: last projection is normactconvq.conv
+            if hasattr(block, 'normactconvq'):
+                nn.init.normal_(block.normactconvq.conv.weight, 0, fixup_scale * 0.01)
+
     def forward(self, x):
         # x shape: [B, input_channels, H, W]
         x = self.start_layer(x)  # [B, input_channels, H, W] -> [B, num_channels, H, W]
         for block in self.trunk_blocks:
             x = block(x)
-
         x = self.trunk_tip_bn(x)
         x = self.trunk_tip_act(x)
 
-        total_policy_logits = self.total_policy_head(x)  # [B, num_channels, H, W] -> [B, 4, H, W]
+        total_policy_logits = self.total_policy_head(x)  # [B, 2, H, W]
+        
         value_logits = self.value_head(x)
 
         nn_output = {
             "policy_logits": total_policy_logits[:, 0:1, :, :],
-            "opponent_policy_logits": total_policy_logits[:, 1:2, :, :],
-            "soft_policy_logits": total_policy_logits[:, 2:3, :, :],
+            "soft_policy_logits": total_policy_logits[:, 1:2, :, :],
+            "opponent_policy_logits": total_policy_logits[:, 2:3, :, :],
             "soft_opponent_policy_logits": total_policy_logits[:, 3:4, :, :],
             "value_logits": value_logits,
         }
