@@ -867,7 +867,7 @@ class AlphaZero:
         nn_value_probs = F.softmax(nn_output["value_logits"], dim=1).cpu().numpy()
         nn_value_probs = nn_value_probs.mean(axis=0)
         nn_value = nn_value_probs[0] - nn_value_probs[2]
-        # Policy, Opponent Policy, Win Position:
+        # Policy, Opponent Policy
         policy_logits = nn_output["policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
         opponent_policy_logits = nn_output["opponent_policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
 
