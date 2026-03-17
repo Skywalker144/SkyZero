@@ -147,23 +147,23 @@ class MCTS:
 
         explore_scaling = c_puct * math.sqrt(total_child_weight + 0.01)
 
-        # FPU - derive scalar Q from WDL: Q = (W - L + 1) / 2, normalized to [0, 1]
+        # FPU - derive scalar Q from WDL: Q = W - L, in [-1, 1]
         parent_q = node.v / node.n if node.n > 0 else np.zeros(3)
-        parent_utility = (parent_q[0] - parent_q[2] + 1) / 2  # W - L -> [0, 1]
-        nn_utility = (node.nn_value_probs[0] - node.nn_value_probs[2] + 1) / 2  # W - L -> [0, 1]
+        parent_utility = parent_q[0] - parent_q[2]  # W - L, [-1, 1]
+        nn_utility = node.nn_value_probs[0] - node.nn_value_probs[2]  # W - L, [-1, 1]
 
         fpu_pow = self.args.get("fpu_pow", 1)
         avg_weight = min(1, math.pow(visited_policy_mass, fpu_pow))
         parent_utility = avg_weight * parent_utility + (1 - avg_weight) * nn_utility
         if node.parent is None:
-            fpu_reduction_max = self.args.get("root_fpu_reduction_max", 0.05)
+            fpu_reduction_max = self.args.get("root_fpu_reduction_max", 0.1)
         else:
-            fpu_reduction_max = self.args.get("fpu_reduction_max", 0.1)
-        reduction = (fpu_reduction_max / 2) * math.sqrt(visited_policy_mass)
+            fpu_reduction_max = self.args.get("fpu_reduction_max", 0.2)
+        reduction = fpu_reduction_max * math.sqrt(visited_policy_mass)
         fpu_value = parent_utility - reduction
 
         fpu_loss_prop = self.args.get("fpu_loss_prop", 0.0)
-        loss_value = 0.0
+        loss_value = -1.0
         fpu_value = fpu_value + (loss_value - fpu_value) * fpu_loss_prop
 
         best_score = -float("inf")
@@ -173,9 +173,9 @@ class MCTS:
             if child.n == 0:
                 q_value = fpu_value
             else:
-                # Child's WDL is from child's perspective; negate by swapping W and L
+                # Child's WDL is from child's perspective; parent's Q = -(child's W - child's L)
                 child_q = child.v / child.n
-                q_value = (child_q[2] - child_q[0] + 1) / 2  # -(W-L) from child -> [0, 1]
+                q_value = child_q[2] - child_q[0]  # L - W from child, [-1, 1]
 
             u_value = explore_scaling * child.prior / (1 + child.n)
 
