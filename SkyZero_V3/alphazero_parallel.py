@@ -170,7 +170,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 else:
                     num_simulations = args["num_simulations"]
 
-                mcts_policy, v_mix, nn_policy, nn_value, gumbel_action = mcts.search(state, to_play, num_simulations)
+                mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = mcts.search(state, to_play, num_simulations)
 
                 # Soft Resign - derive scalar from WDL
                 v_mix_scalar = v_mix[0] - v_mix[2]  # W - L
@@ -191,7 +191,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     "to_play": to_play,
                     "mcts_policy": mcts_policy,
                     "nn_policy": nn_policy,
-                    "nn_value_probs": nn_value,  # WDL vector for psw
+                    "nn_value_probs": nn_value_probs,  # WDL vector for psw
                     "v_mix": v_mix,  # WDL vector
                     "next_mcts_policy": None,
                     "sample_weight": 1 if not in_soft_resign else args.get("soft_resign_sample_weight", 0.1),
