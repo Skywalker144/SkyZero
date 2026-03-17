@@ -119,9 +119,6 @@ class GamePlayer:
                 print(f"Opponent Policy:\n{info['nn_opponent_policy']}")
                 print()
                 print(f"Actual Search Num: {info['actual_search_num']}")
-                print(f"Win Position:\n{info['win_pos']}")
-                print(f"Remaining Steps: {info['remaining_steps']:.2f}")
-
             to_play = -to_play
             color = -color
             print_board(state)
