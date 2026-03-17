@@ -488,7 +488,13 @@ class AlphaZero:
             })
 
             # Gumbel Zero selfplay exploration - directly use the action derived from Gumbel-Max trick
-            action = gumbel_action
+            move_count = len(memory)
+            half_life = self.args.get("half_life", self.game.board_size)
+            prob = 0.5 ** (move_count / half_life)
+            if np.random.rand() < prob and move_count < half_life * 2:
+                action = np.random.choice(len(mcts_policy), p=mcts_policy)
+            else:
+                action = gumbel_action
 
             last_action = action
             last_player = to_play

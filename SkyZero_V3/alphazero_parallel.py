@@ -198,7 +198,14 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 })
 
                 # Gumbel Zero selfplay exploration - directly use the action derived from Gumbel-Max trick
-                action = gumbel_action
+                move_count = len(memory)
+                half_life = args.get("half_life", game.board_size)
+                prob = 0.5 ** (move_count / half_life)
+                if np.random.rand() < prob and move_count < half_life * 2:
+                    action = np.random.choice(len(mcts_policy), p=mcts_policy)
+                else:
+                    action = gumbel_action
+
                 last_action = action
                 last_player = to_play
                 state = game.get_next_state(state, action, to_play)
@@ -236,7 +243,8 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             # of search root value (v_mix) and game outcome, with outcome weight increasing near end.
             # value_target[last] = outcome[last]
             # value_target[i] = (1 - now_factor) * value_target[i+1]_flipped + now_factor * v_mix[i]
-            now_factor = 1.0 / (1.0 + (game.board_size ** 2) * 0.016)
+            naw_factor_constant = args.get("value_target_mix_now_factor_constant", 0.2)
+            now_factor = 1.0 / (1.0 + (game.board_size ** 2) * naw_factor_constant)
             return_memory[-1]["value_target"] = return_memory[-1]["outcome"].copy()
             for i in range(len(return_memory) - 2, -1, -1):
                 next_value_target = return_memory[i+1]["value_target"]
