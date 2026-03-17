@@ -5,9 +5,9 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import torch.optim as optim
 import numpy as np
 from alphazero import AlphaZero
-from alphazero_parallel_tr import AlphaZeroParallel
+from alphazero_parallel import AlphaZeroParallel
 from envs.gomoku import Gomoku
-from nets_v2 import ResNet
+from nets import ResNet
 
 train_args = {
     "mode": "train",
@@ -15,7 +15,6 @@ train_args = {
     "num_workers": 19,
 
     "board_size": 15,
-    "history_step": 2,
     "num_blocks": 4,
     "num_channels": 128,
     "lr": 0.0001,
@@ -57,7 +56,7 @@ train_args = {
 
 if __name__ == "__main__":
     np.set_printoptions(precision=2, suppress=True)
-    game = Gomoku(board_size=train_args["board_size"], history_step=train_args["history_step"])
+    game = Gomoku(board_size=train_args["board_size"])
     model = ResNet(game, num_blocks=train_args["num_blocks"], num_channels=train_args["num_channels"]).to(train_args["device"])
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 

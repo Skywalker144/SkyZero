@@ -2,10 +2,10 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nets_v2 import ResNet
+from nets import ResNet
 from envs.tictactoe import TicTacToe
 from alphazero import AlphaZero
-from alphazero_parallel_tr import AlphaZeroParallel
+from alphazero_parallel import AlphaZeroParallel
 import numpy as np
 import torch.optim as optim
 
@@ -14,7 +14,6 @@ train_args = {
     
     "num_workers": 19,
 
-    "history_step": 2,
     "num_blocks": 2,
     "num_channels": 32,
     "lr": 0.001,
@@ -59,7 +58,7 @@ train_args = {
 
 if __name__ == "__main__":
     np.set_printoptions(precision=2, suppress=True)
-    game = TicTacToe(history_step=train_args["history_step"])
+    game = TicTacToe()
     model = ResNet(game, num_blocks=train_args["num_blocks"], num_channels=train_args["num_channels"]).to(train_args["device"])
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 

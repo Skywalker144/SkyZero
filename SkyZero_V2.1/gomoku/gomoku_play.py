@@ -7,7 +7,6 @@ from playgame import GamePlayer
 
 eval_args = {
     "mode": "eval",
-    "history_step": train_args["history_step"],
     "num_blocks": train_args["num_blocks"],
     "num_channels": train_args["num_channels"],
     "lr": train_args["lr"],
@@ -32,5 +31,5 @@ eval_args = {
 }
 
 if __name__ == "__main__":
-    gp = GamePlayer(Gomoku(board_size=train_args["board_size"], history_step=train_args["history_step"]), eval_args)
+    gp = GamePlayer(Gomoku(board_size=train_args["board_size"]), eval_args)
     gp.play()
