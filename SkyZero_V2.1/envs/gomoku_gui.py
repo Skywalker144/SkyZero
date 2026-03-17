@@ -201,29 +201,24 @@ class GomokuGUI:
         if current_board[row, col] != 0:
             return
 
-        # Check legality
+        # Check legality (heuristic region check, not forbidden)
         action = row * self.board_size + col
-        legal_moves = self.game.get_is_legal_actions(state, self.to_play)
-        self.to_play *= -1
+        player = self.get_current_player()
+        legal_moves = self.game.get_is_legal_actions(state, player)
         
         if not legal_moves[action]:
-            # Illegal move (e.g. forbidden for Black)
-            # We can give feedback, but usually silent is fine or status bar update
-            player = self.get_current_player()
-            if player == 1:
-                self.info_label.config(text="Illegal Move (Forbidden Rule)")
             return
 
         # Execute move
-        player = self.get_current_player()
         next_state = self.game.get_next_state(state, action, player)
         self.state_history.append(next_state)
+        self.to_play *= -1
         
         # Update UI
         self.draw_board()
         
-        # Check Winner
-        winner = self.game.get_winner(next_state)
+        # Check Winner (including forbidden move loss for Black)
+        winner = self.game.get_winner(next_state, last_action=action, last_player=player)
         if winner is not None:
             self.game_over = True
             if winner == 1:

@@ -1,53 +1,9 @@
 import numpy as np
-from utils import print_board
 import math
 from scipy import ndimage
 
-def get_expanded_region_square(state, k=3):
-    current_board = state[-1]
-    board_size = current_board.shape[0]
-    
-    expanded = np.zeros((board_size, board_size), dtype=bool)
-    
-    rows, cols = np.where(current_board != 0)
-    k = math.ceil(k)
-    
-    for r, c in zip(rows, cols):
-        for dr in range(-k, k + 1):
-            for dc in range(-k, k + 1):
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < board_size and 0 <= nc < board_size:
-                    expanded[nr, nc] = True
-    
-    return expanded
-
-def get_expanded_region_circle_slow(state, k=3.5):
-    current_board = state[-1]
-    board_size = current_board.shape[0]
-    
-    expanded = np.zeros((board_size, board_size), dtype=bool)
-    
-    rows, cols = np.where(current_board != 0)
-    
-    k_sq = k ** 2
-    
-    k_int = math.ceil(k)
-    
-    for r, c in zip(rows, cols):
-        for dr in range(-k_int, k_int + 1):
-            for dc in range(-k_int, k_int + 1):
-                dist_sq = dr**2 + dc**2
-                
-                if dist_sq <= k_sq:
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < board_size and 0 <= nc < board_size:
-                        expanded[nr, nc] = True
-    
-    return expanded
-
 def get_expanded_region_circle(state, k=3.5):
     current_board = state[-1]
-    board_size = current_board.shape[0]
     
     y, x = np.ogrid[-k:k+1, -k:k+1]
     mask = x**2 + y**2 <= k**2
@@ -314,7 +270,7 @@ class ForbiddenPointFinder:
                     # Check if placing at (i, j) makes an open four that is not a double three/four forbidden point
                     if self.IsOpenFour(i, j, nColor, nDir) == 1:
                         if nColor == C_BLACK:
-                            if not self.IsDoubleFour(i, j) and not self.IsDoubleThree(i, j):
+                            if not self.IsDoubleFour(i, j) and not self.IsDoubleThree(i, j) and not self.IsOverline(i, j):
                                 found = True
                         else:
                             found = True
@@ -487,15 +443,15 @@ class GameLogic:
 
 
 class Gomoku:
-    def __init__(self, board_size=15, history_step=2, use_renju=True):
+    def __init__(self, board_size=15, use_renju=True, enable_forbidden_point_plane=False):
         self.board_size = board_size
-        self.history_step = history_step
-        self.num_planes = 2 * history_step + 2
+        self.num_planes = 3 + (1 if enable_forbidden_point_plane else 0)
         self.use_renju = use_renju
+        self.enable_forbidden_point_plane = enable_forbidden_point_plane
         self._fpf = ForbiddenPointFinder(board_size)
 
     def get_initial_state(self):
-        return np.zeros((self.history_step, self.board_size, self.board_size), dtype=np.int8)
+        return np.zeros((1, self.board_size, self.board_size), dtype=np.int8)
 
     def get_is_legal_actions(self, state, to_play):
         current_board = state[-1]
@@ -507,45 +463,39 @@ class Gomoku:
             legal_mask[:] = False
             legal_mask[self.center_loc] = True
         else:
-            legal_mask = legal_mask & get_expanded_region_circle(state, k=3.5).flatten()
-
-        # In Renju, only Black (1) has forbidden moves
-        if self.use_renju and to_play == 1:
-            self._fpf.Clear()
-            # Populate FPF board (convert 1/-1 to 1/2)
-            rows, cols = np.where(current_board != 0)
-            for r, c in zip(rows, cols):
-                val = current_board[r, c]
-                stone = C_BLACK if val == 1 else C_WHITE
-                self._fpf.SetStone(r, c, stone)
-
-            # Check forbidden moves for all empty spots
-            # Optimizing: only check indices that are currently legal (empty)
-            indices = np.where(legal_mask)[0]
-            for idx in indices:
-                r, c = idx // self.board_size, idx % self.board_size
-                if self._fpf.isForbidden(r, c):
-                    legal_mask[idx] = False
+            legal_mask = legal_mask & get_expanded_region_circle(state, k=4).flatten()
 
         return legal_mask
 
     def get_next_state(self, state, action, to_play):
         state = state.copy()
-        current_board = state[-1].copy()
 
         row = action // self.board_size
         col = action % self.board_size
         
-        current_board[row, col] = to_play
-
-        state[:-1] = state[1:]
-        state[-1] = current_board
+        state[0, row, col] = to_play
 
         return state
 
-    def get_winner(self, state):
+    def get_winner(self, state, last_action=None, last_player=None):
         current_board = state[-1]
         size = self.board_size
+
+        # Renju forbidden move check (must run BEFORE five-in-a-row scan):
+        # Black overline (6+) and other forbidden moves should be caught here
+        # before the generic scan misidentifies them as a win for black.
+        if self.use_renju and last_action is not None and last_player == 1:
+            row, col = last_action // size, last_action % size
+            self._fpf.Clear()
+            rows, cols = np.where(current_board != 0)
+            for r, c in zip(rows, cols):
+                if r == row and c == col:
+                    continue  # skip the last placed stone to check pre-move board
+                val = current_board[r, c]
+                stone = C_BLACK if val == 1 else C_WHITE
+                self._fpf.SetStone(r, c, stone)
+            if self._fpf.isForbidden(row, col):
+                return -1  # White wins
 
         # Check horizontal
         for r in range(size):
@@ -586,39 +536,57 @@ class Gomoku:
 
         return None
 
-    def is_terminal(self, state):
-        return self.get_winner(state) is not None
+    def is_terminal(self, state, last_action=None, last_player=None):
+        return self.get_winner(state, last_action, last_player) is not None
 
     def encode_state(self, state, to_play):
-        history_len = state.shape[0]
-        board_height = state.shape[1]
-        board_width = state.shape[2]
 
-        encoded_state = np.zeros((history_len * 2 + 2, board_height, board_width), dtype=np.int8)
+        encoded_state = np.zeros((3 + (1 if self.enable_forbidden_point_plane else 0), self.board_size, self.board_size), dtype=np.int8)
 
-        for i in range(history_len):
-            encoded_state[2 * i] = (state[i] == to_play)
-            encoded_state[2 * i + 1] = (state[i] == -to_play)
+        encoded_state[0] = (state[0] == to_play)
+        encoded_state[1] = (state[0] == -to_play)
 
-        forbidden_plane = np.zeros((board_height, board_width), dtype=np.int8)
-        if self.use_renju:
-            fpf = ForbiddenPointFinder(board_height)
-            current_board = state[-1]
-            rows, cols = np.where(current_board != 0)
-            for r, c in zip(rows, cols):
-                val = current_board[r, c]
-                stone = C_BLACK if val == 1 else C_WHITE
-                fpf.SetStone(r, c, stone)
+        if self.enable_forbidden_point_plane:
+            forbidden_plane = np.zeros((self.board_size, self.board_size), dtype=np.int8)
+            if self.use_renju:
+                fpf = ForbiddenPointFinder(self.board_size)
+                current_board = state[-1]
+                rows, cols = np.where(current_board != 0)
+                for r, c in zip(rows, cols):
+                    val = current_board[r, c]
+                    stone = C_BLACK if val == 1 else C_WHITE
+                    fpf.SetStone(r, c, stone)
 
-            empty_rows, empty_cols = np.where(current_board == 0)
-            for r, c in zip(empty_rows, empty_cols):
-                if fpf.isForbidden(r, c):
-                    forbidden_plane[r, c] = 1
+                empty_rows, empty_cols = np.where(current_board == 0)
+                for r, c in zip(empty_rows, empty_cols):
+                    if fpf.isForbidden(r, c):
+                        forbidden_plane[r, c] = 1
 
-        encoded_state[-2] = forbidden_plane
-        encoded_state[-1] = (to_play > 0) * np.ones((board_height, board_width), dtype=np.int8)
+            encoded_state[-2] = forbidden_plane
+        encoded_state[-1] = (to_play > 0) * np.ones((self.board_size, self.board_size), dtype=np.int8)
 
         return encoded_state
+
+    def encode_state_batch(self, states, to_plays):
+        """Vectorized batch encoding of raw states.
+        
+        Args:
+            states: np.ndarray, shape (B, 1, H, W), dtype int8
+            to_plays: np.ndarray, shape (B,), values in {-1, 1}
+        Returns:
+            np.ndarray, shape (B, num_planes, H, W), dtype int8
+        """
+        B = states.shape[0]
+        H, W = self.board_size, self.board_size
+        tp = to_plays.reshape(B, 1, 1)  # (B, 1, 1) for broadcasting
+
+        encoded = np.zeros((B, self.num_planes, H, W), dtype=np.int8)
+        boards = states[:, 0]  # (B, H, W)
+        encoded[:, 0] = (boards == tp)
+        encoded[:, 1] = (boards == -tp)
+        # Note: enable_forbidden_point_plane is not supported in batch mode
+        encoded[:, -1] = (tp > 0).astype(np.int8) * np.ones((1, H, W), dtype=np.int8)
+        return encoded
 
     def get_win_pos(self, final_state):
         current_board = final_state[-1]
@@ -658,3 +626,29 @@ class Gomoku:
                         five_pos[r+k, c-k] = 1
         
         return five_pos
+
+if __name__ == "__main__":
+    def print_board(board):
+        current_board = board[-1] if board.ndim == 3 else board
+        rows, cols = current_board.shape
+
+        print("   ", end="")
+        for col in range(cols):
+            print(f"{col:2d} ", end="")
+        print()
+
+        for row in range(rows):
+            print(f"{row:2d} ", end="")
+            for col in range(cols):
+                if current_board[row, col] == 1:
+                    print(" × ", end="")
+                elif current_board[row, col] == -1:
+                    print(" ○ ", end="")
+                else:
+                    print(" · ", end="")
+            print()
+    env = Gomoku(board_size=15, use_renju=True)
+    state = env.get_initial_state()
+    state = env.get_next_state(state, action=112, to_play=1)
+    print(state.shape)
+    print(env.encode_state(state, to_play=-1))
