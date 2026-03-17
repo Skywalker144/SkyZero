@@ -1,8 +1,3 @@
-html {
-    height: 100%;
-    overflow: hidden;
-}
-
 :root {
     --bg: #fafafa;
     --accents-1: #ffffff;
@@ -22,11 +17,11 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
-    height: 100vh;
+    min-height: 100vh;
     margin: 0;
-    padding: 0;
+    padding: 20px;
+    box-sizing: border-box;
     -webkit-font-smoothing: antialiased;
-    overflow: hidden;
 }
 
 .container {
@@ -36,9 +31,6 @@ body {
     width: 100%;
     max-width: 1400px;
     align-items: stretch;
-    height: 100%;
-    padding: 20px;
-    box-sizing: border-box;
 }
 
 .title {
@@ -47,6 +39,7 @@ body {
     margin: 0;
     letter-spacing: -0.06em;
     background: linear-gradient(180deg, #000 0%, #444 100%);
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     text-align: left;
@@ -100,11 +93,68 @@ body {
     justify-content: center;
 }
 
+.board-warning {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(18, 18, 18, 0.45);
+    backdrop-filter: blur(2px);
+    z-index: 20;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.board-warning.is-visible {
+    display: flex;
+}
+
+.board-warning-card {
+    max-width: 520px;
+    width: min(92%, 520px);
+    background: #ffffff;
+    color: var(--fg);
+    border-radius: 14px;
+    padding: 22px 24px;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.board-warning-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.board-warning-text {
+    margin: 0;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    color: var(--accents-5);
+}
+
+.board-warning-close {
+    align-self: center;
+    min-width: 140px;
+    background: var(--fg);
+    color: var(--bg);
+    border-color: var(--fg);
+}
+
+.board-warning-close:hover {
+    background: var(--accents-5);
+    border-color: var(--accents-5);
+}
+
 canvas {
     cursor: crosshair;
     display: block;
     border-radius: 0;
-    box-shadow: 0 20px 50px rgba(0,0,0,0.15);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.1);
     max-width: 100%;
     height: auto;
     border: 1px solid var(--accents-2);
@@ -327,6 +377,7 @@ canvas {
 
 .game-controls {
     flex: 0 0 auto;
+    align-items: center;
 }
 
 .sim-controls {
@@ -341,10 +392,17 @@ canvas {
     align-items: center;
 }
 
-.analysis-bar .toggle-group {
-    align-items: flex-start;
-    width: 100%;
-}
+ .analysis-bar {
+      background-color: var(--accents-1);
+     padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--accents-2);
+      box-sizing: border-box;
+      min-height: 120px;
+      display: flex;
+      flex-direction: column;
+     gap: 6px;
+  }
 
 .toggle-label {
     font-size: 0.9rem;
@@ -363,52 +421,82 @@ canvas {
     isolation: isolate;
 }
 
-.switch-container.analysis-switches {
-    gap: 8px;
-    background-color: transparent;
-    border: none;
-    padding: 0;
-    flex-direction: column;
-    width: 100%;
-}
-
-.switch-container.analysis-switches button {
-    border: 1px solid var(--accents-2);
-    border-radius: 10px;
-    background-color: var(--accents-1);
-    color: var(--accents-5);
+.analysis-option {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    opacity: 0.7;
+    justify-content: space-between;
+    gap: 6px;
     width: 100%;
-    justify-content: flex-start;
-}
-
-.switch-container.analysis-switches button:not(.active):hover {
-    border-color: var(--accents-3);
-    color: var(--fg);
-    opacity: 0.9;
-}
-
-.switch-container.analysis-switches button.active {
-    background-color: var(--accents-2);
-    color: var(--fg);
-    border-color: var(--accents-3);
-    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04);
-    opacity: 1;
-}
-
-.analysis-bar {
-    background-color: var(--accents-1);
-    padding: 10px 14px;
+    flex-wrap: wrap;
+    padding: 4px 6px;
     border-radius: 8px;
-    border: 1px solid var(--accents-2);
+    border: none;
+    background-color: var(--accents-1);
+    box-shadow: none;
     box-sizing: border-box;
-    min-height: 120px;
-    display: flex;
-    align-items: flex-start;
+    align-self: stretch;
+}
+
+.analysis-option-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: 0.02em;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.analysis-switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    width: 46px;
+    height: 24px;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.analysis-switch input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.analysis-switch-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 999px;
+    background-color: var(--accents-2);
+    border: 1px solid var(--accents-3);
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.analysis-switch-thumb {
+    position: absolute;
+    top: 50%;
+    left: 3px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-color: var(--bg);
+    border: 1px solid var(--accents-3);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
+    transform: translateY(-50%);
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.analysis-switch input:checked ~ .analysis-switch-track {
+    background-color: var(--fg);
+    border-color: var(--fg);
+}
+
+.analysis-switch input:checked ~ .analysis-switch-thumb {
+    transform: translate(22px, -50%);
+    border-color: var(--fg);
+}
+
+.analysis-switch input:focus-visible ~ .analysis-switch-track {
+    box-shadow: 0 0 0 2px rgba(0, 112, 243, 0.25);
 }
 
 .toggle-group.horizontal {
@@ -594,7 +682,7 @@ button.active {
 
 @media (max-width: 1024px) {
     body {
-        padding: 0;
+        padding: 8px;
     }
     .container {
         padding: 6px;
@@ -639,12 +727,16 @@ button.active {
 .game-controls .toggle-group {
     flex-direction: row;
     align-items: center;
-    gap: 0;
+    gap: 8px;
+    flex-wrap: nowrap;
+    justify-content: center;
 }
 
 .game-controls .toggle-label {
     font-size: 0.9rem;
     margin-right: 8px;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .sim-controls .label {
@@ -658,6 +750,7 @@ button.active {
 .game-controls .switch-container {
     padding: 4px;
     border-radius: 6px;
+    min-width: 0;
 }
 
 .game-controls .switch-slider {

@@ -31,8 +31,8 @@
                         <span class="toggle-label">玩家执子：</span>
                         <div class="switch-container">
                             <div class="switch-slider" id="player-slider"></div>
-                            <button id="pick-black" class="active">黑棋</button>
-                            <button id="pick-white">白棋</button>
+                            <button id="pick-black">黑棋</button>
+                            <button id="pick-white" class="active">白棋</button>
                         </div>
                     </div>
                 </div>
@@ -70,12 +70,29 @@
                 </div>
 
                 <div class="analysis-bar">
-                    <div class="toggle-group">
-                        <span class="toggle-label">分析：</span>
-                        <div class="switch-container analysis-switches">
-                            <button id="toggle-mcts" class="active">SkyZero策略热力图</button>
-                            <button id="toggle-forbidden" class="active">黑方禁手点</button>
-                        </div>
+                    <div class="analysis-option">
+                        <span class="analysis-option-label">显示策略热力图</span>
+                        <label class="analysis-switch">
+                            <input id="toggle-mcts" type="checkbox" role="switch" checked>
+                            <span class="analysis-switch-track"></span>
+                            <span class="analysis-switch-thumb"></span>
+                        </label>
+                    </div>
+                    <div class="analysis-option">
+                        <span class="analysis-option-label">显示黑方禁手点</span>
+                        <label class="analysis-switch">
+                            <input id="toggle-forbidden" type="checkbox" role="switch" checked>
+                            <span class="analysis-switch-track"></span>
+                            <span class="analysis-switch-thumb"></span>
+                        </label>
+                    </div>
+                    <div class="analysis-option">
+                        <span class="analysis-option-label">显示棋子编号</span>
+                        <label class="analysis-switch">
+                            <input id="toggle-move-numbers" type="checkbox" role="switch">
+                            <span class="analysis-switch-track"></span>
+                            <span class="analysis-switch-thumb"></span>
+                        </label>
                     </div>
                 </div>
             </div>
@@ -83,6 +100,13 @@
             <div class="board-panel">
                 <div class="board-container">
                     <canvas id="board" width="800" height="800"></canvas>
+                    <div id="iphone-warning" class="board-warning" role="dialog" aria-live="polite" aria-hidden="true">
+                        <div class="board-warning-card">
+                            <div class="board-warning-title">iPhone 访问提示</div>
+                            <p class="board-warning-text">iPhone端会出现网页打开30秒左右强制刷新的bug，建议使用电脑访问该网站</p>
+                            <button id="iphone-warning-close" class="board-warning-close" type="button">我知道了</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="action-buttons board-actions">
                     <button id="reset-btn">新游戏</button>

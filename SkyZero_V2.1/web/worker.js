@@ -1,9 +1,10 @@
-importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js");
+importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/ort.min.js");
 importScripts("gomoku.js");
 importScripts("mcts.js");
 
 // 强制 ONNX Runtime 从 CDN 加载 WASM 资源，避免 404
-ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/";
+ort.env.wasm.numThreads = 1; // 禁用多线程以避免 CDN Worker 跨域加载失败导致的 of[a] TypeError
 
 let session = null;
 let game = null;
