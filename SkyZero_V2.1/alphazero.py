@@ -616,7 +616,8 @@ class AlphaZero:
         
         # Value target construction (KataGo-style TD): recursive exponential weighted average
         # of search root value (root_value) and game outcome, with outcome weight increasing near end.
-        now_factor = 1.0 / (1.0 + (self.game.board_size ** 2) * 0.016)
+        naw_factor_constant = self.args.get("value_target_mix_now_factor_constant", 0.2)
+        now_factor = 1.0 / (1.0 + (self.game.board_size ** 2) * naw_factor_constant)
         return_memory[-1]["value_target"] = return_memory[-1]["outcome"].copy()
         for i in range(len(return_memory) - 2, -1, -1):
             next_value_target = return_memory[i + 1]["value_target"]
