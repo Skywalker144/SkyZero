@@ -839,7 +839,7 @@ class AlphaZero:
 
         actual_num_simulations = self.args["full_search_num_simulations"] - root.n
 
-        mcts_policy, root_value, _, _ = self.mcts.eval_search(state, to_play, actual_num_simulations, root)
+        mcts_policy, root_value_probs, _, _ = self.mcts.eval_search(state, to_play, actual_num_simulations, root)
 
         action = np.argmax(mcts_policy)
 
@@ -867,29 +867,22 @@ class AlphaZero:
         nn_value_probs = F.softmax(nn_output["value_logits"], dim=1).cpu().numpy()
         nn_value_probs = nn_value_probs.mean(axis=0)
         nn_value = nn_value_probs[0] - nn_value_probs[2]
-        # Remaining steps:
-        remaining_steps = nn_output["remaining_steps"].view(8).cpu().numpy()
-        remaining_steps = remaining_steps.mean()
-        remaining_steps = remaining_steps * self.game.board_size ** 2
         # Policy, Opponent Policy, Win Position:
         policy_logits = nn_output["policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
         opponent_policy_logits = nn_output["opponent_policy_logits"].squeeze(1).cpu().numpy()  # (8, H, W)
 
         untransformed_pl = []
         untransformed_opl = []
-        untransformed_wpl = []
         for i, (do_flip, k) in enumerate([(f, r) for f in [False, True] for r in range(4)]):
             pl = policy_logits[i]
             opl = opponent_policy_logits[i]
             if do_flip:
                 pl = np.flip(pl, axis=1)
                 opl = np.flip(opl, axis=1)
-                wpl = np.flip(wpl, axis=1)
             pl = np.rot90(pl, k=-k)
             opl = np.rot90(opl, k=-k)
             untransformed_pl.append(pl.flatten())
             untransformed_opl.append(opl.flatten())
-            untransformed_wpl.append(wpl.flatten())
         
         avg_pl = np.mean(untransformed_pl, axis=0)
         is_legal_actions = self.game.get_is_legal_actions(state, to_play)
@@ -906,7 +899,8 @@ class AlphaZero:
 
         info = {
             "mcts_policy": mcts_policy.reshape(self.game.board_size, self.game.board_size),
-            "root_value": root_value,
+            "root_value_probs": root_value_probs,
+            "root_value": root_value_probs[0] - root_value_probs[2],
             "nn_policy": nn_policy.reshape(self.game.board_size, self.game.board_size),
             "nn_opponent_policy": nn_opponent_policy.reshape(self.game.board_size, self.game.board_size),
             "nn_value": nn_value,

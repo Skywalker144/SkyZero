@@ -114,8 +114,13 @@ class GamePlayer:
                     f"Draw Probability: {info['nn_value_probs'][1]:.2f}\n"
                     f"Lose Probability: {info['nn_value_probs'][2]:.2f}"
                 )
-                print(f"root value: {info['root_value']:.2f}")
-                print(f"nn value:   {info['nn_value']:.2f}")
+                root_value_p = info['root_value_probs']
+                nn_val_p = info['nn_value_probs']
+                print(
+                    f"          {'Win':>6s}  {'Draw':>6s}  {'Loss':>6s}  {'W-L':>6s}\n"
+                    f"  root_value:  {root_value_p[0]:6.2%}  {root_value_p[1]:6.2%}  {root_value_p[2]:6.2%}  {info['root_value']:+.2f}\n"
+                    f"  nn_value:    {nn_val_p[0]:6.2%}  {nn_val_p[1]:6.2%}  {nn_val_p[2]:6.2%}  {info['nn_value']:+.2f}"
+                )
                 print(f"Opponent Policy:\n{info['nn_opponent_policy']}")
                 print()
                 print(f"Actual Search Num: {info['actual_search_num']}")
