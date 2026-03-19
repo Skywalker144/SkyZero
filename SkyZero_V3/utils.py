@@ -73,3 +73,25 @@ def drop_last(memory, batch_size):
     memory = memory[:len_memory - len_memory % batch_size]
     return memory
 
+def temperature_transform(probs, temp):
+    probs = np.asarray(probs, dtype=np.float64)
+    
+    if temp <= 1e-10:
+        max_val = np.max(probs)
+        max_mask = (probs == max_val)
+        return max_mask.astype(np.float64) / np.sum(max_mask)
+    if abs(temp - 1.0) < 1e-10:
+        return probs
+    non_zero_mask = probs > 0
+    if not np.any(non_zero_mask):
+        return probs
+    logits = np.log(probs[non_zero_mask])
+    logits /= temp
+    
+    logits -= np.max(logits)
+    exp_logits = np.exp(logits)
+    
+    probs_normalized = exp_logits / np.sum(exp_logits)
+    scaled = np.zeros_like(probs)
+    scaled[non_zero_mask] = probs_normalized
+    return scaled

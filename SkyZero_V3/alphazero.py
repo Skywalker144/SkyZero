@@ -13,6 +13,7 @@ from policy_surprise_weighting import compute_policy_surprise_weights, apply_sur
 from utils import (
     random_augment_batch,
     softmax,
+    temperature_transform,
 )
 
 
@@ -491,8 +492,14 @@ class AlphaZero:
             move_count = len(memory)
             half_life = self.args.get("half_life", self.game.board_size)
             prob = 0.5 ** (move_count / half_life)
+            t_init = self.args.get("move_temperature_init", 1.1)
+            t_final = self.args.get("move_temperature_final", 1)
+            t = t_final + (t_init - t_final) * (0.5 ** (move_count / half_life))
             if np.random.rand() < prob and move_count < half_life * 2:
-                action = np.random.choice(len(mcts_policy), p=mcts_policy)
+                action = np.random.choice(
+                    len(mcts_policy),
+                    p=temperature_transform(mcts_policy, t)
+                )
             else:
                 action = gumbel_action
 
