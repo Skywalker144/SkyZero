@@ -233,20 +233,38 @@ onmessage = async function(e) {
         root = new Node(game.getInitialState(), 1);
     } else if (data.type === "move") {
         latestSearchId++;
-        // No tree reuse for Gumbel search — each search creates a fresh root
-        // (consistent with Python backend behavior)
-        root = new Node(data.nextState, data.nextToPlay);
+        // Tree reuse: find child matching the played action and promote it to root
+        if (root && root.children.length > 0) {
+            let found = false;
+            for (const child of root.children) {
+                if (child.actionTaken === data.action) {
+                    root = child;
+                    root.parent = null; // detach from old tree for GC
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                root = new Node(data.nextState, data.nextToPlay);
+            }
+        } else {
+            root = new Node(data.nextState, data.nextToPlay);
+        }
     } else if (data.type === "search") {
         const thinkTimeMs = Number.isFinite(data.thinkTimeMs) ? data.thinkTimeMs : 3000;
         const searchId = data.searchId;
         latestSearchId = searchId;
         
-        // Always create a fresh root for Gumbel search (no tree reuse)
-        root = new Node(data.state, data.toPlay);
+        // Tree reuse: keep existing root if already expanded, otherwise create fresh
+        if (!root || root.children.length === 0) {
+            root = new Node(data.state, data.toPlay);
+        }
 
         const searchStartTime = performance.now();
+        const reusingTree = root.isExpanded();
 
-        // === Step 1: Root expand (full symmetry inference) ===
+        // === Step 1: Root expand + full symmetry inference ===
+        // Always run inference for oppPLogits (needed for UI display)
         const rootInfStart = performance.now();
         const { policy: rootPolicy, value: rootValue, policyLogits: rootLogits, oppPLogits } =
             await inference(root.state, root.toPlay, "full");
@@ -255,11 +273,12 @@ onmessage = async function(e) {
         // Check for abortion after async
         if (latestSearchId !== searchId) return;
 
-        // Expand root
-        mcts.expand(root, rootPolicy, rootValue, rootLogits);
-
-        // Backpropagate root NN value
-        mcts.backpropagate(root, rootValue);
+        if (!reusingTree) {
+            // Fresh root: expand and backpropagate as usual
+            mcts.expand(root, rootPolicy, rootValue, rootLogits);
+            mcts.backpropagate(root, rootValue);
+        }
+        // If reusing tree, root is already expanded with cached nnLogits/nnPolicy/nnValue
 
         // === Step 2: Estimate simulation budget from remaining time ===
         // Update inference time EMA (child inference uses stochastic mode = ~1/8 of full)
@@ -277,6 +296,10 @@ onmessage = async function(e) {
         let numSimulations = Math.max(1, Math.floor((remainingTime - reservedTime) / Math.max(1, inferenceTimeEma)));
         // Cap simulations
         numSimulations = Math.min(numSimulations, 1600);
+        // Subtract existing visits from tree reuse (consistent with Python alphazero.py:782)
+        if (reusingTree && root.n > 0) {
+            numSimulations = Math.max(1, numSimulations - root.n);
+        }
 
         // === Step 3: Run Gumbel Sequential Halving ===
         let lastProgressTime = performance.now();
