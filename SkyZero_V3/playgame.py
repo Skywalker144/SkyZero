@@ -2,7 +2,7 @@ import os, sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import torch.optim as optim
 import numpy as np
-from alphazero import AlphaZero
+from alphazero import AlphaZero, Node
 from nets import ResNet
 from utils import print_board
 
@@ -29,6 +29,7 @@ class GamePlayer:
         color = 1
         state = self.game.get_initial_state()
         history = []
+        mcts_root = None  # Tree Reuse
         print_board(state)
         while True:
             if self.game.is_terminal(state):
@@ -43,8 +44,8 @@ class GamePlayer:
                 resp = input("Game Over. 'u' to undo, 'q' to quit: ").strip().lower()
                 if resp == "u":
                     if len(history) >= 2:
-                        state, to_play, color = history.pop() # State before AI move
-                        state, to_play, color = history.pop() # State before Human move
+                        state, to_play, color, mcts_root = history.pop() # State before AI move
+                        state, to_play, color, mcts_root = history.pop() # State before Human move
                         print("Undo successful.")
                         print_board(state)
                         continue
@@ -59,8 +60,8 @@ class GamePlayer:
                     move = input(f"Human step (row col / 'u' for undo / 'q' for quit): ").strip().lower()
                     if move == "u":
                         if len(history) >= 2:
-                            state, to_play, color = history.pop()  # Revert to state before AI move
-                            state, to_play, color = history.pop()  # Revert to state before Human move
+                            state, to_play, color, mcts_root = history.pop()  # Revert to state before AI move
+                            state, to_play, color, mcts_root = history.pop()  # Revert to state before Human move
                             print("Undo successful.")
                             print_board(state)
                             continue
@@ -81,15 +82,43 @@ class GamePlayer:
                     except (ValueError, IndexError):
                         print("Invalid input format. Please enter 'row col' (e.g., '7 7').")
 
-                history.append((state.copy(), to_play, color))
+                history.append((state.copy(), to_play, color, mcts_root))
                 
                 state = self.game.get_next_state(state, action, color)
+
+                # Tree Reuse: advance tree after human move
+                if mcts_root is not None:
+                    next_root = None
+                    for child in mcts_root.children:
+                        if child.action_taken == action:
+                            next_root = child
+                            break
+                    if next_root is not None:
+                        next_root.parent = None
+                        mcts_root = next_root
+                    else:
+                        mcts_root = None
+
             elif to_play == -human_side:
-                history.append((state.copy(), to_play, color))
+                history.append((state.copy(), to_play, color, mcts_root))
                 print(f"AlphaZero step:")
-                action, info = alphazero.play(state, color)
+                action, info, mcts_root = alphazero.play(state, color, root=mcts_root)
 
                 state = self.game.get_next_state(state, action, color)
+
+                # Tree Reuse: advance tree after AI move
+                if mcts_root is not None:
+                    next_root = None
+                    for child in mcts_root.children:
+                        if child.action_taken == action:
+                            next_root = child
+                            break
+                    if next_root is not None:
+                        next_root.parent = None
+                        mcts_root = next_root
+                    else:
+                        mcts_root = None
+
                 print(f"MCTS Strategy:\n{info['mcts_policy']}")
                 print(f"NN Strategy:\n{info['nn_policy']}")
                 v_mix_p = info['v_mix_probs']

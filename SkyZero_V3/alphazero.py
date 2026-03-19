@@ -384,23 +384,35 @@ class MCTS:
         return improved_policy, gumbel_action, v_mix
 
     @torch.inference_mode()
-    def search(self, state, to_play, num_simulations):
+    def search(self, state, to_play, num_simulations, root=None):
 
-        root = Node(state, to_play)
+        if root is None:
+            root = Node(state, to_play)
 
-        nn_policy, nn_value_probs = self.root_expand(root)
-        self.backpropagate(root, nn_value_probs)
+        if not root.is_expanded():
+            nn_policy, nn_value_probs = self.root_expand(root)
+            self.backpropagate(root, nn_value_probs)
+        else:
+            # Tree Reuse: root already expanded from previous search, use cached values
+            nn_policy = root.nn_policy
+            nn_value_probs = root.nn_value_probs
 
         mcts_policy, gumbel_action, v_mix = self._gumbel_sequential_halving(root, num_simulations, is_eval=False)
         return mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action
 
     @torch.inference_mode()
-    def eval_search(self, state, to_play, num_simulations):
+    def eval_search(self, state, to_play, num_simulations, root=None):
 
-        root = Node(state, to_play)
+        if root is None:
+            root = Node(state, to_play)
 
-        nn_policy, nn_value_probs = self.root_expand(root)
-        self.backpropagate(root, nn_value_probs)
+        if not root.is_expanded():
+            nn_policy, nn_value_probs = self.root_expand(root)
+            self.backpropagate(root, nn_value_probs)
+        else:
+            # Tree Reuse: root already expanded from previous search, use cached values
+            nn_policy = root.nn_policy
+            nn_value_probs = root.nn_value_probs
 
         mcts_policy, gumbel_action, v_mix = self._gumbel_sequential_halving(root, num_simulations, is_eval=True)
         return mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action
@@ -451,6 +463,8 @@ class AlphaZero:
         last_action = None
         last_player = None
 
+        root = Node(state, to_play)  # Tree Reuse: initialize root before game loop
+
         while not self.game.is_terminal(state, last_action, last_player):
             
             if in_soft_resign:
@@ -461,7 +475,7 @@ class AlphaZero:
             else:
                 num_simulations = self.args["num_simulations"]
 
-            mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations)
+            mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations, root=root)
 
             # Soft Resign - derive scalar from WDL for threshold check
             v_mix_scalar = v_mix[0] - v_mix[2]  # W - L
@@ -507,6 +521,19 @@ class AlphaZero:
             last_player = to_play
             state = self.game.get_next_state(state, action, to_play)
             to_play = -to_play
+
+            # Tree Advance
+            next_root = None
+            for child in root.children:
+                if child.action_taken == action:
+                    next_root = child
+                    break
+            
+            if next_root is not None:
+                next_root.parent = None
+                root = next_root
+            else:
+                root = Node(state, to_play)
 
         final_state = state
         winner = self.game.get_winner(final_state, last_action, last_player)
@@ -746,10 +773,15 @@ class AlphaZero:
                 print("\nKeyboardInterrupt detected. Exiting without saving checkpoint.")
 
     @torch.inference_mode()
-    def play(self, state, to_play, show_progress_bar=True):
+    def play(self, state, to_play, root=None, show_progress_bar=True):
         self.model.eval()
 
-        mcts_policy, v_mix, _, _, gumbel_action = self.mcts.eval_search(state, to_play, self.args["num_simulations"])
+        if root is None:
+            root = Node(state, to_play)
+
+        actual_num_simulations = max(1, self.args["num_simulations"] - root.n)
+
+        mcts_policy, v_mix, _, _, gumbel_action = self.mcts.eval_search(state, to_play, actual_num_simulations, root)
 
         # Get symmetry avg outputs
         encoded = self.game.encode_state(state, to_play)  # (num_planes, board_size, board_size)
@@ -802,6 +834,11 @@ class AlphaZero:
         # v_mix is now a WDL vector; derive scalar for display
         v_mix_scalar = v_mix[0] - v_mix[2]
 
+        if gumbel_action is not None:
+            action = gumbel_action
+        else:
+            action = np.argmax(mcts_policy)
+
         info = {
             "mcts_policy": mcts_policy.reshape(self.game.board_size, self.game.board_size),
             "v_mix": v_mix_scalar,
@@ -810,9 +847,10 @@ class AlphaZero:
             "nn_opponent_policy": nn_opponent_policy.reshape(self.game.board_size, self.game.board_size),
             "nn_value": nn_value,
             "nn_value_probs": nn_value_probs,
+            "actual_search_num": actual_num_simulations,
         }
         
-        return gumbel_action, info
+        return action, info, root
 
     def save_model(self, filepath=None, timestamp=None):
         from datetime import datetime

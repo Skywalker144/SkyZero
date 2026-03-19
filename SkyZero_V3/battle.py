@@ -52,24 +52,54 @@ def play_battle(game, model_a, model_b, args, a_starts=True):
     # model_a_color determines which "to_play" value belongs to model_a
     model_a_color = 1 if a_starts else -1
     
-    mcts_root = None
+    # Each model maintains its own tree (different models have different NN outputs)
+    root_a = None
+    root_b = None
     while not game.is_terminal(state):
         if to_play == model_a_color:
-            action, _, mcts_root = model_a.play(state, to_play, mcts_root, show_progress_bar=False)
-            # Tree Reuse
-            if mcts_root is not None:
-                for child in mcts_root.children:
+            action, _, root_a = model_a.play(state, to_play, root_a, show_progress_bar=False)
+            # Tree Reuse: advance model_a's tree
+            if root_a is not None:
+                next_root = None
+                for child in root_a.children:
                     if child.action_taken == action:
-                        child.parent = None
-                        mcts_root = child
+                        next_root = child
+                        break
+                root_a = next_root
+                if root_a is not None:
+                    root_a.parent = None
+            # Tree Reuse: advance model_b's tree (opponent moved)
+            if root_b is not None:
+                next_root = None
+                for child in root_b.children:
+                    if child.action_taken == action:
+                        next_root = child
+                        break
+                root_b = next_root
+                if root_b is not None:
+                    root_b.parent = None
         else:
-            action, _, mcts_root = model_b.play(state, to_play, mcts_root, show_progress_bar=False)
-            # Tree Reuse
-            if mcts_root is not None:
-                for child in mcts_root.children:
+            action, _, root_b = model_b.play(state, to_play, root_b, show_progress_bar=False)
+            # Tree Reuse: advance model_b's tree
+            if root_b is not None:
+                next_root = None
+                for child in root_b.children:
                     if child.action_taken == action:
-                        child.parent = None
-                        mcts_root = child
+                        next_root = child
+                        break
+                root_b = next_root
+                if root_b is not None:
+                    root_b.parent = None
+            # Tree Reuse: advance model_a's tree (opponent moved)
+            if root_a is not None:
+                next_root = None
+                for child in root_a.children:
+                    if child.action_taken == action:
+                        next_root = child
+                        break
+                root_a = next_root
+                if root_a is not None:
+                    root_a.parent = None
             
         state = game.get_next_state(state, action, to_play)
 

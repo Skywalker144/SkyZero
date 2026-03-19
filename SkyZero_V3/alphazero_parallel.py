@@ -160,6 +160,8 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             last_action = None
             last_player = None
 
+            root = Node(state, to_play)  # Tree Reuse: initialize root before game loop
+
             while not game.is_terminal(state, last_action, last_player):
 
                 if in_soft_resign:
@@ -170,7 +172,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 else:
                     num_simulations = args["num_simulations"]
 
-                mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = mcts.search(state, to_play, num_simulations)
+                mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = mcts.search(state, to_play, num_simulations, root=root)
 
                 # Soft Resign - derive scalar from WDL
                 v_mix_scalar = v_mix[0] - v_mix[2]  # W - L
@@ -216,6 +218,19 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 last_player = to_play
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
+
+                # Tree Advance
+                next_root = None
+                for child in root.children:
+                    if child.action_taken == action:
+                        next_root = child
+                        break
+                
+                if next_root is not None:
+                    next_root.parent = None
+                    root = next_root
+                else:
+                    root = Node(state, to_play)
 
             final_state = state
             winner = game.get_winner(final_state, last_action, last_player)
