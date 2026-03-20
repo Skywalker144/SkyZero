@@ -37,9 +37,8 @@ def load_args_from_path(args_path):
     return getattr(module, "eval_args"), getattr(module, "train_args")
 
 def get_game_instance(eval_args, train_args):
-    history_step = eval_args.get("history_step", 2)
     board_size = train_args.get("board_size", 15)
-    return Gomoku(board_size=board_size, history_step=history_step)
+    return Gomoku(board_size=board_size)
 
 def play_battle(game, model_a, model_b, args, a_starts=True):
     """
