@@ -27,8 +27,7 @@ let moveHistory = [];
 let aiRunning = false;
 let lastMove = null; // 记录上一手棋的位置 {r, c}
 let thinkTimeMs = 3000;
-const undoLimit = 3;
-let undoCount = 0;
+
 
 // Heatmap data
 let lastResults = {
@@ -210,13 +209,8 @@ function setStatusText(text) {
 
 function updateUndoButton() {
     if (!undoBtn) return;
-    const remaining = Math.max(0, undoLimit - undoCount);
-    undoBtn.disabled = remaining === 0;
-    if (remaining === undoLimit) {
-        undoBtn.textContent = "悔棋";
-    } else {
-        undoBtn.textContent = `悔棋 (剩余${remaining})`;
-    }
+    undoBtn.disabled = false;
+    undoBtn.textContent = "悔棋";
 }
 
 function updateStatusFoot() {
@@ -693,8 +687,6 @@ function resetGame() {
     winProbHistory = []; // Clear history
     aiRunning = false;
     lastMove = null;
-    undoCount = 0;
-    updateUndoButton();
     searchId++;
     renderResults(null);
     worker.postMessage({ type: "reset" });
@@ -720,11 +712,6 @@ function resetGame() {
 
 function undo() {
     const isGameOver = game.getWinner(state) !== null;
-    if (undoCount >= undoLimit) {
-        setIdleStatus("本局悔棋次数已用完", true, true);
-        return;
-    }
-
     let movesToUndo = 0;
     
     // Allow undo to interrupt AI search and perform undo
@@ -742,8 +729,6 @@ function undo() {
             lastMove = prev.lastMove;
             renderResults(prev.lastResults);
             drawBoard();
-            undoCount++;
-            updateUndoButton();
         }
         if (movesToUndo > 0) popMoveHistory(movesToUndo);
         setIdleStatus(toPlay === 1 ? "轮到黑棋" : "轮到白棋", true, true);
@@ -800,8 +785,6 @@ function undo() {
     
     worker.postMessage({ type: "reset" });
     drawBoard();
-    undoCount++;
-    updateUndoButton();
 }
 
 function popMoveHistory(count) {
