@@ -367,12 +367,15 @@ onmessage = async function(e) {
 
         postMessage({ type: "progress", progress: 100, searchId });
 
+        // Visit-count-based policy for heatmap display
+        const visitPolicy = mcts.getMCTSPolicy(root);
+
         // Compute scalar root value from vMix WDL: W - L
         const rootValueScalar = vMix[0] - vMix[2];
 
         postMessage({
             type: "result",
-            policy: improvedPolicy,
+            policy: visitPolicy,
             gumbelAction: gumbelAction,
             rootValue: rootValueScalar,
             rootToPlay: root.toPlay,
