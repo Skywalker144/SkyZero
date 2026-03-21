@@ -86,7 +86,7 @@ class MCTS {
         let c_puct = this.args.c_puct;
         c_puct += this.args.c_puct_log * Math.log((totalChildWeight + this.args.c_puct_base) / this.args.c_puct_base);
 
-        const exploreScaling = (c_puct / 2) * Math.sqrt(totalChildWeight + 0.01);
+        const exploreScaling = c_puct * Math.sqrt(totalChildWeight + 0.01);
 
         // FPU - derive scalar Q from WDL: Q = W - L
         let parentQ;
@@ -102,7 +102,7 @@ class MCTS {
         let parentUtility = avgWeight * parentQ + (1 - avgWeight) * nnUtility;
 
         const fpuReductionMax = (node.parent === null) ? this.args.root_fpu_reduction_max : this.args.fpu_reduction_max;
-        const reduction = (fpuReductionMax / 2) * Math.sqrt(visitedPolicyMass);
+        const reduction = fpuReductionMax * Math.sqrt(visitedPolicyMass);
         let fpuValue = parentUtility - reduction;
 
         const fpuLossProp = this.args.fpu_loss_prop;
