@@ -2,16 +2,13 @@ import numpy as np
 import math
 from scipy import ndimage
 
-def get_expanded_region_circle(state, k=3.5):
+def get_expanded_region(state, half_size=2):
+    """Expand occupied positions by a square region of side (2*half_size+1)."""
     current_board = state[-1]
-    
-    y, x = np.ogrid[-k:k+1, -k:k+1]
-    mask = x**2 + y**2 <= k**2
-    
     binary_board = current_board != 0
-    
+    side = 2 * half_size + 1
+    mask = np.ones((side, side), dtype=bool)
     expanded = ndimage.binary_dilation(binary_board, structure=mask)
-    
     return expanded
 
 
@@ -242,8 +239,13 @@ class ForbiddenPointFinder:
         for d in range(1, 5):
             ret = self.IsOpenFour(x, y, C_BLACK, d)
             if ret == 2:
+                # Two independent fours in this direction (e.g. jump pattern)
                 nFour += 2
+            elif ret == 1:
+                # Standard open four counts as one four in this direction
+                nFour += 1
             elif self.IsFour(x, y, C_BLACK, d):
+                # Closed four (only one end can make five)
                 nFour += 1
 
         return nFour >= 2
@@ -300,13 +302,19 @@ class ForbiddenPointFinder:
             return False
 
         nearbyBlack = 0
-        # Check nearby stones to optimize
+        # Optimization: a forbidden point (double-three, double-four, or overline)
+        # requires at least two black stones within distance 2 (Chebyshev) of (x, y),
+        # excluding knight's-move positions (Manhattan distance 3).
+        # This is safe because any line pattern contributing to a forbidden point
+        # (open three, four, or overline) must have at least one black stone
+        # within 2 cells of the placed position along that line direction.
+        # Two such patterns in different directions thus need >= 2 nearby stones.
         for i in range(max(0, x - 2), min(self.f_boardsize - 1, x + 2) + 1):
             for j in range(max(0, y - 2), min(self.f_boardsize - 1, y + 2) + 1):
                 if i == x and j == y: continue
                 if self.cBoard[i + 1][j + 1] == C_BLACK:
                     xd, yd = abs(i - x), abs(j - y)
-                    if (xd + yd) != 3:  # Exclude knight"s move points as in C++
+                    if (xd + yd) != 3:  # Exclude knight's move positions
                         nearbyBlack += 1
 
         if nearbyBlack < 2: return False
@@ -369,21 +377,40 @@ class GameLogic:
         return C_WHITE if pla == C_BLACK else C_BLACK
 
     @staticmethod
+    def _adj_crosses_boundary(board, loc, adj):
+        """Check if stepping from loc by adj crosses a row boundary (for horizontal/diagonal directions)."""
+        x1 = loc % board.x_size
+        x2 = (loc + adj) % board.x_size
+        # For vertical adj (adj == ±board.x_size), column doesn't change, no wrap.
+        # For horizontal or diagonal, the column changes by ±1.
+        # If the column wraps around (e.g. 14->0 or 0->14), the step is invalid.
+        abs_adj = abs(adj)
+        if abs_adj == board.x_size:
+            return False  # pure vertical, no column wrap possible
+        # horizontal or diagonal: column should change by exactly 1
+        col_diff = abs(x2 - x1)
+        return col_diff != 1
+
+    @staticmethod
     def connectionLengthOneDirection(board, pla, isSixWin, loc, adj):
         tmploc = loc
         conNum = 0
         isLife = False
 
         while True:
+            prev_loc = tmploc
             tmploc += adj
             if not board.isOnBoard(tmploc): break
+            if GameLogic._adj_crosses_boundary(board, prev_loc, adj): break
             if board.colors[tmploc] == pla:
                 conNum += 1
             elif board.colors[tmploc] == C_EMPTY:
                 isLife = True
                 if not isSixWin:
                     tmploc2 = tmploc + adj
-                    if board.isOnBoard(tmploc2) and board.colors[tmploc2] == pla:
+                    if (board.isOnBoard(tmploc2)
+                            and not GameLogic._adj_crosses_boundary(board, tmploc, adj)
+                            and board.colors[tmploc2] == pla):
                         isLife = False
                 break
             else:
@@ -458,12 +485,12 @@ class Gomoku:
         legal_mask = (current_board.flatten() == 0)
 
         # Heuristic legal action limitation
-        if np.sum(current_board == 1) == 0:
+        if np.all(current_board == 0):
             self.center_loc = (self.board_size // 2) * self.board_size + (self.board_size // 2)
             legal_mask[:] = False
             legal_mask[self.center_loc] = True
         else:
-            legal_mask = legal_mask & get_expanded_region_circle(state, k=4).flatten()
+            legal_mask = legal_mask & get_expanded_region(state, half_size=2).flatten()
 
         return legal_mask
 
