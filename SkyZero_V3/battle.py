@@ -47,6 +47,8 @@ def play_battle(game, model_a, model_b, args, a_starts=True):
     """
     state = game.get_initial_state()
     to_play = 1  # Black/First player
+    last_action = None
+    last_player = None
     
     # model_a_color determines which "to_play" value belongs to model_a
     model_a_color = 1 if a_starts else -1
@@ -54,7 +56,7 @@ def play_battle(game, model_a, model_b, args, a_starts=True):
     # Each model maintains its own tree (different models have different NN outputs)
     root_a = None
     root_b = None
-    while not game.is_terminal(state):
+    while not game.is_terminal(state, last_action, last_player):
         if to_play == model_a_color:
             action, _, root_a = model_a.play(state, to_play, root_a, show_progress_bar=False)
             # Tree Reuse: advance model_a's tree
@@ -101,10 +103,12 @@ def play_battle(game, model_a, model_b, args, a_starts=True):
                     root_a.parent = None
             
         state = game.get_next_state(state, action, to_play)
+        last_action = action
+        last_player = to_play
 
         to_play = -to_play
         print_board(state)
-    winner = game.get_winner(state)
+    winner = game.get_winner(state, last_action, last_player)
     if winner == 0:
         return 0
     return 1 if winner == model_a_color else -1
