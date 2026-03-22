@@ -1,10 +1,10 @@
-importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/ort.min.js");
+importScripts("ort.min.js");
 importScripts("gomoku.js");
 importScripts("mcts.js");
 
-// 强制 ONNX Runtime 从 CDN 加载 WASM 资源，避免 404
-ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.2/dist/";
-ort.env.wasm.numThreads = 1; // 禁用多线程以避免 CDN Worker 跨域加载失败导致的 TypeError
+// Load WASM files from the same origin to avoid CDN dependency and cross-origin issues
+ort.env.wasm.wasmPaths = "./";
+ort.env.wasm.numThreads = 1; // 禁用多线程以避免 Worker 跨域加载失败导致的 TypeError
 
 let session = null;
 let game = null;
@@ -130,20 +130,17 @@ async function init() {
     });
     
     try {
-        const ua = (self.navigator && self.navigator.userAgent) ? self.navigator.userAgent : "";
-        const isIOS = /iP(hone|ad|od)/.test(ua);
-        const executionProviders = isIOS ? ["wasm", "cpu"] : ["webgl", "cpu"];
+        // Web Workers have no WebGL context, so always use the WASM backend.
+        // Using "webgl" here would cause silent hangs on some deployments (e.g. Cloudflare Pages)
+        // because the WebGL init fails and fallback behavior is inconsistent across environments.
+        const executionProviders = ["wasm"];
 
-        if (isIOS) {
-            session = await ort.InferenceSession.create("model.onnx", { executionProviders });
-        } else {
-            const modelBytes = await fetchModelWithProgress("model.onnx");
-            session = await ort.InferenceSession.create(modelBytes, { executionProviders });
-        }
+        const modelBytes = await fetchModelWithProgress("model.onnx");
+        session = await ort.InferenceSession.create(modelBytes, { executionProviders });
         postMessage({ type: "ready" });
     } catch (e) {
         console.error("Failed to load ONNX model:", e);
-        postMessage({ type: "error", message: e.message });
+        postMessage({ type: "error", message: "模型加载失败: " + (e.message || String(e)) });
     }
 }
 
@@ -156,6 +153,10 @@ async function init() {
  *   - oppPLogits: Float32Array averaged opponent policy logits (boardSize^2)
  */
 async function inference(state, toPlay, mode = "single") {
+    if (!session) {
+        throw new Error("ONNX session not initialized");
+    }
+
     const encoded = game.encodeState(state, toPlay);
     const C = game.numPlanes, H = boardSize, W = boardSize;
     
@@ -178,8 +179,15 @@ async function inference(state, toPlay, mode = "single") {
         inputData.set(aug, i * C * H * W);
     }
 
-    const input = new ort.Tensor("float32", inputData, [batchSize, C, H, W]);
-    const results = await session.run({ input: input });
+    let results;
+    try {
+        const input = new ort.Tensor("float32", inputData, [batchSize, C, H, W]);
+        results = await session.run({ input: input });
+    } catch (e) {
+        console.error("ONNX inference failed:", e);
+        postMessage({ type: "error", message: "推理失败: " + (e.message || String(e)) });
+        throw e;
+    }
 
     const pLogits = results.policy_logits.data;
     const vLogits = results.value_logits.data;
