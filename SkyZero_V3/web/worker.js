@@ -1,8 +1,9 @@
-importScripts("ort.wasm.min.js");
+importScripts("ort.min.js");
 importScripts("gomoku.js");
 importScripts("mcts.js");
 
-// Load WASM files from the same origin to avoid CDN dependency and cross-origin issues
+// v1.17 uses no dynamic import(), so importScripts works reliably in classic Workers.
+// Load WASM binary from the same origin to avoid external CDN dependency.
 ort.env.wasm.wasmPaths = "./";
 ort.env.wasm.numThreads = 1; // 禁用多线程以避免 Worker 跨域加载失败导致的 TypeError
 
@@ -130,9 +131,6 @@ async function init() {
     });
     
     try {
-        // Web Workers have no WebGL context, so always use the WASM backend.
-        // Using "webgl" here would cause silent hangs on some deployments (e.g. Cloudflare Pages)
-        // because the WebGL init fails and fallback behavior is inconsistent across environments.
         const executionProviders = ["wasm"];
 
         const modelBytes = await fetchModelWithProgress("model.onnx");
