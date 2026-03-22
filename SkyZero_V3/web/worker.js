@@ -1,4 +1,4 @@
-importScripts("ort.min.js");
+importScripts("ort.wasm.min.js");
 importScripts("gomoku.js");
 importScripts("mcts.js");
 
