@@ -17,10 +17,10 @@ train_args = {
     "board_size": 15,
     "num_blocks": 4,
     "num_channels": 128,
-    "lr": 0.00008,
+    "lr": 0.0001,
     "weight_decay": 3e-5,
 
-    "num_simulations": 256,
+    "num_simulations": 512,
     "batch_size": 256,
 
     # Gumbel settings
@@ -35,6 +35,8 @@ train_args = {
     "linear_threshold": 5e6,
     "alpha": 0.75,
     "max_buffer_size": 5e7,
+
+    "half_life": 3,
 
     "train_steps_per_generation": 100,
     "target_ReplayRatio": 8,
