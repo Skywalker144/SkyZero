@@ -4,7 +4,15 @@ importScripts("mcts.js");
 
 // v1.17 uses no dynamic import(), so importScripts works reliably in classic Workers.
 // Load WASM binary from the same origin to avoid external CDN dependency.
-ort.env.wasm.wasmPaths = "./";
+// Use object form of wasmPaths: map every WASM variant to deployed files.
+// This ensures loading succeeds even if Cloudflare CDN hasn't deployed all variants.
+// Non-SIMD variants are mapped to SIMD versions (safe because all modern browsers support WASM SIMD).
+ort.env.wasm.wasmPaths = {
+    "ort-wasm-simd-threaded.wasm": "./ort-wasm-simd-threaded.wasm",
+    "ort-wasm-simd.wasm":          "./ort-wasm-simd.wasm",
+    "ort-wasm-threaded.wasm":      "./ort-wasm-simd-threaded.wasm",
+    "ort-wasm.wasm":               "./ort-wasm-simd.wasm",
+};
 ort.env.wasm.numThreads = 1; // 禁用多线程以避免 Worker 跨域加载失败导致的 TypeError
 
 let session = null;
