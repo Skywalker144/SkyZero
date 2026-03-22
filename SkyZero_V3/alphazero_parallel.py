@@ -202,11 +202,10 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 # Gumbel Zero selfplay exploration - directly use the action derived from Gumbel-Max trick
                 move_count = len(memory)
                 half_life = args.get("half_life", game.board_size)
-                prob = 0.5 ** (move_count / half_life)
                 t_init = args.get("move_temperature_init", 1.1)
                 t_final = args.get("move_temperature_final", 1)
-                t = t_final + (t_init - t_final) * (0.5 ** (move_count / half_life))
-                if np.random.rand() < prob and move_count < half_life * 2:
+                t = t_init - (move_count / half_life) * (t_init - t_final)
+                if move_count < half_life:
                     action = np.random.choice(
                         len(mcts_policy),
                         p=temperature_transform(mcts_policy, t)
