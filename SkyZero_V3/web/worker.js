@@ -125,7 +125,7 @@ async function init() {
         root_fpu_reduction_max: 0.0,
         fpu_pow: 1.0,
         fpu_loss_prop: 0.0,
-        gumbel_m: 16,
+        gumbel_m: 4,
         gumbel_c_visit: 50,
         gumbel_c_scale: 1.0,
     });
