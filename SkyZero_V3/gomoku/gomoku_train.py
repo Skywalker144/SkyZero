@@ -24,7 +24,7 @@ train_args = {
     "batch_size": 256,
 
     # Gumbel settings
-    "gumbel_m": 16,
+    "gumbel_m": 32,
     "gumbel_c_visit": 50,
     "gumbel_c_scale": 1.0,
 
@@ -36,7 +36,7 @@ train_args = {
     "alpha": 0.75,
     "max_buffer_size": 5e7,
 
-    "half_life": 3,
+    "half_life": 10,
 
     "train_steps_per_generation": 100,
     "target_ReplayRatio": 8,
@@ -44,7 +44,7 @@ train_args = {
     "fpu_reduction_max": 0.08,
     "root_fpu_reduction_max": 0.0,
 
-    "savetime_interval": 7200,
+    "savetime_interval": 14400,
     "file_name": "gomoku",
     "data_dir": "data/gomoku",
     "device": "cuda",
