@@ -27,6 +27,8 @@ let moveHistory = [];
 let aiRunning = false;
 let lastMove = null; // 记录上一手棋的位置 {r, c}
 let thinkTimeMs = 3000;
+let searchMode = "time"; // "time" or "sims"
+let fixedSimulations = 200;
 const undoLimit = 3;
 let undoCount = 0;
 
@@ -68,6 +70,46 @@ if (thinkSlider) {
     thinkSlider.addEventListener("input", () => {
         updateThinkTime(thinkSlider.value);
     });
+}
+
+// --- Search mode tabs (time vs sims) ---
+const simsSlider = document.getElementById("sims-slider");
+const simsValueEl = document.getElementById("sims-value");
+const panelTime = document.getElementById("panel-time");
+const panelSims = document.getElementById("panel-sims");
+
+function updateFixedSimulations(value) {
+    const parsed = parseInt(value, 10);
+    fixedSimulations = Number.isFinite(parsed) ? parsed : 200;
+    if (simsValueEl) simsValueEl.textContent = `${fixedSimulations}`;
+}
+
+if (simsSlider) {
+    updateFixedSimulations(simsSlider.value);
+    simsSlider.addEventListener("input", () => {
+        updateFixedSimulations(simsSlider.value);
+    });
+}
+
+document.querySelectorAll(".sim-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+        document.querySelectorAll(".sim-tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        const mode = tab.dataset.mode;
+        searchMode = mode;
+        if (panelTime) panelTime.style.display = mode === "time" ? "" : "none";
+        if (panelSims) panelSims.style.display = mode === "sims" ? "" : "none";
+    });
+});
+
+function buildSearchMessage(state, toPlay, searchId, extra) {
+    const msg = { type: "search", state, toPlay, searchId, ...extra };
+    if (searchMode === "sims") {
+        msg.numSimulations = fixedSimulations;
+    } else {
+        msg.thinkTimeMs = getEffectiveThinkTimeMs();
+    }
+    return msg;
 }
 
 const IPHONE_WARNING_KEY = "skyzero:hide-iphone-warning";
@@ -656,7 +698,7 @@ function makeMove(action) {
             startSearchStatus();
             aiRunning = true;
             searchId++;
-            worker.postMessage({ type: "search", thinkTimeMs: getEffectiveThinkTimeMs(), state, toPlay, searchId });
+            worker.postMessage(buildSearchMessage(state, toPlay, searchId));
         }
     }
 }
@@ -708,7 +750,7 @@ function resetGame() {
     } else {
         startSearchStatus();
         aiRunning = true;
-        worker.postMessage({ type: "search", thinkTimeMs: getEffectiveThinkTimeMs(), state, toPlay, searchId, purpose: "play" });
+        worker.postMessage(buildSearchMessage(state, toPlay, searchId, { purpose: "play" }));
     }
     
     drawBoard();

@@ -332,6 +332,44 @@ canvas {
     letter-spacing: 0.04em;
 }
 
+.sim-tabs {
+    display: flex;
+    gap: 0;
+    background: var(--accents-2);
+    border-radius: 5px;
+    padding: 2px;
+}
+
+.sim-tab {
+    flex: 1;
+    padding: 3px 0;
+    border: none;
+    background: transparent;
+    color: var(--accents-5);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: background 0.15s, color 0.15s;
+}
+
+.sim-tab:hover {
+    color: var(--fg);
+}
+
+.sim-tab.active {
+    background: var(--accents-1);
+    color: var(--fg);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.sim-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .stat-box {
     flex: 0 0 auto;
     min-width: 150px;

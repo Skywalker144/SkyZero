@@ -257,7 +257,9 @@ onmessage = async function(e) {
             root = new Node(data.nextState, data.nextToPlay);
         }
     } else if (data.type === "search") {
-        const thinkTimeMs = Number.isFinite(data.thinkTimeMs) ? data.thinkTimeMs : 3000;
+        const thinkTimeMs = Number.isFinite(data.thinkTimeMs) ? data.thinkTimeMs : null;
+        const fixedSims = Number.isFinite(data.numSimulations) ? data.numSimulations : null;
+        const useFixedSims = fixedSims !== null;
         const searchId = data.searchId;
         latestSearchId = searchId;
         
@@ -286,25 +288,37 @@ onmessage = async function(e) {
         }
         // If reusing tree, root is already expanded with cached nnLogits/nnPolicy/nnValue
 
-        // === Step 2: Estimate simulation budget from remaining time ===
-        // Update inference time EMA (child inference uses stochastic mode = ~1/8 of full)
-        const singleInfEstimate = rootInfTime / 8;  // Approximate stochastic inference time
-        if (inferenceTimeEma === null) {
-            inferenceTimeEma = singleInfEstimate;
+        // === Step 2: Determine simulation budget ===
+        let numSimulations;
+        if (useFixedSims) {
+            // Fixed simulation count mode: use user-specified number directly
+            numSimulations = Math.max(1, Math.min(fixedSims, 1600));
+            // Subtract existing visits from tree reuse
+            if (reusingTree && root.n > 0) {
+                numSimulations = Math.max(1, numSimulations - root.n);
+            }
         } else {
-            inferenceTimeEma = 0.7 * inferenceTimeEma + 0.3 * singleInfEstimate;
-        }
+            // Time-based mode: estimate simulation budget from remaining time
+            const effectiveThinkTimeMs = thinkTimeMs !== null ? thinkTimeMs : 3000;
+            // Update inference time EMA (child inference uses stochastic mode = ~1/8 of full)
+            const singleInfEstimate = rootInfTime / 8;  // Approximate stochastic inference time
+            if (inferenceTimeEma === null) {
+                inferenceTimeEma = singleInfEstimate;
+            } else {
+                inferenceTimeEma = 0.7 * inferenceTimeEma + 0.3 * singleInfEstimate;
+            }
 
-        const elapsed = performance.now() - searchStartTime;
-        const remainingTime = Math.max(0, thinkTimeMs - elapsed);
-        // Each simulation = 1 inference (approximately). Reserve some time for final computation.
-        const reservedTime = Math.min(200, remainingTime * 0.05);
-        let numSimulations = Math.max(1, Math.floor((remainingTime - reservedTime) / Math.max(1, inferenceTimeEma)));
-        // Cap simulations
-        numSimulations = Math.min(numSimulations, 1600);
-        // Subtract existing visits from tree reuse (consistent with Python alphazero.py:782)
-        if (reusingTree && root.n > 0) {
-            numSimulations = Math.max(1, numSimulations - root.n);
+            const elapsed = performance.now() - searchStartTime;
+            const remainingTime = Math.max(0, effectiveThinkTimeMs - elapsed);
+            // Each simulation = 1 inference (approximately). Reserve some time for final computation.
+            const reservedTime = Math.min(200, remainingTime * 0.05);
+            numSimulations = Math.max(1, Math.floor((remainingTime - reservedTime) / Math.max(1, inferenceTimeEma)));
+            // Cap simulations
+            numSimulations = Math.min(numSimulations, 1600);
+            // Subtract existing visits from tree reuse (consistent with Python alphazero.py:782)
+            if (reusingTree && root.n > 0) {
+                numSimulations = Math.max(1, numSimulations - root.n);
+            }
         }
 
         // === Step 3: Run Gumbel Sequential Halving ===
@@ -360,7 +374,15 @@ onmessage = async function(e) {
             const now = performance.now();
             if (now - lastProgressTime > 60) {
                 lastProgressTime = now;
-                const progress = Math.min(100, ((now - searchStartTime) / thinkTimeMs) * 100);
+                let progress;
+                if (useFixedSims) {
+                    // Fixed sims mode: progress based on simulation count
+                    progress = Math.min(100, (totalSims / numSimulations) * 100);
+                } else {
+                    // Time mode: progress based on elapsed time
+                    const effectiveThinkTimeMs = thinkTimeMs !== null ? thinkTimeMs : 3000;
+                    progress = Math.min(100, ((now - searchStartTime) / effectiveThinkTimeMs) * 100);
+                }
                 postMessage({ type: "progress", progress, searchId });
             }
         };
