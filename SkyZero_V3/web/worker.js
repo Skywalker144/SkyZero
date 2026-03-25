@@ -5,7 +5,12 @@ importScripts("mcts.js");
 // v1.17 uses no dynamic import(), so importScripts works reliably in classic Workers.
 // Load WASM binary from the jsdelivr CDN to avoid Cloudflare Pages file size limits.
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
-ort.env.wasm.numThreads = 1; // 禁用多线程以避免 Worker 跨域加载失败导致的 TypeError
+// 如果浏览器支持 SharedArrayBuffer（需要 COOP/COEP 头），启用 WASM 多线程加速推理
+if (typeof SharedArrayBuffer !== "undefined") {
+    ort.env.wasm.numThreads = Math.min(navigator.hardwareConcurrency || 1, 4);
+} else {
+    ort.env.wasm.numThreads = 1;
+}
 
 let session = null;
 let game = null;
@@ -58,49 +63,6 @@ async function fetchModelWithProgress(url) {
     return concatChunks(chunks, total || loaded);
 }
 
-// --- Symmetry Utilities ---
-function rotate90(data, C, H, W) {
-    const newData = new Float32Array(data.length);
-    const layerSize = H * W;
-    for (let c = 0; c < C; c++) {
-        for (let h = 0; h < H; h++) {
-            for (let w = 0; w < W; w++) {
-                // Counter-clockwise rotation: (h, w) -> (W-1-w, h)
-                newData[c * layerSize + (W - 1 - w) * H + h] = data[c * layerSize + h * W + w];
-            }
-        }
-    }
-    return newData;
-}
-
-function flip(data, C, H, W) {
-    const newData = new Float32Array(data.length);
-    const layerSize = H * W;
-    for (let c = 0; c < C; c++) {
-        for (let h = 0; h < H; h++) {
-            for (let w = 0; w < W; w++) {
-                // Horizontal flip: (h, w) -> (h, W-1-w)
-                newData[c * layerSize + h * W + (W - 1 - w)] = data[c * layerSize + h * W + w];
-            }
-        }
-    }
-    return newData;
-}
-
-function applySymmetry(data, C, H, W, doFlip, rot) {
-    let res = data;
-    for (let i = 0; i < rot; i++) res = rotate90(res, C, H, W);
-    if (doFlip) res = flip(res, C, H, W);
-    return res;
-}
-
-function applyInverseSymmetry(data, C, H, W, doFlip, rot) {
-    let res = data;
-    if (doFlip) res = flip(res, C, H, W);
-    for (let i = 0; i < (4 - rot) % 4; i++) res = rotate90(res, C, H, W);
-    return res;
-}
-
 function mctsSoftmax(logits) {
     let maxLogit = -Infinity;
     for (let i = 0; i < logits.length; i++) {
@@ -121,11 +83,11 @@ async function init() {
         c_puct: 1.1,
         c_puct_log: 0.45,
         c_puct_base: 500,
-        fpu_reduction_max: 0.2,
-        root_fpu_reduction_max: 0.0,
+        fpu_reduction_max: 0.08,
+        root_fpu_reduction_max: 0.08,
         fpu_pow: 1.0,
         fpu_loss_prop: 0.0,
-        gumbel_m: 4,
+        gumbel_m: 8,
         gumbel_c_visit: 50,
         gumbel_c_scale: 1.0,
     });
@@ -143,43 +105,24 @@ async function init() {
 }
 
 /**
- * Run NN inference with optional symmetry augmentation.
+ * Run NN inference (single forward pass, no symmetry augmentation).
  * Returns { policy, value, policyLogits, oppPLogits }
  *   - policy: Float32Array softmax probabilities (boardSize^2)
  *   - value: Float64Array WDL [win, draw, loss]
  *   - policyLogits: Float32Array masked logits (boardSize^2)
- *   - oppPLogits: Float32Array averaged opponent policy logits (boardSize^2)
+ *   - oppPLogits: Float32Array opponent policy logits (boardSize^2)
  */
-async function inference(state, toPlay, mode = "single") {
+async function inference(state, toPlay) {
     if (!session) {
         throw new Error("ONNX session not initialized");
     }
 
     const encoded = game.encodeState(state, toPlay);
     const C = game.numPlanes, H = boardSize, W = boardSize;
-    
-    let batchSize = 1;
-    let symmetries = [{ doFlip: false, rot: 0 }];
-
-    if (mode === "stochastic") {
-        symmetries = [{ doFlip: Math.random() < 0.5, rot: Math.floor(Math.random() * 4) }];
-    } else if (mode === "full") {
-        batchSize = 8;
-        symmetries = [];
-        for (const f of [false, true]) {
-            for (let r = 0; r < 4; r++) symmetries.push({ doFlip: f, rot: r });
-        }
-    }
-
-    const inputData = new Float32Array(batchSize * C * H * W);
-    for (let i = 0; i < batchSize; i++) {
-        const aug = applySymmetry(encoded, C, H, W, symmetries[i].doFlip, symmetries[i].rot);
-        inputData.set(aug, i * C * H * W);
-    }
 
     let results;
     try {
-        const input = new ort.Tensor("float32", inputData, [batchSize, C, H, W]);
+        const input = new ort.Tensor("float32", encoded, [1, C, H, W]);
         results = await session.run({ input: input });
     } catch (e) {
         console.error("ONNX inference failed:", e);
@@ -189,39 +132,21 @@ async function inference(state, toPlay, mode = "single") {
 
     const pLogits = results.policy_logits.data;
     const vLogits = results.value_logits.data;
-    const oppPLogitsData = results.opponent_policy_logits.data;
+    const oppPLogits = new Float32Array(results.opponent_policy_logits.data);
 
-    // Average value logits across symmetries, then softmax to WDL
-    const vLogitsAvg = new Float32Array(3).fill(0);
-    for (let i = 0; i < batchSize; i++) {
-        for (let j = 0; j < 3; j++) vLogitsAvg[j] += vLogits[i * 3 + j] / batchSize;
-    }
-    const vProbs = mctsSoftmax(Array.from(vLogitsAvg));
+    // Softmax value logits to WDL
+    const vProbs = mctsSoftmax(Array.from(vLogits));
     const value = new Float64Array([vProbs[0], vProbs[1], vProbs[2]]);  // WDL [win, draw, loss]
-
-    // Average policy logits & opponent policy logits across symmetries (with inverse transform)
-    const avgPLogits = new Float32Array(H * W).fill(0);
-    const avgOppPLogits = new Float32Array(H * W).fill(0);
-
-    for (let i = 0; i < batchSize; i++) {
-        const p = applyInverseSymmetry(pLogits.slice(i * H * W, (i + 1) * H * W), 1, H, W, symmetries[i].doFlip, symmetries[i].rot);
-        const oppP = applyInverseSymmetry(oppPLogitsData.slice(i * H * W, (i + 1) * H * W), 1, H, W, symmetries[i].doFlip, symmetries[i].rot);
-        
-        for (let j = 0; j < H * W; j++) {
-            avgPLogits[j] += p[j] / batchSize;
-            avgOppPLogits[j] += oppP[j] / batchSize;
-        }
-    }
 
     // Mask illegal moves and compute softmax policy
     const legalMask = game.getLegalActions(state, toPlay);
     const maskedLogits = new Float32Array(H * W);
     for (let i = 0; i < H * W; i++) {
-        maskedLogits[i] = legalMask[i] ? avgPLogits[i] : -1e9;
+        maskedLogits[i] = legalMask[i] ? pLogits[i] : -1e9;
     }
     const policy = new Float32Array(mctsSoftmax(Array.from(maskedLogits)));
 
-    return { policy, value, policyLogits: maskedLogits, oppPLogits: avgOppPLogits };
+    return { policy, value, policyLogits: maskedLogits, oppPLogits };
 }
 
 let latestSearchId = 0;
@@ -271,22 +196,29 @@ onmessage = async function(e) {
         const searchStartTime = performance.now();
         const reusingTree = root.isExpanded();
 
-        // === Step 1: Root expand + full symmetry inference ===
-        // Always run inference for oppPLogits (needed for UI display)
+        // === Step 1: Root inference ===
         const rootInfStart = performance.now();
-        const { policy: rootPolicy, value: rootValue, policyLogits: rootLogits, oppPLogits } =
-            await inference(root.state, root.toPlay, "full");
+        let oppPLogits;
+        let rootValue;
+
+        if (reusingTree) {
+            // 树复用：root 已有 nnPolicy/nnValue/nnLogits，只需 oppPLogits 供 UI 显示
+            const result = await inference(root.state, root.toPlay);
+            oppPLogits = result.oppPLogits;
+            rootValue = root.nnValue;  // 使用缓存的 NN 值
+        } else {
+            // 新 root：直接推理
+            const result = await inference(root.state, root.toPlay);
+            oppPLogits = result.oppPLogits;
+            rootValue = result.value;
+            mcts.expand(root, result.policy, result.value, result.policyLogits);
+            mcts.backpropagate(root, result.value);
+        }
+
         const rootInfTime = performance.now() - rootInfStart;
 
         // Check for abortion after async
         if (latestSearchId !== searchId) return;
-
-        if (!reusingTree) {
-            // Fresh root: expand and backpropagate as usual
-            mcts.expand(root, rootPolicy, rootValue, rootLogits);
-            mcts.backpropagate(root, rootValue);
-        }
-        // If reusing tree, root is already expanded with cached nnLogits/nnPolicy/nnValue
 
         // === Step 2: Determine simulation budget ===
         let numSimulations;
@@ -300,8 +232,8 @@ onmessage = async function(e) {
         } else {
             // Time-based mode: estimate simulation budget from remaining time
             const effectiveThinkTimeMs = thinkTimeMs !== null ? thinkTimeMs : 3000;
-            // Update inference time EMA (child inference uses stochastic mode = ~1/8 of full)
-            const singleInfEstimate = rootInfTime / 8;  // Approximate stochastic inference time
+            // Update inference time EMA from root inference
+            const singleInfEstimate = rootInfTime;
             if (inferenceTimeEma === null) {
                 inferenceTimeEma = singleInfEstimate;
             } else {
@@ -352,9 +284,9 @@ onmessage = async function(e) {
                     value = new Float64Array([0.0, 1.0, 0.0]);  // draw
                 }
             } else {
-                // NN inference (stochastic symmetry for non-root)
+                // NN inference
                 const infStart = performance.now();
-                const { policy, value: v, policyLogits } = await inference(node.state, node.toPlay, "stochastic");
+                const { policy, value: v, policyLogits } = await inference(node.state, node.toPlay);
                 const infTime = performance.now() - infStart;
 
                 // Update inference time EMA
