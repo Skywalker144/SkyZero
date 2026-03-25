@@ -118,9 +118,9 @@ def main():
     
     # Configuration: Manually set paths and parameters here
     play_script_path = "gomoku/gomoku_play.py"
-    checkpoint_a_path = "data/gomoku/models/gomoku_model_2026-03-02_15-37-44.pth"  # Path for Model A (New Model)
+    checkpoint_a_path = "data/gomoku/models/gomoku_model_2026-03-25_05-55-14.pth"  # Path for Model A (New Model)
     # checkpoint_a_path = "data/gomoku/models/gomoku_model_2026-02-28_11-16-17.pth"
-    checkpoint_b_path = "data/gomoku/models/gomoku_model_2026-03-02_03-37-44.pth"   # Path for Model B (Old Model)
+    checkpoint_b_path = "data/gomoku/models/gomoku_model_2026-03-24_05-12-24.pth"   # Path for Model B (Old Model)
     num_games = 20                                    # Number of games to play
 
     # Load configuration
