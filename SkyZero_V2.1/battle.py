@@ -8,7 +8,7 @@ from tqdm import tqdm
 # Add current directory to path so we can import local modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from alphazero import TreeReuseAlphaZero
+from alphazero import AlphaZero
 from nets import ResNet
 from envs.gomoku import Gomoku
 from utils import print_board
@@ -47,24 +47,63 @@ def play_battle(game, model_a, model_b, args, a_starts=True):
     """
     state = game.get_initial_state()
     to_play = 1  # Black/First player
+    last_action = None
+    last_player = None
     
     # model_a_color determines which "to_play" value belongs to model_a
     model_a_color = 1 if a_starts else -1
     
-    mcts_root = None
-    while not game.is_terminal(state):
+    root_a = None
+    root_b = None
+    while not game.is_terminal(state, last_action, last_player):
         if to_play == model_a_color:
-            action, _, mcts_root = model_a.play(state, to_play, mcts_root, show_progress_bar=False)
-            model_a.apply_action(mcts_root, action)
+            action, _, root_a = model_a.play(state, to_play, root_a, show_progress_bar=False)
+            if root_a is not None:
+                next_root = None
+                for child in root_a.children:
+                    if child.action_taken == action:
+                        next_root = child
+                        break
+                root_a = next_root
+                if root_a is not None:
+                    root_a.parent = None
+            if root_b is not None:
+                next_root = None
+                for child in root_b.children:
+                    if child.action_taken == action:
+                        next_root = child
+                        break
+                root_b = next_root
+                if root_b is not None:
+                    root_b.parent = None
         else:
-            action, _, mcts_root = model_b.play(state, to_play, mcts_root, show_progress_bar=False)
-            model_b.apply_action(mcts_root, action)
+            action, _, root_b = model_b.play(state, to_play, root_b, show_progress_bar=False)
+            if root_b is not None:
+                next_root = None
+                for child in root_b.children:
+                    if child.action_taken == action:
+                        next_root = child
+                        break
+                root_b = next_root
+                if root_b is not None:
+                    root_b.parent = None
+            if root_a is not None:
+                next_root = None
+                for child in root_a.children:
+                    if child.action_taken == action:
+                        next_root = child
+                        break
+                root_a = next_root
+                if root_a is not None:
+                    root_a.parent = None
             
         state = game.get_next_state(state, action, to_play)
+        last_action = action
+        last_player = to_play
 
         to_play = -to_play
         print_board(state)
-    winner = game.get_winner(state)
+    winner = game.get_winner(state, last_action, last_player)
     if winner == 0:
         return 0
     return 1 if winner == model_a_color else -1
@@ -100,7 +139,7 @@ def main():
     # Initialize Models
     def create_alphazero(checkpoint_path):
         model = ResNet(game, num_blocks=eval_args["num_blocks"], num_channels=eval_args["num_channels"])
-        az = TreeReuseAlphaZero(game, model, None, eval_args)
+        az = AlphaZero(game, model, None, eval_args)
         if not az.load_model(checkpoint_path):
             raise ValueError(f"Failed to load model: {checkpoint_path}")
         return az
