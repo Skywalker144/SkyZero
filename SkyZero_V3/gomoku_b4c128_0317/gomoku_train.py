@@ -31,7 +31,7 @@ train_args = {
     "enable_stochastic_transform_inference_for_child": True,
     "enable_stochastic_transform_inference_for_root": True,
 
-    "min_buffer_size": 8e5,
+    "min_buffer_size": 5e5,
     "linear_threshold": 5e6,
     "alpha": 0.75,
     "max_buffer_size": 5e7,
