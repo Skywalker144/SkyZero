@@ -2,16 +2,12 @@ import numpy as np
 import math
 from scipy import ndimage
 
-def get_expanded_region_circle(state, k=3.5):
+def get_expanded_region(state, half_size=2):
     current_board = state[-1]
-    
-    y, x = np.ogrid[-k:k+1, -k:k+1]
-    mask = x**2 + y**2 <= k**2
-    
     binary_board = current_board != 0
-    
+    side = 2 * half_size + 1
+    mask = np.ones((side, side), dtype=bool)
     expanded = ndimage.binary_dilation(binary_board, structure=mask)
-    
     return expanded
 
 
@@ -463,7 +459,7 @@ class Gomoku:
             legal_mask[:] = False
             legal_mask[self.center_loc] = True
         else:
-            legal_mask = legal_mask & get_expanded_region_circle(state, k=4).flatten()
+            legal_mask = legal_mask & get_expanded_region(state, half_size=2).flatten()
 
         return legal_mask
 
