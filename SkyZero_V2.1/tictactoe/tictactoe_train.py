@@ -38,10 +38,10 @@ train_args = {
     "min_buffer_size": 500,
     "linear_threshold": 2048,
     "alpha": 0.75,
-    "max_physical_limit": 100000,
+    "max_buffer_size": 100000,
 
-    "train_steps_per_generation": 5,
-    "target_ReplayRatio": 5,
+    "train_steps_per_generation": 50,
+    "target_ReplayRatio": 8,
 
     "enable_forced_playouts": True,
     "forced_playouts_k": 1,

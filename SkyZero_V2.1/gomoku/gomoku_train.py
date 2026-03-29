@@ -20,9 +20,13 @@ train_args = {
     "lr": 0.0001,
     "weight_decay": 3e-5,
 
-    "full_search_num_simulations": 1000,
-    "fast_search_num_simulations": 200,
+    "full_search_num_simulations": 480,
+    "fast_search_num_simulations": 80,
     "full_search_prob": 0.25,
+
+    # "enable_symmetry_inference_for_root": True,
+    "enable_stochastic_transform_inference_for_root": True,
+    "enable_stochastic_transform_inference_for_child": True,
 
     "root_temperature_init": 1.25,
     "root_temperature_final": 1.1,
@@ -36,13 +40,13 @@ train_args = {
     "batch_size": 128,
     "max_grad_norm": 1,
 
-    "min_buffer_size": 2048,
-    "linear_threshold": 200000,
-    "alpha": 0.8,
-    "max_physical_limit": 1e7,
+    "min_buffer_size": 5e5,
+    "linear_threshold": 5e6,
+    "alpha": 0.75,
+    "max_buffer_size": 5e7,
 
-    "train_steps_per_generation": 5,
-    "target_ReplayRatio": 5,
+    "train_steps_per_generation": 100,
+    "target_ReplayRatio": 8,
 
     "fpu_reduction_max": 0.08,
     "root_fpu_reduction_max": 0,
@@ -61,5 +65,5 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 
     alphazero = AlphaZeroParallel(game, model, optimizer, train_args)
-    alphazero.load_checkpoint()
+    # alphazero.load_checkpoint()
     alphazero.learn()
