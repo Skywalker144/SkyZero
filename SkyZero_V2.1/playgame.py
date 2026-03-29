@@ -28,12 +28,14 @@ class GamePlayer:
         to_play = 1
         color = 1
         state = self.game.get_initial_state()
+        last_action = None
+        last_player = None
         history = []
         mcts_root = None
         print_board(state)
         while True:
-            if self.game.is_terminal(state):
-                winner = self.game.get_winner(state)
+            if self.game.is_terminal(state, last_action, last_player):
+                winner = self.game.get_winner(state, last_action, last_player)
                 if winner == 1:
                     print("Black wins!")
                 elif winner == -1:
@@ -44,9 +46,8 @@ class GamePlayer:
                 resp = input("Game Over. 'u' to undo, 'q' to quit: ").strip().lower()
                 if resp == "u":
                     if len(history) >= 2:
-                        state, to_play, color = history.pop() # State before AI move
-                        state, to_play, color = history.pop() # State before Human move
-                        mcts_root = None # Reset MCTS tree on undo
+                        state, to_play, color, mcts_root, last_action, last_player = history.pop()
+                        state, to_play, color, mcts_root, last_action, last_player = history.pop()
                         print("Undo successful.")
                         print_board(state)
                         continue
@@ -61,9 +62,8 @@ class GamePlayer:
                     move = input(f"Human step (row col / 'u' for undo / 'q' for quit): ").strip().lower()
                     if move == "u":
                         if len(history) >= 2:
-                            state, to_play, color = history.pop()  # Revert to state before AI move
-                            state, to_play, color = history.pop()  # Revert to state before Human move
-                            mcts_root = None # Reset MCTS tree on undo
+                            state, to_play, color, mcts_root, last_action, last_player = history.pop()
+                            state, to_play, color, mcts_root, last_action, last_player = history.pop()
                             print("Undo successful.")
                             print_board(state)
                             continue
@@ -84,29 +84,44 @@ class GamePlayer:
                     except (ValueError, IndexError):
                         print("Invalid input format. Please enter 'row col' (e.g., '7 7').")
 
-                history.append((state.copy(), to_play, color))
-                
-                # Tree Reuse
-                if mcts_root is not None:
-                    for child in mcts_root.children:
-                        if child.action_taken == action:
-                            child.parent = None
-                            mcts_root = child
+                history.append((state.copy(), to_play, color, mcts_root, last_action, last_player))
 
                 state = self.game.get_next_state(state, action, color)
+                last_action = action
+                last_player = to_play
+
+                if mcts_root is not None:
+                    next_root = None
+                    for child in mcts_root.children:
+                        if child.action_taken == action:
+                            next_root = child
+                            break
+                    if next_root is not None:
+                        next_root.parent = None
+                        mcts_root = next_root
+                    else:
+                        mcts_root = None
             elif to_play == -human_side:
-                history.append((state.copy(), to_play, color))
+                history.append((state.copy(), to_play, color, mcts_root, last_action, last_player))
                 print(f"AlphaZero step:")
                 action, info, mcts_root = alphazero.play(state, color, root=mcts_root)
 
-                # Tree Reuse
+                state = self.game.get_next_state(state, action, color)
+                last_action = action
+                last_player = to_play
+
                 if mcts_root is not None:
+                    next_root = None
                     for child in mcts_root.children:
                         if child.action_taken == action:
-                            child.parent = None
-                            mcts_root = child
+                            next_root = child
+                            break
+                    if next_root is not None:
+                        next_root.parent = None
+                        mcts_root = next_root
+                    else:
+                        mcts_root = None
 
-                state = self.game.get_next_state(state, action, color)
                 print(f"MCTS Strategy:\n{info['mcts_policy']}")
                 print(f"NN Strategy:\n{info['nn_policy']}")
                 print(
