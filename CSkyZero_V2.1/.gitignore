@@ -29,3 +29,6 @@ cmake_install.cmake
 Makefile
 *.cmake
 !CMakeLists.txt
+
+.cc
+.cu
