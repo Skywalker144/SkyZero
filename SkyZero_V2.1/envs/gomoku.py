@@ -461,6 +461,19 @@ class Gomoku:
         else:
             legal_mask = legal_mask & get_expanded_region(state, half_size=2).flatten()
 
+        # Filter out forbidden points for Black under Renju rules
+        if self.use_renju and to_play == 1:
+            self._fpf.Clear()
+            rows, cols = np.where(current_board != 0)
+            for r, c in zip(rows, cols):
+                stone = C_BLACK if current_board[r, c] == 1 else C_WHITE
+                self._fpf.SetStone(r, c, stone)
+            for i in range(self.board_size * self.board_size):
+                if legal_mask[i]:
+                    r, c = i // self.board_size, i % self.board_size
+                    if self._fpf.isForbidden(r, c):
+                        legal_mask[i] = False
+
         return legal_mask
 
     def get_next_state(self, state, action, to_play):
@@ -476,22 +489,6 @@ class Gomoku:
     def get_winner(self, state, last_action=None, last_player=None):
         current_board = state[-1]
         size = self.board_size
-
-        # Renju forbidden move check (must run BEFORE five-in-a-row scan):
-        # Black overline (6+) and other forbidden moves should be caught here
-        # before the generic scan misidentifies them as a win for black.
-        if self.use_renju and last_action is not None and last_player == 1:
-            row, col = last_action // size, last_action % size
-            self._fpf.Clear()
-            rows, cols = np.where(current_board != 0)
-            for r, c in zip(rows, cols):
-                if r == row and c == col:
-                    continue  # skip the last placed stone to check pre-move board
-                val = current_board[r, c]
-                stone = C_BLACK if val == 1 else C_WHITE
-                self._fpf.SetStone(r, c, stone)
-            if self._fpf.isForbidden(row, col):
-                return -1  # White wins
 
         # Check horizontal
         for r in range(size):
@@ -543,7 +540,8 @@ class Gomoku:
         encoded_state[1] = (state[0] == -to_play)
 
         if self.enable_forbidden_point_plane:
-            forbidden_plane = np.zeros((self.board_size, self.board_size), dtype=np.int8)
+            # Always mark Black's forbidden points regardless of to_play,
+            # so both sides can see them: Black learns to avoid, White learns to exploit.
             if self.use_renju:
                 fpf = ForbiddenPointFinder(self.board_size)
                 current_board = state[-1]
@@ -556,9 +554,8 @@ class Gomoku:
                 empty_rows, empty_cols = np.where(current_board == 0)
                 for r, c in zip(empty_rows, empty_cols):
                     if fpf.isForbidden(r, c):
-                        forbidden_plane[r, c] = 1
+                        encoded_state[-2, r, c] = 1
 
-            encoded_state[-2] = forbidden_plane
         encoded_state[-1] = (to_play > 0) * np.ones((self.board_size, self.board_size), dtype=np.int8)
 
         return encoded_state
@@ -580,7 +577,25 @@ class Gomoku:
         boards = states[:, 0]  # (B, H, W)
         encoded[:, 0] = (boards == tp)
         encoded[:, 1] = (boards == -tp)
-        # Note: enable_forbidden_point_plane is not supported in batch mode
+
+        if self.enable_forbidden_point_plane:
+            # Always mark Black's forbidden points regardless of to_play,
+            # so both sides can see them: Black learns to avoid, White learns to exploit.
+            if self.use_renju:
+                fpf = ForbiddenPointFinder(self.board_size)
+                for b in range(B):
+                    board = boards[b]  # (H, W)
+                    fpf.Clear()
+                    rows, cols = np.where(board != 0)
+                    for r, c in zip(rows, cols):
+                        stone = C_BLACK if board[r, c] == 1 else C_WHITE
+                        fpf.SetStone(r, c, stone)
+
+                    empty_rows, empty_cols = np.where(board == 0)
+                    for r, c in zip(empty_rows, empty_cols):
+                        if fpf.isForbidden(r, c):
+                            encoded[b, -2, r, c] = 1
+
         encoded[:, -1] = (tp > 0).astype(np.int8) * np.ones((1, H, W), dtype=np.int8)
         return encoded
 
