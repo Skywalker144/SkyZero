@@ -3,7 +3,6 @@ import math
 from scipy import ndimage
 
 def get_expanded_region(state, half_size=2):
-    """Expand occupied positions by a square region of side (2*half_size+1)."""
     current_board = state[-1]
     binary_board = current_board != 0
     side = 2 * half_size + 1
@@ -239,13 +238,8 @@ class ForbiddenPointFinder:
         for d in range(1, 5):
             ret = self.IsOpenFour(x, y, C_BLACK, d)
             if ret == 2:
-                # Two independent fours in this direction (e.g. jump pattern)
                 nFour += 2
-            elif ret == 1:
-                # Standard open four counts as one four in this direction
-                nFour += 1
             elif self.IsFour(x, y, C_BLACK, d):
-                # Closed four (only one end can make five)
                 nFour += 1
 
         return nFour >= 2
@@ -302,19 +296,13 @@ class ForbiddenPointFinder:
             return False
 
         nearbyBlack = 0
-        # Optimization: a forbidden point (double-three, double-four, or overline)
-        # requires at least two black stones within distance 2 (Chebyshev) of (x, y),
-        # excluding knight's-move positions (Manhattan distance 3).
-        # This is safe because any line pattern contributing to a forbidden point
-        # (open three, four, or overline) must have at least one black stone
-        # within 2 cells of the placed position along that line direction.
-        # Two such patterns in different directions thus need >= 2 nearby stones.
+        # Check nearby stones to optimize
         for i in range(max(0, x - 2), min(self.f_boardsize - 1, x + 2) + 1):
             for j in range(max(0, y - 2), min(self.f_boardsize - 1, y + 2) + 1):
                 if i == x and j == y: continue
                 if self.cBoard[i + 1][j + 1] == C_BLACK:
                     xd, yd = abs(i - x), abs(j - y)
-                    if (xd + yd) != 3:  # Exclude knight's move positions
+                    if (xd + yd) != 3:  # Exclude knight"s move points as in C++
                         nearbyBlack += 1
 
         if nearbyBlack < 2: return False
@@ -377,40 +365,21 @@ class GameLogic:
         return C_WHITE if pla == C_BLACK else C_BLACK
 
     @staticmethod
-    def _adj_crosses_boundary(board, loc, adj):
-        """Check if stepping from loc by adj crosses a row boundary (for horizontal/diagonal directions)."""
-        x1 = loc % board.x_size
-        x2 = (loc + adj) % board.x_size
-        # For vertical adj (adj == ±board.x_size), column doesn't change, no wrap.
-        # For horizontal or diagonal, the column changes by ±1.
-        # If the column wraps around (e.g. 14->0 or 0->14), the step is invalid.
-        abs_adj = abs(adj)
-        if abs_adj == board.x_size:
-            return False  # pure vertical, no column wrap possible
-        # horizontal or diagonal: column should change by exactly 1
-        col_diff = abs(x2 - x1)
-        return col_diff != 1
-
-    @staticmethod
     def connectionLengthOneDirection(board, pla, isSixWin, loc, adj):
         tmploc = loc
         conNum = 0
         isLife = False
 
         while True:
-            prev_loc = tmploc
             tmploc += adj
             if not board.isOnBoard(tmploc): break
-            if GameLogic._adj_crosses_boundary(board, prev_loc, adj): break
             if board.colors[tmploc] == pla:
                 conNum += 1
             elif board.colors[tmploc] == C_EMPTY:
                 isLife = True
                 if not isSixWin:
                     tmploc2 = tmploc + adj
-                    if (board.isOnBoard(tmploc2)
-                            and not GameLogic._adj_crosses_boundary(board, tmploc, adj)
-                            and board.colors[tmploc2] == pla):
+                    if board.isOnBoard(tmploc2) and board.colors[tmploc2] == pla:
                         isLife = False
                 break
             else:
@@ -470,7 +439,7 @@ class GameLogic:
 
 
 class Gomoku:
-    def __init__(self, board_size=15, use_renju=True, enable_forbidden_point_plane=False):
+    def __init__(self, board_size=15, use_renju=True, enable_forbidden_point_plane=True):
         self.board_size = board_size
         self.num_planes = 3 + (1 if enable_forbidden_point_plane else 0)
         self.use_renju = use_renju
@@ -485,12 +454,25 @@ class Gomoku:
         legal_mask = (current_board.flatten() == 0)
 
         # Heuristic legal action limitation
-        if np.all(current_board == 0):
+        if np.sum(current_board == 1) == 0:
             self.center_loc = (self.board_size // 2) * self.board_size + (self.board_size // 2)
             legal_mask[:] = False
             legal_mask[self.center_loc] = True
         else:
             legal_mask = legal_mask & get_expanded_region(state, half_size=2).flatten()
+
+        # Filter out forbidden points for Black under Renju rules
+        if self.use_renju and to_play == 1:
+            self._fpf.Clear()
+            rows, cols = np.where(current_board != 0)
+            for r, c in zip(rows, cols):
+                stone = C_BLACK if current_board[r, c] == 1 else C_WHITE
+                self._fpf.SetStone(r, c, stone)
+            for i in range(self.board_size * self.board_size):
+                if legal_mask[i]:
+                    r, c = i // self.board_size, i % self.board_size
+                    if self._fpf.isForbidden(r, c):
+                        legal_mask[i] = False
 
         return legal_mask
 
@@ -507,22 +489,6 @@ class Gomoku:
     def get_winner(self, state, last_action=None, last_player=None):
         current_board = state[-1]
         size = self.board_size
-
-        # Renju forbidden move check (must run BEFORE five-in-a-row scan):
-        # Black overline (6+) and other forbidden moves should be caught here
-        # before the generic scan misidentifies them as a win for black.
-        if self.use_renju and last_action is not None and last_player == 1:
-            row, col = last_action // size, last_action % size
-            self._fpf.Clear()
-            rows, cols = np.where(current_board != 0)
-            for r, c in zip(rows, cols):
-                if r == row and c == col:
-                    continue  # skip the last placed stone to check pre-move board
-                val = current_board[r, c]
-                stone = C_BLACK if val == 1 else C_WHITE
-                self._fpf.SetStone(r, c, stone)
-            if self._fpf.isForbidden(row, col):
-                return -1  # White wins
 
         # Check horizontal
         for r in range(size):
@@ -574,7 +540,8 @@ class Gomoku:
         encoded_state[1] = (state[0] == -to_play)
 
         if self.enable_forbidden_point_plane:
-            forbidden_plane = np.zeros((self.board_size, self.board_size), dtype=np.int8)
+            # Always mark Black's forbidden points regardless of to_play,
+            # so both sides can see them: Black learns to avoid, White learns to exploit.
             if self.use_renju:
                 fpf = ForbiddenPointFinder(self.board_size)
                 current_board = state[-1]
@@ -587,9 +554,8 @@ class Gomoku:
                 empty_rows, empty_cols = np.where(current_board == 0)
                 for r, c in zip(empty_rows, empty_cols):
                     if fpf.isForbidden(r, c):
-                        forbidden_plane[r, c] = 1
+                        encoded_state[-2, r, c] = 1
 
-            encoded_state[-2] = forbidden_plane
         encoded_state[-1] = (to_play > 0) * np.ones((self.board_size, self.board_size), dtype=np.int8)
 
         return encoded_state
@@ -611,7 +577,25 @@ class Gomoku:
         boards = states[:, 0]  # (B, H, W)
         encoded[:, 0] = (boards == tp)
         encoded[:, 1] = (boards == -tp)
-        # Note: enable_forbidden_point_plane is not supported in batch mode
+
+        if self.enable_forbidden_point_plane:
+            # Always mark Black's forbidden points regardless of to_play,
+            # so both sides can see them: Black learns to avoid, White learns to exploit.
+            if self.use_renju:
+                fpf = ForbiddenPointFinder(self.board_size)
+                for b in range(B):
+                    board = boards[b]  # (H, W)
+                    fpf.Clear()
+                    rows, cols = np.where(board != 0)
+                    for r, c in zip(rows, cols):
+                        stone = C_BLACK if board[r, c] == 1 else C_WHITE
+                        fpf.SetStone(r, c, stone)
+
+                    empty_rows, empty_cols = np.where(board == 0)
+                    for r, c in zip(empty_rows, empty_cols):
+                        if fpf.isForbidden(r, c):
+                            encoded[b, -2, r, c] = 1
+
         encoded[:, -1] = (tp > 0).astype(np.int8) * np.ones((1, H, W), dtype=np.int8)
         return encoded
 
