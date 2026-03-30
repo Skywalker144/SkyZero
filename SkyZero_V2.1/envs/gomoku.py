@@ -439,7 +439,7 @@ class GameLogic:
 
 
 class Gomoku:
-    def __init__(self, board_size=15, use_renju=True, enable_forbidden_point_plane=False):
+    def __init__(self, board_size=15, use_renju=True, enable_forbidden_point_plane=True):
         self.board_size = board_size
         self.num_planes = 3 + (1 if enable_forbidden_point_plane else 0)
         self.use_renju = use_renju
