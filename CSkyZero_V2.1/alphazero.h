@@ -261,7 +261,7 @@ private:
 
         auto logits_cpu = policy_logits.flatten().to(torch::kCPU).contiguous();
         std::vector<float> logits(static_cast<size_t>(logits_cpu.numel()));
-        std::memcpy(logits.data(), logits_cpu.data_ptr<float>(), logits.size() * sizeof(float));
+        std::memcpy(logits.data(), logits_cpu.template data_ptr<float>(), logits.size() * sizeof(float));
 
         const auto legal = game_.get_is_legal_actions(state, to_play);
         const float neg_inf = -1e30f;
@@ -276,7 +276,7 @@ private:
         auto value_probs = torch::softmax(nn_out.value_logits, 1).to(torch::kCPU).contiguous();
         std::array<float, 3> value{0.0f, 1.0f, 0.0f};
         if (value_probs.numel() >= 3) {
-            const auto* p = value_probs.data_ptr<float>();
+            const auto* p = value_probs.template data_ptr<float>();
             value = {p[0], p[1], p[2]};
         }
         return {policy, value};

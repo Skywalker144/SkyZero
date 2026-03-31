@@ -26,9 +26,9 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.dirichlet_epsilon = 0.25f;
 
     cfg.batch_size = 256;
-    cfg.min_buffer_size = 1e5;
-    cfg.linear_threshold = 5e6;
-    cfg.replay_alpha = 0.75f;
+    cfg.min_buffer_size = 2e5;
+    cfg.linear_threshold = 2e6;
+    cfg.replay_alpha = 0.8f;
     cfg.max_buffer_size = 5e7;
 
     cfg.train_steps_per_generation = 100;

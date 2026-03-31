@@ -737,9 +737,9 @@ public:
 
             torch::Tensor t;
             checkpoint_archive.read("game_count", t);
-            game_count_ = static_cast<int>(t.item<int64_t>());
+            game_count_ = static_cast<int>(t.template item<int64_t>());
             checkpoint_archive.read("total_samples", t);
-            total_samples_ = static_cast<int64_t>(t.item<int64_t>());
+            total_samples_ = static_cast<int64_t>(t.template item<int64_t>());
 
             total_loss_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "loss_total"));
             policy_loss_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "loss_policy"));
@@ -752,7 +752,7 @@ public:
             winrate_history_.clear();
             auto win_t = must_read_tensor(checkpoint_archive, "winrate_history").to(torch::kCPU).contiguous();
             if (win_t.numel() > 0) {
-                const auto* p = win_t.data_ptr<float>();
+                const auto* p = win_t.template data_ptr<float>();
                 const int64_t rows = win_t.size(0);
                 for (int64_t i = 0; i < rows; ++i) {
                     winrate_history_.push_back({
@@ -773,16 +773,16 @@ public:
             checkpoint_archive.read("replay_buffer", rb_archive);
 
             ReplayBufferState rb;
-            rb.board_size = static_cast<int>(must_read_tensor(rb_archive, "board_size").item<int64_t>());
-            rb.action_size = static_cast<int>(must_read_tensor(rb_archive, "action_size").item<int64_t>());
-            rb.min_buffer_size = static_cast<int>(must_read_tensor(rb_archive, "min_buffer_size").item<int64_t>());
-            rb.linear_threshold = static_cast<int>(must_read_tensor(rb_archive, "linear_threshold").item<int64_t>());
-            rb.alpha = must_read_tensor(rb_archive, "alpha").item<float>();
-            rb.max_buffer_size = static_cast<int>(must_read_tensor(rb_archive, "max_buffer_size").item<int64_t>());
-            rb.ptr = static_cast<int>(must_read_tensor(rb_archive, "ptr").item<int64_t>());
-            rb.size = static_cast<int>(must_read_tensor(rb_archive, "size").item<int64_t>());
-            rb.total_samples_added = static_cast<int>(must_read_tensor(rb_archive, "total_samples_added").item<int64_t>());
-            rb.games_count = static_cast<int>(must_read_tensor(rb_archive, "games_count").item<int64_t>());
+            rb.board_size = static_cast<int>(must_read_tensor(rb_archive, "board_size").template item<int64_t>());
+            rb.action_size = static_cast<int>(must_read_tensor(rb_archive, "action_size").template item<int64_t>());
+            rb.min_buffer_size = static_cast<int>(must_read_tensor(rb_archive, "min_buffer_size").template item<int64_t>());
+            rb.linear_threshold = static_cast<int>(must_read_tensor(rb_archive, "linear_threshold").template item<int64_t>());
+            rb.alpha = must_read_tensor(rb_archive, "alpha").template item<float>();
+            rb.max_buffer_size = static_cast<int>(must_read_tensor(rb_archive, "max_buffer_size").template item<int64_t>());
+            rb.ptr = static_cast<int>(must_read_tensor(rb_archive, "ptr").template item<int64_t>());
+            rb.size = static_cast<int>(must_read_tensor(rb_archive, "size").template item<int64_t>());
+            rb.total_samples_added = static_cast<int>(must_read_tensor(rb_archive, "total_samples_added").template item<int64_t>());
+            rb.games_count = static_cast<int>(must_read_tensor(rb_archive, "games_count").template item<int64_t>());
 
             rb.states = tensor_to_vec<int8_t>(must_read_tensor(rb_archive, "states"));
             rb.to_play = tensor_to_vec<int8_t>(must_read_tensor(rb_archive, "to_play"));
@@ -1138,8 +1138,8 @@ private:
 
                 auto policy = out.policy_logits.reshape({bsz, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
                 auto value = torch::softmax(out.value_logits.to(torch::kFloat32), 1).to(torch::kCPU).contiguous();
-                const float* pp = policy.data_ptr<float>();
-                const float* vp = value.data_ptr<float>();
+                const float* pp = policy.template data_ptr<float>();
+                const float* vp = value.template data_ptr<float>();
 
                 for (int i = 0; i < bsz; ++i) {
                     std::vector<float> logits(static_cast<size_t>(area), 0.0f);
@@ -1414,7 +1414,7 @@ private:
     static std::vector<int> tensor_to_ints(const torch::Tensor& t) {
         auto cpu = t.to(torch::kCPU).to(torch::kInt64).contiguous();
         std::vector<int> out(static_cast<size_t>(cpu.numel()), 0);
-        const auto* p = cpu.data_ptr<int64_t>();
+        const auto* p = cpu.template data_ptr<int64_t>();
         for (size_t i = 0; i < out.size(); ++i) {
             out[i] = static_cast<int>(p[i]);
         }
@@ -1426,7 +1426,7 @@ private:
         auto cpu = t.to(torch::kCPU).contiguous();
         std::vector<T> out(static_cast<size_t>(cpu.numel()));
         if (!out.empty()) {
-            std::memcpy(out.data(), cpu.data_ptr<T>(), out.size() * sizeof(T));
+            std::memcpy(out.data(), cpu.template data_ptr<T>(), out.size() * sizeof(T));
         }
         return out;
     }
@@ -1568,7 +1568,7 @@ private:
         auto weighted_ce = [&](const torch::Tensor& logits, const torch::Tensor& targets) {
             auto loss = -(targets * torch::log_softmax(logits, -1)).sum(-1);
             auto result = (loss * sample_weights).mean();
-            if (torch::isnan(result).item<bool>() || torch::isinf(result).item<bool>()) {
+            if (torch::isnan(result).template item<bool>() || torch::isinf(result).template item<bool>()) {
                 return torch::zeros({1}, result.options()).squeeze();
             }
             return result;
@@ -1599,12 +1599,12 @@ private:
         optimizer_.step();
 
         BatchLossStats out;
-        out.total_loss = total_loss.item<float>();
-        out.policy_loss = policy_loss.item<float>();
-        out.opponent_policy_loss = opp_policy_loss.item<float>();
-        out.soft_policy_loss = soft_policy_loss.item<float>();
-        out.soft_opponent_policy_loss = soft_opp_policy_loss.item<float>();
-        out.value_loss = value_loss.item<float>();
+        out.total_loss = total_loss.template item<float>();
+        out.policy_loss = policy_loss.template item<float>();
+        out.opponent_policy_loss = opp_policy_loss.template item<float>();
+        out.soft_policy_loss = soft_policy_loss.template item<float>();
+        out.soft_opponent_policy_loss = soft_opp_policy_loss.template item<float>();
+        out.value_loss = value_loss.template item<float>();
         out.full_search_ratio = full_search_ratio;
         return out;
     }
