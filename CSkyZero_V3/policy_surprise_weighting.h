@@ -17,6 +17,10 @@ inline float clampf(float v, float lo, float hi) {
     return std::max(lo, std::min(v, hi));
 }
 
+// ---------------------------------------------------------------------------
+// PolicySurpriseSample — intermediate struct during selfplay before weighting
+// Aligned to Python V3 return_memory sample dict
+// ---------------------------------------------------------------------------
 struct PolicySurpriseSample {
     std::vector<int8_t> state;
     int8_t to_play = 1;
@@ -26,12 +30,14 @@ struct PolicySurpriseSample {
     std::array<float, 3> outcome{0.0f, 0.0f, 0.0f};
     std::vector<float> nn_policy;
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};
-    std::array<float, 3> root_value{0.0f, 0.0f, 0.0f};
+    std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};         // WDL from search root
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
-    uint8_t is_full_search = 1;
     float sample_weight = 1.0f;
 };
 
+// ---------------------------------------------------------------------------
+// KL divergence (vector version)
+// ---------------------------------------------------------------------------
 inline float compute_kl_divergence(
     const std::vector<float>& policy_target,
     const std::vector<float>& policy_prior,
@@ -63,6 +69,9 @@ inline float compute_kl_divergence(
     return std::max(0.0f, kl);
 }
 
+// ---------------------------------------------------------------------------
+// KL divergence (array<3> version — for value WDL)
+// ---------------------------------------------------------------------------
 inline float compute_kl_divergence(
     const std::array<float, 3>& target,
     const std::array<float, 3>& prior,
@@ -89,6 +98,11 @@ inline float compute_kl_divergence(
     return std::max(0.0f, kl);
 }
 
+// ---------------------------------------------------------------------------
+// compute_policy_surprise_weights
+// Aligned to Python V3 policy_surprise_weighting.py
+// Key change: target_weights[i] = sample.sample_weight (not is_full_search)
+// ---------------------------------------------------------------------------
 inline std::vector<float> compute_policy_surprise_weights(
     const std::vector<PolicySurpriseSample>& game_data,
     float policy_surprise_data_weight = 0.5f,
@@ -105,9 +119,12 @@ inline std::vector<float> compute_policy_surprise_weights(
 
     for (int i = 0; i < n; ++i) {
         const auto& s = game_data[i];
+        // Policy Surprise (KL between search policy and NN prior)
         policy_surprises[i] = compute_kl_divergence(s.policy_target, s.nn_policy);
+        // Value Surprise (KL between value_target and NN value probs)
         value_surprises[i] = std::min(compute_kl_divergence(s.value_target, s.nn_value_probs), 1.0f);
-        target_weights[i] = s.is_full_search ? 1.0f : 0.0f;
+        // Weight = sample_weight (aligned to Python V3)
+        target_weights[i] = s.sample_weight;
     }
 
     const float sum_weights = std::accumulate(target_weights.begin(), target_weights.end(), 0.0f);
@@ -124,11 +141,12 @@ inline std::vector<float> compute_policy_surprise_weights(
     avg_p_surprise /= sum_weights;
     avg_v_surprise /= sum_weights;
 
+    // Dynamic scaling of value surprise weight if average surprise is very low
     float actual_v_weight = value_surprise_data_weight;
     if (avg_v_surprise < 0.01f) {
         actual_v_weight *= (avg_v_surprise / 0.01f);
     }
-    const float baseline_weight_ratio = 1.0f - policy_surprise_data_weight - actual_v_weight;
+    const float baseline_weight_ratio = std::max(0.0f, 1.0f - policy_surprise_data_weight - actual_v_weight);
     const float p_threshold = avg_p_surprise * 1.5f;
 
     std::vector<float> p_prob_values(n, 0.0f);
@@ -137,6 +155,7 @@ inline std::vector<float> compute_policy_surprise_weights(
         const float w = target_weights[i];
         const float ps = policy_surprises[i];
         const float vs = value_surprises[i];
+        // Surprise weighting logic (aligned to Python V3)
         p_prob_values[i] = w * ps + (1.0f - w) * std::max(0.0f, ps - p_threshold);
         v_prob_values[i] = w * vs;
     }
@@ -155,6 +174,11 @@ inline std::vector<float> compute_policy_surprise_weights(
     return final_weights;
 }
 
+// ---------------------------------------------------------------------------
+// apply_surprise_weighting_to_game
+// Aligned to Python V3: delete outcome/nn_policy/nn_value_probs/v_mix
+// then stochastic rounding by weight
+// ---------------------------------------------------------------------------
 inline std::vector<TrainSample> apply_surprise_weighting_to_game(
     const std::vector<PolicySurpriseSample>& game_data,
     const std::vector<float>& weights,
@@ -182,7 +206,6 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.opponent_policy_target = game_data[i].opponent_policy_target;
             ts.value_target = game_data[i].value_target;
             ts.sample_weight = game_data[i].sample_weight;
-            ts.is_full_search = game_data[i].is_full_search;
             return ts;
         };
 

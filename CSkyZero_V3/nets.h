@@ -10,9 +10,7 @@ namespace skyzero {
 
 struct NetworkOutput {
     torch::Tensor policy_logits;
-    torch::Tensor soft_policy_logits;
     torch::Tensor opponent_policy_logits;
-    torch::Tensor soft_opponent_policy_logits;
     torch::Tensor value_logits;
 };
 
@@ -244,7 +242,7 @@ struct ResNetImpl : torch::nn::Module {
         trunk_tip_bn = register_module("trunk_tip_bn", torch::nn::BatchNorm2d(num_channels));
         trunk_tip_act = register_module("trunk_tip_act", torch::nn::SiLU());
 
-        total_policy_head = register_module("total_policy_head", PolicyHead(num_channels, 4, board_size, num_channels / 2));
+        total_policy_head = register_module("total_policy_head", PolicyHead(num_channels, 2, board_size, num_channels / 2));
         value_head = register_module("value_head", ValueHead(num_channels, 3, num_channels / 4, num_channels / 2));
 
         init_weights();
@@ -290,9 +288,7 @@ struct ResNetImpl : torch::nn::Module {
 
         NetworkOutput output;
         output.policy_logits = total_policy_logits.slice(1, 0, 1);
-        output.soft_policy_logits = total_policy_logits.slice(1, 1, 2);
-        output.opponent_policy_logits = total_policy_logits.slice(1, 2, 3);
-        output.soft_opponent_policy_logits = total_policy_logits.slice(1, 3, 4);
+        output.opponent_policy_logits = total_policy_logits.slice(1, 1, 2);
         output.value_logits = value_logits;
         return output;
     }

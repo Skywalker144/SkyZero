@@ -18,7 +18,6 @@ struct TrainSample {
     std::vector<float> opponent_policy_target;
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
     float sample_weight = 1.0f;
-    uint8_t is_full_search = 1;
 };
 
 struct ReplayBufferState {
@@ -39,7 +38,6 @@ struct ReplayBufferState {
     std::vector<float> opponent_policy_targets;
     std::vector<float> value_targets;
     std::vector<float> sample_weights;
-    std::vector<uint8_t> is_full_search;
 };
 
 class ReplayBuffer {
@@ -165,7 +163,6 @@ public:
         st.opponent_policy_targets.reserve(n * action_cells);
         st.value_targets.reserve(n * 3);
         st.sample_weights.reserve(n);
-        st.is_full_search.reserve(n);
 
         const int oldest = (ptr_ - size_ + max_buffer_size_) % max_buffer_size_;
         for (int i = 0; i < size_; ++i) {
@@ -177,7 +174,6 @@ public:
             st.opponent_policy_targets.insert(st.opponent_policy_targets.end(), s.opponent_policy_target.begin(), s.opponent_policy_target.end());
             st.value_targets.insert(st.value_targets.end(), s.value_target.begin(), s.value_target.end());
             st.sample_weights.push_back(s.sample_weight);
-            st.is_full_search.push_back(s.is_full_search);
         }
         return st;
     }
@@ -203,8 +199,7 @@ public:
             st.policy_targets.size() != n * action_cells ||
             st.opponent_policy_targets.size() != n * action_cells ||
             st.value_targets.size() != n * 3 ||
-            st.sample_weights.size() != n ||
-            st.is_full_search.size() != n) {
+            st.sample_weights.size() != n) {
             throw std::runtime_error("ReplayBuffer: invalid state tensor sizes");
         }
 
@@ -234,7 +229,6 @@ public:
                 st.value_targets[static_cast<size_t>(src_i) * 3 + 2],
             };
             s.sample_weight = st.sample_weights[src_i];
-            s.is_full_search = st.is_full_search[src_i];
             data_[i] = std::move(s);
         }
 
