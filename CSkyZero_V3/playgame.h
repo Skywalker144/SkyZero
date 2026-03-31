@@ -118,8 +118,9 @@ public:
             std::cout << "Invalid input. Please enter 1 or -1.\n";
         }
 
-        std::vector<int8_t> state = game_.get_initial_state();
-        int to_play = 1;
+        auto init = game_.get_initial_state(rng_);
+        std::vector<int8_t> state = std::move(init.board);
+        int to_play = init.to_play;
         int last_action = -1;
         int last_player = 0;
 

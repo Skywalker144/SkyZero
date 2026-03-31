@@ -3,17 +3,23 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <random>
 #include <vector>
 
 namespace skyzero {
+
+struct GameInitialState {
+    std::vector<int8_t> board;
+    int to_play;
+};
 
 class TicTacToe {
 public:
     int board_size = 3;
     int num_planes = 3;
 
-    std::vector<int8_t> get_initial_state() const {
-        return std::vector<int8_t>(board_size * board_size, 0);
+    GameInitialState get_initial_state(std::mt19937& /*rng*/) const {
+        return {std::vector<int8_t>(board_size * board_size, 0), 1};
     }
 
     std::vector<uint8_t> get_is_legal_actions(const std::vector<int8_t>& state, int /*to_play*/) const {

@@ -1234,8 +1234,9 @@ private:
         );
 
         std::vector<MemoryStep> memory;
-        int to_play = 1;
-        auto state = game_.get_initial_state();
+        auto init = game_.get_initial_state(worker_rng);
+        std::vector<int8_t> state = std::move(init.board);
+        int to_play = init.to_play;
         bool in_soft_resign = false;
         std::vector<float> historical_v_mix;
         int last_action = -1;

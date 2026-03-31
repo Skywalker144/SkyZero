@@ -3,11 +3,19 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdint>
-#include <cmath>
+#include <fstream>
+#include <iostream>
+#include <random>
+#include <sstream>
+#include <string>
 #include <vector>
 
 namespace skyzero {
+
+struct GameInitialState {
+    std::vector<int8_t> board;
+    int to_play;
+};
 
 class Gomoku {
 public:
@@ -16,14 +24,115 @@ public:
     bool use_renju;
     bool enable_forbidden_point_plane;
 
+    struct Opening {
+        std::vector<int8_t> board;
+        int to_play;
+    };
+    std::vector<Opening> openings_;
+    std::vector<float> opening_weights_;
+    float empty_board_prob_ = 1.0f;
+
     Gomoku(int size = 15, bool renju = true, bool forbidden_plane = true)
         : board_size(size),
           num_planes(3 + (forbidden_plane ? 1 : 0)),
           use_renju(renju),
           enable_forbidden_point_plane(forbidden_plane) {}
 
-    std::vector<int8_t> get_initial_state() const {
-        return std::vector<int8_t>(board_size * board_size, 0);
+    void load_openings(const std::string& path, float empty_board_prob = 0.0f) {
+        empty_board_prob_ = empty_board_prob;
+        std::ifstream fs(path);
+        if (!fs.is_open()) {
+            std::cerr << "Warning: Could not open opening file: " << path << ". Using empty board only.\n";
+            empty_board_prob_ = 1.0f;
+            return;
+        }
+
+        struct RawOpening {
+            std::string weight_str;
+            std::string black_str;
+            std::string white_str;
+        };
+        std::vector<RawOpening> raw_list;
+        std::string line;
+        while (std::getline(fs, line)) {
+            RawOpening ro;
+            ro.weight_str = line;
+            if (!std::getline(fs, ro.black_str)) break;
+            if (!std::getline(fs, ro.white_str)) break;
+            raw_list.push_back(ro);
+        }
+
+        float sum_explicit = 0.0f;
+        int num_implicit = 0;
+        for (const auto& ro : raw_list) {
+            if (ro.weight_str.empty() || std::all_of(ro.weight_str.begin(), ro.weight_str.end(), [](unsigned char ch){ return std::isspace(ch); })) {
+                num_implicit++;
+            } else {
+                sum_explicit += std::stof(ro.weight_str);
+            }
+        }
+
+        float implicit_weight = 0.0f;
+        if (num_implicit > 0) {
+            implicit_weight = std::max(0.0f, (1.0f - sum_explicit) / num_implicit);
+        }
+
+        const int center = board_size / 2;
+        for (const auto& ro : raw_list) {
+            Opening op;
+            op.board.assign(board_size * board_size, 0);
+            int stones = 0;
+
+            auto place = [&](const std::string& s, int color) {
+                std::stringstream ss(s);
+                std::string coord;
+                while (ss >> coord) {
+                    size_t comma = coord.find(',');
+                    if (comma != std::string::npos) {
+                        int dx = std::stoi(coord.substr(0, comma));
+                        int dy = std::stoi(coord.substr(comma + 1));
+                        int r = center + dx;
+                        int c = center + dy;
+                        if (r >= 0 && r < board_size && c >= 0 && c < board_size) {
+                            op.board[r * board_size + c] = static_cast<int8_t>(color);
+                            stones++;
+                        }
+                    }
+                }
+            };
+
+            place(ro.black_str, 1);
+            place(ro.white_str, -1);
+            op.to_play = (stones % 2 == 0) ? 1 : -1;
+            openings_.push_back(op);
+
+            float w = 0.0f;
+            if (ro.weight_str.empty() || std::all_of(ro.weight_str.begin(), ro.weight_str.end(), [](unsigned char ch){ return std::isspace(ch); })) {
+                w = implicit_weight;
+            } else {
+                w = std::stof(ro.weight_str);
+            }
+            opening_weights_.push_back(w);
+        }
+
+        if (openings_.empty()) {
+            empty_board_prob_ = 1.0f;
+        }
+    }
+
+    GameInitialState get_initial_state(std::mt19937& rng) const {
+        if (openings_.empty()) {
+            return {std::vector<int8_t>(board_size * board_size, 0), 1};
+        }
+
+        std::uniform_real_distribution<float> uni(0.0f, 1.0f);
+        if (uni(rng) < empty_board_prob_) {
+            return {std::vector<int8_t>(board_size * board_size, 0), 1};
+        }
+
+        std::discrete_distribution<int> dist(opening_weights_.begin(), opening_weights_.end());
+        const auto& op = openings_[dist(rng)];
+        return {op.board, op.to_play};
     }
 
     std::vector<uint8_t> get_is_legal_actions(const std::vector<int8_t>& state, int to_play) const {
@@ -42,7 +151,7 @@ public:
                 if (state[loc] != 0) {
                     continue;
                 }
-                legal[loc] = is_near_occupied(state, r, c, 2) ? 1 : 0;
+                legal[loc] = is_near_occupied(state, r, c, 3) ? 1 : 0;
             }
         }
 
