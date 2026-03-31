@@ -12,9 +12,7 @@ skyzero::AlphaZeroConfig build_gomoku_eval_config() {
     cfg.board_size = 15;
     cfg.num_blocks = 4;
     cfg.num_channels = 128;
-    cfg.full_search_num_simulations = 400;
-    cfg.fast_search_num_simulations = 400;
-    cfg.enable_forced_playouts = true;
+    cfg.num_simulations = 400;
     cfg.device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
     return cfg;
 }

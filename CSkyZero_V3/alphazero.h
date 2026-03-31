@@ -50,12 +50,6 @@ struct AlphaZeroConfig {
     float move_temperature_init = 1.1f;
     float move_temperature_final = 1.0f;
 
-    // Root exploration (Dirichlet + root temperature for expand — used only in non‑Gumbel root_expand)
-    float root_temperature_init = 1.25f;
-    float root_temperature_final = 1.1f;
-    float total_dirichlet_alpha = 6.75f;
-    float dirichlet_epsilon = 0.25f;
-
     // PUCT / FPU
     float c_puct = 1.1f;
     float c_puct_log = 0.45f;

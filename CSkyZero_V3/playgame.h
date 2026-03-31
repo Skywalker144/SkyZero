@@ -206,8 +206,11 @@ public:
                 push_history(state, to_play, last_action, last_player);
                 std::cout << "AlphaZero step:\n";
 
-                const auto out = mcts_.search(state, to_play, cfg_.full_search_num_simulations, root_);
-                const int action = playgame_detail::argmax_index(out.mcts_policy);
+                const auto out = mcts_.search(state, to_play, cfg_.num_simulations, root_);
+                int action = out.gumbel_action;
+                if (action < 0) {
+                    action = playgame_detail::argmax_index(out.mcts_policy);
+                }
                 if (action < 0) {
                     std::cout << "No legal action found. Exiting game.\n";
                     return 1;
@@ -228,7 +231,7 @@ public:
                     << "Draw Probability: " << std::fixed << std::setprecision(2) << out.nn_value_probs[1] << '\n'
                     << "Lose Probability: " << std::fixed << std::setprecision(2) << out.nn_value_probs[2] << '\n';
 
-                const float root_value = out.root_value[0] - out.root_value[2];
+                const float root_value = out.v_mix[0] - out.v_mix[2];
                 const float nn_value = out.nn_value_probs[0] - out.nn_value_probs[2];
                 std::cout
                     << "          "
@@ -237,9 +240,9 @@ public:
                     << std::setw(6) << "Loss" << "  "
                     << std::setw(6) << "W-L" << '\n'
                     << "  root_value:  "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.root_value[0] * 100.0f) << "%  "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.root_value[1] * 100.0f) << "%  "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.root_value[2] * 100.0f) << "%  "
+                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.v_mix[0] * 100.0f) << "%  "
+                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.v_mix[1] * 100.0f) << "%  "
+                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.v_mix[2] * 100.0f) << "%  "
                     << std::showpos << std::fixed << std::setprecision(2) << root_value << std::noshowpos << '\n'
                     << "  nn_value:    "
                     << std::setw(6) << std::fixed << std::setprecision(2) << (out.nn_value_probs[0] * 100.0f) << "%  "

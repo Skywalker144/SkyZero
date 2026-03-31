@@ -51,9 +51,9 @@ public:
         const std::vector<int8_t>& state,
         int to_play,
         int num_simulations,
-        std::unique_ptr<MCTSNode>& root
+        std::unique_ptr<MCTSNode>& root,
+        bool is_eval = false
     ) {
-        const bool is_full_search = (num_simulations == cfg_.full_search_num_simulations);
         if (!root) {
             root.reset(new MCTSNode{state, to_play});
         }
@@ -61,242 +61,47 @@ public:
         std::vector<float> nn_policy;
         std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};
         if (!root->is_expanded()) {
-            auto pair = root_expand(*root, is_full_search);
+            auto pair = root_expand(*root);
             nn_policy = pair.first;
             nn_value_probs = pair.second;
             backpropagate(root.get(), nn_value_probs);
         } else {
-            if (is_full_search) {
-                nn_policy = apply_dirichlet_to_root(*root);
-            } else {
-                nn_policy = root->nn_policy;
-            }
+            nn_policy = root->nn_policy;
             nn_value_probs = root->nn_value_probs;
         }
 
-        struct PendingLeaf {
-            MCTSNode* leaf = nullptr;
-            std::vector<int8_t> encoded;
-            int transform_k = 0;
-            bool transform_flip = false;
-            std::vector<std::vector<MCTSNode*>> paths;
-        };
-
-        int sim = 0;
-        while (sim < num_simulations) {
-            const int batch_k = std::min(leaf_batch_size_, num_simulations - sim);
-            std::vector<PendingLeaf> pending;
-            pending.reserve(static_cast<size_t>(batch_k));
-            std::unordered_map<MCTSNode*, size_t> pending_lookup;
-            pending_lookup.reserve(static_cast<size_t>(batch_k));
-
-            for (int i = 0; i < batch_k; ++i) {
-                std::vector<MCTSNode*> path;
-                path.reserve(64);
-
-                MCTSNode* node = root.get();
-                node->vloss += 1;
-                path.push_back(node);
-
-                while (node->is_expanded()) {
-                    node = select(*node, is_full_search);
-                    if (node == nullptr) {
-                        remove_vloss_on_path(path);
-                        throw std::runtime_error("MCTS select returned null");
-                    }
-                    node->vloss += 1;
-                    path.push_back(node);
-                }
-
-                if (game_.is_terminal(node->state)) {
-                    std::array<float, 3> value{0.0f, 1.0f, 0.0f};
-                    const int result = game_.get_winner(node->state) * node->to_play;
-                    if (result == 1) value = {1.0f, 0.0f, 0.0f};
-                    else if (result == -1) value = {0.0f, 0.0f, 1.0f};
-                    backpropagate_path_with_vloss(path, value);
-                    ++sim;
-                    continue;
-                }
-
-                auto it = pending_lookup.find(node);
-                if (it == pending_lookup.end()) {
-                    PendingLeaf pl;
-                    pl.leaf = node;
-                    pl.encoded = game_.encode_state(node->state, node->to_play);
-
-                    const bool use_stochastic_transform = cfg_.enable_stochastic_transform_inference_for_child;
-                    if (use_stochastic_transform) {
-                        std::uniform_int_distribution<int> dist(0, 7);
-                        const int transform_type = dist(rng_);
-                        pl.transform_k = transform_type % 4;
-                        pl.transform_flip = transform_type >= 4;
-                        pl.encoded = transform_encoded_state(
-                            pl.encoded,
-                            game_.num_planes,
-                            game_.board_size,
-                            pl.transform_k,
-                            pl.transform_flip
-                        );
-                    }
-
-                    pl.paths.push_back(std::move(path));
-                    pending_lookup.emplace(node, pending.size());
-                    pending.push_back(std::move(pl));
-                } else {
-                    pending[it->second].paths.push_back(std::move(path));
-                }
-            }
-
-            std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
-            try {
-                std::vector<std::vector<int8_t>> encoded_batch;
-                encoded_batch.reserve(pending.size());
-                for (const auto& p : pending) {
-                    encoded_batch.push_back(p.encoded);
-                }
-
-                if (batch_infer_fn_) {
-                    infer_results = batch_infer_fn_(encoded_batch);
-                } else {
-                    infer_results.reserve(encoded_batch.size());
-                    for (const auto& e : encoded_batch) {
-                        infer_results.push_back(infer_fn_(e));
-                    }
-                }
-            } catch (...) {
-                for (const auto& p : pending) {
-                    for (const auto& path : p.paths) {
-                        remove_vloss_on_path(path);
-                    }
-                }
-                throw;
-            }
-
-            if (infer_results.size() != pending.size()) {
-                for (const auto& p : pending) {
-                    for (const auto& path : p.paths) {
-                        remove_vloss_on_path(path);
-                    }
-                }
-                throw std::runtime_error("batch_infer_fn returned unexpected batch size");
-            }
-
-            for (size_t i = 0; i < pending.size(); ++i) {
-                auto logits = std::move(infer_results[i].first);
-                const auto value = infer_results[i].second;
-
-                if (pending[i].transform_k != 0 || pending[i].transform_flip) {
-                    logits = undo_transform_flat(logits, game_.board_size, pending[i].transform_k, pending[i].transform_flip);
-                }
-
-                const auto legal = game_.get_is_legal_actions(pending[i].leaf->state, pending[i].leaf->to_play);
-                for (size_t j = 0; j < logits.size(); ++j) {
-                    if (!legal[j]) {
-                        logits[j] = -std::numeric_limits<float>::infinity();
-                    }
-                }
-
-                auto policy = softmax(logits);
-                auto& leaf = *pending[i].leaf;
-                leaf.nn_policy = policy;
-                leaf.nn_value_probs = value;
-                leaf.children.clear();
-                for (int a = 0; a < static_cast<int>(policy.size()); ++a) {
-                    const float p = policy[static_cast<size_t>(a)];
-                    if (p <= 0.0f) continue;
-                    auto child = std::unique_ptr<MCTSNode>(new MCTSNode{
-                        game_.get_next_state(leaf.state, a, leaf.to_play),
-                        -leaf.to_play,
-                        p,
-                        &leaf,
-                        a
-                    });
-                    leaf.children.push_back(std::move(child));
-                }
-
-                for (const auto& path : pending[i].paths) {
-                    backpropagate_path_with_vloss(path, value);
-                    ++sim;
-                }
-            }
-        }
-
-        std::vector<float> mcts_policy(game_.board_size * game_.board_size, 0.0f);
-        if (cfg_.enable_forced_playouts && root->is_expanded()) {
-            MCTSNode* best_child = nullptr;
-            for (auto& c : root->children) {
-                if (!best_child || c->n > best_child->n) {
-                    best_child = c.get();
-                }
-            }
-
-            float c_puct = cfg_.c_puct;
-            const float total_child_weight = static_cast<float>(std::max(0, root->n - 1));
-            if (root->n > 0) {
-                c_puct += cfg_.c_puct_log * std::log((total_child_weight + cfg_.c_puct_base) / cfg_.c_puct_base);
-            }
-            const float explore_scaling = c_puct * std::sqrt(total_child_weight + 0.01f);
-
-            float q_best = 0.0f;
-            if (best_child && best_child->n > 0) {
-                const std::array<float, 3> bcq{
-                    best_child->v[0] / best_child->n,
-                    best_child->v[1] / best_child->n,
-                    best_child->v[2] / best_child->n,
-                };
-                q_best = bcq[2] - bcq[0];
-            }
-            const float u_best = best_child ? (explore_scaling * best_child->prior / (1.0f + static_cast<float>(best_child->n))) : 0.0f;
-            const float puct_best = q_best + u_best;
-
-            for (auto& child_ptr : root->children) {
-                auto& child = *child_ptr;
-                if (&child == best_child) {
-                    mcts_policy[child.action_taken] = static_cast<float>(child.n);
-                    continue;
-                }
-                float q_child = 0.0f;
-                if (child.n > 0) {
-                    const std::array<float, 3> cq{
-                        child.v[0] / child.n,
-                        child.v[1] / child.n,
-                        child.v[2] / child.n,
-                    };
-                    q_child = cq[2] - cq[0];
-                }
-                const float puct_gap = puct_best - q_child;
-                float max_subtract = 0.0f;
-                if (puct_gap > 0.0f) {
-                    const float min_denominator = (explore_scaling * child.prior) / puct_gap;
-                    max_subtract = (1.0f + child.n) - min_denominator;
-                }
-                const float new_n = static_cast<float>(child.n) - std::max(0.0f, max_subtract);
-                mcts_policy[child.action_taken] = (new_n <= 1.0f) ? 0.0f : new_n;
-            }
-        } else {
-            for (auto& c : root->children) {
-                mcts_policy[c->action_taken] = static_cast<float>(c->n);
-            }
-        }
-
-        const float sum_n = std::accumulate(mcts_policy.begin(), mcts_policy.end(), 0.0f);
-        if (sum_n > 0.0f) {
-            for (float& p : mcts_policy) p /= sum_n;
-        } else if (!root->children.empty()) {
-            mcts_policy[root->children[0]->action_taken] = 1.0f;
-        }
+        auto gumbel = gumbel_sequential_halving(*root, num_simulations, is_eval);
 
         MCTSSearchOutput out;
-        out.mcts_policy = mcts_policy;
-        out.nn_policy = nn_policy;
+        out.mcts_policy = std::move(gumbel.improved_policy);
+        out.v_mix = gumbel.v_mix;
+        out.nn_policy = std::move(nn_policy);
         out.nn_value_probs = nn_value_probs;
-        if (root->n > 0) {
-            out.root_value = {root->v[0] / root->n, root->v[1] / root->n, root->v[2] / root->n};
-        }
+        out.gumbel_action = gumbel.gumbel_action;
         return out;
     }
 
 private:
+    struct InferenceResult {
+        std::vector<float> policy;
+        std::array<float, 3> value{0.0f, 1.0f, 0.0f};
+        std::vector<float> masked_logits;
+    };
+
+    struct PendingLeaf {
+        MCTSNode* leaf = nullptr;
+        std::vector<int8_t> encoded;
+        int transform_k = 0;
+        bool transform_flip = false;
+        std::vector<MCTSNode*> path;
+    };
+
+    struct GumbelResult {
+        std::vector<float> improved_policy;
+        int gumbel_action = -1;
+        std::array<float, 3> v_mix{0.0f, 1.0f, 0.0f};
+    };
+
     static std::vector<float> undo_transform_flat(
         const std::vector<float>& transformed,
         int board_size,
@@ -323,7 +128,7 @@ private:
         return out;
     }
 
-    std::pair<std::vector<float>, std::array<float, 3>> inference(
+    InferenceResult inference(
         const std::vector<int8_t>& state,
         int to_play,
         bool use_stochastic_transform
@@ -353,135 +158,41 @@ private:
             }
         }
 
-        return {softmax(logits), pair.second};
+        return {softmax(logits), pair.second, logits};
+    }
+
+    void expand_with(const InferenceResult& ir, MCTSNode& node) {
+        node.nn_policy = ir.policy;
+        node.nn_value_probs = ir.value;
+        node.nn_logits = ir.masked_logits;
+        node.children.clear();
+        for (int a = 0; a < static_cast<int>(ir.policy.size()); ++a) {
+            const float p = ir.policy[a];
+            if (p <= 0.0f) continue;
+            auto child = std::unique_ptr<MCTSNode>(new MCTSNode{
+                game_.get_next_state(node.state, a, node.to_play),
+                -node.to_play,
+                p,
+                &node,
+                a
+            });
+            node.children.push_back(std::move(child));
+        }
     }
 
     std::array<float, 3> expand(MCTSNode& node) {
-        const auto pair = inference(node.state, node.to_play, cfg_.enable_stochastic_transform_inference_for_child);
-        node.nn_policy = pair.first;
-        node.nn_value_probs = pair.second;
-        node.children.clear();
-        for (int a = 0; a < static_cast<int>(node.nn_policy.size()); ++a) {
-            const float p = node.nn_policy[a];
-            if (p <= 0.0f) continue;
-            auto child = std::unique_ptr<MCTSNode>(new MCTSNode{
-                game_.get_next_state(node.state, a, node.to_play),
-                -node.to_play,
-                p,
-                &node,
-                a
-            });
-            node.children.push_back(std::move(child));
-        }
-        return node.nn_value_probs;
+        const auto ir = inference(node.state, node.to_play, cfg_.enable_stochastic_transform_inference_for_child);
+        expand_with(ir, node);
+        return ir.value;
     }
 
-    std::pair<std::vector<float>, std::array<float, 3>> root_expand(MCTSNode& node, bool enable_dirichlet) {
-        auto pair = inference(node.state, node.to_play, cfg_.enable_stochastic_transform_inference_for_root);
-        node.nn_policy = pair.first;
-        node.nn_value_probs = pair.second;
-
-        auto root_policy = node.nn_policy;
-        if (enable_dirichlet) {
-            int current_step = 0;
-            for (int8_t v : node.state) {
-                if (v != 0) ++current_step;
-            }
-            root_policy = add_shaped_dirichlet_noise(root_policy, cfg_.total_dirichlet_alpha, cfg_.dirichlet_epsilon, rng_);
-            root_policy = root_temperature_transform(
-                root_policy,
-                current_step,
-                cfg_.root_temperature_init,
-                cfg_.root_temperature_final,
-                game_.board_size
-            );
-        }
-
-        node.children.clear();
-        for (int a = 0; a < static_cast<int>(root_policy.size()); ++a) {
-            const float p = root_policy[a];
-            if (p <= 0.0f) continue;
-            auto child = std::unique_ptr<MCTSNode>(new MCTSNode{
-                game_.get_next_state(node.state, a, node.to_play),
-                -node.to_play,
-                p,
-                &node,
-                a
-            });
-            node.children.push_back(std::move(child));
-        }
-        return {root_policy, node.nn_value_probs};
+    std::pair<std::vector<float>, std::array<float, 3>> root_expand(MCTSNode& node) {
+        const auto ir = inference(node.state, node.to_play, cfg_.enable_stochastic_transform_inference_for_root);
+        expand_with(ir, node);
+        return {ir.policy, ir.value};
     }
 
-    std::vector<float> apply_dirichlet_to_root(MCTSNode& node) {
-        if (node.nn_policy.empty()) {
-            return node.nn_policy;
-        }
-        int current_step = 0;
-        for (int8_t v : node.state) {
-            if (v != 0) ++current_step;
-        }
-        auto root_policy = add_shaped_dirichlet_noise(node.nn_policy, cfg_.total_dirichlet_alpha, cfg_.dirichlet_epsilon, rng_);
-        root_policy = root_temperature_transform(
-            root_policy,
-            current_step,
-            cfg_.root_temperature_init,
-            cfg_.root_temperature_final,
-            game_.board_size
-        );
-
-        std::vector<std::unique_ptr<MCTSNode>> new_children;
-        new_children.reserve(node.children.size());
-        for (int a = 0; a < static_cast<int>(root_policy.size()); ++a) {
-            const float p = root_policy[a];
-            if (p <= 0.0f) continue;
-
-            MCTSNode* existing = nullptr;
-            for (auto& c : node.children) {
-                if (c && c->action_taken == a) {
-                    existing = c.release();
-                    break;
-                }
-            }
-            if (existing) {
-                existing->prior = p;
-                existing->parent = &node;
-                new_children.emplace_back(existing);
-            } else {
-                new_children.emplace_back(new MCTSNode{
-                    game_.get_next_state(node.state, a, node.to_play),
-                    -node.to_play,
-                    p,
-                    &node,
-                    a
-                });
-            }
-        }
-        node.children = std::move(new_children);
-        return root_policy;
-    }
-
-    MCTSNode* select(MCTSNode& node, bool is_full_search) {
-        if (cfg_.enable_forced_playouts && is_full_search && node.parent == nullptr && node.n > 0) {
-            MCTSNode* best_forced_child = nullptr;
-            float best_prior = -1.0f;
-            const int effective_parent_n = node.n + node.vloss;
-            const float total_child_weight = static_cast<float>(std::max(0, effective_parent_n - 1));
-            const float sqrt_node_n = std::sqrt(total_child_weight);
-            for (auto& child_ptr : node.children) {
-                auto& child = *child_ptr;
-                if (child.prior <= 0.0f) continue;
-                const float target_visits = std::sqrt(cfg_.forced_playouts_k * child.prior) * sqrt_node_n;
-                if (static_cast<float>(child.n + child.vloss) < target_visits && child.prior > best_prior) {
-                    best_prior = child.prior;
-                    best_forced_child = &child;
-                }
-            }
-            if (best_forced_child) {
-                return best_forced_child;
-            }
-        }
-
+    MCTSNode* select(MCTSNode& node) {
         float visited_policy_mass = 0.0f;
         for (auto& child_ptr : node.children) {
             if (child_ptr->n > 0 || child_ptr->vloss > 0) {
@@ -528,6 +239,338 @@ private:
         return best_child;
     }
 
+    void run_rollouts(MCTSNode& root, const std::vector<int>& actions, int& sims_budget) {
+        if (actions.empty() || sims_budget <= 0) {
+            return;
+        }
+
+        std::vector<PendingLeaf> pending;
+        pending.reserve(actions.size());
+
+        for (int action : actions) {
+            if (sims_budget <= 0) {
+                break;
+            }
+
+            MCTSNode* child = nullptr;
+            for (auto& c : root.children) {
+                if (c && c->action_taken == action) {
+                    child = c.get();
+                    break;
+                }
+            }
+            if (child == nullptr) {
+                continue;
+            }
+
+            std::vector<MCTSNode*> path;
+            path.reserve(64);
+            root.vloss += 1;
+            path.push_back(&root);
+
+            MCTSNode* node = child;
+            node->vloss += 1;
+            path.push_back(node);
+
+            while (node->is_expanded()) {
+                node = select(*node);
+                if (node == nullptr) {
+                    remove_vloss_on_path(path);
+                    break;
+                }
+                node->vloss += 1;
+                path.push_back(node);
+            }
+            if (node == nullptr) {
+                continue;
+            }
+
+            if (game_.is_terminal(node->state, node->action_taken, -node->to_play)) {
+                std::array<float, 3> value{0.0f, 1.0f, 0.0f};
+                const int result = game_.get_winner(node->state, node->action_taken, -node->to_play) * node->to_play;
+                if (result == 1) value = {1.0f, 0.0f, 0.0f};
+                else if (result == -1) value = {0.0f, 0.0f, 1.0f};
+                backpropagate_path_with_vloss(path, value);
+                sims_budget -= 1;
+                continue;
+            }
+
+            PendingLeaf pl;
+            pl.leaf = node;
+            pl.path = std::move(path);
+            pl.encoded = game_.encode_state(node->state, node->to_play);
+
+            if (cfg_.enable_stochastic_transform_inference_for_child) {
+                std::uniform_int_distribution<int> dist(0, 7);
+                const int transform_type = dist(rng_);
+                pl.transform_k = transform_type % 4;
+                pl.transform_flip = transform_type >= 4;
+                pl.encoded = transform_encoded_state(pl.encoded, game_.num_planes, game_.board_size, pl.transform_k, pl.transform_flip);
+            }
+
+            pending.push_back(std::move(pl));
+        }
+
+        if (pending.empty()) {
+            return;
+        }
+
+        std::vector<std::vector<int8_t>> encoded_batch;
+        encoded_batch.reserve(pending.size());
+        for (const auto& p : pending) {
+            encoded_batch.push_back(p.encoded);
+        }
+
+        std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
+        try {
+            if (batch_infer_fn_) {
+                infer_results = batch_infer_fn_(encoded_batch);
+            } else {
+                infer_results.reserve(encoded_batch.size());
+                for (const auto& e : encoded_batch) {
+                    infer_results.push_back(infer_fn_(e));
+                }
+            }
+        } catch (...) {
+            for (const auto& p : pending) {
+                remove_vloss_on_path(p.path);
+            }
+            throw;
+        }
+
+        if (infer_results.size() != pending.size()) {
+            for (const auto& p : pending) {
+                remove_vloss_on_path(p.path);
+            }
+            throw std::runtime_error("batch_infer_fn returned unexpected batch size");
+        }
+
+        for (size_t i = 0; i < pending.size(); ++i) {
+            auto logits = std::move(infer_results[i].first);
+            if (pending[i].transform_k != 0 || pending[i].transform_flip) {
+                logits = undo_transform_flat(logits, game_.board_size, pending[i].transform_k, pending[i].transform_flip);
+            }
+
+            const auto legal = game_.get_is_legal_actions(pending[i].leaf->state, pending[i].leaf->to_play);
+            for (size_t j = 0; j < logits.size(); ++j) {
+                if (j >= legal.size() || !legal[j]) {
+                    logits[j] = -std::numeric_limits<float>::infinity();
+                }
+            }
+
+            InferenceResult ir;
+            ir.masked_logits = logits;
+            ir.policy = softmax(logits);
+            ir.value = infer_results[i].second;
+            expand_with(ir, *pending[i].leaf);
+            backpropagate_path_with_vloss(pending[i].path, ir.value);
+            sims_budget -= 1;
+        }
+    }
+
+    GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations, bool is_eval = false) {
+        const int action_size = game_.board_size * game_.board_size;
+        std::vector<float> logits = root.nn_logits;
+        if (logits.size() != static_cast<size_t>(action_size)) {
+            logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
+        }
+
+        const auto is_legal = game_.get_is_legal_actions(root.state, root.to_play);
+
+        // Gumbel noise: disabled in eval mode (unless gumbel_stochastic_eval is set)
+        std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
+        if (is_eval && !cfg_.gumbel_stochastic_eval) {
+            // eval mode: no noise
+        } else {
+            std::extreme_value_distribution<float> gumbel_dist(0.0f, 1.0f);
+            for (int i = 0; i < action_size; ++i) {
+                g[static_cast<size_t>(i)] = gumbel_dist(rng_);
+            }
+        }
+
+        int m = std::min(num_simulations, cfg_.gumbel_m);
+        std::vector<int> sorted_actions(static_cast<size_t>(action_size));
+        std::iota(sorted_actions.begin(), sorted_actions.end(), 0);
+        std::sort(sorted_actions.begin(), sorted_actions.end(), [&](int a, int b) {
+            const float sa = (a < static_cast<int>(is_legal.size()) && is_legal[static_cast<size_t>(a)])
+                ? (logits[static_cast<size_t>(a)] + g[static_cast<size_t>(a)])
+                : -std::numeric_limits<float>::infinity();
+            const float sb = (b < static_cast<int>(is_legal.size()) && is_legal[static_cast<size_t>(b)])
+                ? (logits[static_cast<size_t>(b)] + g[static_cast<size_t>(b)])
+                : -std::numeric_limits<float>::infinity();
+            return sa > sb;
+        });
+
+        std::vector<int> surviving_actions;
+        surviving_actions.reserve(static_cast<size_t>(m));
+        for (int a : sorted_actions) {
+            if (static_cast<int>(surviving_actions.size()) >= m) {
+                break;
+            }
+            if (a < static_cast<int>(is_legal.size()) && is_legal[static_cast<size_t>(a)]) {
+                surviving_actions.push_back(a);
+            }
+        }
+
+        m = static_cast<int>(surviving_actions.size());
+        if (m > 0) {
+            const int phases = (m > 1) ? static_cast<int>(std::ceil(std::log2(static_cast<double>(m)))) : 1;
+            int sims_budget = num_simulations;
+
+            for (int phase = 0; phase < phases; ++phase) {
+                if (sims_budget <= 0 || surviving_actions.empty()) {
+                    break;
+                }
+
+                const int remaining_phases = phases - phase;
+                const int sims_this_phase = sims_budget / remaining_phases;
+                const int num_actions = static_cast<int>(surviving_actions.size());
+                const int sims_per_action = std::max(1, sims_this_phase / std::max(1, num_actions));
+
+                std::vector<int> rollout_actions;
+                rollout_actions.reserve(static_cast<size_t>(std::max(1, sims_per_action * num_actions)));
+                for (int s = 0; s < sims_per_action && sims_budget > 0; ++s) {
+                    for (int action : surviving_actions) {
+                        if (sims_budget <= 0) {
+                            break;
+                        }
+                        rollout_actions.push_back(action);
+                    }
+                }
+
+                size_t offset = 0;
+                while (offset < rollout_actions.size() && sims_budget > 0) {
+                    const size_t chunk = std::min(static_cast<size_t>(leaf_batch_size_), rollout_actions.size() - offset);
+                    std::vector<int> action_batch;
+                    action_batch.reserve(chunk);
+                    for (size_t i = 0; i < chunk; ++i) {
+                        action_batch.push_back(rollout_actions[offset + i]);
+                    }
+                    run_rollouts(root, action_batch, sims_budget);
+                    offset += chunk;
+                }
+
+                if (phase < phases - 1 && !surviving_actions.empty()) {
+                    const float max_n = max_child_n(root);
+                    const float c_visit = cfg_.gumbel_c_visit;
+                    const float c_scale = cfg_.gumbel_c_scale;
+
+                    auto eval_action = [&](int a) {
+                        MCTSNode* c = nullptr;
+                        for (auto& child : root.children) {
+                            if (child && child->action_taken == a) {
+                                c = child.get();
+                                break;
+                            }
+                        }
+                        float q = 0.5f;
+                        if (c && c->n > 0) {
+                            const float cw = c->v[0] / static_cast<float>(c->n);
+                            const float cl = c->v[2] / static_cast<float>(c->n);
+                            q = ((cl - cw) + 1.0f) * 0.5f;
+                        }
+                        return logits[static_cast<size_t>(a)] + g[static_cast<size_t>(a)] + (c_visit + max_n) * c_scale * q;
+                    };
+
+                    std::sort(surviving_actions.begin(), surviving_actions.end(), [&](int a, int b) {
+                        return eval_action(a) > eval_action(b);
+                    });
+                    surviving_actions.resize(static_cast<size_t>(std::max(1, static_cast<int>(surviving_actions.size()) / 2)));
+                }
+            }
+        }
+
+        const float c_visit = cfg_.gumbel_c_visit;
+        const float c_scale = cfg_.gumbel_c_scale;
+        const float max_n = max_child_n(root);
+
+        std::vector<std::array<float, 3>> q_wdl(static_cast<size_t>(action_size), {0.0f, 0.0f, 0.0f});
+        std::vector<float> n_values(static_cast<size_t>(action_size), 0.0f);
+        for (auto& c : root.children) {
+            if (c && c->n > 0) {
+                const float cw = c->v[0] / static_cast<float>(c->n);
+                const float cd = c->v[1] / static_cast<float>(c->n);
+                const float cl = c->v[2] / static_cast<float>(c->n);
+                q_wdl[static_cast<size_t>(c->action_taken)] = {cl, cd, cw};
+                n_values[static_cast<size_t>(c->action_taken)] = static_cast<float>(c->n);
+            }
+        }
+
+        const float sum_n = std::accumulate(n_values.begin(), n_values.end(), 0.0f);
+        std::array<float, 3> v_mix = root.nn_value_probs;
+        if (sum_n > 0.0f) {
+            std::array<float, 3> weighted_q{0.0f, 0.0f, 0.0f};
+            float policy_sum = 1e-12f;
+            for (int a = 0; a < action_size; ++a) {
+                if (n_values[static_cast<size_t>(a)] > 0.0f && a < static_cast<int>(root.nn_policy.size())) {
+                    const float p = root.nn_policy[static_cast<size_t>(a)];
+                    weighted_q[0] += p * q_wdl[static_cast<size_t>(a)][0];
+                    weighted_q[1] += p * q_wdl[static_cast<size_t>(a)][1];
+                    weighted_q[2] += p * q_wdl[static_cast<size_t>(a)][2];
+                    policy_sum += p;
+                }
+            }
+            weighted_q[0] /= policy_sum;
+            weighted_q[1] /= policy_sum;
+            weighted_q[2] /= policy_sum;
+            v_mix = {
+                (root.nn_value_probs[0] + sum_n * weighted_q[0]) / (1.0f + sum_n),
+                (root.nn_value_probs[1] + sum_n * weighted_q[1]) / (1.0f + sum_n),
+                (root.nn_value_probs[2] + sum_n * weighted_q[2]) / (1.0f + sum_n),
+            };
+        }
+
+        std::vector<float> sigma_q(static_cast<size_t>(action_size), 0.0f);
+        for (int a = 0; a < action_size; ++a) {
+            const auto& q = (n_values[static_cast<size_t>(a)] > 0.0f) ? q_wdl[static_cast<size_t>(a)] : v_mix;
+            float s = q[0] - q[2];
+            s = (s + 1.0f) * 0.5f;
+            sigma_q[static_cast<size_t>(a)] = (c_visit + max_n) * c_scale * s;
+        }
+
+        std::vector<float> improved_logits(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
+        for (int a = 0; a < action_size; ++a) {
+            if (a < static_cast<int>(is_legal.size()) && is_legal[static_cast<size_t>(a)]) {
+                improved_logits[static_cast<size_t>(a)] = logits[static_cast<size_t>(a)] + sigma_q[static_cast<size_t>(a)];
+            }
+        }
+        auto improved_policy = softmax(improved_logits);
+
+        auto final_eval = [&](int a) {
+            return logits[static_cast<size_t>(a)] + g[static_cast<size_t>(a)] + sigma_q[static_cast<size_t>(a)];
+        };
+
+        int gumbel_action = -1;
+        if (!surviving_actions.empty()) {
+            float max_n_surviving = -1.0f;
+            std::vector<int> most_visited;
+            for (int a : surviving_actions) {
+                const float nv = n_values[static_cast<size_t>(a)];
+                if (nv > max_n_surviving) {
+                    max_n_surviving = nv;
+                    most_visited.clear();
+                    most_visited.push_back(a);
+                } else if (nv == max_n_surviving) {
+                    most_visited.push_back(a);
+                }
+            }
+            gumbel_action = most_visited[0];
+            float best_eval = final_eval(gumbel_action);
+            for (size_t i = 1; i < most_visited.size(); ++i) {
+                const float ev = final_eval(most_visited[i]);
+                if (ev > best_eval) {
+                    best_eval = ev;
+                    gumbel_action = most_visited[i];
+                }
+            }
+        }
+
+        if (gumbel_action < 0 && !improved_policy.empty()) {
+            gumbel_action = static_cast<int>(std::distance(improved_policy.begin(), std::max_element(improved_policy.begin(), improved_policy.end())));
+        }
+        return {improved_policy, gumbel_action, v_mix};
+    }
+
     static void remove_vloss_on_path(const std::vector<MCTSNode*>& path) {
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             if ((*it)->vloss > 0) {
@@ -550,6 +593,16 @@ private:
             value = flip_wdl(value);
             node = node->parent;
         }
+    }
+
+    static float max_child_n(const MCTSNode& root) {
+        float mx = 0.0f;
+        for (const auto& c : root.children) {
+            if (c) {
+                mx = std::max(mx, static_cast<float>(c->n));
+            }
+        }
+        return mx;
     }
 
     Game& game_;
@@ -591,10 +644,7 @@ public:
         float total_loss = 0.0f;
         float policy_loss = 0.0f;
         float opponent_policy_loss = 0.0f;
-        float soft_policy_loss = 0.0f;
-        float soft_opponent_policy_loss = 0.0f;
         float value_loss = 0.0f;
-        float full_search_ratio = 0.0f;
     };
 
     bool save_checkpoint(const std::string& filepath = "") {
@@ -629,8 +679,6 @@ public:
         checkpoint_archive.write("loss_total", vec_to_1d_tensor(total_loss_history_, torch::kFloat32));
         checkpoint_archive.write("loss_policy", vec_to_1d_tensor(policy_loss_history_, torch::kFloat32));
         checkpoint_archive.write("loss_opp_policy", vec_to_1d_tensor(opponent_policy_loss_history_, torch::kFloat32));
-        checkpoint_archive.write("loss_soft_policy", vec_to_1d_tensor(soft_policy_loss_history_, torch::kFloat32));
-        checkpoint_archive.write("loss_soft_opp_policy", vec_to_1d_tensor(soft_opponent_policy_loss_history_, torch::kFloat32));
         checkpoint_archive.write("loss_value", vec_to_1d_tensor(value_loss_history_, torch::kFloat32));
         checkpoint_archive.write("avg_game_len_history", vec_to_1d_tensor(avg_game_len_history_, torch::kFloat32));
 
@@ -674,7 +722,6 @@ public:
         rb_archive.write("opponent_policy_targets", vec_to_2d_tensor(rb.opponent_policy_targets, rows, action_cells, torch::kFloat32));
         rb_archive.write("value_targets", vec_to_2d_tensor(rb.value_targets, rows, 3, torch::kFloat32));
         rb_archive.write("sample_weights", vec_to_1d_tensor(rb.sample_weights, torch::kFloat32));
-        rb_archive.write("is_full_search", vec_to_1d_tensor(rb.is_full_search, torch::kUInt8));
         checkpoint_archive.write("replay_buffer", rb_archive);
 
         checkpoint_archive.save_to(checkpoint_path.string());
@@ -744,8 +791,6 @@ public:
             total_loss_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "loss_total"));
             policy_loss_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "loss_policy"));
             opponent_policy_loss_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "loss_opp_policy"));
-            soft_policy_loss_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "loss_soft_policy"));
-            soft_opponent_policy_loss_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "loss_soft_opp_policy"));
             value_loss_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "loss_value"));
             avg_game_len_history_ = tensor_to_vec<float>(must_read_tensor(checkpoint_archive, "avg_game_len_history"));
 
@@ -790,7 +835,6 @@ public:
             rb.opponent_policy_targets = tensor_to_vec<float>(must_read_tensor(rb_archive, "opponent_policy_targets"));
             rb.value_targets = tensor_to_vec<float>(must_read_tensor(rb_archive, "value_targets"));
             rb.sample_weights = tensor_to_vec<float>(must_read_tensor(rb_archive, "sample_weights"));
-            rb.is_full_search = tensor_to_vec<uint8_t>(must_read_tensor(rb_archive, "is_full_search"));
 
             replay_buffer_.load_state(rb);
 
@@ -898,29 +942,19 @@ public:
                         mean.total_loss += s.total_loss;
                         mean.policy_loss += s.policy_loss;
                         mean.opponent_policy_loss += s.opponent_policy_loss;
-                        mean.soft_policy_loss += s.soft_policy_loss;
-                        mean.soft_opponent_policy_loss += s.soft_opponent_policy_loss;
                         mean.value_loss += s.value_loss;
-                        mean.full_search_ratio += s.full_search_ratio;
                     }
                     const float inv = 1.0f / static_cast<float>(batch_losses.size());
                     mean.total_loss *= inv;
                     mean.policy_loss *= inv;
                     mean.opponent_policy_loss *= inv;
-                    mean.soft_policy_loss *= inv;
-                    mean.soft_opponent_policy_loss *= inv;
                     mean.value_loss *= inv;
-                    mean.full_search_ratio *= inv;
 
                     total_loss_history_.push_back(mean.total_loss);
                     policy_loss_history_.push_back(mean.policy_loss);
                     opponent_policy_loss_history_.push_back(mean.opponent_policy_loss);
-                    soft_policy_loss_history_.push_back(mean.soft_policy_loss);
-                    soft_opponent_policy_loss_history_.push_back(mean.soft_opponent_policy_loss);
                     value_loss_history_.push_back(mean.value_loss);
 
-                    std::cout << "  [Training] Full Search Ratio: " << std::fixed << std::setprecision(2)
-                              << mean.full_search_ratio << "\n";
                     std::cout << "  [Training] Loss: " << std::fixed << std::setprecision(2)
                               << mean.total_loss << " | Policy Loss: " << mean.policy_loss
                               << " | Value Loss: " << mean.value_loss << "\n";
@@ -1178,8 +1212,7 @@ private:
             std::vector<float> mcts_policy;
             std::vector<float> nn_policy;
             std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};
-            std::array<float, 3> root_value{0.0f, 0.0f, 0.0f};
-            uint8_t is_full_search = 1;
+            std::array<float, 3> v_mix{0.0f, 1.0f, 0.0f};
             std::vector<float> next_mcts_policy;
             float sample_weight = 1.0f;
         };
@@ -1204,31 +1237,30 @@ private:
         int to_play = 1;
         auto state = game_.get_initial_state();
         bool in_soft_resign = false;
-        std::vector<float> historical_root_value;
+        std::vector<float> historical_v_mix;
         int last_action = -1;
         int last_player = 0;
         std::unique_ptr<MCTSNode> root(new MCTSNode{state, to_play});
 
         while (!game_.is_terminal(state, last_action, last_player)) {
-            int num_simulations = cfg_.fast_search_num_simulations;
-            if (!in_soft_resign) {
-                std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-                num_simulations = (uni(worker_rng) < cfg_.full_search_prob) ? cfg_.full_search_num_simulations : cfg_.fast_search_num_simulations;
+            int num_simulations = cfg_.num_simulations;
+            if (in_soft_resign) {
+                num_simulations = std::max(cfg_.num_simulations / 4, cfg_.min_simulations_in_soft_resign);
             }
 
             const auto sr = mcts.search(state, to_play, num_simulations, root);
-            const float root_value_scalar = sr.root_value[0] - sr.root_value[2];
-            historical_root_value.push_back(root_value_scalar);
+            const float v_mix_scalar = sr.v_mix[0] - sr.v_mix[2];
+            historical_v_mix.push_back(v_mix_scalar);
 
-            const int n = static_cast<int>(historical_root_value.size());
-            float absmin_root_value = std::numeric_limits<float>::infinity();
+            const int n = static_cast<int>(historical_v_mix.size());
+            float absmin_v_mix = std::numeric_limits<float>::infinity();
             const int from = std::max(0, n - cfg_.soft_resign_step_threshold);
             for (int i = from; i < n; ++i) {
-                absmin_root_value = std::min(absmin_root_value, std::fabs(historical_root_value[i]));
+                absmin_v_mix = std::min(absmin_v_mix, std::fabs(historical_v_mix[i]));
             }
             if (!in_soft_resign) {
                 std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-                if (absmin_root_value >= cfg_.soft_resign_threshold && uni(worker_rng) < cfg_.soft_resign_prob) {
+                if (absmin_v_mix >= cfg_.soft_resign_threshold && uni(worker_rng) < cfg_.soft_resign_prob) {
                     in_soft_resign = true;
                 }
             }
@@ -1243,18 +1275,26 @@ private:
             ms.mcts_policy = sr.mcts_policy;
             ms.nn_policy = sr.nn_policy;
             ms.nn_value_probs = sr.nn_value_probs;
-            ms.root_value = sr.root_value;
-            ms.is_full_search = (num_simulations == cfg_.full_search_num_simulations) ? 1 : 0;
+            ms.v_mix = sr.v_mix;
             ms.sample_weight = in_soft_resign ? cfg_.soft_resign_sample_weight : 1.0f;
             memory.push_back(ms);
 
-            const int current_step = static_cast<int>(memory.size());
-            const float t = cfg_.move_temperature_final + (cfg_.move_temperature_init - cfg_.move_temperature_final) *
-                std::pow(0.5f, static_cast<float>(current_step) / game_.board_size);
-            const auto move_probs = temperature_transform(sr.mcts_policy, t);
+            const int move_count = static_cast<int>(memory.size());
+            const int half_life = std::max(1, cfg_.half_life);
+            const float t = cfg_.move_temperature_init
+                - (static_cast<float>(move_count) / static_cast<float>(half_life))
+                    * (cfg_.move_temperature_init - cfg_.move_temperature_final);
 
-            std::discrete_distribution<int> action_dist(move_probs.begin(), move_probs.end());
-            const int action = action_dist(worker_rng);
+            int action = sr.gumbel_action;
+            if (move_count < half_life) {
+                const auto move_probs = temperature_transform(sr.mcts_policy, t);
+                std::discrete_distribution<int> action_dist(move_probs.begin(), move_probs.end());
+                action = action_dist(worker_rng);
+            }
+            if (action < 0) {
+                std::discrete_distribution<int> action_dist(sr.mcts_policy.begin(), sr.mcts_policy.end());
+                action = action_dist(worker_rng);
+            }
 
             last_action = action;
             last_player = to_play;
@@ -1297,8 +1337,7 @@ private:
             ps.outcome = outcome;
             ps.nn_policy = s.nn_policy;
             ps.nn_value_probs = s.nn_value_probs;
-            ps.root_value = s.root_value;
-            ps.is_full_search = s.is_full_search;
+            ps.v_mix = s.v_mix;
             ps.sample_weight = s.sample_weight;
             return_memory.push_back(ps);
         }
@@ -1309,9 +1348,9 @@ private:
             for (int i = static_cast<int>(return_memory.size()) - 2; i >= 0; --i) {
                 const auto next_target = flip_wdl(return_memory[i + 1].value_target);
                 return_memory[i].value_target = {
-                    (1.0f - now_factor) * next_target[0] + now_factor * return_memory[i].root_value[0],
-                    (1.0f - now_factor) * next_target[1] + now_factor * return_memory[i].root_value[1],
-                    (1.0f - now_factor) * next_target[2] + now_factor * return_memory[i].root_value[2],
+                    (1.0f - now_factor) * next_target[0] + now_factor * return_memory[i].v_mix[0],
+                    (1.0f - now_factor) * next_target[1] + now_factor * return_memory[i].v_mix[1],
+                    (1.0f - now_factor) * next_target[2] + now_factor * return_memory[i].v_mix[2],
                 };
             }
         }
@@ -1552,18 +1591,11 @@ private:
         auto value_targets = torch::from_blob(value_target_buf.data(), {bsz, 3}, torch::kFloat32).clone().to(cfg_.device);
         auto sample_weights = torch::from_blob(sample_weights_buf.data(), {bsz}, torch::kFloat32).clone().to(cfg_.device);
 
-        auto soft_policy_targets = torch::pow(policy_targets, 0.25);
-        soft_policy_targets = soft_policy_targets / (soft_policy_targets.sum(-1, true) + 1e-10);
-        auto soft_opp_policy_targets = torch::pow(opp_policy_targets, 0.25);
-        soft_opp_policy_targets = soft_opp_policy_targets / (soft_opp_policy_targets.sum(-1, true) + 1e-10);
-
         model_->train();
         const auto nn_out = model_->forward(encoded_states);
 
         auto policy_logits = nn_out.policy_logits.view({bsz, -1});
         auto opp_policy_logits = nn_out.opponent_policy_logits.view({bsz, -1});
-        auto soft_policy_logits = nn_out.soft_policy_logits.view({bsz, -1});
-        auto soft_opp_policy_logits = nn_out.soft_opponent_policy_logits.view({bsz, -1});
 
         auto weighted_ce = [&](const torch::Tensor& logits, const torch::Tensor& targets) {
             auto loss = -(targets * torch::log_softmax(logits, -1)).sum(-1);
@@ -1576,22 +1608,12 @@ private:
 
         auto policy_loss = weighted_ce(policy_logits, policy_targets);
         auto opp_policy_loss = weighted_ce(opp_policy_logits, opp_policy_targets);
-        auto soft_policy_loss = weighted_ce(soft_policy_logits, soft_policy_targets);
-        auto soft_opp_policy_loss = weighted_ce(soft_opp_policy_logits, soft_opp_policy_targets);
         auto value_loss = weighted_ce(nn_out.value_logits, value_targets);
 
         auto total_loss =
             cfg_.policy_loss_weight * policy_loss +
             cfg_.opponent_policy_loss_weight * opp_policy_loss +
-            cfg_.soft_policy_loss_weight * soft_policy_loss +
-            cfg_.soft_opponent_policy_loss_weight * soft_opp_policy_loss +
             cfg_.value_loss_weight * value_loss;
-
-        float full_search_ratio = 0.0f;
-        for (const auto& s : batch) {
-            full_search_ratio += static_cast<float>(s.is_full_search ? 1 : 0);
-        }
-        full_search_ratio /= static_cast<float>(std::max<size_t>(1, batch.size()));
 
         optimizer_.zero_grad();
         total_loss.backward();
@@ -1602,10 +1624,7 @@ private:
         out.total_loss = total_loss.template item<float>();
         out.policy_loss = policy_loss.template item<float>();
         out.opponent_policy_loss = opp_policy_loss.template item<float>();
-        out.soft_policy_loss = soft_policy_loss.template item<float>();
-        out.soft_opponent_policy_loss = soft_opp_policy_loss.template item<float>();
         out.value_loss = value_loss.template item<float>();
-        out.full_search_ratio = full_search_ratio;
         return out;
     }
 
@@ -1639,8 +1658,6 @@ private:
     std::vector<float> total_loss_history_;
     std::vector<float> policy_loss_history_;
     std::vector<float> opponent_policy_loss_history_;
-    std::vector<float> soft_policy_loss_history_;
-    std::vector<float> soft_opponent_policy_loss_history_;
     std::vector<float> value_loss_history_;
     std::vector<std::array<float, 4>> winrate_history_;
     std::vector<float> avg_game_len_history_;

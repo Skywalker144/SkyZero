@@ -12,9 +12,7 @@ skyzero::AlphaZeroConfig build_tictactoe_eval_config() {
     cfg.board_size = 3;
     cfg.num_blocks = 2;
     cfg.num_channels = 32;
-    cfg.full_search_num_simulations = 200;
-    cfg.fast_search_num_simulations = 200;
-    cfg.enable_forced_playouts = true;
+    cfg.num_simulations = 200;
     cfg.device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
     return cfg;
 }

@@ -13,17 +13,13 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.lr = 1e-4f;
     cfg.weight_decay = 3e-5f;
 
-    cfg.full_search_num_simulations = 480;
-    cfg.fast_search_num_simulations = 80;
-    cfg.full_search_prob = 0.25f;
+    cfg.num_simulations = 512;
+    cfg.gumbel_m = 16;
+    cfg.gumbel_c_visit = 50.0f;
+    cfg.gumbel_c_scale = 1.0f;
 
-    cfg.root_temperature_init = 1.25f;
-    cfg.root_temperature_final = 1.1f;
     cfg.move_temperature_init = 0.8f;
     cfg.move_temperature_final = 0.2f;
-
-    cfg.total_dirichlet_alpha = 6.75f;
-    cfg.dirichlet_epsilon = 0.25f;
 
     cfg.batch_size = 256;
     cfg.min_buffer_size = 2e5;
@@ -40,8 +36,6 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
 
     cfg.fpu_reduction_max = 0.08f;
     cfg.root_fpu_reduction_max = 0.0f;
-    cfg.enable_forced_playouts = true;
-    cfg.forced_playouts_k = 2.0f;
 
     cfg.device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
     return cfg;
