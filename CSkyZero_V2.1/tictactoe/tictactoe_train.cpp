@@ -41,6 +41,10 @@ skyzero::AlphaZeroConfig build_tictactoe_config() {
     cfg.forced_playouts_k = 1.0f;
     cfg.fpu_reduction_max = 0.0f;
     cfg.root_fpu_reduction_max = 0.0f;
+    cfg.enable_stochastic_transform_inference_for_root = false;
+    cfg.enable_symmetry_inference_for_root = true;
+    cfg.enable_stochastic_transform_inference_for_child = true;
+    cfg.enable_symmetry_inference_for_child = false;
 
     cfg.device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
     return cfg;
