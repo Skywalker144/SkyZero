@@ -47,8 +47,6 @@ def load_metrics_from_checkpoint(path: str) -> Dict[str, torch.Tensor]:
         "loss_total",
         "loss_policy",
         "loss_opp_policy",
-        "loss_soft_policy",
-        "loss_soft_opp_policy",
         "loss_value",
         "avg_game_len_history",
         "winrate_history",
