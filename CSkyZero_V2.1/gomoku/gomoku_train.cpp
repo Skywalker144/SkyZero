@@ -13,8 +13,8 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.lr = 1e-4f;
     cfg.weight_decay = 3e-5f;
 
-    cfg.full_search_num_simulations = 480;
-    cfg.fast_search_num_simulations = 80;
+    cfg.full_search_num_simulations = 1000;
+    cfg.fast_search_num_simulations = 200;
     cfg.full_search_prob = 0.25f;
 
     cfg.root_temperature_init = 1.25f;
@@ -62,6 +62,7 @@ int main() {
     pcfg.idle_sleep_ms = 0;
 
     skyzero::Gomoku game(cfg.board_size, true, true);
+    game.load_openings("envs/gomoku_openings.txt", 0.2f);
     auto model = skyzero::ResNet(game.board_size, game.num_planes, cfg.num_blocks, cfg.num_channels);
     model->to(cfg.device);
 
