@@ -62,7 +62,7 @@ int main() {
     pcfg.idle_sleep_ms = 0;
 
     skyzero::Gomoku game(cfg.board_size, true, true);
-    game.load_openings("envs/gomoku_openings.txt", 0.2f);
+    game.load_openings("envs/gomoku_openings.txt", 0.5f);
     auto model = skyzero::ResNet(game.board_size, game.num_planes, cfg.num_blocks, cfg.num_channels);
     model->to(cfg.device);
 
