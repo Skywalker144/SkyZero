@@ -175,8 +175,8 @@ public:
             }
 
             std::array<float, 3> value{0.0f, 1.0f, 0.0f};
-            if (game_.is_terminal(node->state)) {
-                const int result = game_.get_winner(node->state) * node->to_play;
+            if (game_.is_terminal(node->state, node->action_taken, -node->to_play)) {
+                const int result = game_.get_winner(node->state, node->action_taken, -node->to_play) * node->to_play;
                 if (result == 1) value = {1.0f, 0.0f, 0.0f};
                 else if (result == -1) value = {0.0f, 0.0f, 1.0f};
             } else {

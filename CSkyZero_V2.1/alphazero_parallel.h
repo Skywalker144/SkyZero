@@ -108,9 +108,9 @@ public:
                     path.push_back(node);
                 }
 
-                if (game_.is_terminal(node->state)) {
+                if (game_.is_terminal(node->state, node->action_taken, -node->to_play)) {
                     std::array<float, 3> value{0.0f, 1.0f, 0.0f};
-                    const int result = game_.get_winner(node->state) * node->to_play;
+                    const int result = game_.get_winner(node->state, node->action_taken, -node->to_play) * node->to_play;
                     if (result == 1) value = {1.0f, 0.0f, 0.0f};
                     else if (result == -1) value = {0.0f, 0.0f, 1.0f};
                     backpropagate_path_with_vloss(path, value);
@@ -1201,8 +1201,9 @@ private:
         );
 
         std::vector<MemoryStep> memory;
-        int to_play = 1;
-        auto state = game_.get_initial_state();
+        auto init = game_.get_initial_state(worker_rng);
+        std::vector<int8_t> state = std::move(init.board);
+        int to_play = init.to_play;
         bool in_soft_resign = false;
         std::vector<float> historical_root_value;
         int last_action = -1;
