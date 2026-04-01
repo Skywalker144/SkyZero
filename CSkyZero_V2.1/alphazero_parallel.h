@@ -79,6 +79,8 @@ public:
             std::vector<int8_t> encoded;
             int transform_k = 0;
             bool transform_flip = false;
+            int infer_offset = 0;
+            int infer_count = 1;
             std::vector<std::vector<MCTSNode*>> paths;
         };
 
@@ -137,6 +139,8 @@ public:
                             pl.transform_k,
                             pl.transform_flip
                         );
+                    } else if (cfg_.enable_symmetry_inference_for_child) {
+                        pl.infer_count = 8;
                     }
 
                     pl.paths.push_back(std::move(path));
@@ -147,12 +151,24 @@ public:
                 }
             }
 
+            std::vector<std::vector<int8_t>> encoded_batch;
             std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
             try {
-                std::vector<std::vector<int8_t>> encoded_batch;
-                encoded_batch.reserve(pending.size());
-                for (const auto& p : pending) {
-                    encoded_batch.push_back(p.encoded);
+                encoded_batch.reserve(pending.size() * 8);
+                for (auto& p : pending) {
+                    p.infer_offset = static_cast<int>(encoded_batch.size());
+                    if (p.infer_count == 8) {
+                        for (int fi = 0; fi < 2; ++fi) {
+                            const bool do_flip = (fi == 1);
+                            for (int k = 0; k < 4; ++k) {
+                                encoded_batch.push_back(
+                                    transform_encoded_state(p.encoded, game_.num_planes, game_.board_size, k, do_flip)
+                                );
+                            }
+                        }
+                    } else {
+                        encoded_batch.push_back(p.encoded);
+                    }
                 }
 
                 if (batch_infer_fn_) {
@@ -172,7 +188,7 @@ public:
                 throw;
             }
 
-            if (infer_results.size() != pending.size()) {
+            if (infer_results.size() != encoded_batch.size()) {
                 for (const auto& p : pending) {
                     for (const auto& path : p.paths) {
                         remove_vloss_on_path(path);
@@ -182,16 +198,36 @@ public:
             }
 
             for (size_t i = 0; i < pending.size(); ++i) {
-                auto logits = std::move(infer_results[i].first);
-                const auto value = infer_results[i].second;
+                std::vector<float> logits;
+                std::array<float, 3> value{0.0f, 0.0f, 0.0f};
 
-                if (pending[i].transform_k != 0 || pending[i].transform_flip) {
-                    logits = undo_transform_flat(logits, game_.board_size, pending[i].transform_k, pending[i].transform_flip);
+                if (pending[i].infer_count == 8) {
+                    const int area = game_.board_size * game_.board_size;
+                    logits.assign(static_cast<size_t>(area), 0.0f);
+                    for (int s = 0; s < 8; ++s) {
+                        const size_t idx = static_cast<size_t>(pending[i].infer_offset + s);
+                        const int k = s % 4;
+                        const bool do_flip = s >= 4;
+                        auto restored = undo_transform_flat(infer_results[idx].first, game_.board_size, k, do_flip);
+                        for (int j = 0; j < area; ++j) {
+                            logits[static_cast<size_t>(j)] += restored[static_cast<size_t>(j)] / 8.0f;
+                        }
+                        value[0] += infer_results[idx].second[0] / 8.0f;
+                        value[1] += infer_results[idx].second[1] / 8.0f;
+                        value[2] += infer_results[idx].second[2] / 8.0f;
+                    }
+                } else {
+                    const size_t idx = static_cast<size_t>(pending[i].infer_offset);
+                    logits = std::move(infer_results[idx].first);
+                    value = infer_results[idx].second;
+                    if (pending[i].transform_k != 0 || pending[i].transform_flip) {
+                        logits = undo_transform_flat(logits, game_.board_size, pending[i].transform_k, pending[i].transform_flip);
+                    }
                 }
 
                 const auto legal = game_.get_is_legal_actions(pending[i].leaf->state, pending[i].leaf->to_play);
                 for (size_t j = 0; j < logits.size(); ++j) {
-                    if (!legal[j]) {
+                    if (j >= legal.size() || !legal[j]) {
                         logits[j] = -std::numeric_limits<float>::infinity();
                     }
                 }
@@ -326,9 +362,58 @@ private:
     std::pair<std::vector<float>, std::array<float, 3>> inference(
         const std::vector<int8_t>& state,
         int to_play,
-        bool use_stochastic_transform
+        bool use_stochastic_transform,
+        bool use_symmetry_transform
     ) {
         auto encoded = game_.encode_state(state, to_play);
+        const int area = game_.board_size * game_.board_size;
+
+        if (!use_stochastic_transform && use_symmetry_transform) {
+            std::vector<std::vector<int8_t>> encoded_batch;
+            encoded_batch.reserve(8);
+            for (int fi = 0; fi < 2; ++fi) {
+                const bool do_flip = (fi == 1);
+                for (int k = 0; k < 4; ++k) {
+                    encoded_batch.push_back(transform_encoded_state(encoded, game_.num_planes, game_.board_size, k, do_flip));
+                }
+            }
+
+            std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
+            if (batch_infer_fn_) {
+                infer_results = batch_infer_fn_(encoded_batch);
+            } else {
+                infer_results.reserve(encoded_batch.size());
+                for (const auto& e : encoded_batch) {
+                    infer_results.push_back(infer_fn_(e));
+                }
+            }
+            if (infer_results.size() != 8) {
+                throw std::runtime_error("symmetry inference returned unexpected batch size");
+            }
+
+            std::vector<float> logits(static_cast<size_t>(area), 0.0f);
+            std::array<float, 3> value{0.0f, 0.0f, 0.0f};
+            for (int i = 0; i < 8; ++i) {
+                const int k = i % 4;
+                const bool do_flip = i >= 4;
+                auto restored = undo_transform_flat(infer_results[static_cast<size_t>(i)].first, game_.board_size, k, do_flip);
+                for (int j = 0; j < area; ++j) {
+                    logits[static_cast<size_t>(j)] += restored[static_cast<size_t>(j)] / 8.0f;
+                }
+                value[0] += infer_results[static_cast<size_t>(i)].second[0] / 8.0f;
+                value[1] += infer_results[static_cast<size_t>(i)].second[1] / 8.0f;
+                value[2] += infer_results[static_cast<size_t>(i)].second[2] / 8.0f;
+            }
+
+            const auto legal = game_.get_is_legal_actions(state, to_play);
+            for (size_t i = 0; i < logits.size(); ++i) {
+                if (i >= legal.size() || !legal[i]) {
+                    logits[i] = -std::numeric_limits<float>::infinity();
+                }
+            }
+
+            return {softmax(logits), value};
+        }
 
         int k = 0;
         bool do_flip = false;
@@ -348,7 +433,7 @@ private:
 
         const auto legal = game_.get_is_legal_actions(state, to_play);
         for (size_t i = 0; i < logits.size(); ++i) {
-            if (!legal[i]) {
+            if (i >= legal.size() || !legal[i]) {
                 logits[i] = -std::numeric_limits<float>::infinity();
             }
         }
@@ -357,7 +442,12 @@ private:
     }
 
     std::array<float, 3> expand(MCTSNode& node) {
-        const auto pair = inference(node.state, node.to_play, cfg_.enable_stochastic_transform_inference_for_child);
+        const auto pair = inference(
+            node.state,
+            node.to_play,
+            cfg_.enable_stochastic_transform_inference_for_child,
+            cfg_.enable_symmetry_inference_for_child
+        );
         node.nn_policy = pair.first;
         node.nn_value_probs = pair.second;
         node.children.clear();
@@ -377,7 +467,12 @@ private:
     }
 
     std::pair<std::vector<float>, std::array<float, 3>> root_expand(MCTSNode& node, bool enable_dirichlet) {
-        auto pair = inference(node.state, node.to_play, cfg_.enable_stochastic_transform_inference_for_root);
+        auto pair = inference(
+            node.state,
+            node.to_play,
+            cfg_.enable_stochastic_transform_inference_for_root,
+            cfg_.enable_symmetry_inference_for_root
+        );
         node.nn_policy = pair.first;
         node.nn_value_probs = pair.second;
 
@@ -826,6 +921,7 @@ public:
         auto last_save_time = std::chrono::steady_clock::now();
         if (session_start_time_.time_since_epoch().count() == 0) {
             session_start_time_ = std::chrono::steady_clock::now();
+            initial_total_samples_ = total_samples_;
         }
 
         start_inference_server();
@@ -1471,7 +1567,7 @@ private:
         const auto elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(
             std::chrono::steady_clock::now() - session_start_time_
         ).count();
-        const double sps = (elapsed > 0.0) ? (static_cast<double>(total_samples_) / elapsed) : 0.0;
+        const double sps = (elapsed > 0.0) ? (static_cast<double>(total_samples_ - initial_total_samples_) / elapsed) : 0.0;
 
         std::cout << "Game: " << game_count_
                   << " | Sps: " << std::fixed << std::setprecision(1) << sps
@@ -1635,6 +1731,7 @@ private:
     std::mt19937 rng_;
     int game_count_ = 0;
     int64_t total_samples_ = 0;
+    int64_t initial_total_samples_ = 0;
     int last_stats_game_count_ = -1;
     std::chrono::steady_clock::time_point session_start_time_{};
     std::vector<float> total_loss_history_;

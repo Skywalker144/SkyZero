@@ -68,6 +68,8 @@ struct AlphaZeroConfig {
 
     bool enable_stochastic_transform_inference_for_root = true;
     bool enable_stochastic_transform_inference_for_child = true;
+    bool enable_symmetry_inference_for_root = false;
+    bool enable_symmetry_inference_for_child = false;
 
     float policy_surprise_data_weight = 0.5f;
     float value_surprise_data_weight = 0.1f;
@@ -183,7 +185,8 @@ public:
                 auto pair = inference(
                     node->state,
                     node->to_play,
-                    cfg_.enable_stochastic_transform_inference_for_child
+                    cfg_.enable_stochastic_transform_inference_for_child,
+                    cfg_.enable_symmetry_inference_for_child
                 );
                 expand(*node, pair.first);
                 node->nn_policy = pair.first;
@@ -220,15 +223,107 @@ public:
     }
 
 private:
+    static std::vector<float> undo_transform_flat(
+        const std::vector<float>& transformed,
+        int board_size,
+        int k,
+        bool do_flip
+    ) {
+        std::vector<float> out(transformed.size(), 0.0f);
+        for (int r = 0; r < board_size; ++r) {
+            for (int c = 0; c < board_size; ++c) {
+                int rr = r;
+                int cc = c;
+                for (int t = 0; t < k; ++t) {
+                    const int nr = board_size - 1 - cc;
+                    const int nc = rr;
+                    rr = nr;
+                    cc = nc;
+                }
+                if (do_flip) {
+                    cc = board_size - 1 - cc;
+                }
+                out[r * board_size + c] = transformed[rr * board_size + cc];
+            }
+        }
+        return out;
+    }
+
     std::pair<std::vector<float>, std::array<float, 3>> inference(
         const std::vector<int8_t>& state,
         int to_play,
-        bool use_stochastic_transform
+        bool use_stochastic_transform,
+        bool use_symmetry_transform
     ) {
         auto encoded = game_.encode_state(state, to_play);
         const int c = game_.num_planes;
         const int h = game_.board_size;
         const int w = game_.board_size;
+        const int area = h * w;
+
+        if (!use_stochastic_transform && use_symmetry_transform) {
+            std::vector<int8_t> sym_encoded;
+            sym_encoded.reserve(encoded.size() * 8);
+            for (int fi = 0; fi < 2; ++fi) {
+                const bool do_flip = (fi == 1);
+                for (int k = 0; k < 4; ++k) {
+                    auto aug = transform_encoded_state(encoded, c, h, k, do_flip);
+                    sym_encoded.insert(sym_encoded.end(), aug.begin(), aug.end());
+                }
+            }
+
+            auto in_tensor = torch::from_blob(sym_encoded.data(), {8, c, h, w}, torch::kInt8)
+                                 .to(torch::kFloat32)
+                                 .clone()
+                                 .to(cfg_.device);
+
+            torch::NoGradGuard no_grad;
+            const auto nn_out = model_->forward(in_tensor);
+
+            auto policy_cpu = nn_out.policy_logits.reshape({8, area}).to(torch::kCPU).contiguous();
+            const float* pp = policy_cpu.template data_ptr<float>();
+
+            std::vector<float> avg_logits(static_cast<size_t>(area), 0.0f);
+            for (int i = 0; i < 8; ++i) {
+                std::vector<float> logits_i(static_cast<size_t>(area), 0.0f);
+                std::memcpy(
+                    logits_i.data(),
+                    pp + static_cast<size_t>(i) * static_cast<size_t>(area),
+                    static_cast<size_t>(area) * sizeof(float)
+                );
+                const int k = i % 4;
+                const bool do_flip = i >= 4;
+                const auto untransformed = undo_transform_flat(logits_i, h, k, do_flip);
+                for (int j = 0; j < area; ++j) {
+                    avg_logits[static_cast<size_t>(j)] += untransformed[static_cast<size_t>(j)] / 8.0f;
+                }
+            }
+
+            const auto legal = game_.get_is_legal_actions(state, to_play);
+            const float neg_inf = -1e30f;
+            for (size_t i = 0; i < avg_logits.size(); ++i) {
+                if (i >= legal.size() || legal[i] == 0) {
+                    avg_logits[i] = neg_inf;
+                }
+            }
+
+            auto policy = softmax(avg_logits);
+
+            auto value_probs = torch::softmax(nn_out.value_logits, 1).to(torch::kCPU).contiguous();
+            std::array<float, 3> value{0.0f, 0.0f, 0.0f};
+            if (value_probs.numel() >= 24) {
+                const float* vp = value_probs.template data_ptr<float>();
+                for (int i = 0; i < 8; ++i) {
+                    const size_t base = static_cast<size_t>(i) * 3;
+                    value[0] += vp[base] / 8.0f;
+                    value[1] += vp[base + 1] / 8.0f;
+                    value[2] += vp[base + 2] / 8.0f;
+                }
+            } else {
+                value = {0.0f, 1.0f, 0.0f};
+            }
+            return {policy, value};
+        }
 
         auto in_tensor = torch::from_blob(encoded.data(), {1, c, h, w}, torch::kInt8)
                              .to(torch::kFloat32)
@@ -286,7 +381,8 @@ private:
         auto pair = inference(
             root.state,
             root.to_play,
-            cfg_.enable_stochastic_transform_inference_for_root
+            cfg_.enable_stochastic_transform_inference_for_root,
+            cfg_.enable_symmetry_inference_for_root
         );
         root.nn_policy = pair.first;
         root.nn_value_probs = pair.second;
