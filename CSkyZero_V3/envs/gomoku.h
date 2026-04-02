@@ -139,7 +139,11 @@ public:
         std::vector<uint8_t> legal(state.size(), 0);
         const bool empty = std::all_of(state.begin(), state.end(), [](int8_t v) { return v == 0; });
         if (empty) {
-            legal.assign(state.size(), 1);
+            // legal.assign(state.size(), 1);
+            int center_r = board_size / 2;
+            int center_c = board_size / 2;
+            int center_loc = center_r * board_size + center_c;
+            legal[center_loc] = 1;
             return legal;
         }
 
