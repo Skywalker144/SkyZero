@@ -5,8 +5,11 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace skyzero {
@@ -242,6 +245,232 @@ public:
         ptr_ = kept_size % max_buffer_size_;
         total_samples_added_ = std::max(kept_size, st.total_samples_added);
         games_count_ = st.games_count;
+    }
+
+    // ── Streaming binary I/O (avoids full-buffer copy) ──────────────
+
+    static constexpr uint32_t kRBFileMagic   = 0x534B5242;  // "SKRB"
+    static constexpr uint32_t kRBFileVersion  = 1;
+    static constexpr int      kSaveChunkSize  = 50000;
+
+    // Header layout (fixed 48 bytes)
+    struct alignas(4) RBFileHeader {
+        uint32_t magic;
+        uint32_t version;
+        int32_t  board_size;
+        int32_t  action_size;
+        int32_t  min_buffer_size;
+        int32_t  linear_threshold;
+        float    alpha;
+        int32_t  max_buffer_size;
+        int32_t  ptr;
+        int32_t  size;
+        int32_t  total_samples_added;
+        int32_t  games_count;
+    };
+    static_assert(sizeof(RBFileHeader) == 48, "RBFileHeader must be 48 bytes");
+
+    bool save_to_file(const std::string& path) const {
+        std::ofstream out(path, std::ios::binary);
+        if (!out) {
+            throw std::runtime_error("ReplayBuffer::save_to_file: cannot open " + path);
+        }
+
+        // ── Write header ──
+        RBFileHeader hdr{};
+        hdr.magic              = kRBFileMagic;
+        hdr.version            = kRBFileVersion;
+        hdr.board_size         = board_size_;
+        hdr.action_size        = action_size_;
+        hdr.min_buffer_size    = min_buffer_size_;
+        hdr.linear_threshold   = linear_threshold_;
+        hdr.alpha              = alpha_;
+        hdr.max_buffer_size    = max_buffer_size_;
+        hdr.ptr                = ptr_;
+        hdr.size               = size_;
+        hdr.total_samples_added = total_samples_added_;
+        hdr.games_count        = games_count_;
+        out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+
+        if (size_ == 0) {
+            return out.good();
+        }
+
+        const int board_cells  = board_size_ * board_size_;
+        const int action_cells = action_size_;
+        const int oldest = (ptr_ - size_ + max_buffer_size_) % max_buffer_size_;
+
+        // Helper: iterate the circular buffer in chunks and write one field
+        // per sample via a caller-provided lambda that copies bytes into buf.
+        auto write_field_chunked = [&](int bytes_per_sample, auto copy_fn) {
+            const int chunk = kSaveChunkSize;
+            std::vector<char> buf(static_cast<size_t>(chunk) * bytes_per_sample);
+            for (int start = 0; start < size_; start += chunk) {
+                const int count = std::min(chunk, size_ - start);
+                for (int i = 0; i < count; ++i) {
+                    const int idx = (oldest + start + i) % max_buffer_size_;
+                    copy_fn(buf.data() + static_cast<size_t>(i) * bytes_per_sample, data_[idx]);
+                }
+                out.write(buf.data(), static_cast<std::streamsize>(count) * bytes_per_sample);
+            }
+        };
+
+        // 1) states  (int8 × board_cells per sample)
+        write_field_chunked(board_cells, [&](char* dst, const TrainSample& s) {
+            std::memcpy(dst, s.state.data(), board_cells);
+        });
+
+        // 2) to_play (int8 × 1)
+        write_field_chunked(1, [](char* dst, const TrainSample& s) {
+            *reinterpret_cast<int8_t*>(dst) = s.to_play;
+        });
+
+        // 3) policy_targets (float × action_cells)
+        const int policy_bytes = action_cells * static_cast<int>(sizeof(float));
+        write_field_chunked(policy_bytes, [&](char* dst, const TrainSample& s) {
+            std::memcpy(dst, s.policy_target.data(), policy_bytes);
+        });
+
+        // 4) opponent_policy_targets (float × action_cells)
+        write_field_chunked(policy_bytes, [&](char* dst, const TrainSample& s) {
+            std::memcpy(dst, s.opponent_policy_target.data(), policy_bytes);
+        });
+
+        // 5) value_targets (float × 3)
+        constexpr int value_bytes = 3 * static_cast<int>(sizeof(float));
+        write_field_chunked(value_bytes, [](char* dst, const TrainSample& s) {
+            std::memcpy(dst, s.value_target.data(), value_bytes);
+        });
+
+        // 6) sample_weights (float × 1)
+        write_field_chunked(static_cast<int>(sizeof(float)), [](char* dst, const TrainSample& s) {
+            std::memcpy(dst, &s.sample_weight, sizeof(float));
+        });
+
+        // 7) is_full_search (uint8 × 1)
+        write_field_chunked(1, [](char* dst, const TrainSample& s) {
+            *reinterpret_cast<uint8_t*>(dst) = s.is_full_search;
+        });
+
+        if (!out.good()) {
+            throw std::runtime_error("ReplayBuffer::save_to_file: write error on " + path);
+        }
+        return true;
+    }
+
+    bool load_from_file(const std::string& path) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            throw std::runtime_error("ReplayBuffer::load_from_file: cannot open " + path);
+        }
+
+        // ── Read & validate header ──
+        RBFileHeader hdr{};
+        in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+        if (!in || hdr.magic != kRBFileMagic) {
+            throw std::runtime_error("ReplayBuffer::load_from_file: invalid magic");
+        }
+        if (hdr.version != kRBFileVersion) {
+            throw std::runtime_error("ReplayBuffer::load_from_file: unsupported version");
+        }
+        if (hdr.board_size <= 0 || hdr.action_size <= 0 || hdr.max_buffer_size <= 0 || hdr.size < 0) {
+            throw std::runtime_error("ReplayBuffer::load_from_file: invalid header values");
+        }
+
+        board_size_          = hdr.board_size;
+        action_size_         = hdr.action_size;
+        min_buffer_size_     = hdr.min_buffer_size;
+        linear_threshold_    = hdr.linear_threshold;
+        alpha_               = hdr.alpha;
+        max_buffer_size_     = hdr.max_buffer_size;
+        total_samples_added_ = hdr.total_samples_added;
+        games_count_         = hdr.games_count;
+
+        const int file_size  = hdr.size;
+        const int kept_size  = std::min(file_size, max_buffer_size_);
+        const int skip_count = file_size - kept_size;
+
+        const int board_cells  = board_size_ * board_size_;
+        const int action_cells = action_size_;
+
+        data_.assign(max_buffer_size_, TrainSample{});
+
+        // Pre-allocate vectors in each kept sample
+        for (int i = 0; i < kept_size; ++i) {
+            data_[i].state.resize(board_cells);
+            data_[i].policy_target.resize(action_cells);
+            data_[i].opponent_policy_target.resize(action_cells);
+        }
+
+        // Helper: read one field for all samples, skipping the first skip_count
+        auto read_field_chunked = [&](int bytes_per_sample, auto load_fn) {
+            const int chunk = kSaveChunkSize;
+            std::vector<char> buf(static_cast<size_t>(chunk) * bytes_per_sample);
+
+            // Skip samples that won't fit
+            int remaining_skip = skip_count;
+            while (remaining_skip > 0) {
+                const int n = std::min(chunk, remaining_skip);
+                in.read(buf.data(), static_cast<std::streamsize>(n) * bytes_per_sample);
+                remaining_skip -= n;
+            }
+
+            // Read kept samples
+            for (int start = 0; start < kept_size; start += chunk) {
+                const int count = std::min(chunk, kept_size - start);
+                in.read(buf.data(), static_cast<std::streamsize>(count) * bytes_per_sample);
+                for (int i = 0; i < count; ++i) {
+                    load_fn(buf.data() + static_cast<size_t>(i) * bytes_per_sample, data_[start + i]);
+                }
+            }
+        };
+
+        // 1) states
+        read_field_chunked(board_cells, [&](const char* src, TrainSample& s) {
+            std::memcpy(s.state.data(), src, board_cells);
+        });
+
+        // 2) to_play
+        read_field_chunked(1, [](const char* src, TrainSample& s) {
+            s.to_play = *reinterpret_cast<const int8_t*>(src);
+        });
+
+        // 3) policy_targets
+        const int policy_bytes = action_cells * static_cast<int>(sizeof(float));
+        read_field_chunked(policy_bytes, [&](const char* src, TrainSample& s) {
+            std::memcpy(s.policy_target.data(), src, policy_bytes);
+        });
+
+        // 4) opponent_policy_targets
+        read_field_chunked(policy_bytes, [&](const char* src, TrainSample& s) {
+            std::memcpy(s.opponent_policy_target.data(), src, policy_bytes);
+        });
+
+        // 5) value_targets
+        constexpr int value_bytes = 3 * static_cast<int>(sizeof(float));
+        read_field_chunked(value_bytes, [](const char* src, TrainSample& s) {
+            std::memcpy(s.value_target.data(), src, value_bytes);
+        });
+
+        // 6) sample_weights
+        read_field_chunked(static_cast<int>(sizeof(float)), [](const char* src, TrainSample& s) {
+            std::memcpy(&s.sample_weight, src, sizeof(float));
+        });
+
+        // 7) is_full_search
+        read_field_chunked(1, [](const char* src, TrainSample& s) {
+            s.is_full_search = *reinterpret_cast<const uint8_t*>(src);
+        });
+
+        size_ = kept_size;
+        ptr_  = kept_size % max_buffer_size_;
+        total_samples_added_ = std::max(kept_size, hdr.total_samples_added);
+        games_count_         = hdr.games_count;
+
+        if (!in) {
+            throw std::runtime_error("ReplayBuffer::load_from_file: read error on " + path);
+        }
+        return true;
     }
 
 private:
