@@ -796,36 +796,20 @@ public:
         checkpoint_archive.write("black_win_counts", ints_to_1d_tensor(black_win_counts_));
         checkpoint_archive.write("white_win_counts", ints_to_1d_tensor(white_win_counts_));
 
-        const auto rb = replay_buffer_.get_state();
-        torch::serialize::OutputArchive rb_archive;
-        rb_archive.write("board_size", torch::tensor({static_cast<int64_t>(rb.board_size)}));
-        rb_archive.write("action_size", torch::tensor({static_cast<int64_t>(rb.action_size)}));
-        rb_archive.write("min_buffer_size", torch::tensor({static_cast<int64_t>(rb.min_buffer_size)}));
-        rb_archive.write("linear_threshold", torch::tensor({static_cast<int64_t>(rb.linear_threshold)}));
-        rb_archive.write("alpha", torch::tensor({rb.alpha}));
-        rb_archive.write("max_buffer_size", torch::tensor({static_cast<int64_t>(rb.max_buffer_size)}));
-        rb_archive.write("ptr", torch::tensor({static_cast<int64_t>(rb.ptr)}));
-        rb_archive.write("size", torch::tensor({static_cast<int64_t>(rb.size)}));
-        rb_archive.write("total_samples_added", torch::tensor({static_cast<int64_t>(rb.total_samples_added)}));
-        rb_archive.write("games_count", torch::tensor({static_cast<int64_t>(rb.games_count)}));
-
-        const int64_t rows = static_cast<int64_t>(rb.size);
-        const int64_t board_cells = static_cast<int64_t>(rb.board_size) * static_cast<int64_t>(rb.board_size);
-        const int64_t action_cells = static_cast<int64_t>(rb.action_size);
-        rb_archive.write("states", vec_to_2d_tensor(rb.states, rows, board_cells, torch::kInt8));
-        rb_archive.write("to_play", vec_to_1d_tensor(rb.to_play, torch::kInt8));
-        rb_archive.write("policy_targets", vec_to_2d_tensor(rb.policy_targets, rows, action_cells, torch::kFloat32));
-        rb_archive.write("opponent_policy_targets", vec_to_2d_tensor(rb.opponent_policy_targets, rows, action_cells, torch::kFloat32));
-        rb_archive.write("value_targets", vec_to_2d_tensor(rb.value_targets, rows, 3, torch::kFloat32));
-        rb_archive.write("sample_weights", vec_to_1d_tensor(rb.sample_weights, torch::kFloat32));
-        checkpoint_archive.write("replay_buffer", rb_archive);
+        // Save replay buffer to a separate binary file (streaming, no full-buffer copy)
+        const fs::path rb_path = fs::path(checkpoint_path).replace_extension(".rb");
+        replay_buffer_.save_to_file(rb_path.string());
+        // Store a marker in the archive so load_checkpoint can detect the new format
+        checkpoint_archive.write("replay_buffer_file", torch::tensor({1}));
 
         checkpoint_archive.save_to(checkpoint_path.string());
 
         const auto model_bytes = fs::file_size(model_path);
         const auto ckpt_bytes = fs::file_size(checkpoint_path);
+        const auto rb_bytes = fs::file_size(rb_path);
         std::cout << "Model saved to " << model_path.string() << " (" << human_size(model_bytes) << ")\n";
         std::cout << "Checkpoint saved to " << checkpoint_path.string() << " (" << human_size(ckpt_bytes) << ")\n";
+        std::cout << "Replay buffer saved to " << rb_path.string() << " (" << human_size(rb_bytes) << ")\n";
         return true;
     }
 
@@ -910,29 +894,41 @@ public:
             black_win_counts_ = tensor_to_ints(must_read_tensor(checkpoint_archive, "black_win_counts"));
             white_win_counts_ = tensor_to_ints(must_read_tensor(checkpoint_archive, "white_win_counts"));
 
-            torch::serialize::InputArchive rb_archive;
-            checkpoint_archive.read("replay_buffer", rb_archive);
+            // Load replay buffer: new streaming format (.rb file) or legacy archive format
+            torch::Tensor rb_marker;
+            const bool has_rb_file = checkpoint_archive.try_read("replay_buffer_file", rb_marker);
+            if (has_rb_file) {
+                // New format: load from separate binary file
+                const fs::path rb_path = fs::path(checkpoint_path).replace_extension(".rb");
+                replay_buffer_.load_from_file(rb_path.string());
+                std::cout << "Replay buffer loaded from " << rb_path.string() << "\n";
+            } else {
+                // Legacy format: load from embedded archive
+                torch::serialize::InputArchive rb_archive;
+                checkpoint_archive.read("replay_buffer", rb_archive);
 
-            ReplayBufferState rb;
-            rb.board_size = static_cast<int>(must_read_tensor(rb_archive, "board_size").template item<int64_t>());
-            rb.action_size = static_cast<int>(must_read_tensor(rb_archive, "action_size").template item<int64_t>());
-            rb.min_buffer_size = static_cast<int>(must_read_tensor(rb_archive, "min_buffer_size").template item<int64_t>());
-            rb.linear_threshold = static_cast<int>(must_read_tensor(rb_archive, "linear_threshold").template item<int64_t>());
-            rb.alpha = must_read_tensor(rb_archive, "alpha").template item<float>();
-            rb.max_buffer_size = static_cast<int>(must_read_tensor(rb_archive, "max_buffer_size").template item<int64_t>());
-            rb.ptr = static_cast<int>(must_read_tensor(rb_archive, "ptr").template item<int64_t>());
-            rb.size = static_cast<int>(must_read_tensor(rb_archive, "size").template item<int64_t>());
-            rb.total_samples_added = static_cast<int>(must_read_tensor(rb_archive, "total_samples_added").template item<int64_t>());
-            rb.games_count = static_cast<int>(must_read_tensor(rb_archive, "games_count").template item<int64_t>());
+                ReplayBufferState rb;
+                rb.board_size = static_cast<int>(must_read_tensor(rb_archive, "board_size").template item<int64_t>());
+                rb.action_size = static_cast<int>(must_read_tensor(rb_archive, "action_size").template item<int64_t>());
+                rb.min_buffer_size = static_cast<int>(must_read_tensor(rb_archive, "min_buffer_size").template item<int64_t>());
+                rb.linear_threshold = static_cast<int>(must_read_tensor(rb_archive, "linear_threshold").template item<int64_t>());
+                rb.alpha = must_read_tensor(rb_archive, "alpha").template item<float>();
+                rb.max_buffer_size = static_cast<int>(must_read_tensor(rb_archive, "max_buffer_size").template item<int64_t>());
+                rb.ptr = static_cast<int>(must_read_tensor(rb_archive, "ptr").template item<int64_t>());
+                rb.size = static_cast<int>(must_read_tensor(rb_archive, "size").template item<int64_t>());
+                rb.total_samples_added = static_cast<int>(must_read_tensor(rb_archive, "total_samples_added").template item<int64_t>());
+                rb.games_count = static_cast<int>(must_read_tensor(rb_archive, "games_count").template item<int64_t>());
 
-            rb.states = tensor_to_vec<int8_t>(must_read_tensor(rb_archive, "states"));
-            rb.to_play = tensor_to_vec<int8_t>(must_read_tensor(rb_archive, "to_play"));
-            rb.policy_targets = tensor_to_vec<float>(must_read_tensor(rb_archive, "policy_targets"));
-            rb.opponent_policy_targets = tensor_to_vec<float>(must_read_tensor(rb_archive, "opponent_policy_targets"));
-            rb.value_targets = tensor_to_vec<float>(must_read_tensor(rb_archive, "value_targets"));
-            rb.sample_weights = tensor_to_vec<float>(must_read_tensor(rb_archive, "sample_weights"));
+                rb.states = tensor_to_vec<int8_t>(must_read_tensor(rb_archive, "states"));
+                rb.to_play = tensor_to_vec<int8_t>(must_read_tensor(rb_archive, "to_play"));
+                rb.policy_targets = tensor_to_vec<float>(must_read_tensor(rb_archive, "policy_targets"));
+                rb.opponent_policy_targets = tensor_to_vec<float>(must_read_tensor(rb_archive, "opponent_policy_targets"));
+                rb.value_targets = tensor_to_vec<float>(must_read_tensor(rb_archive, "value_targets"));
+                rb.sample_weights = tensor_to_vec<float>(must_read_tensor(rb_archive, "sample_weights"));
 
-            replay_buffer_.load_state(rb);
+                replay_buffer_.load_state(rb);
+                std::cout << "Replay buffer loaded from legacy archive format\n";
+            }
 
             // Override LR from current config
             for (auto& pg : optimizer_.param_groups()) {
