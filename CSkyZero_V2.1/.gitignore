@@ -32,3 +32,6 @@ Makefile
 
 *.cc
 *.cu
+
+gomoku_train
+gomoku_play
