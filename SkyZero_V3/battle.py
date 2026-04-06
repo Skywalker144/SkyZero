@@ -45,8 +45,7 @@ def play_battle(game, model_a, model_b, args, a_starts=True):
     Plays a single game between model_a and model_b.
     Returns: 1 if model_a wins, -1 if model_b wins, 0 if draw.
     """
-    state = game.get_initial_state()
-    to_play = 1  # Black/First player
+    state, to_play = game.get_initial_state()
     last_action = None
     last_player = None
     

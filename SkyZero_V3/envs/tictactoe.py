@@ -9,7 +9,7 @@ class TicTacToe:
         self.num_planes = 3
 
     def get_initial_state(self):
-        return np.zeros((1, self.board_size, self.board_size))
+        return np.zeros((1, self.board_size, self.board_size)), 1
 
     @staticmethod
     def get_is_legal_actions(state, to_play):

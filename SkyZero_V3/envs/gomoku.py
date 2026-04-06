@@ -1,14 +1,16 @@
 import numpy as np
-import math
-from scipy import ndimage
+import os
 
-def get_expanded_region(state, half_size=2):
-    current_board = state[-1]
-    binary_board = current_board != 0
-    side = 2 * half_size + 1
-    mask = np.ones((side, side), dtype=bool)
-    expanded = ndimage.binary_dilation(binary_board, structure=mask)
-    return expanded
+
+def is_near_occupied(board, r, c, dist, board_size):
+    """Check if any stone exists within a (2*dist+1) x (2*dist+1) square centered at (r, c)."""
+    for dr in range(-dist, dist + 1):
+        for dc in range(-dist, dist + 1):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < board_size and 0 <= nc < board_size:
+                if board[nr, nc] != 0:
+                    return True
+    return False
 
 
 C_EMPTY = 0
@@ -445,34 +447,129 @@ class Gomoku:
         self.use_renju = use_renju
         self.enable_forbidden_point_plane = enable_forbidden_point_plane
         self._fpf = ForbiddenPointFinder(board_size)
+        self.openings_ = []
+        self.opening_weights_ = []
+        self.empty_board_prob_ = 1.0
+
+    def load_openings(self, path, empty_board_prob=0.0):
+        """Load opening book from file matching C++ load_openings logic."""
+        self.empty_board_prob_ = empty_board_prob
+        if not os.path.isfile(path):
+            print(f"Warning: Could not open opening file: {path}. Using empty board only.")
+            self.empty_board_prob_ = 1.0
+            return
+
+        with open(path, 'r') as f:
+            lines = f.readlines()
+
+        # Parse triplets: (weight_str, black_str, white_str)
+        raw_list = []
+        i = 0
+        while i + 2 < len(lines):
+            weight_str = lines[i].strip()
+            black_str = lines[i + 1].strip()
+            white_str = lines[i + 2].strip()
+            raw_list.append((weight_str, black_str, white_str))
+            i += 3
+
+        # Calculate implicit weights
+        sum_explicit = 0.0
+        num_implicit = 0
+        for weight_str, _, _ in raw_list:
+            if weight_str == '':
+                num_implicit += 1
+            else:
+                try:
+                    sum_explicit += float(weight_str)
+                except ValueError:
+                    num_implicit += 1
+
+        implicit_weight = 0.0
+        if num_implicit > 0:
+            implicit_weight = max(0.0, (1.0 - sum_explicit) / num_implicit)
+
+        center = self.board_size // 2
+        for weight_str, black_str, white_str in raw_list:
+            board = np.zeros((1, self.board_size, self.board_size), dtype=np.int8)
+            stones = 0
+
+            # Place black stones
+            if black_str:
+                for coord in black_str.split():
+                    if ',' in coord:
+                        dx, dy = coord.split(',')
+                        r = center + int(dx)
+                        c = center + int(dy)
+                        if 0 <= r < self.board_size and 0 <= c < self.board_size:
+                            board[0, r, c] = 1
+                            stones += 1
+
+            # Place white stones
+            if white_str:
+                for coord in white_str.split():
+                    if ',' in coord:
+                        dx, dy = coord.split(',')
+                        r = center + int(dx)
+                        c = center + int(dy)
+                        if 0 <= r < self.board_size and 0 <= c < self.board_size:
+                            board[0, r, c] = -1
+                            stones += 1
+
+            to_play = 1 if stones % 2 == 0 else -1
+            self.openings_.append((board, to_play))
+
+            # Parse weight
+            w = 0.0
+            if weight_str == '':
+                w = implicit_weight
+            else:
+                try:
+                    w = float(weight_str)
+                except ValueError:
+                    w = implicit_weight
+            self.opening_weights_.append(w)
+
+        if len(self.openings_) == 0:
+            self.empty_board_prob_ = 1.0
 
     def get_initial_state(self):
-        return np.zeros((1, self.board_size, self.board_size), dtype=np.int8)
+        """Return (state, to_play) tuple. May randomly select from opening book."""
+        empty_state = np.zeros((1, self.board_size, self.board_size), dtype=np.int8)
+        if len(self.openings_) == 0:
+            return empty_state, 1
+
+        if np.random.rand() < self.empty_board_prob_:
+            return empty_state, 1
+
+        # Weighted random selection
+        weights = np.array(self.opening_weights_, dtype=np.float64)
+        weights /= weights.sum()
+        idx = np.random.choice(len(self.openings_), p=weights)
+        board, to_play = self.openings_[idx]
+        return board.copy(), to_play
 
     def get_is_legal_actions(self, state, to_play):
         current_board = state[-1]
-        legal_mask = (current_board.flatten() == 0)
+        size = self.board_size
+        legal_mask = np.zeros(size * size, dtype=bool)
 
-        # Heuristic legal action limitation
-        if np.sum(current_board == 1) == 0:
-            self.center_loc = (self.board_size // 2) * self.board_size + (self.board_size // 2)
-            legal_mask[:] = False
-            legal_mask[self.center_loc] = True
-        else:
-            legal_mask = legal_mask & get_expanded_region(state, half_size=2).flatten()
+        # Empty board: only center is legal
+        if np.all(current_board == 0):
+            center_loc = (size // 2) * size + (size // 2)
+            legal_mask[center_loc] = True
+            return legal_mask
 
-        # Filter out forbidden points for Black under Renju rules
-        if self.use_renju and to_play == 1:
-            self._fpf.Clear()
-            rows, cols = np.where(current_board != 0)
-            for r, c in zip(rows, cols):
-                stone = C_BLACK if current_board[r, c] == 1 else C_WHITE
-                self._fpf.SetStone(r, c, stone)
-            for i in range(self.board_size * self.board_size):
-                if legal_mask[i]:
-                    r, c = i // self.board_size, i % self.board_size
-                    if self._fpf.isForbidden(r, c):
-                        legal_mask[i] = False
+        # Non-empty: empty positions within distance 3 of any occupied stone
+        for r in range(size):
+            for c in range(size):
+                loc = r * size + c
+                if current_board[r, c] != 0:
+                    continue
+                if is_near_occupied(current_board, r, c, 3, size):
+                    legal_mask[loc] = True
+
+        # Forbidden points are legal moves for Black, but playing on one
+        # results in an immediate loss (checked in get_winner).
 
         return legal_mask
 
@@ -490,39 +587,46 @@ class Gomoku:
         current_board = state[-1]
         size = self.board_size
 
-        # Check horizontal
+        # Check if Black's last move is on a forbidden point -> White wins
+        if self.use_renju and last_action is not None and last_player == 1:
+            row = last_action // size
+            col = last_action % size
+            fpf = ForbiddenPointFinder(size)
+            for i in range(size * size):
+                r_i = i // size
+                c_i = i % size
+                if i == last_action or current_board[r_i, c_i] == 0:
+                    continue
+                stone = C_BLACK if current_board[r_i, c_i] == 1 else C_WHITE
+                fpf.SetStone(r_i, c_i, stone)
+            if fpf.isForbidden(row, col):
+                return -1
+
+        # Scan all positions, check lines in 4 directions
+        dirs = [(1, 0), (0, 1), (1, 1), (1, -1)]
         for r in range(size):
-            for c in range(size - 4):
-                window = current_board[r, c:c + 5]
-                s = np.sum(window)
-                if s == 5 or s <= -5:
-                    return 1 if s > 0 else -1
-
-        # Check vertical
-        for r in range(size - 4):
             for c in range(size):
-                window = current_board[r:r + 5, c]
-                s = np.sum(window)
-                if abs(s) == 5:
-                    return 1 if s > 0 else -1
-
-        # Check diagonal \
-        for r in range(size - 4):
-            for c in range(size - 4):
-                s = 0
-                for k in range(5):
-                    s += current_board[r + k, c + k]
-                if abs(s) == 5:
-                    return 1 if s > 0 else -1
-
-        # Check diagonal /
-        for r in range(size - 4):
-            for c in range(4, size):
-                s = 0
-                for k in range(5):
-                    s += current_board[r + k, c - k]
-                if abs(s) == 5:
-                    return 1 if s > 0 else -1
+                stone = current_board[r, c]
+                if stone == 0:
+                    continue
+                for dr, dc in dirs:
+                    # Skip if preceded by the same stone (avoid counting the same line twice)
+                    pr, pc = r - dr, c - dc
+                    if 0 <= pr < size and 0 <= pc < size and current_board[pr, pc] == stone:
+                        continue
+                    # Count contiguous length
+                    length = 1
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < size and 0 <= nc < size and current_board[nr, nc] == stone:
+                        length += 1
+                        nr += dr
+                        nc += dc
+                    # Black wins with exactly 5 (overline is forbidden)
+                    if stone == 1 and length == 5:
+                        return 1
+                    # White wins with 5 or more
+                    if stone == -1 and length >= 5:
+                        return -1
 
         if np.all(current_board != 0):
             return 0
@@ -533,30 +637,29 @@ class Gomoku:
         return self.get_winner(state, last_action, last_player) is not None
 
     def encode_state(self, state, to_play):
+        encoded_state = np.zeros((self.num_planes, self.board_size, self.board_size), dtype=np.int8)
 
-        encoded_state = np.zeros((3 + (1 if self.enable_forbidden_point_plane else 0), self.board_size, self.board_size), dtype=np.int8)
-
+        # Plane 0: current player's stones
+        # Plane 1: opponent's stones
         encoded_state[0] = (state[0] == to_play)
         encoded_state[1] = (state[0] == -to_play)
 
-        if self.enable_forbidden_point_plane:
-            # Always mark Black's forbidden points regardless of to_play,
-            # so both sides can see them: Black learns to avoid, White learns to exploit.
-            if self.use_renju:
-                fpf = ForbiddenPointFinder(self.board_size)
-                current_board = state[-1]
-                rows, cols = np.where(current_board != 0)
-                for r, c in zip(rows, cols):
-                    val = current_board[r, c]
-                    stone = C_BLACK if val == 1 else C_WHITE
-                    fpf.SetStone(r, c, stone)
+        # Plane 2: forbidden points when to_play == 1 (Black)
+        # Plane 3: forbidden points when to_play == -1 (White)
+        # The populated plane implicitly indicates whose turn it is.
+        if self.enable_forbidden_point_plane and self.use_renju:
+            fpf = ForbiddenPointFinder(self.board_size)
+            current_board = state[-1]
+            rows, cols = np.where(current_board != 0)
+            for r, c in zip(rows, cols):
+                stone = C_BLACK if current_board[r, c] == 1 else C_WHITE
+                fpf.SetStone(r, c, stone)
 
-                empty_rows, empty_cols = np.where(current_board == 0)
-                for r, c in zip(empty_rows, empty_cols):
-                    if fpf.isForbidden(r, c):
-                        encoded_state[-2, r, c] = 1
-
-        encoded_state[-1] = (to_play > 0) * np.ones((self.board_size, self.board_size), dtype=np.int8)
+            forbidden_plane = 2 if to_play == 1 else 3
+            empty_rows, empty_cols = np.where(current_board == 0)
+            for r, c in zip(empty_rows, empty_cols):
+                if fpf.isForbidden(r, c):
+                    encoded_state[forbidden_plane, r, c] = 1
 
         return encoded_state
 
@@ -578,25 +681,24 @@ class Gomoku:
         encoded[:, 0] = (boards == tp)
         encoded[:, 1] = (boards == -tp)
 
-        if self.enable_forbidden_point_plane:
-            # Always mark Black's forbidden points regardless of to_play,
-            # so both sides can see them: Black learns to avoid, White learns to exploit.
-            if self.use_renju:
-                fpf = ForbiddenPointFinder(self.board_size)
-                for b in range(B):
-                    board = boards[b]  # (H, W)
-                    fpf.Clear()
-                    rows, cols = np.where(board != 0)
-                    for r, c in zip(rows, cols):
-                        stone = C_BLACK if board[r, c] == 1 else C_WHITE
-                        fpf.SetStone(r, c, stone)
+        # Plane 2: forbidden points when tp == 1 (Black)
+        # Plane 3: forbidden points when tp == -1 (White)
+        if self.enable_forbidden_point_plane and self.use_renju:
+            fpf = ForbiddenPointFinder(self.board_size)
+            for b in range(B):
+                board = boards[b]  # (H, W)
+                fpf.Clear()
+                rows, cols = np.where(board != 0)
+                for r, c in zip(rows, cols):
+                    stone = C_BLACK if board[r, c] == 1 else C_WHITE
+                    fpf.SetStone(r, c, stone)
 
-                    empty_rows, empty_cols = np.where(board == 0)
-                    for r, c in zip(empty_rows, empty_cols):
-                        if fpf.isForbidden(r, c):
-                            encoded[b, -2, r, c] = 1
+                forbidden_plane = 2 if to_plays[b] == 1 else 3
+                empty_rows, empty_cols = np.where(board == 0)
+                for r, c in zip(empty_rows, empty_cols):
+                    if fpf.isForbidden(r, c):
+                        encoded[b, forbidden_plane, r, c] = 1
 
-        encoded[:, -1] = (tp > 0).astype(np.int8) * np.ones((1, H, W), dtype=np.int8)
         return encoded
 
     def get_win_pos(self, final_state):
@@ -659,7 +761,7 @@ if __name__ == "__main__":
                     print(" · ", end="")
             print()
     env = Gomoku(board_size=15, use_renju=True)
-    state = env.get_initial_state()
+    state, to_play = env.get_initial_state()
     state = env.get_next_state(state, action=112, to_play=1)
     print(state.shape)
     print(env.encode_state(state, to_play=-1))

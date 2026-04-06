@@ -52,7 +52,7 @@ class GomokuGUI:
         self.draw_board()
 
     def init_game(self):
-        initial_state = self.game.get_initial_state()
+        initial_state, _ = self.game.get_initial_state()
         self.state_history = [initial_state]
         self.game_over = False
         self.winner = None

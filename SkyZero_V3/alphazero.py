@@ -455,8 +455,7 @@ class AlphaZero:
     @torch.inference_mode()
     def selfplay(self):
         memory = []
-        to_play = 1
-        state = self.game.get_initial_state()
+        state, to_play = self.game.get_initial_state()
 
         in_soft_resign = False
         historical_v_mix = []
