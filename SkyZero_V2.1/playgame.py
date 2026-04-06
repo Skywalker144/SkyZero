@@ -25,9 +25,8 @@ class GamePlayer:
             f"   (first input the vertical coordinate, then the horizontal coordinate).\n"
             f"Please enter:"
         ))
-        to_play = 1
-        color = 1
-        state = self.game.get_initial_state()
+        state, to_play = self.game.get_initial_state()
+        color = to_play
         last_action = None
         last_player = None
         history = []

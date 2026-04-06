@@ -160,8 +160,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
         while True:
             memory = []
-            to_play = 1
-            state = game.get_initial_state()
+            state, to_play = game.get_initial_state()
 
             in_soft_resign = False
             historical_root_value = []
