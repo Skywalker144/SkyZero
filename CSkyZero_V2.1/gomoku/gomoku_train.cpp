@@ -13,8 +13,8 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.lr = 1e-4f;
     cfg.weight_decay = 3e-5f;
 
-    cfg.full_search_num_simulations = 480;
-    cfg.fast_search_num_simulations = 80;
+    cfg.full_search_num_simulations = 1000;
+    cfg.fast_search_num_simulations = 200;
     cfg.full_search_prob = 0.25f;
 
     cfg.root_temperature_init = 1.25f;
@@ -29,7 +29,7 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.min_buffer_size = 2e5;
     cfg.linear_threshold = 2e6;
     cfg.replay_alpha = 0.8f;
-    cfg.max_buffer_size = 5e7;
+    cfg.max_buffer_size = 2e7;
 
     cfg.train_steps_per_generation = 100;
     cfg.target_replay_ratio = 6.0f;
