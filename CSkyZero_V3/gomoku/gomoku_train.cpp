@@ -25,7 +25,7 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.min_buffer_size = 2e5;
     cfg.linear_threshold = 2e6;
     cfg.replay_alpha = 0.8f;
-    cfg.max_buffer_size = 5e7;
+    cfg.max_buffer_size = 2e7;
 
     cfg.train_steps_per_generation = 100;
     cfg.target_replay_ratio = 6.0f;
@@ -40,6 +40,19 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.enable_symmetry_inference_for_root = true;
     cfg.enable_stochastic_transform_inference_for_child = true;
     cfg.enable_symmetry_inference_for_child = false;
+
+    // Dynamic Variance-Scaled cPUCT
+    cfg.cpuct_utility_stdev_prior = 0.40f;
+    cfg.cpuct_utility_stdev_prior_weight = 2.0f;
+    cfg.cpuct_utility_stdev_scale = 0.85f;
+
+    // Subtree Value Bias
+    cfg.enable_subtree_value_bias = true;
+    cfg.subtree_value_bias_factor = 0.35f;
+    cfg.subtree_value_bias_weight_exponent = 0.85f;
+    cfg.subtree_value_bias_free_prop = 0.8f;
+    cfg.subtree_value_bias_table_shards = 4096;
+    cfg.subtree_value_bias_pattern_radius = 2;
 
     cfg.device = torch::cuda::is_available() ? torch::kCUDA : torch::kCPU;
     return cfg;
