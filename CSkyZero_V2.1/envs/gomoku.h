@@ -115,6 +115,10 @@ public:
             opening_weights_.push_back(w);
         }
 
+        if (!openings_.empty()) {
+            std::cout << "Loaded " << openings_.size() << " openings from " << path << "\n";
+        }
+
         if (openings_.empty()) {
             empty_board_prob_ = 1.0f;
         }
