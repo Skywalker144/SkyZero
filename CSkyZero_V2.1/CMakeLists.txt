@@ -12,4 +12,7 @@ target_link_libraries(gomoku_train "${TORCH_LIBRARIES}")
 add_executable(gomoku_play gomoku/gomoku_play.cpp)
 target_link_libraries(gomoku_play "${TORCH_LIBRARIES}")
 
+add_executable(generate_openings gomoku/generate_openings.cpp)
+target_link_libraries(generate_openings "${TORCH_LIBRARIES}")
+
 set_property(TARGET gomoku_train PROPERTY CXX_STANDARD 17)
