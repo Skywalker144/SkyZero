@@ -24,6 +24,7 @@
 #include "nets.h"
 #include "policy_surprise_weighting.h"
 #include "replaybuffer.h"
+#include "subtree_value_bias.h"
 #include "utils.h"
 
 namespace skyzero {
@@ -62,6 +63,19 @@ struct AlphaZeroConfig {
     float fpu_reduction_max = 0.2f;
     float root_fpu_reduction_max = 0.1f;
     float fpu_loss_prop = 0.0f;
+
+    // Dynamic Variance-Scaled cPUCT
+    float cpuct_utility_stdev_prior = 0.40f;
+    float cpuct_utility_stdev_prior_weight = 2.0f;
+    float cpuct_utility_stdev_scale = 0.85f;
+
+    // Subtree Value Bias
+    bool enable_subtree_value_bias = false;
+    float subtree_value_bias_factor = 0.35f;
+    float subtree_value_bias_weight_exponent = 0.85f;
+    float subtree_value_bias_free_prop = 0.8f;
+    int subtree_value_bias_table_shards = 4096;
+    int subtree_value_bias_pattern_radius = 2;
 
     bool enable_forced_playouts = true;
     float forced_playouts_k = 2.0f;
@@ -107,8 +121,14 @@ struct MCTSNode {
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};
 
     std::array<float, 3> v{0.0f, 0.0f, 0.0f};
+    float utility_sq_sum = 0.0f;  // cumulative squared utility (parent perspective)
     int n = 0;
     int vloss = 0;
+
+    // Subtree Value Bias bookkeeping
+    std::shared_ptr<SubtreeValueBiasEntry> svb_entry;
+    float last_svb_delta_sum = 0.0f;
+    float last_svb_weight = 0.0f;
 
     bool is_expanded() const { return !children.empty(); }
 
@@ -116,6 +136,9 @@ struct MCTSNode {
         v[0] += value[0];
         v[1] += value[1];
         v[2] += value[2];
+        // parent-perspective utility = child_loss - child_win
+        const float u = value[2] - value[0];
+        utility_sq_sum += u * u;
         n += 1;
     }
 };
@@ -133,6 +156,84 @@ inline std::array<float, 3> flip_wdl(const std::array<float, 3>& in) {
 
 inline float wdl_utility(const std::array<float, 3>& v) {
     return v[0] - v[2];
+}
+
+// ---------------------------------------------------------------------------
+// Shared MCTS helpers: dynamic variance-scaled cPUCT + FPU
+// ---------------------------------------------------------------------------
+
+struct SelectParams {
+    float explore_scaling;
+    float fpu_value;
+};
+
+// Compute the stdev-based scaling factor for cPUCT at a given node.
+// KataGo: searchexplorehelpers.cpp getFpuValueForChildrenAssumeVisited
+inline float compute_parent_utility_stdev_factor(
+    const MCTSNode& node,
+    float parent_utility,
+    const AlphaZeroConfig& cfg
+) {
+    const float variance_prior = cfg.cpuct_utility_stdev_prior * cfg.cpuct_utility_stdev_prior;
+    const float variance_prior_weight = cfg.cpuct_utility_stdev_prior_weight;
+
+    float parent_stdev;
+    if (node.n <= 1) {
+        parent_stdev = cfg.cpuct_utility_stdev_prior;
+    } else {
+        const float effective_n = static_cast<float>(node.n);
+        const float utility_sq_avg = node.utility_sq_sum / effective_n;
+        const float u_sq = parent_utility * parent_utility;
+        // Guard against numerical issues
+        const float adj_sq_avg = std::max(utility_sq_avg, u_sq);
+        parent_stdev = std::sqrt(std::max(0.0f,
+            ((u_sq + variance_prior) * variance_prior_weight + adj_sq_avg * effective_n)
+            / (variance_prior_weight + effective_n - 1.0f)
+            - u_sq
+        ));
+    }
+
+    return 1.0f + cfg.cpuct_utility_stdev_scale
+        * (parent_stdev / std::max(1e-8f, cfg.cpuct_utility_stdev_prior) - 1.0f);
+}
+
+// Compute explore_scaling and fpu_value for a node's children.
+// Works for both single-threaded and parallel (vloss-aware) versions.
+// effective_parent_n should be (node.n) for single-thread, (node.n + node.vloss) for parallel.
+inline SelectParams compute_select_params(
+    const MCTSNode& node,
+    int effective_parent_n,
+    float visited_policy_mass,
+    const AlphaZeroConfig& cfg
+) {
+    const float total_child_weight = static_cast<float>(std::max(0, effective_parent_n - 1));
+
+    // Dynamic cPUCT with log scaling
+    const float c_puct = cfg.c_puct + cfg.c_puct_log
+        * std::log((total_child_weight + cfg.c_puct_base) / cfg.c_puct_base);
+
+    // Parent Q (from real visits only, excluding vloss)
+    std::array<float, 3> parent_q{0.0f, 0.0f, 0.0f};
+    if (node.n > 0) {
+        parent_q = {node.v[0] / node.n, node.v[1] / node.n, node.v[2] / node.n};
+    }
+    float parent_utility = wdl_utility(parent_q);
+
+    // Variance-scaled exploration factor
+    const float stdev_factor = compute_parent_utility_stdev_factor(node, parent_utility, cfg);
+    const float explore_scaling = c_puct * std::sqrt(total_child_weight + 0.01f) * stdev_factor;
+
+    // FPU: blend parent MCTS utility with NN utility based on visited policy mass
+    const float nn_utility = wdl_utility(node.nn_value_probs);
+    const float avg_weight = std::min(1.0f, static_cast<float>(std::pow(visited_policy_mass, cfg.fpu_pow)));
+    const float parent_utility_for_fpu = avg_weight * parent_utility + (1.0f - avg_weight) * nn_utility;
+
+    const float fpu_reduction_max = (node.parent == nullptr) ? cfg.root_fpu_reduction_max : cfg.fpu_reduction_max;
+    const float reduction = fpu_reduction_max * std::sqrt(visited_policy_mass);
+    float fpu_value = parent_utility_for_fpu - reduction;
+    fpu_value = fpu_value + ((-1.0f) - fpu_value) * cfg.fpu_loss_prop;
+
+    return {explore_scaling, fpu_value};
 }
 
 template <typename Game>
@@ -444,22 +545,21 @@ private:
             return nullptr;
         }
 
+        // Compute visited policy mass
+        float visited_policy_mass = 0.0f;
+        for (auto& c : node.children) {
+            if (c->n > 0) visited_policy_mass += c->prior;
+        }
+
+        const auto sp = compute_select_params(node, node.n, visited_policy_mass, cfg_);
+
         MCTSNode* best = nullptr;
         float best_score = -std::numeric_limits<float>::infinity();
-
-        const float total_child_n = static_cast<float>(std::max(1, node.n));
-        float c_puct = cfg_.c_puct;
-        if (is_full_search && node.n > 0) {
-            c_puct += cfg_.c_puct_log *
-                std::log((total_child_n + cfg_.c_puct_base) / std::max(1e-6f, cfg_.c_puct_base));
-        }
-        const float sqrt_total = std::sqrt(total_child_n);
-
         for (auto& c : node.children) {
             const float q = (c->n > 0)
                 ? ((c->v[2] - c->v[0]) / static_cast<float>(c->n))
-                : -cfg_.fpu_reduction_max;
-            const float u = c_puct * c->prior * sqrt_total / (1.0f + static_cast<float>(c->n));
+                : sp.fpu_value;
+            const float u = sp.explore_scaling * c->prior / (1.0f + static_cast<float>(c->n));
             const float score = q + u;
             if (score > best_score) {
                 best_score = score;
