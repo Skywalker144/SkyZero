@@ -25,7 +25,7 @@ def count_total_selfplay_rows(selfplay_dir, num_processes=8):
     npz_files = []
     for dirpath, _, filenames in os.walk(selfplay_dir):
         for f in filenames:
-            if f.endswith(".npz") and "_" not in f:  # skip temp files
+            if f.endswith(".npz"):
                 npz_files.append(os.path.join(dirpath, f))
 
     if not npz_files:
