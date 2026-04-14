@@ -2,7 +2,11 @@ cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
 project(skyzero_selfplay)
 
 set(CMAKE_CXX_STANDARD 17)
-set(TORCH_CUDA_ARCH_LIST "8.9")
+# Set CUDA arch: override via -DTORCH_CUDA_ARCH_LIST="X.Y" if needed
+# 8.9 = RTX 4090, 12.0 = RTX 5060/5090
+if(NOT DEFINED TORCH_CUDA_ARCH_LIST)
+    set(TORCH_CUDA_ARCH_LIST "8.9")
+endif()
 
 find_package(Torch REQUIRED)
 
