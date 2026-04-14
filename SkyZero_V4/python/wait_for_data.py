@@ -29,6 +29,8 @@ def main():
                         help="Seconds between checks while waiting")
     parser.add_argument("--max-wait", type=int, default=0,
                         help="Maximum total seconds to wait (0 = unlimited)")
+    parser.add_argument("--once", action="store_true",
+                        help="Check once and exit with code 2 if insufficient (no waiting)")
     args = parser.parse_args()
 
     start_time = time.time()
@@ -64,6 +66,9 @@ def main():
             f"@ {datetime.datetime.now().strftime('%H:%M:%S')}",
             flush=True,
         )
+
+        if args.once:
+            return 2
 
         if args.max_wait > 0 and (now - start_time) >= args.max_wait:
             print(f"[wait_for_data] max-wait {args.max_wait}s exceeded, exiting with error", file=sys.stderr)
