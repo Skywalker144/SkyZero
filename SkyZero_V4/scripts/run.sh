@@ -72,6 +72,9 @@ LOOKAHEAD_ALPHA="${LOOKAHEAD_ALPHA:-0.5}"
 SAMPLES_PER_EPOCH="${SAMPLES_PER_EPOCH:-2000000}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 
+TRAIN_PER_DATA="${TRAIN_PER_DATA:-2.0}"
+MIN_GAMES="${MIN_GAMES:-500}"
+
 # --- Source config (overrides defaults, but env vars take priority) ---
 CFGFILE="${CFGFILE:-$SCRIPTDIR/selfplay.cfg}"
 if [ -f "$CFGFILE" ]; then
@@ -91,7 +94,7 @@ echo "=== SkyZero V4 Training Pipeline ==="
 echo "GPU: $GPU | Board: ${BOARD_SIZE}x${BOARD_SIZE} | Renju: $RENJU"
 echo "Model config: $MODEL_CONFIG | C++ Blocks: $NUM_BLOCKS | C++ Channels: $NUM_CHANNELS"
 echo "Sims: $NUM_SIMULATIONS | Workers: $NUM_WORKERS | Servers: $NUM_SERVERS"
-echo "MaxGames/iter: $MAX_GAMES | BatchSize: $BATCHSIZE"
+echo "MaxGames/iter: $MAX_GAMES | MinGames: $MIN_GAMES | TrainPerData: $TRAIN_PER_DATA | BatchSize: $BATCHSIZE"
 echo "BASEDIR: $BASEDIR"
 echo ""
 
@@ -120,7 +123,6 @@ fi
 SELFPLAY_ARGS=(
     --model-dir "$BASEDIR/models"
     --output-dir "$BASEDIR/selfplay"
-    --max-games "$MAX_GAMES"
     --board-size "$BOARD_SIZE"
     --num-simulations "$NUM_SIMULATIONS"
     --gumbel-m "$GUMBEL_M"
@@ -182,10 +184,22 @@ do
     echo "==================== Iteration $ITERATION ===================="
     echo "Started at $(date '+%Y-%m-%d %H:%M:%S')"
 
+    # 0. Compute dynamic selfplay game count based on train_per_data ratio
+    DYNAMIC_GAMES=$(python "$PYTHONDIR/compute_games.py" \
+        --traindir "$BASEDIR/train/skyzero" \
+        --selfplay-dir "$BASEDIR/selfplay" \
+        --train-per-data "$TRAIN_PER_DATA" \
+        --samples-per-epoch "$SAMPLES_PER_EPOCH" \
+        --default-games "$MAX_GAMES" \
+        --min-games "$MIN_GAMES" \
+        --max-games "$MAX_GAMES" \
+        || echo "$MAX_GAMES")
+    echo "Dynamic selfplay games: $DYNAMIC_GAMES (train_per_data=$TRAIN_PER_DATA)"
+
     # 1. Selfplay (C++)
     echo ""
     echo "--- Stage 1: Selfplay ---"
-    CUDA_VISIBLE_DEVICES=$GPU "$SELFPLAY" "${SELFPLAY_ARGS[@]}"
+    CUDA_VISIBLE_DEVICES=$GPU "$SELFPLAY" "${SELFPLAY_ARGS[@]}" --max-games "$DYNAMIC_GAMES"
     SP_EXIT=$?
     if [ $SP_EXIT -ne 0 ]; then
         echo "Selfplay exited with code $SP_EXIT. Stopping pipeline."
