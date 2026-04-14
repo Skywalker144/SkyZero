@@ -21,9 +21,9 @@ namespace skyzero {
 struct AlphaZeroParallelConfig {
     int num_workers = std::max(1u, std::thread::hardware_concurrency());
     int num_inference_servers = 1;
-    int inference_batch_size = 64;
-    int inference_batch_wait_us = 250;
-    int leaf_batch_size = 8;
+    int inference_batch_size = 256;
+    int inference_batch_wait_us = 1500;
+    int leaf_batch_size = 32;
     int max_games_to_process_per_tick = 50;
     int idle_sleep_ms = 1;
     int model_check_interval_ms = 10000;  // how often to check for new models

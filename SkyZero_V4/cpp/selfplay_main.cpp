@@ -40,8 +40,8 @@ static void print_usage(const char* prog) {
               << "\nParallel options:\n"
               << "  --num-workers N        Selfplay worker threads (default: auto)\n"
               << "  --num-servers N        Inference server threads (default: 1)\n"
-              << "  --inference-batch N    Max inference batch size (default: 64)\n"
-              << "  --leaf-batch N         Leaf batch size for MCTS (default: 8)\n"
+              << "  --inference-batch N    Max inference batch size (default: 256)\n"
+              << "  --leaf-batch N         Leaf batch size for MCTS (default: 32)\n"
               << "  --model-check-ms N     Model check interval in ms (default: 10000)\n"
               << std::endl;
 }
