@@ -163,6 +163,10 @@ int main(int argc, char* argv[]) {
     skyzero::AlphaZeroParallel<skyzero::Gomoku> engine(game, cfg, pcfg, opening_cfg);
     engine.run();
 
+    if (skyzero::stop_requested) {
+        std::cout << "Selfplay interrupted by user." << std::endl;
+        return 130;  // 128 + SIGINT(2), conventional shell exit code for Ctrl+C
+    }
     std::cout << "Done." << std::endl;
     return 0;
 }
