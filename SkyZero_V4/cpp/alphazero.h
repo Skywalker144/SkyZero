@@ -37,7 +37,7 @@ struct AlphaZeroConfig {
     int num_channels = 128;
 
     // Gumbel MCTS
-    int num_simulations = 32;
+    int num_simulations = 512;
     int gumbel_m = 16;
     float gumbel_c_visit = 50.0f;
     float gumbel_c_scale = 1.0f;
