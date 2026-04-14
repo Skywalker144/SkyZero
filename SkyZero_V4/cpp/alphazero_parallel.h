@@ -826,7 +826,7 @@ public:
         start_model_watcher();
 
         try {
-            while (!stop_requested && game_count_ < cfg_.max_games_total) {
+            while (!stop_requested && (cfg_.max_games_total < 0 || game_count_ < cfg_.max_games_total)) {
                 int games_processed = 0;
                 while (games_processed < pcfg_.max_games_to_process_per_tick) {
                     SelfPlayResult sp;
@@ -1364,8 +1364,9 @@ private:
         ).count();
         const double sps = (elapsed > 0.0) ? (static_cast<double>(total_samples_) / elapsed) : 0.0;
 
-        std::cout << "Game: " << game_count_
-                  << "/" << cfg_.max_games_total
+        std::cout << "Game: " << game_count_;
+        if (cfg_.max_games_total >= 0) std::cout << "/" << cfg_.max_games_total;
+        std::cout
                   << " | Sps: " << std::fixed << std::setprecision(1) << sps
                   << " | AvgGameLen: " << std::fixed << std::setprecision(1) << avg_game_len
                   << " | BWD: " << std::fixed << std::setprecision(2) << b_rate
