@@ -220,8 +220,6 @@ if __name__ == '__main__':
                 for filename in filenames:
                     if not filename.endswith(".npz"):
                         continue
-                    if "_" in filename:
-                        continue  # Skip temp files
                     full_path = os.path.join(path, filename)
                     files_with_unknown_num_rows.append(full_path)
                     all_files.append((full_path, os.path.getmtime(full_path)))
