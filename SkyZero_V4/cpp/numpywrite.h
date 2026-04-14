@@ -103,7 +103,6 @@ uint64_t NumpyBuffer<T>::prepareHeaderWithNumRows(int64_t numWriteableRows) {
 
     int64_t actualDataLen = 1;
     for (size_t i = 0; i < shape.size(); i++) {
-        if (i > 0) { s[idx] = ','; idx += 1; }
         int64_t x = (i == 0) ? numWriteableRows : shape[i];
         actualDataLen *= x;
 
@@ -115,6 +114,7 @@ uint64_t NumpyBuffer<T>::prepareHeaderWithNumRows(int64_t numWriteableRows) {
         for (int j = numDigits - 1; j >= 0; j--) {
             s[idx] = digitsRev[j]; idx += 1;
         }
+        s[idx] = ','; idx += 1;
     }
     s[idx] = ')'; idx += 1;
     s[idx] = '}'; idx += 1;

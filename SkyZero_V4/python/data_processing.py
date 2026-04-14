@@ -3,6 +3,7 @@
 import os
 import numpy as np
 import torch
+import _numpy_compat  # noqa: F401 -- installs header-parse compat for legacy npz
 
 
 def apply_symmetry(tensor, symm):

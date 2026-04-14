@@ -21,6 +21,7 @@ import hashlib
 import gc
 import multiprocessing
 import numpy as np
+import _numpy_compat  # noqa: F401 -- installs header-parse compat for legacy npz
 
 KEYS = [
     "encodedInputNCHW",
@@ -45,11 +46,11 @@ def get_numpy_npz_headers(filename):
         for subfilename in z.namelist():
             npyfile = z.open(subfilename)
             try:
-                version = np.lib.format.read_magic(npyfile)
+                np.lib.format.read_magic(npyfile)
             except ValueError:
                 print("WARNING: bad file, skipping: %s (bad array %s)" % (filename, subfilename))
                 return None
-            (shape, is_fortran, dtype) = np.lib.format._read_array_header(npyfile, version)
+            (shape, is_fortran, dtype) = np.lib.format.read_array_header_1_0(npyfile)
             npzheaders[subfilename] = (shape, is_fortran, dtype)
         return npzheaders
 
