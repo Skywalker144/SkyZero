@@ -206,15 +206,19 @@ do
         exit $SP_EXIT
     fi
 
-    # 1.5. Wait until total selfplay data satisfies train_per_data ratio
+    # 1.5. Check if total selfplay data satisfies train_per_data ratio;
+    # if not, loop back to selfplay instead of waiting.
     echo ""
-    echo "--- Stage 1.5: Wait for sufficient new data ---"
-    python "$PYTHONDIR/wait_for_data.py" \
+    echo "--- Stage 1.5: Check data sufficiency ---"
+    if ! python "$PYTHONDIR/wait_for_data.py" \
         --traindir "$BASEDIR/train/skyzero" \
         --selfplay-dir "$BASEDIR/selfplay" \
         --train-per-data "$TRAIN_PER_DATA" \
         --samples-per-epoch "$SAMPLES_PER_EPOCH" \
-        --check-interval 30
+        --once; then
+        echo "Insufficient data, looping back to selfplay..."
+        continue
+    fi
 
     # 2. Shuffle (Python)
     echo ""
