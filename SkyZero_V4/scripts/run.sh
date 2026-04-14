@@ -1,5 +1,6 @@
 #!/bin/bash -eu
 set -o pipefail
+trap 'echo ""; echo "Pipeline interrupted by user. Exiting."; exit 130' INT TERM
 
 # =============================================================================
 # SkyZero V4 — Main training loop
@@ -185,6 +186,11 @@ do
     echo ""
     echo "--- Stage 1: Selfplay ---"
     CUDA_VISIBLE_DEVICES=$GPU "$SELFPLAY" "${SELFPLAY_ARGS[@]}"
+    SP_EXIT=$?
+    if [ $SP_EXIT -ne 0 ]; then
+        echo "Selfplay exited with code $SP_EXIT. Stopping pipeline."
+        exit $SP_EXIT
+    fi
 
     # 2. Shuffle (Python)
     echo ""
