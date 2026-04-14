@@ -206,6 +206,16 @@ do
         exit $SP_EXIT
     fi
 
+    # 1.5. Wait until total selfplay data satisfies train_per_data ratio
+    echo ""
+    echo "--- Stage 1.5: Wait for sufficient new data ---"
+    python "$PYTHONDIR/wait_for_data.py" \
+        --traindir "$BASEDIR/train/skyzero" \
+        --selfplay-dir "$BASEDIR/selfplay" \
+        --train-per-data "$TRAIN_PER_DATA" \
+        --samples-per-epoch "$SAMPLES_PER_EPOCH" \
+        --check-interval 30
+
     # 2. Shuffle (Python)
     echo ""
     echo "--- Stage 2: Shuffle ---"

@@ -83,17 +83,13 @@ def main():
         print(args.default_games)
         return
 
-    # How many new selfplay rows does the next training epoch require?
-    # samples_per_epoch training rows need (samples_per_epoch / train_per_data) new selfplay rows
-    required_new_sp_rows = args.samples_per_epoch / args.train_per_data
-
-    # Also check cumulative balance: total training done vs total selfplay generated
+    # Cumulative balance: total training done vs total selfplay generated.
     # Ideal: global_step_samples <= total_sp_rows * train_per_data
-    # After next epoch: (global_step_samples + samples_per_epoch) should <= (total_sp_rows + new_rows) * train_per_data
+    # After next epoch: (global_step_samples + samples_per_epoch) <= (total_sp_rows + new_rows) * train_per_data
     # => new_rows >= (global_step_samples + samples_per_epoch) / train_per_data - total_sp_rows
+    # Negative means remote workers have already over-supplied; main host can fall to MIN_GAMES.
     cumulative_needed = (global_step_samples + args.samples_per_epoch) / args.train_per_data - total_sp_rows
-    needed_rows = max(required_new_sp_rows, cumulative_needed)
-    needed_rows = max(0, needed_rows)
+    needed_rows = max(0, cumulative_needed)
 
     # Convert rows to games
     games = int(needed_rows / args.avg_rows_per_game)
