@@ -5,6 +5,7 @@
 #include "alphazero.h"
 #include "alphazero_parallel.h"
 #include "envs/gomoku.h"
+#include "random_opening.h"
 
 // Use signal handler from utils.h (sets skyzero::stop_requested)
 
@@ -21,6 +22,12 @@ static void print_usage(const char* prog) {
               << "  --no-renju            Disable renju rules\n"
               << "  --openings FILE        Opening book file\n"
               << "  --empty-board-prob F   Probability of empty board vs opening (default: 0.0)\n"
+              << "  --online-openings      Enable online balanced opening generation\n"
+              << "  --opening-min-moves N  Min random scatter moves (default: 3)\n"
+              << "  --opening-max-moves N  Max random scatter moves (default: 10)\n"
+              << "  --opening-balance-power F  Exponent k in (1-V^2)^k (default: 4.0)\n"
+              << "  --opening-reject-threshold F  Reject if best |V| > this (default: 0.20)\n"
+              << "  --opening-max-retries N  Max retries before fallback (default: 20)\n"
               << "\nMCTS options:\n"
               << "  --num-simulations N    MCTS simulations per move (default: 32)\n"
               << "  --gumbel-m N           Gumbel top-k actions (default: 16)\n"
@@ -49,6 +56,7 @@ int main(int argc, char* argv[]) {
     bool enable_forbidden_plane = true;
     std::string openings_file;
     float empty_board_prob = 0.0f;
+    skyzero::RandomOpeningConfig opening_cfg;
 
     // Default device
     if (torch::cuda::is_available()) {
@@ -108,6 +116,13 @@ int main(int argc, char* argv[]) {
         else if (arg == "--enable-symmetry-child") cfg.enable_symmetry_inference_for_child = true;
         else if (arg == "--disable-stochastic-root") cfg.enable_stochastic_transform_inference_for_root = false;
         else if (arg == "--disable-stochastic-child") cfg.enable_stochastic_transform_inference_for_child = false;
+        // Online balanced opening generation
+        else if (arg == "--online-openings") opening_cfg.enabled = true;
+        else if (arg == "--opening-min-moves") opening_cfg.min_moves = std::stoi(next());
+        else if (arg == "--opening-max-moves") opening_cfg.max_moves = std::stoi(next());
+        else if (arg == "--opening-balance-power") opening_cfg.balance_power = std::stof(next());
+        else if (arg == "--opening-reject-threshold") opening_cfg.reject_threshold = std::stof(next());
+        else if (arg == "--opening-max-retries") opening_cfg.max_retries = std::stoi(next());
         else {
             std::cerr << "Unknown option: " << arg << std::endl;
             print_usage(argv[0]);
@@ -137,8 +152,15 @@ int main(int argc, char* argv[]) {
               << " | Output dir: " << cfg.output_dir << std::endl;
     std::cout << "Max games: " << cfg.max_games_total
               << " | Device: " << cfg.device << std::endl;
+    if (opening_cfg.enabled) {
+        std::cout << "Online openings: ON (moves=" << opening_cfg.min_moves
+                  << "-" << opening_cfg.max_moves
+                  << ", power=" << opening_cfg.balance_power
+                  << ", reject=" << opening_cfg.reject_threshold
+                  << ", retries=" << opening_cfg.max_retries << ")" << std::endl;
+    }
 
-    skyzero::AlphaZeroParallel<skyzero::Gomoku> engine(game, cfg, pcfg);
+    skyzero::AlphaZeroParallel<skyzero::Gomoku> engine(game, cfg, pcfg, opening_cfg);
     engine.run();
 
     std::cout << "Done." << std::endl;

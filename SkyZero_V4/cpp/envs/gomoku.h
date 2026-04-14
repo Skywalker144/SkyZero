@@ -301,16 +301,6 @@ public:
         return out;
     }
 
-private:
-    static constexpr int C_EMPTY = 0;
-    static constexpr int C_BLACK = 1;
-    static constexpr int C_WHITE = 2;
-    static constexpr int C_WALL = 3;
-
-    bool on_board(int r, int c) const {
-        return r >= 0 && r < board_size && c >= 0 && c < board_size;
-    }
-
     bool is_near_occupied(const std::vector<int8_t>& state, int r, int c, int dist) const {
         for (int dr = -dist; dr <= dist; ++dr) {
             for (int dc = -dist; dc <= dist; ++dc) {
@@ -325,6 +315,16 @@ private:
             }
         }
         return false;
+    }
+
+private:
+    static constexpr int C_EMPTY = 0;
+    static constexpr int C_BLACK = 1;
+    static constexpr int C_WHITE = 2;
+    static constexpr int C_WALL = 3;
+
+    bool on_board(int r, int c) const {
+        return r >= 0 && r < board_size && c >= 0 && c < board_size;
     }
 
     struct ForbiddenPointFinder {

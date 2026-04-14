@@ -25,6 +25,12 @@ BOARD_SIZE="${BOARD_SIZE:-15}"
 RENJU="${RENJU:-true}"
 OPENINGS="${OPENINGS:-}"
 EMPTY_BOARD_PROB="${EMPTY_BOARD_PROB:-0.0}"
+ONLINE_OPENINGS="${ONLINE_OPENINGS:-true}"
+OPENING_MIN_MOVES="${OPENING_MIN_MOVES:-3}"
+OPENING_MAX_MOVES="${OPENING_MAX_MOVES:-10}"
+OPENING_BALANCE_POWER="${OPENING_BALANCE_POWER:-4.0}"
+OPENING_REJECT_THRESHOLD="${OPENING_REJECT_THRESHOLD:-0.20}"
+OPENING_MAX_RETRIES="${OPENING_MAX_RETRIES:-20}"
 
 NUM_SIMULATIONS="${NUM_SIMULATIONS:-512}"
 GUMBEL_M="${GUMBEL_M:-16}"
@@ -141,6 +147,16 @@ SELFPLAY_ARGS=(
 [[ "$RENJU" == "false" ]] && SELFPLAY_ARGS+=(--no-renju)
 [[ "$ENABLE_SVB" == "true" ]] && SELFPLAY_ARGS+=(--enable-svb)
 [[ -n "$OPENINGS" ]] && SELFPLAY_ARGS+=(--openings "$OPENINGS" --empty-board-prob "$EMPTY_BOARD_PROB")
+if [[ "$ONLINE_OPENINGS" == "true" ]]; then
+    SELFPLAY_ARGS+=(
+        --online-openings
+        --opening-min-moves "$OPENING_MIN_MOVES"
+        --opening-max-moves "$OPENING_MAX_MOVES"
+        --opening-balance-power "$OPENING_BALANCE_POWER"
+        --opening-reject-threshold "$OPENING_REJECT_THRESHOLD"
+        --opening-max-retries "$OPENING_MAX_RETRIES"
+    )
+fi
 
 # --- Build train.py extra args ---
 TRAIN_EXTRA_ARGS=()

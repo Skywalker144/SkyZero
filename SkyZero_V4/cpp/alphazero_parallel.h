@@ -13,6 +13,7 @@
 
 #include "alphazero.h"
 #include "npz_writer.h"
+#include "random_opening.h"
 #include "selfplay_manager.h"
 
 namespace skyzero {
@@ -796,11 +797,13 @@ public:
     AlphaZeroParallel(
         Game& game,
         const AlphaZeroConfig& cfg,
-        const AlphaZeroParallelConfig& pcfg = AlphaZeroParallelConfig{}
+        const AlphaZeroParallelConfig& pcfg = AlphaZeroParallelConfig{},
+        const RandomOpeningConfig& opening_cfg = RandomOpeningConfig{}
     )
         : game_(game),
           cfg_(cfg),
           pcfg_(pcfg),
+          opening_cfg_(opening_cfg),
           rng_(std::random_device{}()),
           data_writer_(game, cfg.output_dir, cfg.max_rows_per_file),
           model_manager_(cfg.model_dir)
@@ -1121,7 +1124,13 @@ private:
         );
 
         std::vector<MemoryStep> memory;
-        auto init = game_.get_initial_state(worker_rng);
+        GameInitialState init;
+        if (opening_cfg_.enabled) {
+            RandomOpeningGenerator opener(game_, opening_cfg_);
+            init = opener.generate(worker_rng, infer_fn, batch_infer_fn);
+        } else {
+            init = game_.get_initial_state(worker_rng);
+        }
         std::vector<int8_t> state = std::move(init.board);
         int to_play = init.to_play;
         bool in_soft_resign = false;
@@ -1380,6 +1389,7 @@ private:
     Game& game_;
     AlphaZeroConfig cfg_;
     AlphaZeroParallelConfig pcfg_;
+    RandomOpeningConfig opening_cfg_;
 
     // TorchScript inference models (one per inference server)
     std::vector<torch::jit::Module> inference_models_;
