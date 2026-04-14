@@ -257,18 +257,20 @@ class KataGPool(nn.Module):
             (x + (mask - 1.0)).view(x.shape[0], x.shape[1], -1).to(torch.float32), dim=2
         )
         layer_max = layer_max.view(x.shape[0], x.shape[1], 1, 1)
-        return torch.cat((layer_mean, layer_mean * (mask_sum_hw_sqrt_offset / 10.0), layer_max), dim=1)
+        out = torch.cat((layer_mean, layer_mean * (mask_sum_hw_sqrt_offset / 10.0), layer_max), dim=1)
+        return out.type_as(x)
 
 
 class KataValueHeadGPool(nn.Module):
     def forward(self, x, mask, mask_sum_hw):
         mask_sum_hw_sqrt_offset = torch.sqrt(mask_sum_hw) - 14.0
         layer_mean = torch.sum(x, dim=(2, 3), keepdim=True, dtype=torch.float32) / mask_sum_hw
-        return torch.cat((
+        out = torch.cat((
             layer_mean,
             layer_mean * (mask_sum_hw_sqrt_offset / 10.0),
             layer_mean * ((mask_sum_hw_sqrt_offset * mask_sum_hw_sqrt_offset) / 100.0 - 0.1),
         ), dim=1)
+        return out.type_as(x)
 
 
 # ---------------------------------------------------------------------------
@@ -630,10 +632,8 @@ class Model(nn.Module):
     def forward(self, x):
         # Construct all-ones mask for gomoku (all positions valid)
         mask = torch.ones_like(x[:, 0:1, :, :])
-        h = x.shape[2]
-        w = x.shape[3]
-        mask_sum_hw = mask.new_tensor(float(h * w)).view(1, 1, 1, 1).expand(x.shape[0], 1, 1, 1)
-        mask_sum = float(x.shape[0] * h * w)
+        mask_sum_hw = torch.sum(mask, dim=(2, 3), keepdim=True)
+        mask_sum = float(x.shape[0] * x.shape[2] * x.shape[3])
 
         out = self.conv_spatial(x)
 
