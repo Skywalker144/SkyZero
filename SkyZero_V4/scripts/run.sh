@@ -26,7 +26,7 @@ RENJU="${RENJU:-true}"
 OPENINGS="${OPENINGS:-}"
 EMPTY_BOARD_PROB="${EMPTY_BOARD_PROB:-0.0}"
 
-NUM_SIMULATIONS="${NUM_SIMULATIONS:-32}"
+NUM_SIMULATIONS="${NUM_SIMULATIONS:-512}"
 GUMBEL_M="${GUMBEL_M:-16}"
 GUMBEL_C_VISIT="${GUMBEL_C_VISIT:-50.0}"
 GUMBEL_C_SCALE="${GUMBEL_C_SCALE:-1.0}"
@@ -74,9 +74,10 @@ fi
 mkdir -p "$BASEDIR"
 BASEDIR="$(cd "$BASEDIR" && pwd)"
 
-# Ensure libzip from conda is on LD_LIBRARY_PATH
-CONDA_BASE="$(conda info --base 2>/dev/null || echo "$HOME/anaconda3")"
-export LD_LIBRARY_PATH="${CONDA_BASE}/lib:${LD_LIBRARY_PATH:-}"
+# Ensure libs (libtorch, libzip, etc.) are on LD_LIBRARY_PATH
+# When a conda env is activated, CONDA_PREFIX points to it; otherwise fall back to base.
+CONDA_LIB="${CONDA_PREFIX:-$(conda info --base 2>/dev/null || echo "$HOME/anaconda3")}/lib"
+export LD_LIBRARY_PATH="${CONDA_LIB}:${LD_LIBRARY_PATH:-}"
 
 echo "=== SkyZero V4 Training Pipeline ==="
 echo "GPU: $GPU | Board: ${BOARD_SIZE}x${BOARD_SIZE} | Renju: $RENJU"
