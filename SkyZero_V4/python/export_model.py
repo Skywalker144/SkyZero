@@ -8,7 +8,8 @@ ExportWrapper to produce tuple output, traces it, and saves as .pt.
 
 import argparse
 import torch
-from nets import ResNet, ExportWrapper
+from nets import Model, ExportWrapper
+from model_config import CONFIG_BY_NAME
 
 
 def main():
@@ -17,15 +18,15 @@ def main():
     parser.add_argument("-output", required=True, help="Output .pt TorchScript file path")
     parser.add_argument("-board-size", type=int, default=15)
     parser.add_argument("-num-planes", type=int, default=4)
-    parser.add_argument("-num-blocks", type=int, default=4)
-    parser.add_argument("-num-channels", type=int, default=128)
+    parser.add_argument("-model-config", type=str, default="b6c96", help="Model config name")
     parser.add_argument("-use-swa", action="store_true", help="Use SWA model weights if available")
     args = parser.parse_args()
 
     print(f"Loading checkpoint: {args.checkpoint}")
     state = torch.load(args.checkpoint, map_location="cpu")
 
-    model = ResNet(args.board_size, args.num_planes, args.num_blocks, args.num_channels)
+    model_config = CONFIG_BY_NAME[args.model_config]
+    model = Model(model_config, args.board_size, args.num_planes)
 
     if args.use_swa and "swa_model" in state:
         print("Using SWA model weights")

@@ -194,6 +194,8 @@ if __name__ == '__main__':
     parser.add_argument('-only-include-md5-path-prop-lbound', type=float, default=None)
     parser.add_argument('-only-include-md5-path-prop-ubound', type=float, default=None)
     parser.add_argument('-output-npz', action='store_true')
+    parser.add_argument('-random-data-dir-pattern', type=str, default='random/tdata/',
+                        help='Substring in file paths that identifies random/init selfplay data')
 
     args = parser.parse_args()
 
@@ -210,6 +212,7 @@ if __name__ == '__main__':
     worker_group_size = args.worker_group_size
     only_include_md5_lbound = args.only_include_md5_path_prop_lbound
     only_include_md5_ubound = args.only_include_md5_path_prop_ubound
+    random_data_dir_pattern = args.random_data_dir_pattern
 
     # Find all NPZ files
     all_files = []
@@ -235,20 +238,33 @@ if __name__ == '__main__':
             results = dict(pool.map(compute_num_rows, files_with_unknown_num_rows))
             all_files = [(f, t, results.get(f)) for f, t in all_files]
 
-    # Count total rows
-    num_rows_total = sum(nr for _, _, nr in all_files if nr is not None and nr > 0)
+    # Count total rows, with random data capping (from KataGomo shuffle.py:552-588)
+    num_rows_total = 0
+    num_random_rows_capped = 0  # Random data rows, capped at min_rows
+    num_postrandom_rows = 0     # Non-random rows
+
+    for (filename, mtime, num_rows) in all_files:
+        if num_rows is None or num_rows <= 0:
+            continue
+        num_rows_total += num_rows
+        if random_data_dir_pattern and random_data_dir_pattern in filename:
+            num_random_rows_capped = min(num_random_rows_capped + num_rows, min_rows)
+        else:
+            num_postrandom_rows += num_rows
+
+    num_usable_rows = num_random_rows_capped + num_postrandom_rows
 
     if num_rows_total <= 0:
         print("No rows found")
         sys.exit(0)
 
-    if num_rows_total < min_rows:
-        print("Not enough rows: %d < %d" % (num_rows_total, min_rows))
+    if num_usable_rows < min_rows:
+        print("Not enough usable rows: %d < %d (total: %d)" % (num_usable_rows, min_rows, num_rows_total))
         sys.exit(0)
 
-    # Compute window size using power-law formula
+    # Compute window size using power-law formula (using usable rows, not total)
     window_taper_offset = min_rows
-    power_law_x = num_rows_total - min_rows + window_taper_offset
+    power_law_x = num_usable_rows - min_rows + window_taper_offset
     unscaled = (power_law_x ** taper_window_exponent) - (window_taper_offset ** taper_window_exponent)
     scaled = unscaled / (taper_window_exponent * (window_taper_offset ** (taper_window_exponent - 1)))
     desired_num_rows = int(scaled * expand_window_per_row + min_rows)
@@ -256,7 +272,8 @@ if __name__ == '__main__':
     if max_rows is not None:
         desired_num_rows = min(desired_num_rows, max_rows)
 
-    print("Total rows: %d, Desired window: %d" % (num_rows_total, desired_num_rows), flush=True)
+    print("Total rows: %d, Usable rows: %d (random capped: %d, postrandom: %d), Desired window: %d" %
+          (num_rows_total, num_usable_rows, num_random_rows_capped, num_postrandom_rows, desired_num_rows), flush=True)
 
     # Reverse so recent files are first
     all_files.reverse()

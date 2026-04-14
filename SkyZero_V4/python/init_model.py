@@ -3,7 +3,8 @@
 
 import argparse
 import torch
-from nets import ResNet, ExportWrapper
+from nets import Model, ExportWrapper
+from model_config import CONFIG_BY_NAME
 
 
 def main():
@@ -11,11 +12,12 @@ def main():
     parser.add_argument("-output", required=True, help="Output .pt file path")
     parser.add_argument("-board-size", type=int, default=15)
     parser.add_argument("-num-planes", type=int, default=4)
-    parser.add_argument("-num-blocks", type=int, default=4)
-    parser.add_argument("-num-channels", type=int, default=128)
+    parser.add_argument("-model-config", type=str, default="b6c96", help="Model config name")
     args = parser.parse_args()
 
-    model = ResNet(args.board_size, args.num_planes, args.num_blocks, args.num_channels)
+    model_config = CONFIG_BY_NAME[args.model_config]
+    model = Model(model_config, args.board_size, args.num_planes)
+    model.initialize()
     model.eval()
 
     wrapper = ExportWrapper(model)
@@ -27,7 +29,7 @@ def main():
 
     print(f"Saved initial model to {args.output}")
     print(f"  board_size={args.board_size}, num_planes={args.num_planes}")
-    print(f"  num_blocks={args.num_blocks}, num_channels={args.num_channels}")
+    print(f"  model_config={args.model_config}")
 
 
 if __name__ == "__main__":

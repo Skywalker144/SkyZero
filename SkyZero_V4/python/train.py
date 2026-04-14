@@ -25,7 +25,8 @@ import torch.optim
 from torch.optim.swa_utils import AveragedModel
 from torch.cuda.amp import GradScaler, autocast
 
-from nets import ResNet
+from nets import Model, ExportWrapper
+from model_config import CONFIG_BY_NAME, SKYZERO_B6C96
 from data_processing import read_npz_training_data, collect_npz_files
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -66,6 +67,85 @@ def load_checkpoint(path, model, swa_model, optimizer, scaler, device):
     return train_state
 
 
+def compute_warmup_scale(global_step_samples, norm_kind):
+    """LR warmup schedule for fixbrenorm (from KataGomo train.py:604-622)."""
+    if norm_kind in ("brenorm", "fixbrenorm"):
+        if global_step_samples < 250000: return 1.0 / 20.0
+        if global_step_samples < 500000: return 1.0 / 14.0
+        if global_step_samples < 750000: return 1.0 / 10.0
+        if global_step_samples < 1000000: return 1.0 / 7.0
+        if global_step_samples < 1250000: return 1.0 / 5.0
+        if global_step_samples < 1500000: return 1.0 / 3.0
+        if global_step_samples < 1750000: return 1.0 / 2.0
+        if global_step_samples < 2000000: return 1.0 / 1.4
+        return 1.0
+    else:
+        # fixup/fixscale warmup
+        if global_step_samples < 1000000: return 1.0 / 5.0
+        if global_step_samples < 2000000: return 1.0 / 3.0
+        if global_step_samples < 4000000: return 1.0 / 2.0
+        if global_step_samples < 6000000: return 1.0 / 1.4
+        return 1.0
+
+
+def lr_scale_auto_factor(global_step_samples):
+    """Step-wise LR decay over long training (from KataGomo train.py:257-269)."""
+    if global_step_samples < 60000000: return 8.0
+    if global_step_samples < 110000000: return 4.0
+    if global_step_samples < 160000000: return 2.0
+    if global_step_samples < 200000000: return 1.0
+    return 0.25
+
+
+def compute_adaptive_gnorm_cap(norm_kind, lr_scale, global_step_samples):
+    """Adaptive gradient clipping (from KataGomo train.py:1068-1089)."""
+    if norm_kind in ("fixup", "fixscale"):
+        gnorm_cap = 2500.0
+    else:
+        gnorm_cap = 5500.0
+    effective_lr_scale = lr_scale * lr_scale_auto_factor(global_step_samples)
+    gnorm_cap = gnorm_cap / math.sqrt(max(1e-7, effective_lr_scale))
+    return gnorm_cap
+
+
+def update_lr(optimizer, base_lr, lr_scale, warmup_scale):
+    """Update optimizer LR per parameter group."""
+    for param_group in optimizer.param_groups:
+        group_scale = param_group.get("lr_scale", 1.0)
+        param_group["lr"] = base_lr * warmup_scale * lr_scale * lr_scale_auto_factor(0) * group_scale
+
+
+def update_lr_and_wd(optimizer, base_lr, lr_scale, global_step_samples, norm_kind, use_auto_lr):
+    """Update LR and weight decay for all parameter groups."""
+    warmup = compute_warmup_scale(global_step_samples, norm_kind)
+    auto = lr_scale_auto_factor(global_step_samples) if use_auto_lr else 1.0
+    for param_group in optimizer.param_groups:
+        group_scale = param_group.get("lr_scale", 1.0)
+        param_group["lr"] = base_lr * warmup * lr_scale * auto * group_scale
+    return warmup, auto
+
+
+def maybe_update_brenorm_params(model, train_state, last_brenorm_update, norm_kind,
+                                 brenorm_target_rmax, brenorm_target_dmax,
+                                 brenorm_avg_momentum, brenorm_adjustment_scale):
+    """Gradually adjust brenorm rmax/dmax (from KataGomo train.py:665-680)."""
+    if norm_kind not in ("brenorm", "fixbrenorm"):
+        return last_brenorm_update
+
+    if "brenorm_rmax" not in train_state:
+        train_state["brenorm_rmax"] = 1.0
+    if "brenorm_dmax" not in train_state:
+        train_state["brenorm_dmax"] = 0.0
+
+    num_samples_elapsed = train_state["global_step_samples"] - last_brenorm_update
+    factor = math.exp(-num_samples_elapsed / brenorm_adjustment_scale)
+    train_state["brenorm_rmax"] += (1.0 - factor) * (brenorm_target_rmax - train_state["brenorm_rmax"])
+    train_state["brenorm_dmax"] += (1.0 - factor) * (brenorm_target_dmax - train_state["brenorm_dmax"])
+
+    model.set_brenorm_params(brenorm_avg_momentum, train_state["brenorm_rmax"], train_state["brenorm_dmax"])
+    return train_state["global_step_samples"]
+
+
 def main():
     parser = argparse.ArgumentParser(description="SkyZero_V4 Training")
     parser.add_argument("-traindir", required=True, help="Directory for training state and logs")
@@ -75,11 +155,11 @@ def main():
     parser.add_argument("-pos-len", type=int, required=True, help="Board size (e.g. 15)")
     parser.add_argument("-batch-size", type=int, required=True)
     parser.add_argument("-num-planes", type=int, default=4, help="Number of input planes")
-    parser.add_argument("-num-blocks", type=int, default=4)
-    parser.add_argument("-num-channels", type=int, default=128)
-    parser.add_argument("-lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("-model-config", type=str, default="b6c96", help="Model config name (b6c96, b4c32, b10c128)")
+    parser.add_argument("-lr", type=float, default=1e-4, help="Base learning rate")
+    parser.add_argument("-lr-scale", type=float, default=1.0, help="LR scale multiplier")
+    parser.add_argument("-lr-scale-auto", action="store_true", help="Enable auto LR decay over training")
     parser.add_argument("-weight-decay", type=float, default=3e-5)
-    parser.add_argument("-max-grad-norm", type=float, default=1.0)
     parser.add_argument("-max-epochs-this-instance", type=int, default=1)
     parser.add_argument("-samples-per-epoch", type=int, default=None, help="Cap samples per epoch (None = all data)")
     parser.add_argument("-use-fp16", action="store_true")
@@ -89,6 +169,10 @@ def main():
     parser.add_argument("-policy-loss-weight", type=float, default=1.0)
     parser.add_argument("-opp-policy-loss-weight", type=float, default=0.15)
     parser.add_argument("-value-loss-weight", type=float, default=1.0)
+    parser.add_argument("-brenorm-target-rmax", type=float, default=3.0)
+    parser.add_argument("-brenorm-target-dmax", type=float, default=5.0)
+    parser.add_argument("-brenorm-avg-momentum", type=float, default=0.001)
+    parser.add_argument("-brenorm-adjustment-scale", type=float, default=50000000)
     parser.add_argument("-no-export", action="store_true")
     args = parser.parse_args()
 
@@ -102,12 +186,25 @@ def main():
     board_area = pos_len * pos_len
 
     # Create model
-    model = ResNet(pos_len, args.num_planes, args.num_blocks, args.num_channels)
+    model_config = CONFIG_BY_NAME[args.model_config]
+    norm_kind = model_config["norm_kind"]
+    model = Model(model_config, pos_len, args.num_planes)
+    model.initialize()
     model.to(device)
     model.train()
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Parameter groups with different weight decay and LR scales
+    reg_dict = {}
+    model.add_reg_dict(reg_dict)
+    wd = args.weight_decay
+    param_groups = [
+        {"params": reg_dict["normal"], "weight_decay": wd, "lr_scale": 1.0, "group_name": "normal"},
+        {"params": reg_dict["normal_gamma"], "weight_decay": wd * 0.5, "lr_scale": 1.0, "group_name": "normal_gamma"},
+        {"params": reg_dict["output"], "weight_decay": wd * 0.5, "lr_scale": 0.5, "group_name": "output"},
+        {"params": reg_dict["noreg"], "weight_decay": 0.0, "lr_scale": 1.0, "group_name": "noreg"},
+        {"params": reg_dict["output_noreg"], "weight_decay": 0.0, "lr_scale": 0.5, "group_name": "output_noreg"},
+    ]
+    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
 
     # FP16
     scaler = GradScaler() if args.use_fp16 else None
@@ -124,6 +221,18 @@ def main():
     ckpt_path = os.path.join(args.traindir, "latest.ckpt")
     if os.path.exists(ckpt_path):
         train_state = load_checkpoint(ckpt_path, model, swa_model, optimizer, scaler, device)
+
+    # Initialize brenorm params
+    last_brenorm_update_samples = train_state.get("global_step_samples", 0)
+    last_brenorm_update_samples = maybe_update_brenorm_params(
+        model, train_state, last_brenorm_update_samples, norm_kind,
+        args.brenorm_target_rmax, args.brenorm_target_dmax,
+        args.brenorm_avg_momentum, args.brenorm_adjustment_scale,
+    )
+
+    # Initialize LR
+    update_lr_and_wd(optimizer, args.lr, args.lr_scale,
+                     train_state.get("global_step_samples", 0), norm_kind, args.lr_scale_auto)
 
     # Lookahead cache
     lookahead_cache = None
@@ -183,7 +292,8 @@ def main():
 
                 scaler.scale(total_loss).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale, train_state["global_step_samples"])
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gnorm_cap)
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -198,7 +308,8 @@ def main():
                 total_loss = args.policy_loss_weight * p_loss + args.opp_policy_loss_weight * o_loss + args.value_loss_weight * v_loss
 
                 total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale, train_state["global_step_samples"])
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gnorm_cap)
                 optimizer.step()
 
             batch_count += 1
@@ -209,6 +320,19 @@ def main():
             running_loss["opp_policy"] += o_loss.item()
             running_loss["value"] += v_loss.item()
             running_loss["total"] += total_loss.item()
+
+            # Update LR every 10 batches (during first 50M samples)
+            if batch_count % 10 == 0 and train_state["global_step_samples"] <= 50000000:
+                update_lr_and_wd(optimizer, args.lr, args.lr_scale,
+                                 train_state["global_step_samples"], norm_kind, args.lr_scale_auto)
+
+            # Update brenorm params every 500 batches
+            if batch_count % 500 == 0:
+                last_brenorm_update_samples = maybe_update_brenorm_params(
+                    model, train_state, last_brenorm_update_samples, norm_kind,
+                    args.brenorm_target_rmax, args.brenorm_target_dmax,
+                    args.brenorm_avg_momentum, args.brenorm_adjustment_scale,
+                )
 
             # Lookahead
             in_between_lookaheads = False
@@ -237,10 +361,11 @@ def main():
                 avg = {k: v / 100 for k, v in running_loss.items()}
                 t1 = time.perf_counter()
                 speed = (100 * batch_size) / (t1 - t0)
+                current_lr = optimizer.param_groups[0]["lr"]
                 logging.info(
                     f"  step={batch_count} samples={samples_this_epoch} "
                     f"loss={avg['total']:.4f} p={avg['policy']:.4f} o={avg['opp_policy']:.4f} v={avg['value']:.4f} "
-                    f"speed={speed:.0f} samp/s"
+                    f"lr={current_lr:.2e} speed={speed:.0f} samp/s"
                 )
                 # Write to JSON log
                 with open(train_log_path, "a") as f:
@@ -252,6 +377,9 @@ def main():
                         "opp_policy_loss": avg["opp_policy"],
                         "value_loss": avg["value"],
                         "total_loss": avg["total"],
+                        "lr": optimizer.param_groups[0]["lr"],
+                        "brenorm_rmax": train_state.get("brenorm_rmax", 1.0),
+                        "brenorm_dmax": train_state.get("brenorm_dmax", 0.0),
                         "speed": speed,
                         "time": datetime.datetime.now().isoformat(),
                     }

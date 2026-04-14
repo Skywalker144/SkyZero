@@ -25,16 +25,20 @@ time python ./train.py \
      -pos-len 15 \
      -batch-size "$BATCHSIZE" \
      -num-planes 4 \
-     -num-blocks 4 \
-     -num-channels 128 \
+     -model-config b6c96 \
      -max-epochs-this-instance 1 \
      -samples-per-epoch 2000000 \
      -lr 1e-4 \
+     -lr-scale 1.0 \
+     -lr-scale-auto \
      -weight-decay 3e-5 \
      -use-fp16 \
      -swa-scale 1.0 \
      -lookahead-k 6 \
      -lookahead-alpha 0.5 \
+     -brenorm-target-rmax 3.0 \
+     -brenorm-target-dmax 5.0 \
+     -brenorm-adjustment-scale 50000000 \
      "$@" \
      2>&1 | tee -a "$BASEDIR"/train/skyzero/stdout.txt
 

@@ -43,8 +43,7 @@ do
         -output "$TMPDST/model.pt" \
         -board-size 15 \
         -num-planes 4 \
-        -num-blocks 4 \
-        -num-channels 128 \
+        -model-config b6c96 \
         -use-swa
     set +x
 

@@ -45,6 +45,7 @@ SVB_FACTOR="${SVB_FACTOR:-0.35}"
 
 NUM_BLOCKS="${NUM_BLOCKS:-4}"
 NUM_CHANNELS="${NUM_CHANNELS:-128}"
+MODEL_CONFIG="${MODEL_CONFIG:-b6c96}"
 
 NUM_WORKERS="${NUM_WORKERS:-32}"
 NUM_SERVERS="${NUM_SERVERS:-1}"
@@ -87,7 +88,7 @@ export LD_LIBRARY_PATH="${CONDA_LIB}:${LD_LIBRARY_PATH:-}"
 
 echo "=== SkyZero V4 Training Pipeline ==="
 echo "GPU: $GPU | Board: ${BOARD_SIZE}x${BOARD_SIZE} | Renju: $RENJU"
-echo "Blocks: $NUM_BLOCKS | Channels: $NUM_CHANNELS"
+echo "Model config: $MODEL_CONFIG | C++ Blocks: $NUM_BLOCKS | C++ Channels: $NUM_CHANNELS"
 echo "Sims: $NUM_SIMULATIONS | Workers: $NUM_WORKERS | Servers: $NUM_SERVERS"
 echo "MaxGames/iter: $MAX_GAMES | BatchSize: $BATCHSIZE"
 echo "BASEDIR: $BASEDIR"
@@ -110,8 +111,7 @@ if [ -z "$(find "$BASEDIR"/models -name '*.pt' -print -quit 2>/dev/null)" ]; the
         -output "$BASEDIR/models/random_init.pt" \
         -board-size "$BOARD_SIZE" \
         -num-planes 4 \
-        -num-blocks "$NUM_BLOCKS" \
-        -num-channels "$NUM_CHANNELS"
+        -model-config "$MODEL_CONFIG"
     echo "Initial model created."
 fi
 
@@ -165,7 +165,9 @@ TRAIN_EXTRA_ARGS+=(-swa-scale "$SWA_SCALE")
 TRAIN_EXTRA_ARGS+=(-lookahead-k "$LOOKAHEAD_K" -lookahead-alpha "$LOOKAHEAD_ALPHA")
 TRAIN_EXTRA_ARGS+=(-samples-per-epoch "$SAMPLES_PER_EPOCH")
 TRAIN_EXTRA_ARGS+=(-max-epochs-this-instance "$MAX_EPOCHS")
-TRAIN_EXTRA_ARGS+=(-num-planes 4 -num-blocks "$NUM_BLOCKS" -num-channels "$NUM_CHANNELS")
+TRAIN_EXTRA_ARGS+=(-num-planes 4 -model-config "$MODEL_CONFIG")
+TRAIN_EXTRA_ARGS+=(-lr-scale-auto)
+TRAIN_EXTRA_ARGS+=(-brenorm-target-rmax 3.0 -brenorm-target-dmax 5.0 -brenorm-adjustment-scale 50000000)
 [[ "$USE_FP16" == "true" ]] && TRAIN_EXTRA_ARGS+=(-use-fp16)
 
 # ==========================================================================
