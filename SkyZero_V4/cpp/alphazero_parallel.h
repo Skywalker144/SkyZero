@@ -1336,10 +1336,11 @@ private:
             ps.v_mix = s.v_mix;
             ps.sample_weight = s.sample_weight;
             ps.policy_weight = s.policy_weight;
-            // opp_policy reliability depends on next row's search quality;
-            // last row has no next move so its opp target is unreliable too.
+            // KataGo-aligned: opp policy weight only masks the final row (no next move).
+            // Cheap-search next-move targets are kept at full weight, since the 0.15
+            // global scaling on opp policy loss already makes this head noise-tolerant.
             const bool has_next = (i + 1 < memory.size());
-            ps.opp_policy_weight = has_next ? memory[i + 1].policy_weight : 0.0f;
+            ps.opp_policy_weight = has_next ? 1.0f : 0.0f;
             return_memory.push_back(ps);
         }
 
