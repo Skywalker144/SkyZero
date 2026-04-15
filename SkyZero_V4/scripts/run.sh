@@ -199,12 +199,28 @@ do
     # 1. Selfplay (C++)
     echo ""
     echo "--- Stage 1: Selfplay ---"
-    CUDA_VISIBLE_DEVICES=$GPU "$SELFPLAY" "${SELFPLAY_ARGS[@]}" --max-games "$DYNAMIC_GAMES"
-    SP_EXIT=$?
+    SP_STDOUT="$BASEDIR/selfplay/.last_run_stdout.txt"
+    set +e
+    CUDA_VISIBLE_DEVICES=$GPU "$SELFPLAY" "${SELFPLAY_ARGS[@]}" --max-games "$DYNAMIC_GAMES" \
+        | tee "$SP_STDOUT"
+    SP_EXIT=${PIPESTATUS[0]}
+    set -e
     if [ $SP_EXIT -ne 0 ]; then
         echo "Selfplay exited with code $SP_EXIT. Stopping pipeline."
         exit $SP_EXIT
     fi
+
+    # Capture last-run stats for compute_games.py's avg_rows_per_game estimate.
+    # Parses: "Selfplay complete. Games: G | Total rows written: R"
+    STATS_LINE=$(grep "^Selfplay complete" "$SP_STDOUT" | tail -n 1 || true)
+    if [[ -n "$STATS_LINE" ]]; then
+        GAMES_RUN=$(echo "$STATS_LINE" | sed -n 's/.*Games: \([0-9]\+\).*/\1/p')
+        ROWS_RUN=$(echo "$STATS_LINE" | sed -n 's/.*Total rows written: \([0-9]\+\).*/\1/p')
+        if [[ -n "$GAMES_RUN" && -n "$ROWS_RUN" && "$GAMES_RUN" -gt 0 ]]; then
+            printf '%s\t%s\n' "$GAMES_RUN" "$ROWS_RUN" > "$BASEDIR/selfplay/last_run.tsv"
+        fi
+    fi
+    rm -f "$SP_STDOUT"
 
     # 1.5. Check if total selfplay data satisfies train_per_data ratio;
     # if not, loop back to selfplay instead of waiting.
