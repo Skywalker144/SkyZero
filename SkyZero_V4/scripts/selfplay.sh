@@ -16,7 +16,7 @@ set -o pipefail
 #   this  → main  :  BASEDIR/selfplay/NODE_ID/  (main picks up game data)
 #
 # Usage:
-#   bash selfplay.sh                         # defaults + selfplay.cfg
+#   bash selfplay.sh                         # defaults + run.cfg
 #   NODE_ID=node2 GPU=0 bash selfplay.sh     # explicit node id and GPU
 # =============================================================================
 
@@ -87,7 +87,7 @@ UNCERTAINTY_EXPONENT="${UNCERTAINTY_EXPONENT:-1.0}"
 UNCERTAINTY_MAX_WEIGHT="${UNCERTAINTY_MAX_WEIGHT:-8.0}"
 
 # --- Source config (overrides defaults, but env vars take priority) ---
-CFGFILE="${CFGFILE:-$SCRIPTDIR/selfplay.cfg}"
+CFGFILE="${CFGFILE:-$SCRIPTDIR/run.cfg}"
 if [ -f "$CFGFILE" ]; then
     source "$CFGFILE"
 fi

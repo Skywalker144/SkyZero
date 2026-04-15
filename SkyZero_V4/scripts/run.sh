@@ -7,7 +7,7 @@ trap 'echo ""; echo "Pipeline interrupted by user. Exiting."; exit 130' INT TERM
 # Orchestrates: selfplay (C++) -> shuffle (Python) -> train (Python) -> export (Python)
 #
 # Usage:
-#   bash run.sh                          # use defaults + selfplay.cfg
+#   bash run.sh                          # use defaults + run.cfg
 #   GPU=1 MAX_GAMES=8000 bash run.sh     # override via env
 # =============================================================================
 
@@ -94,7 +94,7 @@ TRAIN_PER_DATA="${TRAIN_PER_DATA:-2.0}"
 MIN_GAMES="${MIN_GAMES:-500}"
 
 # --- Source config (overrides defaults, but env vars take priority) ---
-CFGFILE="${CFGFILE:-$SCRIPTDIR/selfplay.cfg}"
+CFGFILE="${CFGFILE:-$SCRIPTDIR/run.cfg}"
 if [ -f "$CFGFILE" ]; then
     source "$CFGFILE"
 fi
