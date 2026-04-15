@@ -27,12 +27,13 @@ namespace skyzero {
 
 struct RandomOpeningConfig {
     bool enabled = false;
-    int min_moves = 3;
-    int max_moves = 10;
-    float balance_power = 4.0f;      // exponent k in (1 - V^2)^k
-    float reject_threshold = 0.20f;  // reject if best |V| > this
-    int max_retries = 20;
-    int nearby_dist = 3;             // Chebyshev distance for "near existing stones"
+    int min_moves = 0;                   // KataGomo NOVC: distribution starts at 0
+    int max_moves = 11;                  // KataGomo NOVC: distribution length = 12
+    float balance_power = 4.0f;          // exponent k in (1 - V^2)^k (selfplay)
+    float reject_prob = 0.995f;          // initial probabilistic rejection strength
+    float reject_prob_fallback = 0.8f;   // fallback after max_retries (loop continues)
+    int max_retries = 20;                // retries before reject_prob decays to fallback
+    int nearby_dist = 3;                 // Chebyshev distance for "near existing stones"
 };
 
 // Global statistics (thread-safe)
@@ -58,7 +59,10 @@ public:
         const InferenceFn& infer_fn,
         const BatchInferenceFn& batch_infer_fn
     ) {
-        for (int attempt = 0; attempt < cfg_.max_retries; ++attempt) {
+        // KataGomo-style infinite retry with rejectProb decay.
+        double reject_prob = cfg_.reject_prob;
+        int tries = 0;
+        while (true) {
             opening_stats::tried_count.fetch_add(1, std::memory_order_relaxed);
 
             // Phase 1: sample move count
@@ -72,27 +76,26 @@ public:
 
             bool ok = scatter_moves(board, to_play, last_action, last_player,
                                     num_moves, rng);
-            if (!ok) continue;
+            if (ok) {
+                // Phase 3: pick one balanced move via NN evaluation
+                int balanced_loc = pick_balanced_move(
+                    board, to_play, last_action, last_player,
+                    reject_prob, rng, infer_fn, batch_infer_fn);
+                if (balanced_loc >= 0) {
+                    board[balanced_loc] = static_cast<int8_t>(to_play);
+                    int next_player = -to_play;
+                    if (!game_.is_terminal(board, balanced_loc, to_play)) {
+                        opening_stats::succeed_count.fetch_add(1, std::memory_order_relaxed);
+                        return {std::move(board), next_player};
+                    }
+                }
+            }
 
-            // Phase 3: pick one balanced move via NN evaluation
-            int balanced_loc = pick_balanced_move(
-                board, to_play, last_action, last_player,
-                rng, infer_fn, batch_infer_fn);
-            if (balanced_loc < 0) continue;
-
-            // Apply the balanced move
-            board[balanced_loc] = static_cast<int8_t>(to_play);
-            int next_player = -to_play;
-
-            // Check terminal after balanced move
-            if (game_.is_terminal(board, balanced_loc, to_play)) continue;
-
-            opening_stats::succeed_count.fetch_add(1, std::memory_order_relaxed);
-            return {std::move(board), next_player};
+            if (++tries > cfg_.max_retries) {
+                tries = 0;
+                reject_prob = cfg_.reject_prob_fallback;
+            }
         }
-
-        // Fallback: empty board
-        return {std::vector<int8_t>(area_, 0), 1};
     }
 
 private:
@@ -102,11 +105,10 @@ private:
 
     // Weighted distribution biased toward mid-range move counts (for Renju)
     int sample_move_count(std::mt19937& rng) {
-        // Probability weights for 0, 1, 2, ..., 11 random moves
-        // Biased toward 3-7 moves for Renju (similar to KataGomo NOVC distribution)
+        // KataGomo NOVC distribution (peak at 3 moves), indices 0..11
         static const std::vector<float> weights = {
-            0.01f, 0.03f, 10.0f, 30.0f, 50.0f, 80.0f,
-            60.0f, 40.0f, 20.0f, 10.0f, 5.0f, 1.0f
+            10.0f, 30.0f, 50.0f, 80.0f, 60.0f, 40.0f,
+            20.0f, 10.0f,  5.0f,  1.0f,  0.0f,  0.0f
         };
 
         int max_idx = std::min(static_cast<int>(weights.size()),
@@ -184,8 +186,8 @@ private:
                                           [](int8_t v) { return v == 0; });
 
         if (is_empty) {
-            // Gaussian around center
-            std::normal_distribution<double> gauss(0.0, 1.5);
+            // Gaussian around center. σ=3 matches KataGomo's effective σ on 15x15.
+            std::normal_distribution<double> gauss(0.0, 3.0);
             for (int tries = 0; tries < 50; ++tries) {
                 double xd = gauss(rng);
                 double yd = gauss(rng);
@@ -247,82 +249,102 @@ private:
     int pick_balanced_move(
         const std::vector<int8_t>& board, int to_play,
         int last_action, int last_player,
+        double reject_prob,
         std::mt19937& rng,
         const InferenceFn& infer_fn,
         const BatchInferenceFn& batch_infer_fn
     ) {
         const int bs = game_.board_size;
+        const int next_player = -to_play;
 
-        // Collect candidate positions: empty cells near existing stones
+        // --- Phase A: evaluate root value from both perspectives (2 inferences)
+        std::vector<std::vector<int8_t>> root_batch;
+        root_batch.push_back(game_.encode_state(board, to_play));
+        root_batch.push_back(game_.encode_state(board, next_player));
+        opening_stats::eval_count.fetch_add(2, std::memory_order_relaxed);
+        auto root_results = batch_infer_fn(root_batch);
+        const auto& wdl_pla = root_results[0].second;
+        const auto& wdl_opp = root_results[1].second;
+        double root_V_pla = static_cast<double>(wdl_pla[0]) - wdl_pla[2];
+        double root_V_opp = static_cast<double>(wdl_opp[0]) - wdl_opp[2];
+
+        std::bernoulli_distribution bern_reject(reject_prob);
+
+        // Pre-check: probably all moves are losing from my perspective
+        if (root_V_pla < 0) {
+            double f = 1.0 - std::exp(-3.0 * root_V_pla * root_V_pla);
+            std::bernoulli_distribution bern_f(f);
+            if (bern_f(rng) && bern_reject(rng)) return -1;
+        }
+        // Pre-check: probably all moves are winning (opp's perspective losing)
+        if (root_V_opp < 0) {
+            double f = 1.0 - std::exp(-3.0 * root_V_opp * root_V_opp);
+            std::bernoulli_distribution bern_f(f);
+            if (bern_f(rng) && bern_reject(rng)) return -1;
+        }
+
+        // KataGomo: nearby filter only activates when position isn't decisively
+        // winning for the player-to-move and the board isn't empty.
+        int stone_num = 0;
+        for (int8_t v : board) if (v != 0) ++stone_num;
+        const bool should_check_nearby = (root_V_opp > 0) && (stone_num > 0);
+
+        // --- Phase B: collect candidate positions
         std::vector<int> candidates;
         for (int r = 0; r < bs; ++r) {
             for (int c = 0; c < bs; ++c) {
                 const int loc = r * bs + c;
                 if (board[loc] != 0) continue;
-                if (!game_.is_near_occupied(board, r, c, cfg_.nearby_dist)) continue;
+                if (should_check_nearby &&
+                    !game_.is_near_occupied(board, r, c, cfg_.nearby_dist)) continue;
                 candidates.push_back(loc);
             }
         }
-
         if (candidates.empty()) return -1;
 
-        // For each candidate: place stone, encode, prepare for batch inference
+        // --- Phase C: place stone, filter terminals/forbidden, encode
         std::vector<std::vector<int8_t>> encoded_batch;
         std::vector<int> valid_candidates;
         encoded_batch.reserve(candidates.size());
         valid_candidates.reserve(candidates.size());
 
-        const int next_player = -to_play;
-
         for (int loc : candidates) {
             auto next_board = board;
             next_board[loc] = static_cast<int8_t>(to_play);
 
-            // Skip if this move ends the game
             if (game_.is_terminal(next_board, loc, to_play)) continue;
-
-            // Skip forbidden points for Black under Renju
             if (game_.use_renju && to_play == 1) {
                 int winner = game_.get_winner(next_board, loc, to_play);
-                if (winner == -1) continue;  // forbidden
+                if (winner == -1) continue;  // forbidden for Black
             }
 
-            auto encoded = game_.encode_state(next_board, next_player);
-            encoded_batch.push_back(std::move(encoded));
+            encoded_batch.push_back(game_.encode_state(next_board, next_player));
             valid_candidates.push_back(loc);
         }
-
         if (valid_candidates.empty()) return -1;
 
-        // Batch NN evaluation
+        // --- Phase D: batch NN evaluation of candidates
         opening_stats::eval_count.fetch_add(
             static_cast<int64_t>(encoded_batch.size()), std::memory_order_relaxed);
-
         auto results = batch_infer_fn(encoded_batch);
 
-        // Compute balance scores
+        // --- Phase E: compute balance scores (1 - V^2)^k
         std::vector<double> scores(results.size(), 0.0);
-        double max_score = 0.0;
-        float min_absV = 1.0f;
-
+        double max_prob = 0.0;
         for (size_t i = 0; i < results.size(); ++i) {
-            const auto& [policy, wdl] = results[i];
-            // V from next_player's perspective: win - loss
-            float V = wdl[0] - wdl[2];
-            float absV = std::fabs(V);
-            min_absV = std::min(min_absV, absV);
-
-            // Balance score: (1 - V^2)^k
-            double score = std::pow(
-                std::max(0.0, 1.0 - static_cast<double>(V) * V),
-                static_cast<double>(cfg_.balance_power));
+            const auto& wdl = results[i].second;
+            double V = static_cast<double>(wdl[0]) - wdl[2];
+            double score = std::pow(std::max(0.0, 1.0 - V * V),
+                                    static_cast<double>(cfg_.balance_power));
             scores[i] = score;
-            max_score = std::max(max_score, score);
+            max_prob = std::max(max_prob, score);
         }
 
-        // Reject if best candidate is still too unbalanced
-        if (min_absV > cfg_.reject_threshold) {
-            return -1;
+        // Probabilistic reject based on max balance score
+        {
+            double p = std::clamp(1.0 - max_prob, 0.0, 1.0);
+            std::bernoulli_distribution bern_max(p);
+            if (bern_max(rng) && bern_reject(rng)) return -1;
         }
 
         // Sample proportional to balance scores
