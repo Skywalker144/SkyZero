@@ -129,17 +129,67 @@ data/
     └── <NODE_ID>/              # 本副机生成的对弈数据
 ```
 
-两种获取模型的方式：
+### 4.1 指定 NODE_ID（决定数据落在哪个子目录）
 
-- **Syncthing（推荐，长期运行用）**：配置成主机 → 副机 单向同步 `data/models/` 目录。副机只需起好 Syncthing，模型会自动到位。
-  - 同步方向总结（出处：`scripts/selfplay.sh:14-16`）：
-    - `主机 → 副机`：`data/models/`
-    - `副机 → 主机`：`data/selfplay/<NODE_ID>/`
-- **scp（临时验证用）**：
-  ```bash
-  mkdir -p data/models
-  scp <主机用户>@<主机IP>:/path/to/SkyZero_V4/data/models/'*.pt' data/models/
-  ```
+**不需要改 `selfplay.sh`**。脚本会根据 `NODE_ID` 自动在 `data/selfplay/` 下建出对应的子目录并把 `.npz` 写进去（出处 `scripts/selfplay.sh:30,99`）。
+
+三种方式（优先级由高到低）：
+
+1. **命令行环境变量**（临时指定）：
+   ```bash
+   NODE_ID=node2 GPU=0 bash scripts/selfplay.sh
+   ```
+
+2. **写进 `scripts/run.cfg`**（长期固定用这个 node_id，推荐）：
+   ```bash
+   # scripts/run.cfg 里加一行
+   NODE_ID=node2
+   ```
+   注意 `selfplay.sh:87-91` 的加载顺序是先用脚本内默认值、再 `source run.cfg`；但因为 `NODE_ID="${NODE_ID:-$(hostname)}"` 已经在第 30 行展开过，**命令行环境变量优先级高于 run.cfg**。
+
+3. **什么都不设**：默认用 `$(hostname)`。如果副机 hostname 本身就有区分度（例如 `worker-01`），可以直接用默认值。
+
+**建议**：多副机场景下给每台机器起一个稳定、易辨认的 `NODE_ID`（如 `node2`、`node3`），方便后面 Syncthing 共享只这台机器的子目录。
+
+### 4.2 Syncthing 配置（两个单向 Folder）
+
+很关键：**不要**给整个 `data/` 或 `data/selfplay/` 建一个双向同步 Folder，否则多台副机的子目录会互相覆盖或触发冲突。正确姿势是建**两个独立的、方向相反的单向 Folder**。
+
+#### Folder 1 — 主机 → 副机：`data/models/`
+
+| 端   | 路径                         | Folder Type  |
+|------|------------------------------|--------------|
+| 主机 | `<项目根>/data/models`       | Send Only    |
+| 副机 | `<项目根>/data/models`       | Receive Only |
+
+作用：主机训练导出的最新 `*.pt` 自动推到副机，`selfplay.sh` 启动时在这里找权重（见 `scripts/selfplay.sh:15`）。
+
+#### Folder 2 — 副机 → 主机：`data/selfplay/<NODE_ID>/`
+
+| 端   | 路径                                          | Folder Type  |
+|------|-----------------------------------------------|--------------|
+| 副机 | `<项目根>/data/selfplay/<NODE_ID>`            | Send Only    |
+| 主机 | `<项目根>/data/selfplay/<NODE_ID>`            | Receive Only |
+
+作用：副机产出的对弈 `.npz` 回流到主机。主机 `shuffle.py` 用 `os.walk` 递归读 `data/selfplay/` 下所有子目录，所以只要落进 `data/selfplay/<NODE_ID>/` 就会被训练吃到。
+
+**配置步骤建议**：
+
+1. 先在副机上跑一次（可以用第 5 节的冒烟参数），让 `selfplay.sh` 自动建出 `data/selfplay/<NODE_ID>/` 目录。
+2. 再去 Syncthing UI 上共享这个已存在的目录，省得手工 `mkdir` 或对不齐路径。
+3. 两个 Folder 的 Folder ID 建议起有意义的名字，例如 `skyzero-models` 和 `skyzero-selfplay-node2`，多台副机一目了然。
+4. Send/Receive Only 的方向性不是可有可无的装饰 —— 它能防止副机本地误改的 `data/models/` 被推回主机覆盖正在导出的权重。
+
+#### scp（临时验证用）
+
+如果只是想先冒烟测试一下，不想立即碰 Syncthing：
+
+```bash
+mkdir -p data/models
+scp <主机用户>@<主机IP>:/path/to/SkyZero_V4/data/models/'*.pt' data/models/
+```
+
+冒烟跑通后再按上面两个 Folder 的结构接入 Syncthing。
 
 ---
 
