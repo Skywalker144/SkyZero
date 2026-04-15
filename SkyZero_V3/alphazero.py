@@ -565,9 +565,8 @@ class AlphaZero:
                 outcome = np.array([0.0, 1.0, 0.0])  # draw
 
             opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
-            # PCR: opp target comes from the NEXT move's mcts_policy, so its reliability
-            # tracks whether THAT move was full-search. Final move has no next → 0.
-            next_is_full = (i + 1 < len(memory)) and memory[i + 1]["is_full_search"]
+            # KataGo-aligned: opp target is next move's mcts_policy at full weight
+            # regardless of cheap/full search; only the final row (no next move) is masked.
             sample_data = {
                 "state": sample["state"],
                 "to_play": sample["to_play"],
@@ -579,7 +578,7 @@ class AlphaZero:
                 "v_mix": sample["v_mix"],  # WDL vector for psw and value target mix
                 "sample_weight": sample["sample_weight"],
                 "policy_weight": 1.0 if sample["is_full_search"] else 0.0,
-                "opponent_policy_weight": 1.0 if next_is_full else 0.0,
+                "opponent_policy_weight": 1.0 if (i + 1 < len(memory)) else 0.0,
             }
             return_memory.append(sample_data)
         
@@ -629,7 +628,7 @@ class AlphaZero:
 
         sample_weights = torch.as_tensor(batch["sample_weight"], device=self.args["device"], dtype=torch.float32)
         # PCR: binary (0/1) masks. policy_weight=0 for fast-search rows;
-        # opponent_policy_weight=0 when the NEXT row was fast-search (noisy opp target).
+        # opponent_policy_weight=0 only for the final row (no next move), KataGo-aligned.
         policy_weights = torch.as_tensor(batch["policy_weight"], device=self.args["device"], dtype=torch.float32)
         opp_policy_weights = torch.as_tensor(batch["opponent_policy_weight"], device=self.args["device"], dtype=torch.float32)
 

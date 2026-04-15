@@ -257,9 +257,8 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     outcome = np.array([0.0, 1.0, 0.0])  # draw
 
                 opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
-                # PCR: opp target is next move's mcts_policy; its reliability tracks
-                # whether THAT move was full-search. Final move has no next → 0.
-                next_is_full = (i + 1 < len(memory)) and memory[i + 1]["is_full_search"]
+                # KataGo-aligned: opp target is next move's mcts_policy at full weight
+                # regardless of cheap/full search; only the final row (no next move) is masked.
                 sample_data = {
                     "state": sample["state"],
                     "to_play": sample["to_play"],
@@ -271,7 +270,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     "v_mix": sample["v_mix"],  # WDL vector for psw and value target mix
                     "sample_weight": sample["sample_weight"],
                     "policy_weight": 1.0 if sample["is_full_search"] else 0.0,
-                    "opponent_policy_weight": 1.0 if next_is_full else 0.0,
+                    "opponent_policy_weight": 1.0 if (i + 1 < len(memory)) else 0.0,
                 }
                 return_memory.append(sample_data)
 
