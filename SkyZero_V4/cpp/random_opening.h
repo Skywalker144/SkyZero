@@ -45,9 +45,9 @@ namespace opening_stats {
 class RandomOpeningGenerator {
 public:
     using InferenceFn = std::function<
-        std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
+        std::pair<std::vector<float>, std::array<float, 4>>(const std::vector<int8_t>&)>;
     using BatchInferenceFn = std::function<
-        std::vector<std::pair<std::vector<float>, std::array<float, 3>>>(
+        std::vector<std::pair<std::vector<float>, std::array<float, 4>>>(
             const std::vector<std::vector<int8_t>>&)>;
 
     RandomOpeningGenerator(const Gomoku& game, const RandomOpeningConfig& cfg)

@@ -1,13 +1,64 @@
 #ifndef SKYZERO_SELFPLAY_MANAGER_H
 #define SKYZERO_SELFPLAY_MANAGER_H
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <deque>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 #include <iostream>
 
 namespace skyzero {
+
+// ---------------------------------------------------------------------------
+// ForkQueue — stores fork-side starting positions for selfplay diversity.
+// Workers push (state, to_play) when an alternative root move is sampled;
+// new games pop from the queue first before falling back to random opening.
+// Thread-safe; bounded size with FIFO eviction.
+// ---------------------------------------------------------------------------
+struct ForkPosition {
+    std::vector<int8_t> state;
+    int to_play = 1;
+};
+
+class ForkQueue {
+public:
+    bool try_pop(ForkPosition& out) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (queue_.empty()) return false;
+        out = std::move(queue_.front());
+        queue_.pop_front();
+        pop_count_ += 1;
+        return true;
+    }
+
+    void push(ForkPosition pos, int max_size) {
+        std::lock_guard<std::mutex> lk(mu_);
+        while (static_cast<int>(queue_.size()) >= max_size) {
+            queue_.pop_front();
+        }
+        queue_.push_back(std::move(pos));
+        push_count_ += 1;
+    }
+
+    size_t size() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return queue_.size();
+    }
+
+    int64_t push_count() const { return push_count_.load(); }
+    int64_t pop_count() const { return pop_count_.load(); }
+
+private:
+    mutable std::mutex mu_;
+    std::deque<ForkPosition> queue_;
+    std::atomic<int64_t> push_count_{0};
+    std::atomic<int64_t> pop_count_{0};
+};
 
 // Watches a directory for the latest TorchScript .pt model file.
 class SelfplayManager {

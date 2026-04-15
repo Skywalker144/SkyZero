@@ -39,6 +39,24 @@ def weighted_cross_entropy(logits, targets, weights):
     return torch.mean(weights * per_sample)
 
 
+def compute_value_error_loss(value_logits, value_error_logit, value_targets, sample_weights, delta=0.4):
+    """Shortterm value error head loss.
+
+    Predicts (utility_pred - actual_outcome)^2 with Huber loss. utility_pred and
+    actual_outcome are detached from the value_logits gradient path so the
+    error head supervises a target derived from the (current) value head's own
+    output without distorting it. Reference: KataGomo metrics_pytorch.py:238-245.
+    """
+    with torch.no_grad():
+        value_probs = torch.softmax(value_logits.float(), dim=-1)
+        utility_pred = value_probs[:, 0] - value_probs[:, 2]
+        actual_outcome = value_targets[:, 0] - value_targets[:, 2]
+        actual_sq_err = (utility_pred - actual_outcome) ** 2
+    pred = torch.nn.functional.softplus(value_error_logit.float().squeeze(-1))
+    huber = torch.nn.functional.huber_loss(pred, actual_sq_err, reduction="none", delta=delta)
+    return torch.mean(sample_weights * huber)
+
+
 def save_checkpoint(model, swa_model, optimizer, scaler, train_state, path):
     state = {
         "model": model.state_dict(),
@@ -169,6 +187,8 @@ def main():
     parser.add_argument("-policy-loss-weight", type=float, default=1.0)
     parser.add_argument("-opp-policy-loss-weight", type=float, default=0.15)
     parser.add_argument("-value-loss-weight", type=float, default=1.0)
+    parser.add_argument("-value-error-loss-weight", type=float, default=0.05,
+                        help="Weight for shortterm value-error head (KataGo-style)")
     parser.add_argument("-brenorm-target-rmax", type=float, default=3.0)
     parser.add_argument("-brenorm-target-dmax", type=float, default=5.0)
     parser.add_argument("-brenorm-avg-momentum", type=float, default=0.001)
@@ -275,6 +295,10 @@ def main():
             opp_policy_targets = batch["opponentPolicyTargetsN"]  # [B, board_area]
             value_targets = batch["valueTargetsN"]       # [B, 3]
             sample_weights = batch["sampleWeightsN"]     # [B]
+            policy_weights = batch["policyWeightsN"]              # [B] (PCR)
+            opp_policy_weights = batch["oppPolicyWeightsN"]       # [B] (PCR)
+            policy_sw = sample_weights * policy_weights
+            opp_policy_sw = sample_weights * opp_policy_weights
 
             optimizer.zero_grad()
 
@@ -284,11 +308,16 @@ def main():
                     policy_logits = outputs["policy_logits"].reshape(-1, board_area)
                     opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
                     value_logits = outputs["value_logits"]
+                    value_error_logit = outputs["value_error_logit"]
 
-                    p_loss = weighted_cross_entropy(policy_logits, policy_targets, sample_weights)
-                    o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, sample_weights)
+                    p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
+                    o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
                     v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
-                    total_loss = args.policy_loss_weight * p_loss + args.opp_policy_loss_weight * o_loss + args.value_loss_weight * v_loss
+                    ve_loss = compute_value_error_loss(value_logits, value_error_logit, value_targets, sample_weights)
+                    total_loss = (args.policy_loss_weight * p_loss
+                                  + args.opp_policy_loss_weight * o_loss
+                                  + args.value_loss_weight * v_loss
+                                  + args.value_error_loss_weight * ve_loss)
 
                 scaler.scale(total_loss).backward()
                 scaler.unscale_(optimizer)
@@ -301,11 +330,16 @@ def main():
                 policy_logits = outputs["policy_logits"].reshape(-1, board_area)
                 opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
                 value_logits = outputs["value_logits"]
+                value_error_logit = outputs["value_error_logit"]
 
-                p_loss = weighted_cross_entropy(policy_logits, policy_targets, sample_weights)
-                o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, sample_weights)
+                p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
+                o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
                 v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
-                total_loss = args.policy_loss_weight * p_loss + args.opp_policy_loss_weight * o_loss + args.value_loss_weight * v_loss
+                ve_loss = compute_value_error_loss(value_logits, value_error_logit, value_targets, sample_weights)
+                total_loss = (args.policy_loss_weight * p_loss
+                              + args.opp_policy_loss_weight * o_loss
+                              + args.value_loss_weight * v_loss
+                              + args.value_error_loss_weight * ve_loss)
 
                 total_loss.backward()
                 gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale, train_state["global_step_samples"])
@@ -319,6 +353,7 @@ def main():
             running_loss["policy"] += p_loss.item()
             running_loss["opp_policy"] += o_loss.item()
             running_loss["value"] += v_loss.item()
+            running_loss["value_error"] += ve_loss.item()
             running_loss["total"] += total_loss.item()
 
             # Update LR every 10 batches (during first 50M samples)
@@ -364,7 +399,8 @@ def main():
                 current_lr = optimizer.param_groups[0]["lr"]
                 logging.info(
                     f"  step={batch_count} samples={samples_this_epoch} "
-                    f"loss={avg['total']:.4f} p={avg['policy']:.4f} o={avg['opp_policy']:.4f} v={avg['value']:.4f} "
+                    f"loss={avg['total']:.4f} p={avg['policy']:.4f} o={avg['opp_policy']:.4f} "
+                    f"v={avg['value']:.4f} ve={avg['value_error']:.4f} "
                     f"lr={current_lr:.2e} speed={speed:.0f} samp/s"
                 )
                 # Write to JSON log
@@ -376,6 +412,7 @@ def main():
                         "policy_loss": avg["policy"],
                         "opp_policy_loss": avg["opp_policy"],
                         "value_loss": avg["value"],
+                        "value_error_loss": avg["value_error"],
                         "total_loss": avg["total"],
                         "lr": optimizer.param_groups[0]["lr"],
                         "brenorm_rmax": train_state.get("brenorm_rmax", 1.0),
@@ -416,20 +453,27 @@ def main():
                     opp_policy_targets = batch["opponentPolicyTargetsN"]
                     value_targets = batch["valueTargetsN"]
                     sample_weights = batch["sampleWeightsN"]
+                    policy_weights = batch["policyWeightsN"]
+                    opp_policy_weights = batch["oppPolicyWeightsN"]
+                    policy_sw = sample_weights * policy_weights
+                    opp_policy_sw = sample_weights * opp_policy_weights
 
                     outputs = model(encoded)
                     policy_logits = outputs["policy_logits"].reshape(-1, board_area)
                     opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
                     value_logits = outputs["value_logits"]
+                    value_error_logit = outputs["value_error_logit"]
 
-                    p_loss = weighted_cross_entropy(policy_logits, policy_targets, sample_weights)
-                    o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, sample_weights)
+                    p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
+                    o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
                     v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
+                    ve_loss = compute_value_error_loss(value_logits, value_error_logit, value_targets, sample_weights)
 
                     val_loss["policy"] += p_loss.item()
                     val_loss["opp_policy"] += o_loss.item()
                     val_loss["value"] += v_loss.item()
-                    val_loss["total"] += (p_loss + 0.15 * o_loss + v_loss).item()
+                    val_loss["value_error"] += ve_loss.item()
+                    val_loss["total"] += (p_loss + 0.15 * o_loss + v_loss + 0.05 * ve_loss).item()
                     val_count += 1
 
             if val_count > 0:

@@ -48,6 +48,8 @@ public:
             value_buf_.push_back(s.value_target[1]);
             value_buf_.push_back(s.value_target[2]);
             weight_buf_.push_back(s.sample_weight);
+            policy_weight_buf_.push_back(s.policy_weight);
+            opp_policy_weight_buf_.push_back(s.opp_policy_weight);
             num_rows_++;
 
             if (num_rows_ >= max_rows_per_file_) {
@@ -93,11 +95,19 @@ private:
         NumpyBuffer<float> weightBuf({(int64_t)N}, "<f4");
         std::memcpy(weightBuf.data, weight_buf_.data(), weight_buf_.size() * sizeof(float));
 
+        NumpyBuffer<float> policyWeightBuf({(int64_t)N}, "<f4");
+        std::memcpy(policyWeightBuf.data, policy_weight_buf_.data(), policy_weight_buf_.size() * sizeof(float));
+
+        NumpyBuffer<float> oppPolicyWeightBuf({(int64_t)N}, "<f4");
+        std::memcpy(oppPolicyWeightBuf.data, opp_policy_weight_buf_.data(), opp_policy_weight_buf_.size() * sizeof(float));
+
         uint64_t encodedBytes = encodedBuf.prepareHeaderWithNumRows(N);
         uint64_t policyBytes = policyBuf.prepareHeaderWithNumRows(N);
         uint64_t oppPolicyBytes = oppPolicyBuf.prepareHeaderWithNumRows(N);
         uint64_t valueBytes = valueBuf.prepareHeaderWithNumRows(N);
         uint64_t weightBytes = weightBuf.prepareHeaderWithNumRows(N);
+        uint64_t policyWeightBytes = policyWeightBuf.prepareHeaderWithNumRows(N);
+        uint64_t oppPolicyWeightBytes = oppPolicyWeightBuf.prepareHeaderWithNumRows(N);
 
         ZipFile zip(filename);
         zip.writeBuffer("encodedInputNCHW.npy", encodedBuf.dataIncludingHeader, encodedBytes);
@@ -105,6 +115,8 @@ private:
         zip.writeBuffer("opponentPolicyTargetsN.npy", oppPolicyBuf.dataIncludingHeader, oppPolicyBytes);
         zip.writeBuffer("valueTargetsN.npy", valueBuf.dataIncludingHeader, valueBytes);
         zip.writeBuffer("sampleWeightsN.npy", weightBuf.dataIncludingHeader, weightBytes);
+        zip.writeBuffer("policyWeightsN.npy", policyWeightBuf.dataIncludingHeader, policyWeightBytes);
+        zip.writeBuffer("oppPolicyWeightsN.npy", oppPolicyWeightBuf.dataIncludingHeader, oppPolicyWeightBytes);
         zip.close();
 
         std::cout << "Wrote " << N << " rows to " << filename << std::endl;
@@ -117,6 +129,8 @@ private:
         opp_policy_buf_.clear();
         value_buf_.clear();
         weight_buf_.clear();
+        policy_weight_buf_.clear();
+        opp_policy_weight_buf_.clear();
         num_rows_ = 0;
     }
 
@@ -136,6 +150,8 @@ private:
     std::vector<float> opp_policy_buf_;
     std::vector<float> value_buf_;
     std::vector<float> weight_buf_;
+    std::vector<float> policy_weight_buf_;
+    std::vector<float> opp_policy_weight_buf_;
 };
 
 }  // namespace skyzero

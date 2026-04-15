@@ -19,6 +19,8 @@ struct TrainSample {
     std::vector<float> opponent_policy_target;
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
     float sample_weight = 1.0f;
+    float policy_weight = 1.0f;       // 0 for cheap-search rows (PCR)
+    float opp_policy_weight = 1.0f;   // 0 if next move was cheap-search
 };
 
 inline float clampf(float v, float lo, float hi) {
@@ -41,6 +43,8 @@ struct PolicySurpriseSample {
     std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};         // WDL from search root
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
     float sample_weight = 1.0f;
+    float policy_weight = 1.0f;
+    float opp_policy_weight = 1.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -214,6 +218,8 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.opponent_policy_target = game_data[i].opponent_policy_target;
             ts.value_target = game_data[i].value_target;
             ts.sample_weight = game_data[i].sample_weight;
+            ts.policy_weight = game_data[i].policy_weight;
+            ts.opp_policy_weight = game_data[i].opp_policy_weight;
             return ts;
         };
 

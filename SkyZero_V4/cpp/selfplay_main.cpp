@@ -123,6 +123,20 @@ int main(int argc, char* argv[]) {
         else if (arg == "--opening-balance-power") opening_cfg.balance_power = std::stof(next());
         else if (arg == "--opening-reject-threshold") opening_cfg.reject_threshold = std::stof(next());
         else if (arg == "--opening-max-retries") opening_cfg.max_retries = std::stoi(next());
+        // Playout Cap Randomization
+        else if (arg == "--cheap-simulations") cfg.cheap_simulations = std::stoi(next());
+        else if (arg == "--cheap-gumbel-m") cfg.cheap_gumbel_m = std::stoi(next());
+        else if (arg == "--full-search-prob") cfg.full_search_prob = std::stof(next());
+        else if (arg == "--cheap-sample-weight") cfg.cheap_sample_weight = std::stof(next());
+        // Fork side positions
+        else if (arg == "--fork-side-prob") cfg.fork_side_position_prob = std::stof(next());
+        else if (arg == "--max-fork-queue") cfg.max_fork_queue_size = std::stoi(next());
+        else if (arg == "--fork-skip-first-n") cfg.fork_skip_first_n_moves = std::stoi(next());
+        // Uncertainty-Weighted MCTS Backup
+        else if (arg == "--enable-uncertainty-weighting") cfg.enable_uncertainty_weighting = true;
+        else if (arg == "--uncertainty-prior") cfg.uncertainty_prior = std::stof(next());
+        else if (arg == "--uncertainty-exponent") cfg.uncertainty_exponent = std::stof(next());
+        else if (arg == "--uncertainty-max-weight") cfg.uncertainty_max_weight = std::stof(next());
         else {
             std::cerr << "Unknown option: " << arg << std::endl;
             print_usage(argv[0]);
