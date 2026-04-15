@@ -502,6 +502,9 @@ class ValueHead(nn.Module):
         self.linear2 = nn.Linear(3 * c_v1, c_v2, bias=True)
         self.act2 = act(activation)
         self.linear_valuehead = nn.Linear(c_v2, 3, bias=True)
+        # Shortterm value error head: predicts (utility_pred - actual_outcome)^2
+        # Bias-init negative so initial softplus output is small (uncertainty ~0.1).
+        self.linear_value_error = nn.Linear(c_v2, 1, bias=True)
 
     def initialize(self):
         bias_scale = 0.2
@@ -510,6 +513,9 @@ class ValueHead(nn.Module):
         init_weights(self.linear2.bias, self.activation, scale=bias_scale, fan_tensor=self.linear2.weight)
         init_weights(self.linear_valuehead.weight, "identity", scale=1.0)
         init_weights(self.linear_valuehead.bias, "identity", scale=bias_scale, fan_tensor=self.linear_valuehead.weight)
+        init_weights(self.linear_value_error.weight, "identity", scale=1.0)
+        # softplus(-2.25) ~= 0.1, gives a sensible "low uncertainty" prior at init.
+        nn.init.constant_(self.linear_value_error.bias, -2.25)
 
     def add_reg_dict(self, reg_dict: Dict[str, List]):
         reg_dict["output"].append(self.conv1.weight)
@@ -517,6 +523,8 @@ class ValueHead(nn.Module):
         reg_dict["output_noreg"].append(self.linear2.bias)
         reg_dict["output"].append(self.linear_valuehead.weight)
         reg_dict["output_noreg"].append(self.linear_valuehead.bias)
+        reg_dict["output"].append(self.linear_value_error.weight)
+        reg_dict["output_noreg"].append(self.linear_value_error.bias)
         self.bias1.add_reg_dict(reg_dict)
 
     def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
@@ -529,7 +537,9 @@ class ValueHead(nn.Module):
         outpooled = self.gpool(outv1, mask=mask, mask_sum_hw=mask_sum_hw).squeeze(-1).squeeze(-1)
         outv2 = self.linear2(outpooled)
         outv2 = self.act2(outv2)
-        return self.linear_valuehead(outv2)  # [B, 3]
+        value_logits = self.linear_valuehead(outv2)          # [B, 3]
+        value_error_logit = self.linear_value_error(outv2)   # [B, 1]
+        return value_logits, value_error_logit
 
 
 # ---------------------------------------------------------------------------
@@ -644,12 +654,15 @@ class Model(nn.Module):
         out = self.act_trunkfinal(out)
 
         policy_out = self.policy_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum)  # [B, 2, H, W]
-        value_out = self.value_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum)  # [B, 3]
+        value_out, value_error_logit = self.value_head(
+            out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum
+        )
 
         return {
             "policy_logits": policy_out[:, 0:1, :, :],            # [B, 1, H, W]
             "opponent_policy_logits": policy_out[:, 1:2, :, :],   # [B, 1, H, W]
             "value_logits": value_out,                             # [B, 3]
+            "value_error_logit": value_error_logit,                # [B, 1]
         }
 
 
@@ -664,4 +677,9 @@ class ExportWrapper(nn.Module):
 
     def forward(self, x):
         out = self.model(x)
-        return (out["policy_logits"], out["opponent_policy_logits"], out["value_logits"])
+        return (
+            out["policy_logits"],
+            out["opponent_policy_logits"],
+            out["value_logits"],
+            out["value_error_logit"],
+        )
