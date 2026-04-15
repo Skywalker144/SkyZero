@@ -32,8 +32,8 @@ struct AlphaZeroParallelConfig {
 template <typename Game>
 class ParallelMCTS {
 public:
-    using InferenceFn = std::function<std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
-    using BatchInferenceFn = std::function<std::vector<std::pair<std::vector<float>, std::array<float, 3>>>(
+    using InferenceFn = std::function<std::pair<std::vector<float>, std::array<float, 4>>(const std::vector<int8_t>&)>;
+    using BatchInferenceFn = std::function<std::vector<std::pair<std::vector<float>, std::array<float, 4>>>(
         const std::vector<std::vector<int8_t>>&
     )>;
 
@@ -66,7 +66,8 @@ public:
         int to_play,
         int num_simulations,
         std::unique_ptr<MCTSNode>& root,
-        bool is_eval = false
+        bool is_eval = false,
+        int gumbel_m_override = -1
     ) {
         if (!root) {
             root.reset(new MCTSNode{state, to_play});
@@ -78,13 +79,13 @@ public:
             auto pair = root_expand(*root);
             nn_policy = pair.first;
             nn_value_probs = pair.second;
-            backpropagate(root.get(), nn_value_probs);
+            backpropagate(root.get(), nn_value_probs, compute_uncertainty_weight(root->nn_value_error));
         } else {
             nn_policy = root->nn_policy;
             nn_value_probs = root->nn_value_probs;
         }
 
-        auto gumbel = gumbel_sequential_halving(*root, num_simulations, is_eval);
+        auto gumbel = gumbel_sequential_halving(*root, num_simulations, is_eval, gumbel_m_override);
 
         MCTSSearchOutput out;
         out.mcts_policy = std::move(gumbel.improved_policy);
@@ -100,6 +101,7 @@ private:
         std::vector<float> policy;
         std::array<float, 3> value{0.0f, 1.0f, 0.0f};
         std::vector<float> masked_logits;
+        float value_error = 0.0f;  // softplus output of value-error head
     };
 
     struct PendingLeaf {
@@ -163,7 +165,7 @@ private:
                 }
             }
 
-            std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
+            std::vector<std::pair<std::vector<float>, std::array<float, 4>>> infer_results;
             if (batch_infer_fn_) {
                 infer_results = batch_infer_fn_(encoded_batch);
             } else {
@@ -178,6 +180,7 @@ private:
 
             std::vector<float> logits(static_cast<size_t>(area), 0.0f);
             std::array<float, 3> value{0.0f, 0.0f, 0.0f};
+            float value_error = 0.0f;
             for (int i = 0; i < 8; ++i) {
                 const int k = i % 4;
                 const bool do_flip = i >= 4;
@@ -188,6 +191,7 @@ private:
                 value[0] += infer_results[static_cast<size_t>(i)].second[0] / 8.0f;
                 value[1] += infer_results[static_cast<size_t>(i)].second[1] / 8.0f;
                 value[2] += infer_results[static_cast<size_t>(i)].second[2] / 8.0f;
+                value_error += infer_results[static_cast<size_t>(i)].second[3] / 8.0f;
             }
 
             const auto legal = game_.get_is_legal_actions(state, to_play);
@@ -196,7 +200,7 @@ private:
                     logits[i] = -std::numeric_limits<float>::infinity();
                 }
             }
-            return {softmax(logits), value, logits};
+            return {softmax(logits), value, logits, value_error};
         }
 
         int k = 0;
@@ -222,13 +226,15 @@ private:
             }
         }
 
-        return {softmax(logits), pair.second, logits};
+        std::array<float, 3> wdl{pair.second[0], pair.second[1], pair.second[2]};
+        return {softmax(logits), wdl, logits, pair.second[3]};
     }
 
     void expand_with(const InferenceResult& ir, MCTSNode& node) {
         node.nn_policy = ir.policy;
         node.nn_value_probs = ir.value;
         node.nn_logits = ir.masked_logits;
+        node.nn_value_error = ir.value_error;
 
         const int prev_action = node.parent ? node.parent->action_taken : -1;
 
@@ -278,20 +284,20 @@ private:
             }
         }
 
-        const int effective_parent_n = node.n + node.vloss;
-        const auto sp = compute_select_params(node, effective_parent_n, visited_policy_mass, cfg_);
+        const float effective_parent_weight = node.weighted_n + static_cast<float>(node.vloss);
+        const auto sp = compute_select_params(node, effective_parent_weight, visited_policy_mass, cfg_);
 
         float best_score = -std::numeric_limits<float>::infinity();
         MCTSNode* best_child = nullptr;
         for (auto& child_ptr : node.children) {
             auto& child = *child_ptr;
-            const int effective_child_n = child.n + child.vloss;
+            const float effective_child_weight = child.weighted_n + static_cast<float>(child.vloss);
             float q = sp.fpu_value;
-            if (effective_child_n > 0) {
+            if (effective_child_weight > 0.0f) {
                 const float utility_sum = (child.v[2] - child.v[0]) - static_cast<float>(child.vloss);
-                q = utility_sum / static_cast<float>(effective_child_n);
+                q = utility_sum / effective_child_weight;
             }
-            const float u = sp.explore_scaling * child.prior / (1.0f + static_cast<float>(effective_child_n));
+            const float u = sp.explore_scaling * child.prior / (1.0f + effective_child_weight);
             const float score = q + u;
             if (score > best_score) {
                 best_score = score;
@@ -352,7 +358,9 @@ private:
                 const int result = game_.get_winner(node->state, node->action_taken, -node->to_play) * node->to_play;
                 if (result == 1) value = {1.0f, 0.0f, 0.0f};
                 else if (result == -1) value = {0.0f, 0.0f, 1.0f};
-                backpropagate_path_with_vloss(path, value);
+                // Terminal nodes have zero predictive variance — give max weight.
+                const float term_weight = cfg_.enable_uncertainty_weighting ? cfg_.uncertainty_max_weight : 1.0f;
+                backpropagate_path_with_vloss(path, value, term_weight);
                 sims_budget -= 1;
                 continue;
             }
@@ -397,7 +405,7 @@ private:
             }
         }
 
-        std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
+        std::vector<std::pair<std::vector<float>, std::array<float, 4>>> infer_results;
         try {
             if (batch_infer_fn_) {
                 infer_results = batch_infer_fn_(encoded_batch);
@@ -424,6 +432,7 @@ private:
         for (size_t i = 0; i < pending.size(); ++i) {
             std::vector<float> logits;
             std::array<float, 3> value{0.0f, 0.0f, 0.0f};
+            float value_error = 0.0f;
 
             if (pending[i].infer_count == 8) {
                 const int area = game_.board_size * game_.board_size;
@@ -439,11 +448,15 @@ private:
                     value[0] += infer_results[idx].second[0] / 8.0f;
                     value[1] += infer_results[idx].second[1] / 8.0f;
                     value[2] += infer_results[idx].second[2] / 8.0f;
+                    value_error += infer_results[idx].second[3] / 8.0f;
                 }
             } else {
                 const size_t idx = static_cast<size_t>(pending[i].infer_offset);
                 logits = std::move(infer_results[idx].first);
-                value = infer_results[idx].second;
+                value[0] = infer_results[idx].second[0];
+                value[1] = infer_results[idx].second[1];
+                value[2] = infer_results[idx].second[2];
+                value_error = infer_results[idx].second[3];
                 if (pending[i].transform_k != 0 || pending[i].transform_flip) {
                     logits = undo_transform_flat(logits, game_.board_size, pending[i].transform_k, pending[i].transform_flip);
                 }
@@ -460,14 +473,16 @@ private:
             ir.masked_logits = logits;
             ir.policy = softmax(logits);
             ir.value = value;
+            ir.value_error = value_error;
             expand_with(ir, *pending[i].leaf);
             const auto corrected_value = apply_svb_correction(*pending[i].leaf, ir.value);
-            backpropagate_path_with_vloss(pending[i].path, corrected_value);
+            const float w = compute_uncertainty_weight(pending[i].leaf->nn_value_error);
+            backpropagate_path_with_vloss(pending[i].path, corrected_value, w);
             sims_budget -= 1;
         }
     }
 
-    GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations, bool is_eval = false) {
+    GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations, bool is_eval = false, int gumbel_m_override = -1) {
         const int action_size = game_.board_size * game_.board_size;
         std::vector<float> logits = root.nn_logits;
         if (logits.size() != static_cast<size_t>(action_size)) {
@@ -486,7 +501,8 @@ private:
             }
         }
 
-        int m = std::min(num_simulations, cfg_.gumbel_m);
+        const int effective_gumbel_m = (gumbel_m_override > 0) ? gumbel_m_override : cfg_.gumbel_m;
+        int m = std::min(num_simulations, effective_gumbel_m);
         std::vector<int> sorted_actions(static_cast<size_t>(action_size));
         std::iota(sorted_actions.begin(), sorted_actions.end(), 0);
         std::sort(sorted_actions.begin(), sorted_actions.end(), [&](int a, int b) {
@@ -562,9 +578,9 @@ private:
                             }
                         }
                         float q = 0.5f;
-                        if (c && c->n > 0) {
-                            const float cw = c->v[0] / static_cast<float>(c->n);
-                            const float cl = c->v[2] / static_cast<float>(c->n);
+                        if (c && c->n > 0 && c->weighted_n > 0.0f) {
+                            const float cw = c->v[0] / c->weighted_n;
+                            const float cl = c->v[2] / c->weighted_n;
                             q = ((cl - cw) + 1.0f) * 0.5f;
                         }
                         return logits[static_cast<size_t>(a)] + g[static_cast<size_t>(a)] + (c_visit + max_n) * c_scale * q;
@@ -585,12 +601,13 @@ private:
         std::vector<std::array<float, 3>> q_wdl(static_cast<size_t>(action_size), {0.0f, 0.0f, 0.0f});
         std::vector<float> n_values(static_cast<size_t>(action_size), 0.0f);
         for (auto& c : root.children) {
-            if (c && c->n > 0) {
-                const float cw = c->v[0] / static_cast<float>(c->n);
-                const float cd = c->v[1] / static_cast<float>(c->n);
-                const float cl = c->v[2] / static_cast<float>(c->n);
+            if (c && c->n > 0 && c->weighted_n > 0.0f) {
+                const float wn = c->weighted_n;
+                const float cw = c->v[0] / wn;
+                const float cd = c->v[1] / wn;
+                const float cl = c->v[2] / wn;
                 q_wdl[static_cast<size_t>(c->action_taken)] = {cl, cd, cw};
-                n_values[static_cast<size_t>(c->action_taken)] = static_cast<float>(c->n);
+                n_values[static_cast<size_t>(c->action_taken)] = wn;
             }
         }
 
@@ -677,9 +694,17 @@ private:
         }
     }
 
-    void backpropagate_path_with_vloss(const std::vector<MCTSNode*>& path, std::array<float, 3> value) {
+    float compute_uncertainty_weight(float value_error_pred) const {
+        if (!cfg_.enable_uncertainty_weighting) return 1.0f;
+        const float denom = value_error_pred + cfg_.uncertainty_prior;
+        if (denom <= 1e-8f) return cfg_.uncertainty_max_weight;
+        const float w = std::pow(denom, -cfg_.uncertainty_exponent);
+        return std::min(cfg_.uncertainty_max_weight, std::max(0.0f, w));
+    }
+
+    void backpropagate_path_with_vloss(const std::vector<MCTSNode*>& path, std::array<float, 3> value, float weight) {
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
-            (*it)->update(value);
+            (*it)->update(value, weight);
             (*it)->vloss -= 1;
             if ((*it)->is_expanded()) {
                 update_svb_for_node(**it);
@@ -688,9 +713,9 @@ private:
         }
     }
 
-    void backpropagate(MCTSNode* node, std::array<float, 3> value) {
+    void backpropagate(MCTSNode* node, std::array<float, 3> value, float weight) {
         while (node != nullptr) {
-            node->update(value);
+            node->update(value, weight);
             if (node->is_expanded()) {
                 update_svb_for_node(*node);
             }
@@ -703,7 +728,7 @@ private:
         float mx = 0.0f;
         for (const auto& c : root.children) {
             if (c) {
-                mx = std::max(mx, static_cast<float>(c->n));
+                mx = std::max(mx, c->weighted_n);
             }
         }
         return mx;
@@ -730,9 +755,9 @@ private:
         float child_utility_sum = 0.0f;
         float child_weight_sum = 0.0f;
         for (auto& c : node.children) {
-            if (c && c->n > 0) {
-                const float child_q = (c->v[2] - c->v[0]) / static_cast<float>(c->n);
-                const float w = static_cast<float>(c->n);
+            if (c && c->n > 0 && c->weighted_n > 0.0f) {
+                const float child_q = (c->v[2] - c->v[0]) / c->weighted_n;
+                const float w = c->weighted_n;
                 child_utility_sum += child_q * w;
                 child_weight_sum += w;
             }
@@ -870,7 +895,7 @@ public:
 private:
     struct InferenceRequest {
         std::vector<int8_t> encoded;
-        std::promise<std::pair<std::vector<float>, std::array<float, 3>>> promise;
+        std::promise<std::pair<std::vector<float>, std::array<float, 4>>> promise;
     };
 
     // --- TorchScript model loading ---
@@ -936,7 +961,7 @@ private:
 
     // --- Inference server ---
 
-    std::pair<std::vector<float>, std::array<float, 3>> request_inference(const std::vector<int8_t>& encoded) {
+    std::pair<std::vector<float>, std::array<float, 4>> request_inference(const std::vector<int8_t>& encoded) {
         auto req = std::unique_ptr<InferenceRequest>(new InferenceRequest{});
         req->encoded = encoded;
         auto fut = req->promise.get_future();
@@ -948,9 +973,9 @@ private:
         return fut.get();
     }
 
-    std::vector<std::pair<std::vector<float>, std::array<float, 3>>>
+    std::vector<std::pair<std::vector<float>, std::array<float, 4>>>
     request_batch_inference(const std::vector<std::vector<int8_t>>& encoded_batch) {
-        std::vector<std::future<std::pair<std::vector<float>, std::array<float, 3>>>> futures;
+        std::vector<std::future<std::pair<std::vector<float>, std::array<float, 4>>>> futures;
         futures.reserve(encoded_batch.size());
 
         {
@@ -964,7 +989,7 @@ private:
         }
         inference_cv_.notify_one();
 
-        std::vector<std::pair<std::vector<float>, std::array<float, 3>>> out;
+        std::vector<std::pair<std::vector<float>, std::array<float, 4>>> out;
         out.reserve(futures.size());
         for (auto& fut : futures) {
             out.push_back(fut.get());
@@ -1057,17 +1082,28 @@ private:
                 auto policy_logits_raw = elements[0].toTensor();  // [B, 1, H, W]
                 // elements[1] is opp_policy_logits — not needed for MCTS inference
                 auto value_logits_raw = elements[2].toTensor();   // [B, 3]
+                // elements[3] is value_error_logit; softplus → predicted squared error
+                torch::Tensor value_error_raw;
+                bool has_value_error = (elements.size() >= 4);
+                if (has_value_error) {
+                    value_error_raw = torch::softplus(elements[3].toTensor().to(torch::kFloat32))
+                                          .reshape({bsz}).to(torch::kCPU).contiguous();
+                }
 
                 auto policy = policy_logits_raw.reshape({bsz, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
                 auto value = torch::softmax(value_logits_raw.to(torch::kFloat32), 1).to(torch::kCPU).contiguous();
                 const float* pp = policy.data_ptr<float>();
                 const float* vp = value.data_ptr<float>();
+                const float* vep = has_value_error ? value_error_raw.data_ptr<float>() : nullptr;
 
                 for (int i = 0; i < bsz; ++i) {
                     std::vector<float> logits(static_cast<size_t>(area), 0.0f);
                     std::memcpy(logits.data(), pp + static_cast<size_t>(i) * area, static_cast<size_t>(area) * sizeof(float));
                     const size_t vi = static_cast<size_t>(i) * 3;
-                    std::array<float, 3> v{vp[vi], vp[vi + 1], vp[vi + 2]};
+                    std::array<float, 4> v{
+                        vp[vi], vp[vi + 1], vp[vi + 2],
+                        vep ? vep[i] : 0.0f
+                    };
                     batch[i]->promise.set_value({std::move(logits), v});
                 }
             } catch (...) {
@@ -1105,6 +1141,7 @@ private:
             std::array<float, 3> v_mix{0.0f, 1.0f, 0.0f};
             std::vector<float> next_mcts_policy;
             float sample_weight = 1.0f;
+            float policy_weight = 1.0f;  // 0 for cheap-search rows (PCR)
         };
 
         std::mt19937 worker_rng(seed);
@@ -1124,15 +1161,24 @@ private:
         );
 
         std::vector<MemoryStep> memory;
-        GameInitialState init;
-        if (opening_cfg_.enabled) {
-            RandomOpeningGenerator opener(game_, opening_cfg_);
-            init = opener.generate(worker_rng, infer_fn, batch_infer_fn);
+        ForkPosition fork_init;
+        bool from_fork = fork_queue_.try_pop(fork_init);
+        std::vector<int8_t> state;
+        int to_play = 1;
+        if (from_fork) {
+            state = std::move(fork_init.state);
+            to_play = fork_init.to_play;
         } else {
-            init = game_.get_initial_state(worker_rng);
+            GameInitialState init;
+            if (opening_cfg_.enabled) {
+                RandomOpeningGenerator opener(game_, opening_cfg_);
+                init = opener.generate(worker_rng, infer_fn, batch_infer_fn);
+            } else {
+                init = game_.get_initial_state(worker_rng);
+            }
+            state = std::move(init.board);
+            to_play = init.to_play;
         }
-        std::vector<int8_t> state = std::move(init.board);
-        int to_play = init.to_play;
         bool in_soft_resign = false;
         std::vector<float> historical_v_mix;
         int last_action = -1;
@@ -1140,12 +1186,19 @@ private:
         std::unique_ptr<MCTSNode> root(new MCTSNode{state, to_play});
 
         while (!game_.is_terminal(state, last_action, last_player)) {
-            int num_simulations = cfg_.num_simulations;
+            // Playout Cap Randomization: full search with prob full_search_prob,
+            // cheap search otherwise (lower visits, lower gumbel_m, downweighted
+            // sample, policy target excluded from training).
+            std::uniform_real_distribution<float> uni01(0.0f, 1.0f);
+            const bool is_full_search = (uni01(worker_rng) < cfg_.full_search_prob);
+
+            int num_simulations = is_full_search ? cfg_.num_simulations : cfg_.cheap_simulations;
+            int gumbel_m_override = is_full_search ? -1 : cfg_.cheap_gumbel_m;
             if (in_soft_resign) {
-                num_simulations = std::max(cfg_.num_simulations / 4, cfg_.min_simulations_in_soft_resign);
+                num_simulations = std::max(num_simulations / 4, cfg_.min_simulations_in_soft_resign);
             }
 
-            const auto sr = mcts.search(state, to_play, num_simulations, root);
+            const auto sr = mcts.search(state, to_play, num_simulations, root, /*is_eval=*/false, gumbel_m_override);
             const float v_mix_scalar = sr.v_mix[0] - sr.v_mix[2];
             historical_v_mix.push_back(v_mix_scalar);
 
@@ -1173,7 +1226,10 @@ private:
             ms.nn_policy = sr.nn_policy;
             ms.nn_value_probs = sr.nn_value_probs;
             ms.v_mix = sr.v_mix;
-            ms.sample_weight = in_soft_resign ? cfg_.soft_resign_sample_weight : 1.0f;
+            float base_weight = in_soft_resign ? cfg_.soft_resign_sample_weight : 1.0f;
+            if (!is_full_search) base_weight *= cfg_.cheap_sample_weight;
+            ms.sample_weight = base_weight;
+            ms.policy_weight = is_full_search ? 1.0f : 0.0f;
             memory.push_back(ms);
 
             const int move_count = static_cast<int>(memory.size());
@@ -1191,6 +1247,36 @@ private:
             if (action < 0) {
                 std::discrete_distribution<int> action_dist(sr.mcts_policy.begin(), sr.mcts_policy.end());
                 action = action_dist(worker_rng);
+            }
+
+            // Fork side position: with small probability, sample an alternative
+            // legal move (by NN policy, excluding the chosen action) and push
+            // the resulting (state, opp_to_play) into the global fork queue.
+            // Skip on cheap-search rows: NN policy + Gumbel result less reliable.
+            if (cfg_.fork_side_position_prob > 0.0f
+                && is_full_search
+                && move_count > cfg_.fork_skip_first_n_moves) {
+                std::uniform_real_distribution<float> uni(0.0f, 1.0f);
+                if (uni(worker_rng) < cfg_.fork_side_position_prob) {
+                    int best_alt = -1;
+                    float best_p = -1.0f;
+                    const auto legal = game_.get_is_legal_actions(state, to_play);
+                    for (int a = 0; a < static_cast<int>(sr.nn_policy.size()); ++a) {
+                        if (!legal[a] || a == action) continue;
+                        if (sr.nn_policy[a] > best_p) {
+                            best_p = sr.nn_policy[a];
+                            best_alt = a;
+                        }
+                    }
+                    if (best_alt >= 0) {
+                        ForkPosition fp;
+                        fp.state = game_.get_next_state(state, best_alt, to_play);
+                        fp.to_play = -to_play;
+                        if (!game_.is_terminal(fp.state, best_alt, to_play)) {
+                            fork_queue_.push(std::move(fp), cfg_.max_fork_queue_size);
+                        }
+                    }
+                }
             }
 
             last_action = action;
@@ -1249,6 +1335,11 @@ private:
             ps.nn_value_probs = s.nn_value_probs;
             ps.v_mix = s.v_mix;
             ps.sample_weight = s.sample_weight;
+            ps.policy_weight = s.policy_weight;
+            // opp_policy reliability depends on next row's search quality;
+            // last row has no next move so its opp target is unreliable too.
+            const bool has_next = (i + 1 < memory.size());
+            ps.opp_policy_weight = has_next ? memory[i + 1].policy_weight : 0.0f;
             return_memory.push_back(ps);
         }
 
@@ -1380,6 +1471,9 @@ private:
                   << " | AvgGameLen: " << std::fixed << std::setprecision(1) << avg_game_len
                   << " | BWD: " << std::fixed << std::setprecision(2) << b_rate
                   << " " << w_rate << " " << d_rate
+                  << " | Fork: " << fork_queue_.size()
+                  << " (push=" << fork_queue_.push_count()
+                  << " pop=" << fork_queue_.pop_count() << ")"
                   << " | Model: " << current_model_path_
                   << "\n";
     }
@@ -1415,6 +1509,9 @@ private:
 
     // NPZ data writer
     NpzDataWriter<Game> data_writer_;
+
+    // Fork-side-position queue (data diversity)
+    ForkQueue fork_queue_;
 
     // Stats
     std::mt19937 rng_;

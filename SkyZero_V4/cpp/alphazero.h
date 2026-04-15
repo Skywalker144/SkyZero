@@ -43,6 +43,12 @@ struct AlphaZeroConfig {
     float gumbel_c_scale = 1.0f;
     bool gumbel_stochastic_eval = false;
 
+    // Playout Cap Randomization (KataGo-style training efficiency)
+    int cheap_simulations = 64;
+    int cheap_gumbel_m = 8;
+    float full_search_prob = 0.25f;
+    float cheap_sample_weight = 0.1f;
+
     // Exploration temperature
     int half_life = -1;                  // Python: args.get("half_life", game.board_size)
     float move_temperature_init = 1.1f;
@@ -61,6 +67,12 @@ struct AlphaZeroConfig {
     float cpuct_utility_stdev_prior = 0.40f;
     float cpuct_utility_stdev_prior_weight = 2.0f;
     float cpuct_utility_stdev_scale = 0.85f;
+
+    // Uncertainty-Weighted MCTS Backup (KataGo-style; requires value_error head)
+    bool enable_uncertainty_weighting = false;
+    float uncertainty_prior = 0.25f;
+    float uncertainty_exponent = 1.0f;
+    float uncertainty_max_weight = 8.0f;
 
     // Subtree Value Bias
     bool enable_subtree_value_bias = false;
@@ -88,6 +100,11 @@ struct AlphaZeroConfig {
     float soft_resign_sample_weight = 0.1f;
     int min_simulations_in_soft_resign = 8;
 
+    // Fork side positions (KataGo-style data diversity)
+    float fork_side_position_prob = 0.04f;
+    int max_fork_queue_size = 1000;
+    int fork_skip_first_n_moves = 3;  // don't fork during opening
+
     // Selfplay output
     int max_games_total = 4000;
     int max_rows_per_file = 25000;
@@ -114,8 +131,13 @@ struct MCTSNode {
 
     std::array<float, 3> v{0.0f, 0.0f, 0.0f};
     float utility_sq_sum = 0.0f;  // cumulative squared utility (parent perspective)
-    int n = 0;
+    int n = 0;                     // raw visit count (for vloss / soft-resign)
+    float weighted_n = 0.0f;       // backup weight sum (uncertainty-weighted)
     int vloss = 0;
+
+    // Cached NN-predicted value error for this node (post-softplus).
+    // Used by uncertainty-weighted backup; 0.0 means uninitialized.
+    float nn_value_error = 0.0f;
 
     // Subtree Value Bias bookkeeping
     std::shared_ptr<SubtreeValueBiasEntry> svb_entry;
@@ -124,13 +146,14 @@ struct MCTSNode {
 
     bool is_expanded() const { return !children.empty(); }
 
-    void update(const std::array<float, 3>& value) {
-        v[0] += value[0];
-        v[1] += value[1];
-        v[2] += value[2];
+    void update(const std::array<float, 3>& value, float weight = 1.0f) {
+        v[0] += weight * value[0];
+        v[1] += weight * value[1];
+        v[2] += weight * value[2];
         // parent-perspective utility = child_loss - child_win
         const float u = value[2] - value[0];
-        utility_sq_sum += u * u;
+        utility_sq_sum += weight * u * u;
+        weighted_n += weight;
         n += 1;
     }
 };
@@ -176,10 +199,10 @@ inline float compute_parent_utility_stdev_factor(
     const float variance_prior_weight = cfg.cpuct_utility_stdev_prior_weight;
 
     float parent_stdev;
-    if (node.n <= 1) {
+    if (node.weighted_n <= 1.0f) {
         parent_stdev = cfg.cpuct_utility_stdev_prior;
     } else {
-        const float effective_n = static_cast<float>(node.n);
+        const float effective_n = node.weighted_n;
         const float utility_sq_avg = node.utility_sq_sum / effective_n;
         const float u_sq = parent_utility * parent_utility;
         const float adj_sq_avg = std::max(utility_sq_avg, u_sq);
@@ -195,21 +218,21 @@ inline float compute_parent_utility_stdev_factor(
 }
 
 // Compute explore_scaling and fpu_value for a node's children.
-// effective_parent_n should be (node.n) for single-thread, (node.n + node.vloss) for parallel.
+// effective_parent_weight = node.weighted_n + node.vloss (parallel) or node.weighted_n (single).
 inline SelectParams compute_select_params(
     const MCTSNode& node,
-    int effective_parent_n,
+    float effective_parent_weight,
     float visited_policy_mass,
     const AlphaZeroConfig& cfg
 ) {
-    const float total_child_weight = static_cast<float>(std::max(0, effective_parent_n - 1));
+    const float total_child_weight = std::max(0.0f, effective_parent_weight - 1.0f);
 
     const float c_puct = cfg.c_puct + cfg.c_puct_log
         * std::log((total_child_weight + cfg.c_puct_base) / cfg.c_puct_base);
 
     std::array<float, 3> parent_q{0.0f, 0.0f, 0.0f};
-    if (node.n > 0) {
-        parent_q = {node.v[0] / node.n, node.v[1] / node.n, node.v[2] / node.n};
+    if (node.weighted_n > 0.0f) {
+        parent_q = {node.v[0] / node.weighted_n, node.v[1] / node.weighted_n, node.v[2] / node.weighted_n};
     }
     float parent_utility = wdl_utility(parent_q);
 
@@ -514,7 +537,7 @@ private:
             if (c->n > 0) visited_policy_mass += c->prior;
         }
 
-        const auto sp = compute_select_params(node, node.n, visited_policy_mass, cfg_);
+        const auto sp = compute_select_params(node, node.weighted_n, visited_policy_mass, cfg_);
 
         float best_score = -std::numeric_limits<float>::infinity();
         MCTSNode* best_child = nullptr;
@@ -523,12 +546,13 @@ private:
             if (c->n == 0) {
                 q_value = sp.fpu_value;
             } else {
+                const float wn = c->weighted_n;
                 const auto child_q_arr = std::array<float, 3>{
-                    c->v[0] / c->n, c->v[1] / c->n, c->v[2] / c->n
+                    c->v[0] / wn, c->v[1] / wn, c->v[2] / wn
                 };
                 q_value = child_q_arr[2] - child_q_arr[0];
             }
-            const float u_value = sp.explore_scaling * c->prior / (1.0f + static_cast<float>(c->n));
+            const float u_value = sp.explore_scaling * c->prior / (1.0f + c->weighted_n);
             const float score = q_value + u_value;
             if (score > best_score) {
                 best_score = score;
@@ -726,9 +750,10 @@ private:
                             if (ch->action_taken == a) { c = ch.get(); break; }
                         }
                         float q = 0.5f;
-                        if (c && c->n > 0) {
+                        if (c && c->n > 0 && c->weighted_n > 0.0f) {
+                            const float wn = c->weighted_n;
                             auto child_wdl = std::array<float, 3>{
-                                c->v[0] / c->n, c->v[1] / c->n, c->v[2] / c->n
+                                c->v[0] / wn, c->v[1] / wn, c->v[2] / wn
                             };
                             q = child_wdl[2] - child_wdl[0]; // parent's Q
                             q = (q + 1.0f) / 2.0f; // [0, 1]
@@ -754,13 +779,14 @@ private:
         std::vector<std::array<float, 3>> q_wdl(action_size, {0.0f, 0.0f, 0.0f});
         std::vector<float> n_values(action_size, 0.0f);
         for (auto& c : root.children) {
-            if (c->n > 0) {
+            if (c->n > 0 && c->weighted_n > 0.0f) {
+                const float wn = c->weighted_n;
                 auto child_wdl = std::array<float, 3>{
-                    c->v[0] / c->n, c->v[1] / c->n, c->v[2] / c->n
+                    c->v[0] / wn, c->v[1] / wn, c->v[2] / wn
                 };
                 // parent perspective: flip child WDL
                 q_wdl[c->action_taken] = {child_wdl[2], child_wdl[1], child_wdl[0]};
-                n_values[c->action_taken] = static_cast<float>(c->n);
+                n_values[c->action_taken] = wn;
             }
         }
 
@@ -853,11 +879,11 @@ private:
         return {improved_policy, gumbel_action, v_mix_wdl};
     }
 
-    // helper: max child N across all root children
+    // helper: max child weighted_n across all root children
     static float max_child_n(const MCTSNode& root) {
         float mx = 0.0f;
         for (auto& c : root.children) {
-            mx = std::max(mx, static_cast<float>(c->n));
+            mx = std::max(mx, c->weighted_n);
         }
         return mx;
     }
