@@ -53,6 +53,30 @@ def load_global_step_samples(traindir):
     return train_state.get("global_step_samples", 0)
 
 
+def load_last_run_avg_rows_per_game(selfplay_dir):
+    """Read last_run.tsv (one line: "<games>\\t<rows>") written by run.sh.
+    Returns rows/games as float, or None if missing/unreadable."""
+    path = os.path.join(selfplay_dir, "last_run.tsv")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            line = f.readline().strip()
+    except OSError:
+        return None
+    parts = line.split()
+    if len(parts) < 2:
+        return None
+    try:
+        games = int(parts[0])
+        rows = int(parts[1])
+    except ValueError:
+        return None
+    if games <= 0 or rows <= 0:
+        return None
+    return rows / games
+
+
 def main():
     parser = argparse.ArgumentParser(description="Compute dynamic selfplay game count")
     parser.add_argument("--traindir", required=True, help="Training checkpoint directory")
@@ -91,14 +115,18 @@ def main():
     cumulative_needed = (global_step_samples + args.samples_per_epoch) / args.train_per_data - total_sp_rows
     needed_rows = max(0, cumulative_needed)
 
-    # Convert rows to games
-    games = int(needed_rows / args.avg_rows_per_game)
+    # Prefer empirical rows/game from the previous selfplay run over the static default.
+    measured_avg = load_last_run_avg_rows_per_game(args.selfplay_dir)
+    avg_rows_per_game = measured_avg if measured_avg is not None else args.avg_rows_per_game
+    source = "last_run" if measured_avg is not None else "default"
+
+    games = int(needed_rows / avg_rows_per_game)
     games = max(args.min_games, min(games, args.max_games))
 
     # Log to stderr for debugging (stdout is the result)
     print(
         f"[compute_games] trained={global_step_samples}, sp_rows={total_sp_rows}, "
-        f"needed_rows={needed_rows:.0f}, games={games}",
+        f"needed_rows={needed_rows:.0f}, avg_rows/game={avg_rows_per_game:.2f} ({source}), games={games}",
         file=sys.stderr,
     )
 
