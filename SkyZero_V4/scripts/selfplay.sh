@@ -40,7 +40,7 @@ OPENING_BALANCE_POWER="${OPENING_BALANCE_POWER:-4.0}"
 OPENING_REJECT_THRESHOLD="${OPENING_REJECT_THRESHOLD:-0.20}"
 OPENING_MAX_RETRIES="${OPENING_MAX_RETRIES:-20}"
 
-NUM_SIMULATIONS="${NUM_SIMULATIONS:-512}"
+NUM_SIMULATIONS="${NUM_SIMULATIONS:-256}"
 GUMBEL_M="${GUMBEL_M:-16}"
 GUMBEL_C_VISIT="${GUMBEL_C_VISIT:-50.0}"
 GUMBEL_C_SCALE="${GUMBEL_C_SCALE:-1.0}"
@@ -68,6 +68,23 @@ POLICY_SURPRISE_WEIGHT="${POLICY_SURPRISE_WEIGHT:-0.5}"
 VALUE_SURPRISE_WEIGHT="${VALUE_SURPRISE_WEIGHT:-0.1}"
 SOFT_RESIGN_THRESHOLD="${SOFT_RESIGN_THRESHOLD:-0.9}"
 SOFT_RESIGN_PROB="${SOFT_RESIGN_PROB:-0.7}"
+
+# Playout Cap Randomization
+FULL_SEARCH_PROB="${FULL_SEARCH_PROB:-0.25}"
+CHEAP_SIMULATIONS="${CHEAP_SIMULATIONS:-64}"
+CHEAP_GUMBEL_M="${CHEAP_GUMBEL_M:-8}"
+CHEAP_SAMPLE_WEIGHT="${CHEAP_SAMPLE_WEIGHT:-0.1}"
+
+# Fork Side Positions
+FORK_SIDE_PROB="${FORK_SIDE_PROB:-0.04}"
+MAX_FORK_QUEUE="${MAX_FORK_QUEUE:-1000}"
+FORK_SKIP_FIRST_N="${FORK_SKIP_FIRST_N:-3}"
+
+# Uncertainty-Weighted MCTS Backup
+ENABLE_UNCERTAINTY_WEIGHTING="${ENABLE_UNCERTAINTY_WEIGHTING:-true}"
+UNCERTAINTY_PRIOR="${UNCERTAINTY_PRIOR:-0.25}"
+UNCERTAINTY_EXPONENT="${UNCERTAINTY_EXPONENT:-1.0}"
+UNCERTAINTY_MAX_WEIGHT="${UNCERTAINTY_MAX_WEIGHT:-8.0}"
 
 # --- Source config (overrides defaults, but env vars take priority) ---
 CFGFILE="${CFGFILE:-$SCRIPTDIR/selfplay.cfg}"
@@ -141,9 +158,20 @@ SELFPLAY_ARGS=(
     --value-surprise-weight "$VALUE_SURPRISE_WEIGHT"
     --soft-resign-threshold "$SOFT_RESIGN_THRESHOLD"
     --soft-resign-prob "$SOFT_RESIGN_PROB"
+    --full-search-prob "$FULL_SEARCH_PROB"
+    --cheap-simulations "$CHEAP_SIMULATIONS"
+    --cheap-gumbel-m "$CHEAP_GUMBEL_M"
+    --cheap-sample-weight "$CHEAP_SAMPLE_WEIGHT"
+    --fork-side-prob "$FORK_SIDE_PROB"
+    --max-fork-queue "$MAX_FORK_QUEUE"
+    --fork-skip-first-n "$FORK_SKIP_FIRST_N"
+    --uncertainty-prior "$UNCERTAINTY_PRIOR"
+    --uncertainty-exponent "$UNCERTAINTY_EXPONENT"
+    --uncertainty-max-weight "$UNCERTAINTY_MAX_WEIGHT"
 )
 [[ "$RENJU" == "false" ]] && SELFPLAY_ARGS+=(--no-renju)
 [[ "$ENABLE_SVB" == "true" ]] && SELFPLAY_ARGS+=(--enable-svb)
+[[ "$ENABLE_UNCERTAINTY_WEIGHTING" == "true" ]] && SELFPLAY_ARGS+=(--enable-uncertainty-weighting)
 [[ -n "$OPENINGS" ]] && SELFPLAY_ARGS+=(--openings "$OPENINGS" --empty-board-prob "$EMPTY_BOARD_PROB")
 if [[ "$ONLINE_OPENINGS" == "true" ]]; then
     SELFPLAY_ARGS+=(
