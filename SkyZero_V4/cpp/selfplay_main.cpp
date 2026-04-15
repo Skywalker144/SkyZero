@@ -34,8 +34,6 @@ static void print_usage(const char* prog) {
               << "  --c-puct F             Exploration constant (default: 1.1)\n"
               << "  --enable-svb           Enable Subtree Value Bias\n"
               << "\nNN options:\n"
-              << "  --num-blocks N         ResNet blocks (default: 4)\n"
-              << "  --num-channels N       ResNet channels (default: 128)\n"
               << "  --device DEVICE        torch device: cpu or cuda (default: cuda if available)\n"
               << "\nParallel options:\n"
               << "  --num-workers N        Selfplay worker threads (default: auto)\n"
@@ -87,8 +85,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--gumbel-m") cfg.gumbel_m = std::stoi(next());
         else if (arg == "--c-puct") cfg.c_puct = std::stof(next());
         else if (arg == "--enable-svb") cfg.enable_subtree_value_bias = true;
-        else if (arg == "--num-blocks") cfg.num_blocks = std::stoi(next());
-        else if (arg == "--num-channels") cfg.num_channels = std::stoi(next());
         else if (arg == "--device") {
             std::string dev = next();
             if (dev == "cpu") cfg.device = torch::kCPU;
