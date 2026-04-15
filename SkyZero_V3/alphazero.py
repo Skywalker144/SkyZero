@@ -248,9 +248,12 @@ class MCTS:
             value = value[[2, 1, 0]]  # flip perspective: [W,D,L] -> [L,D,W]
             node = node.parent
 
-    def _gumbel_sequential_halving(self, root, num_simulations, is_eval=False):
+    def _gumbel_sequential_halving(self, root, num_simulations, is_eval=False, gumbel_m_override=None):
 
-        m = min(num_simulations, self.args.get("gumbel_m", 16))  # 确定初始候选动作数量m
+        if gumbel_m_override is not None:
+            m = min(num_simulations, gumbel_m_override)
+        else:
+            m = min(num_simulations, self.args.get("full_search_gumbel_m", 16))  # 确定初始候选动作数量m
         logits = root.nn_logits.copy()  # 直接使用网络输出的原始logits（已mask非法动作为-inf）
         is_legal = self.game.get_is_legal_actions(root.state, root.to_play)  # 合法动作掩码
         
@@ -384,7 +387,7 @@ class MCTS:
         return improved_policy, gumbel_action, v_mix
 
     @torch.inference_mode()
-    def search(self, state, to_play, num_simulations, root=None):
+    def search(self, state, to_play, num_simulations, root=None, gumbel_m_override=None):
 
         if root is None:
             root = Node(state, to_play)
@@ -397,7 +400,7 @@ class MCTS:
             nn_policy = root.nn_policy
             nn_value_probs = root.nn_value_probs
 
-        mcts_policy, gumbel_action, v_mix = self._gumbel_sequential_halving(root, num_simulations, is_eval=False)
+        mcts_policy, gumbel_action, v_mix = self._gumbel_sequential_halving(root, num_simulations, is_eval=False, gumbel_m_override=gumbel_m_override)
         return mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action
 
     @torch.inference_mode()
@@ -465,16 +468,29 @@ class AlphaZero:
         root = Node(state, to_play)  # Tree Reuse: initialize root before game loop
 
         while not self.game.is_terminal(state, last_action, last_player):
-            
-            if in_soft_resign:
-                num_simulations = max(
-                    self.args["num_simulations"] // 4,
-                    self.args.get("min_simulations_in_soft_resign", 8)
-                )
-            else:
-                num_simulations = self.args["num_simulations"]
 
-            mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(state, to_play, num_simulations, root=root)
+            # Playout Cap Randomization: each non-soft-resign move flips a coin between
+            # full-search (rare, high-quality policy target) and fast-search (common,
+            # policy target masked out at training time). Soft resign always uses fast.
+            if in_soft_resign:
+                is_full_search = False
+                num_simulations = max(
+                    self.args["fast_search_num_simulations"],
+                    self.args.get("min_simulations_in_soft_resign", 8),
+                )
+                gumbel_m = self.args["fast_search_gumbel_m"]
+            else:
+                is_full_search = np.random.rand() < self.args["full_search_prob"]
+                if is_full_search:
+                    num_simulations = self.args["full_search_num_simulations"]
+                    gumbel_m = self.args["full_search_gumbel_m"]
+                else:
+                    num_simulations = self.args["fast_search_num_simulations"]
+                    gumbel_m = self.args["fast_search_gumbel_m"]
+
+            mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = self.mcts.search(
+                state, to_play, num_simulations, root=root, gumbel_m_override=gumbel_m,
+            )
 
             # Soft Resign - derive scalar from WDL for threshold check
             v_mix_scalar = v_mix[0] - v_mix[2]  # W - L
@@ -499,6 +515,7 @@ class AlphaZero:
                 "v_mix": v_mix,  # WDL vector
                 "next_mcts_policy": None,
                 "sample_weight": 1 if not in_soft_resign else self.args.get("soft_resign_sample_weight", 0.1),
+                "is_full_search": is_full_search,
             })
 
             # Gumbel Zero selfplay exploration - directly use the action derived from Gumbel-Max trick
@@ -537,7 +554,7 @@ class AlphaZero:
         winner = self.game.get_winner(final_state, last_action, last_player)
 
         return_memory = []
-        for sample in memory:
+        for i, sample in enumerate(memory):
             # Outcome as WDL one-hot from this player's perspective
             result = winner * sample["to_play"]
             if result == 1:
@@ -548,6 +565,9 @@ class AlphaZero:
                 outcome = np.array([0.0, 1.0, 0.0])  # draw
 
             opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
+            # PCR: opp target comes from the NEXT move's mcts_policy, so its reliability
+            # tracks whether THAT move was full-search. Final move has no next → 0.
+            next_is_full = (i + 1 < len(memory)) and memory[i + 1]["is_full_search"]
             sample_data = {
                 "state": sample["state"],
                 "to_play": sample["to_play"],
@@ -558,6 +578,8 @@ class AlphaZero:
                 "nn_value_probs": sample["nn_value_probs"],  # WDL vector for psw
                 "v_mix": sample["v_mix"],  # WDL vector for psw and value target mix
                 "sample_weight": sample["sample_weight"],
+                "policy_weight": 1.0 if sample["is_full_search"] else 0.0,
+                "opponent_policy_weight": 1.0 if next_is_full else 0.0,
             }
             return_memory.append(sample_data)
         
@@ -606,6 +628,10 @@ class AlphaZero:
         value_targets = torch.as_tensor(batch["value_target"], device=self.args["device"], dtype=torch.float32)
 
         sample_weights = torch.as_tensor(batch["sample_weight"], device=self.args["device"], dtype=torch.float32)
+        # PCR: binary (0/1) masks. policy_weight=0 for fast-search rows;
+        # opponent_policy_weight=0 when the NEXT row was fast-search (noisy opp target).
+        policy_weights = torch.as_tensor(batch["policy_weight"], device=self.args["device"], dtype=torch.float32)
+        opp_policy_weights = torch.as_tensor(batch["opponent_policy_weight"], device=self.args["device"], dtype=torch.float32)
 
         self.model.train()
         nn_output = self.model(encoded_states)
@@ -613,23 +639,21 @@ class AlphaZero:
         policy_logits = nn_output["policy_logits"].view(batch_size, -1)
         opponent_policy_logits = nn_output["opponent_policy_logits"].view(batch_size, -1)
 
-        def get_loss(logits, targets, weights, mask=None):
-            loss = -torch.sum(targets * F.log_softmax(logits, dim=-1), dim=-1)
-            if mask is not None:  # For Opponent policy loss (Final state)
-                masked_loss = loss * weights * mask
-                return masked_loss.sum() / (mask.sum() + 1e-8)
-            else:
-                return (loss * weights).mean()
+        # Policy Loss: sum / weight.sum() keeps per-active-sample gradient scale stable
+        # regardless of the fraction of fast-search rows in the batch.
+        policy_loss_per = -torch.sum(policy_targets * F.log_softmax(policy_logits, dim=-1), dim=-1)
+        policy_eff = sample_weights * policy_weights
+        policy_loss = (policy_loss_per * policy_eff).sum() / (policy_eff.sum() + 1e-8)
 
-        # Policy Loss
-        policy_loss = get_loss(policy_logits, policy_targets, sample_weights)
-
-        # Opponent Policy Loss
+        # Opponent Policy Loss: combine final-state mask (no next move) with PCR mask.
         opp_target_sum = opponent_policy_targets.sum(dim=-1)
-        opp_mask = (opp_target_sum > 0.5).float()
-        opponent_policy_loss = get_loss(opponent_policy_logits, opponent_policy_targets, sample_weights, opp_mask)
+        opp_final_mask = (opp_target_sum > 0.5).float()
+        opp_loss_per = -torch.sum(opponent_policy_targets * F.log_softmax(opponent_policy_logits, dim=-1), dim=-1)
+        opp_eff = sample_weights * opp_policy_weights * opp_final_mask
+        opponent_policy_loss = (opp_loss_per * opp_eff).sum() / (opp_eff.sum() + 1e-8)
 
-        # Value Loss - value_targets is already [batch_size, 3] WDL probabilities
+        # Value Loss - value_targets is already [batch_size, 3] WDL probabilities.
+        # All samples supervise the value head (fast and full), so only sample_weights applies.
         value_loss = -torch.sum(value_targets * F.log_softmax(nn_output["value_logits"], dim=-1), dim=-1)
         value_loss = (value_loss * sample_weights).mean()
 
@@ -777,7 +801,7 @@ class AlphaZero:
         if root is None:
             root = Node(state, to_play)
 
-        actual_num_simulations = max(1, self.args["num_simulations"] - root.n)
+        actual_num_simulations = max(1, self.args["full_search_num_simulations"] - root.n)
 
         mcts_policy, v_mix, _, _, gumbel_action = self.mcts.eval_search(state, to_play, actual_num_simulations, root)
 

@@ -25,6 +25,17 @@ class ReplayBuffer:
         self.total_samples_added = 0
         self.games_count = 0
 
+    _PER_SAMPLE_KEYS = (
+        "state",
+        "to_play",
+        "policy_target",
+        "opponent_policy_target",
+        "value_target",
+        "sample_weight",
+        "policy_weight",
+        "opponent_policy_weight",
+    )
+
     def _create_block(self):
         return {
             "state": torch.empty((self.block_size, 1, self.board_size, self.board_size), dtype=torch.int8),
@@ -33,6 +44,9 @@ class ReplayBuffer:
             "opponent_policy_target": torch.empty((self.block_size, self.action_size), dtype=torch.float32),
             "value_target": torch.empty((self.block_size, 3), dtype=torch.float32),
             "sample_weight": torch.empty(self.block_size, dtype=torch.float32),
+            # PCR per-sample masks (0.0 or 1.0)
+            "policy_weight": torch.empty(self.block_size, dtype=torch.float32),
+            "opponent_policy_weight": torch.empty(self.block_size, dtype=torch.float32),
         }
 
     def get_window_size(self):
@@ -86,7 +100,7 @@ class ReplayBuffer:
             return 0
         
         # Keys to extract from game_memory
-        keys = ["state", "to_play", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
+        keys = list(self._PER_SAMPLE_KEYS)
         
         # Prepare data in torch format (on CPU)
         batch_data = {}
@@ -146,7 +160,7 @@ class ReplayBuffer:
         block_ids = indices // self.block_size
         offsets = indices % self.block_size
         
-        keys = ["state", "to_play", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
+        keys = list(self._PER_SAMPLE_KEYS)
         
         # Determine output shapes from first non-None block
         sample_block = next(b for b in self.blocks if b is not None)
@@ -182,7 +196,7 @@ class ReplayBuffer:
 
         # Consolidate non-None blocks into a dict of lists for fewer pickle objects
         # Record which block indices are valid (some may have been freed by GC)
-        keys = ["state", "to_play", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
+        keys = list(self._PER_SAMPLE_KEYS)
         
         valid_block_indices = []
         consolidated = {key: [] for key in keys}
@@ -223,18 +237,23 @@ class ReplayBuffer:
         self.total_samples_added = state.get("total_samples_added", state_size)
         self.games_count = state.get("games_count", 0)
 
-        keys = ["state", "to_play", "policy_target", "opponent_policy_target", "value_target", "sample_weight"]
+        keys = list(self._PER_SAMPLE_KEYS)
 
         cb = state["consolidated_blocks"]
         valid_indices = state["valid_block_indices"]
         num_total_blocks = state.get("num_total_blocks", max(valid_indices) + 1 if valid_indices else 0)
 
-        # Restore sparse block list (with None holes from GC)
+        # Restore sparse block list (with None holes from GC).
+        # Backfill new PCR fields to 1.0 when loading pre-PCR checkpoints so legacy
+        # samples behave as full-search (no zeroed policy gradients).
         self.blocks = [None] * num_total_blocks
         for i, b_idx in enumerate(valid_indices):
             block = self._create_block()
             for key in keys:
-                block[key][:] = cb[key][i]
+                if key in cb:
+                    block[key][:] = cb[key][i]
+                elif key in ("policy_weight", "opponent_policy_weight"):
+                    block[key][:] = 1.0
             self.blocks[b_idx] = block
 
         self.size = state_size

@@ -12,9 +12,9 @@ eval_args = {
     "lr": train_args["lr"],
     "weight_decay": train_args["weight_decay"],
 
-    "num_simulations": 800,
+    "full_search_num_simulations": 800,
 
-    "gumbel_m": train_args["gumbel_m"],
+    "full_search_gumbel_m": train_args["full_search_gumbel_m"],
 
     "fpu_reduction_max": train_args["fpu_reduction_max"],
     "root_fpu_reduction_max": train_args["root_fpu_reduction_max"],

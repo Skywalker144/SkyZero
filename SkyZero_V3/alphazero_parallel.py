@@ -163,15 +163,26 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
             while not game.is_terminal(state, last_action, last_player):
 
+                # Playout Cap Randomization: see alphazero.py selfplay for design notes.
                 if in_soft_resign:
+                    is_full_search = False
                     num_simulations = max(
-                        args["num_simulations"] // 4,
-                        args.get("min_simulations_in_soft_resign", 8)
+                        args["fast_search_num_simulations"],
+                        args.get("min_simulations_in_soft_resign", 8),
                     )
+                    gumbel_m = args["fast_search_gumbel_m"]
                 else:
-                    num_simulations = args["num_simulations"]
+                    is_full_search = np.random.rand() < args["full_search_prob"]
+                    if is_full_search:
+                        num_simulations = args["full_search_num_simulations"]
+                        gumbel_m = args["full_search_gumbel_m"]
+                    else:
+                        num_simulations = args["fast_search_num_simulations"]
+                        gumbel_m = args["fast_search_gumbel_m"]
 
-                mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = mcts.search(state, to_play, num_simulations, root=root)
+                mcts_policy, v_mix, nn_policy, nn_value_probs, gumbel_action = mcts.search(
+                    state, to_play, num_simulations, root=root, gumbel_m_override=gumbel_m,
+                )
 
                 # Soft Resign - derive scalar from WDL
                 v_mix_scalar = v_mix[0] - v_mix[2]  # W - L
@@ -196,6 +207,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     "v_mix": v_mix,  # WDL vector
                     "next_mcts_policy": None,
                     "sample_weight": 1 if not in_soft_resign else args.get("soft_resign_sample_weight", 0.1),
+                    "is_full_search": is_full_search,
                 })
 
                 # Gumbel Zero selfplay exploration - directly use the action derived from Gumbel-Max trick
@@ -234,7 +246,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             winner = game.get_winner(final_state, last_action, last_player)
 
             return_memory = []
-            for sample in memory:
+            for i, sample in enumerate(memory):
                 # Outcome as WDL one-hot from this player's perspective
                 result = winner * sample["to_play"]
                 if result == 1:
@@ -245,6 +257,9 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     outcome = np.array([0.0, 1.0, 0.0])  # draw
 
                 opponent_policy = sample["next_mcts_policy"] if sample["next_mcts_policy"] is not None else np.zeros_like(sample["mcts_policy"])
+                # PCR: opp target is next move's mcts_policy; its reliability tracks
+                # whether THAT move was full-search. Final move has no next → 0.
+                next_is_full = (i + 1 < len(memory)) and memory[i + 1]["is_full_search"]
                 sample_data = {
                     "state": sample["state"],
                     "to_play": sample["to_play"],
@@ -255,6 +270,8 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     "nn_value_probs": sample["nn_value_probs"],  # WDL vector for psw
                     "v_mix": sample["v_mix"],  # WDL vector for psw and value target mix
                     "sample_weight": sample["sample_weight"],
+                    "policy_weight": 1.0 if sample["is_full_search"] else 0.0,
+                    "opponent_policy_weight": 1.0 if next_is_full else 0.0,
                 }
                 return_memory.append(sample_data)
 

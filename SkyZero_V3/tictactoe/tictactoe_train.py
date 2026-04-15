@@ -19,11 +19,14 @@ train_args = {
     "lr": 0.001,
     "weight_decay": 3e-5,
 
-    "num_simulations": 8,
     "batch_size": 256,
 
-    # Gumbel settings
-    "gumbel_m": 4,
+    # Gumbel + Playout Cap Randomization settings
+    "full_search_num_simulations": 8,
+    "full_search_gumbel_m": 4,
+    "fast_search_num_simulations": 2,
+    "fast_search_gumbel_m": 2,
+    "full_search_prob": 0.25,
     "gumbel_c_visit": 50,
     "gumbel_c_scale": 1.0,
 
