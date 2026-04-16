@@ -286,20 +286,37 @@ private:
             }
         }
 
-        const float effective_parent_weight = node.weighted_n + static_cast<float>(node.vloss);
-        const auto sp = compute_select_params(node, effective_parent_weight, visited_policy_mass, cfg_);
+        // KataGomo-aligned (searchexplorehelpers.cpp:316-338): totalChildWeight excludes
+        // virtual losses — they only affect the per-child PUCT term below.
+        const auto sp = compute_select_params(node, node.weighted_n, visited_policy_mass, cfg_);
+
+        // KataGomo virtual-loss math (searchexplorehelpers.cpp:134-143):
+        // Blend child utility toward loss (-1) using virtualLossWeight = vloss * num_vl_per_thread,
+        // with asymmetric denominator max(0.25, childWeight) in the utility blend but raw addition
+        // into the PUCT denominator.
+        const float vl_mult = cfg_.num_virtual_losses_per_thread;
 
         float best_score = -std::numeric_limits<float>::infinity();
         MCTSNode* best_child = nullptr;
         for (auto& child_ptr : node.children) {
             auto& child = *child_ptr;
-            const float effective_child_weight = child.weighted_n + static_cast<float>(child.vloss);
-            float q = sp.fpu_value;
-            if (effective_child_weight > 0.0f) {
-                const float utility_sum = (child.v[2] - child.v[0]) - static_cast<float>(child.vloss);
-                q = utility_sum / effective_child_weight;
+            const float child_weight = child.weighted_n;  // real weight, no vloss
+            float q;
+            if (child_weight > 0.0f) {
+                q = (child.v[2] - child.v[0]) / child_weight;
+            } else {
+                q = sp.fpu_value;
             }
-            const float u = sp.explore_scaling * child.prior / (1.0f + effective_child_weight);
+
+            float puct_child_weight = child_weight;
+            if (child.vloss > 0) {
+                const float vl_weight = static_cast<float>(child.vloss) * vl_mult;
+                const float vl_frac = vl_weight / (vl_weight + std::max(0.25f, child_weight));
+                q = q + (-1.0f - q) * vl_frac;
+                puct_child_weight = child_weight + vl_weight;
+            }
+
+            const float u = sp.explore_scaling * child.prior / (1.0f + puct_child_weight);
             const float score = q + u;
             if (score > best_score) {
                 best_score = score;

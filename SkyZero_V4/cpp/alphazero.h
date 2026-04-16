@@ -50,14 +50,25 @@ struct AlphaZeroConfig {
     float move_temperature_init = 1.1f;
     float move_temperature_final = 1.0f;
 
-    // PUCT / FPU
+    // PUCT / FPU (KataGomo-aligned; see searchexplorehelpers.cpp:242-298)
     float c_puct = 1.1f;
     float c_puct_log = 0.45f;
     float c_puct_base = 500.0f;
-    float fpu_pow = 1.0f;
     float fpu_reduction_max = 0.2f;
     float root_fpu_reduction_max = 0.1f;
     float fpu_loss_prop = 0.0f;
+    float root_fpu_loss_prop = 0.0f;
+    // parent_utility blended with NN utility by visited policy mass: avg_w = min(1, visited^pow)
+    // When true (KataGo selfplay default), FPU base = avg_w * parent_utility + (1-avg_w) * nn_utility.
+    // When false and fpu_parent_weight > 0: fixed-ratio NN blend.
+    // When false and fpu_parent_weight == 0: FPU base = parent_utility (KataGo raw default).
+    bool fpu_parent_weight_by_visited_policy = true;
+    float fpu_parent_weight_by_visited_policy_pow = 1.0f;
+    float fpu_parent_weight = 0.0f;
+
+    // Virtual-loss multiplier: each in-flight thread pulls child utility toward loss with this weight.
+    // KataGo default 3.0; see searchexplorehelpers.cpp:135-143.
+    float num_virtual_losses_per_thread = 3.0f;
 
     // Dynamic Variance-Scaled cPUCT
     float cpuct_utility_stdev_prior = 0.40f;
@@ -236,14 +247,24 @@ inline SelectParams compute_select_params(
     const float stdev_factor = compute_parent_utility_stdev_factor(node, parent_utility, cfg);
     const float explore_scaling = c_puct * std::sqrt(total_child_weight + 0.01f) * stdev_factor;
 
-    const float nn_utility = wdl_utility(node.nn_value_probs);
-    const float avg_weight = std::min(1.0f, static_cast<float>(std::pow(visited_policy_mass, cfg.fpu_pow)));
-    const float parent_utility_for_fpu = avg_weight * parent_utility + (1.0f - avg_weight) * nn_utility;
+    float parent_utility_for_fpu = parent_utility;
+    if (cfg.fpu_parent_weight_by_visited_policy) {
+        const float nn_utility = wdl_utility(node.nn_value_probs);
+        const float avg_weight = std::min(1.0f, static_cast<float>(
+            std::pow(visited_policy_mass, cfg.fpu_parent_weight_by_visited_policy_pow)));
+        parent_utility_for_fpu = avg_weight * parent_utility + (1.0f - avg_weight) * nn_utility;
+    } else if (cfg.fpu_parent_weight > 0.0f) {
+        const float nn_utility = wdl_utility(node.nn_value_probs);
+        parent_utility_for_fpu = cfg.fpu_parent_weight * nn_utility
+                               + (1.0f - cfg.fpu_parent_weight) * parent_utility;
+    }
 
-    const float fpu_reduction_max = (node.parent == nullptr) ? cfg.root_fpu_reduction_max : cfg.fpu_reduction_max;
+    const bool is_root = (node.parent == nullptr);
+    const float fpu_reduction_max = is_root ? cfg.root_fpu_reduction_max : cfg.fpu_reduction_max;
+    const float fpu_loss_prop = is_root ? cfg.root_fpu_loss_prop : cfg.fpu_loss_prop;
     const float reduction = fpu_reduction_max * std::sqrt(visited_policy_mass);
     float fpu_value = parent_utility_for_fpu - reduction;
-    fpu_value = fpu_value + ((-1.0f) - fpu_value) * cfg.fpu_loss_prop;
+    fpu_value = fpu_value + ((-1.0f) - fpu_value) * fpu_loss_prop;
 
     return {explore_scaling, fpu_value};
 }
