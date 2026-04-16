@@ -88,6 +88,11 @@ LOOKAHEAD_ALPHA="${LOOKAHEAD_ALPHA:-0.5}"
 SAMPLES_PER_EPOCH="${SAMPLES_PER_EPOCH:-1024000}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 VALUE_ERROR_LOSS_WEIGHT="${VALUE_ERROR_LOSS_WEIGHT:-2.0}"
+NUM_PLANES="${NUM_PLANES:-4}"
+LR_SCALE_AUTO="${LR_SCALE_AUTO:-true}"
+BRENORM_TARGET_RMAX="${BRENORM_TARGET_RMAX:-3.0}"
+BRENORM_TARGET_DMAX="${BRENORM_TARGET_DMAX:-5.0}"
+BRENORM_ADJUSTMENT_SCALE="${BRENORM_ADJUSTMENT_SCALE:-50000000}"
 
 TRAIN_PER_DATA="${TRAIN_PER_DATA:-2.0}"
 MIN_GAMES="${MIN_GAMES:-500}"
@@ -131,7 +136,7 @@ if [ -z "$(find "$BASEDIR"/models -name '*.pt' -print -quit 2>/dev/null)" ]; the
     python "$PYTHONDIR/init_model.py" \
         -output "$BASEDIR/models/random_init.pt" \
         -board-size "$BOARD_SIZE" \
-        -num-planes 4 \
+        -num-planes "$NUM_PLANES" \
         -model-config "$MODEL_CONFIG"
     echo "Initial model created."
 fi
@@ -195,10 +200,10 @@ TRAIN_EXTRA_ARGS+=(-swa-scale "$SWA_SCALE")
 TRAIN_EXTRA_ARGS+=(-lookahead-k "$LOOKAHEAD_K" -lookahead-alpha "$LOOKAHEAD_ALPHA")
 TRAIN_EXTRA_ARGS+=(-samples-per-epoch "$SAMPLES_PER_EPOCH")
 TRAIN_EXTRA_ARGS+=(-max-epochs-this-instance "$MAX_EPOCHS")
-TRAIN_EXTRA_ARGS+=(-num-planes 4 -model-config "$MODEL_CONFIG")
-TRAIN_EXTRA_ARGS+=(-lr-scale-auto)
-TRAIN_EXTRA_ARGS+=(-brenorm-target-rmax 3.0 -brenorm-target-dmax 5.0 -brenorm-adjustment-scale 50000000)
+TRAIN_EXTRA_ARGS+=(-num-planes "$NUM_PLANES" -model-config "$MODEL_CONFIG")
+TRAIN_EXTRA_ARGS+=(-brenorm-target-rmax "$BRENORM_TARGET_RMAX" -brenorm-target-dmax "$BRENORM_TARGET_DMAX" -brenorm-adjustment-scale "$BRENORM_ADJUSTMENT_SCALE")
 TRAIN_EXTRA_ARGS+=(-value-error-loss-weight "$VALUE_ERROR_LOSS_WEIGHT")
+[[ "$LR_SCALE_AUTO" == "true" ]] && TRAIN_EXTRA_ARGS+=(-lr-scale-auto)
 [[ "$USE_FP16" == "true" ]] && TRAIN_EXTRA_ARGS+=(-use-fp16)
 
 # ==========================================================================
