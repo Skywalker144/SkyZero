@@ -188,7 +188,7 @@ def main():
     parser.add_argument("-lookahead-alpha", type=float, default=0.5)
     parser.add_argument("-policy-loss-weight", type=float, default=1.0)
     parser.add_argument("-opp-policy-loss-weight", type=float, default=0.15)
-    parser.add_argument("-value-loss-weight", type=float, default=1.2)
+    parser.add_argument("-value-loss-weight", type=float, default=0.6)
     parser.add_argument("-value-error-loss-weight", type=float, default=2.0,
                         help="Weight for shortterm value-error head (KataGo-style)")
     parser.add_argument("-brenorm-target-rmax", type=float, default=3.0)
