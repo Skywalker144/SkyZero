@@ -792,10 +792,13 @@ private:
         if (!svb_table_ || !node.svb_entry) return value;
         const float bias = node.svb_entry->get_bias();
         if (std::fabs(bias) < 1e-8f) return value;
+        // KataGomo-aligned (searchupdatehelpers.cpp:30-32): bias > 0 means NN
+        // underestimates node.to_play's utility, so shift prob mass from loss to
+        // win. Signs were previously flipped.
         const float correction = cfg_.subtree_value_bias_factor * bias;
         auto corrected = value;
-        corrected[0] = std::max(0.0f, std::min(1.0f, value[0] - correction * 0.5f));
-        corrected[2] = std::max(0.0f, std::min(1.0f, value[2] + correction * 0.5f));
+        corrected[0] = std::max(0.0f, std::min(1.0f, value[0] + correction * 0.5f));
+        corrected[2] = std::max(0.0f, std::min(1.0f, value[2] - correction * 0.5f));
         const float sum = corrected[0] + corrected[1] + corrected[2];
         if (sum > 1e-8f) {
             corrected[0] /= sum;
