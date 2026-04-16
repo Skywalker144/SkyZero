@@ -217,7 +217,13 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.policy_target = game_data[i].policy_target;
             ts.opponent_policy_target = game_data[i].opponent_policy_target;
             ts.value_target = game_data[i].value_target;
-            ts.sample_weight = game_data[i].sample_weight;
+            // KataGomo-aligned: relative importance is already encoded by the
+            // floor+bernoulli insertion count derived from final_weights[i].
+            // Each written row contributes at full weight (cf. trainingwrite.cpp
+            // addRow with weight=1.0). This also avoids double-discounting
+            // soft-resign / cheap rows (once via insertion rate, once via
+            // per-row loss weight).
+            ts.sample_weight = 1.0f;
             ts.policy_weight = game_data[i].policy_weight;
             ts.opp_policy_weight = game_data[i].opp_policy_weight;
             return ts;
