@@ -806,7 +806,7 @@ private:
     }
 
     Game& game_;
-    const AlphaZeroConfig& cfg_;
+    AlphaZeroConfig cfg_;
     int leaf_batch_size_ = 1;
     InferenceFn infer_fn_;
     BatchInferenceFn batch_infer_fn_;
