@@ -569,9 +569,14 @@ class ValueHead(nn.Module):
         outv2 = self.act2(outv2)
         value_logits = self.linear_valuehead(outv2)          # [B, 3]
         value_error_raw = self.linear_value_error(outv2).squeeze(-1)  # [B]
-        value_error_pred = SoftPlusWithGradientFloorFunction.apply(
-            value_error_raw, 0.05, False
-        ) * SHORTTERM_VALUE_ERROR_MULTIPLIER                          # [B]
+        if self.training:
+            value_error_pred = SoftPlusWithGradientFloorFunction.apply(
+                value_error_raw, 0.05, False
+            ) * SHORTTERM_VALUE_ERROR_MULTIPLIER                      # [B]
+        else:
+            # Inference/trace path: autograd.Function can't be exported by jit.trace.
+            # Forward is mathematically identical to F.softplus when square=False.
+            value_error_pred = F.softplus(value_error_raw) * SHORTTERM_VALUE_ERROR_MULTIPLIER  # [B]
         return value_logits, value_error_pred.unsqueeze(-1)           # [B, 1]
 
 
