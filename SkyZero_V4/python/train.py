@@ -186,8 +186,8 @@ def main():
     parser.add_argument("-lookahead-alpha", type=float, default=0.5)
     parser.add_argument("-policy-loss-weight", type=float, default=1.0)
     parser.add_argument("-opp-policy-loss-weight", type=float, default=0.15)
-    parser.add_argument("-value-loss-weight", type=float, default=1.0)
-    parser.add_argument("-value-error-loss-weight", type=float, default=0.05,
+    parser.add_argument("-value-loss-weight", type=float, default=1.2)
+    parser.add_argument("-value-error-loss-weight", type=float, default=2.0,
                         help="Weight for shortterm value-error head (KataGo-style)")
     parser.add_argument("-brenorm-target-rmax", type=float, default=3.0)
     parser.add_argument("-brenorm-target-dmax", type=float, default=5.0)
@@ -473,7 +473,12 @@ def main():
                     val_loss["opp_policy"] += o_loss.item()
                     val_loss["value"] += v_loss.item()
                     val_loss["value_error"] += ve_loss.item()
-                    val_loss["total"] += (p_loss + 0.15 * o_loss + v_loss + 0.05 * ve_loss).item()
+                    val_loss["total"] += (
+                        args.policy_loss_weight * p_loss
+                        + args.opp_policy_loss_weight * o_loss
+                        + args.value_loss_weight * v_loss
+                        + args.value_error_loss_weight * ve_loss
+                    ).item()
                     val_count += 1
 
             if val_count > 0:
