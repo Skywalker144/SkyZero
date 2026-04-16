@@ -65,8 +65,9 @@ struct AlphaZeroConfig {
     float cpuct_utility_stdev_scale = 0.85f;
 
     // Uncertainty-Weighted MCTS Backup (KataGo-style; requires value_error head)
+    // Weight formula: w = coeff / (u^exp + coeff/max_weight)
     bool enable_uncertainty_weighting = false;
-    float uncertainty_prior = 0.25f;
+    float uncertainty_coeff = 0.25f;
     float uncertainty_exponent = 1.0f;
     float uncertainty_max_weight = 8.0f;
 

@@ -698,10 +698,13 @@ private:
 
     float compute_uncertainty_weight(float value_error_pred) const {
         if (!cfg_.enable_uncertainty_weighting) return 1.0f;
-        const float denom = value_error_pred + cfg_.uncertainty_prior;
-        if (denom <= 1e-8f) return cfg_.uncertainty_max_weight;
-        const float w = std::pow(denom, -cfg_.uncertainty_exponent);
-        return std::min(cfg_.uncertainty_max_weight, std::max(0.0f, w));
+        const float u = std::max(0.0f, value_error_pred);
+        float powered;
+        if (cfg_.uncertainty_exponent == 1.0f)      powered = u;
+        else if (cfg_.uncertainty_exponent == 0.5f) powered = std::sqrt(u);
+        else                                         powered = std::pow(u, cfg_.uncertainty_exponent);
+        const float baseline = cfg_.uncertainty_coeff / cfg_.uncertainty_max_weight;
+        return cfg_.uncertainty_coeff / (powered + baseline);
     }
 
     void backpropagate_path_with_vloss(const std::vector<MCTSNode*>& path, std::array<float, 3> value, float weight) {
@@ -1087,11 +1090,12 @@ private:
                 auto policy_logits_raw = elements[0].toTensor();  // [B, 1, H, W]
                 // elements[1] is opp_policy_logits — not needed for MCTS inference
                 auto value_logits_raw = elements[2].toTensor();   // [B, 3]
-                // elements[3] is value_error_logit; softplus → predicted squared error
+                // elements[3] is predicted short-term squared value error
+                // (model already applies softplus-with-gradient-floor + 0.25 multiplier)
                 torch::Tensor value_error_raw;
                 bool has_value_error = (elements.size() >= 4);
                 if (has_value_error) {
-                    value_error_raw = torch::softplus(elements[3].toTensor().to(torch::kFloat32))
+                    value_error_raw = elements[3].toTensor().to(torch::kFloat32)
                                           .reshape({bsz}).to(torch::kCPU).contiguous();
                 }
 
