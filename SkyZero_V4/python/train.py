@@ -291,6 +291,17 @@ def main():
         t0 = time.perf_counter()
         lookahead_counter = 0
 
+        # Unconditional epoch-start brenorm progression (mirrors KataGomo
+        # train.py:988). Guarantees rmax/dmax advance every epoch even when
+        # the epoch runs fewer than 500 batches (the intra-epoch % 500 gate
+        # below is unreliable because read_npz_training_data drops partial
+        # trailing batches per npz).
+        last_brenorm_update_samples = maybe_update_brenorm_params(
+            model, train_state, last_brenorm_update_samples, norm_kind,
+            args.brenorm_target_rmax, args.brenorm_target_dmax,
+            args.brenorm_avg_momentum, args.brenorm_adjustment_scale,
+        )
+
         for batch in read_npz_training_data(train_files, batch_size, pos_len, device, randomize_symmetries=True):
             encoded = batch["encodedInputNCHW"]          # [B, C, H, W]
             policy_targets = batch["policyTargetsN"]     # [B, board_area]
