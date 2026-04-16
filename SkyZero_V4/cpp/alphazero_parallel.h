@@ -61,6 +61,8 @@ public:
         }
     }
 
+    AlphaZeroConfig& config() { return cfg_; }
+
     MCTSSearchOutput search(
         const std::vector<int8_t>& state,
         int to_play,
@@ -1198,7 +1200,12 @@ private:
                 num_simulations = std::max(num_simulations / 4, cfg_.min_simulations_in_soft_resign);
             }
 
+            const float saved_root_fpu = mcts.config().root_fpu_reduction_max;
+            if (!is_full_search) {
+                mcts.config().root_fpu_reduction_max = mcts.config().fpu_reduction_max;
+            }
             const auto sr = mcts.search(state, to_play, num_simulations, root, /*is_eval=*/!is_full_search, gumbel_m_override);
+            mcts.config().root_fpu_reduction_max = saved_root_fpu;
             const float v_mix_scalar = sr.v_mix[0] - sr.v_mix[2];
             historical_v_mix.push_back(v_mix_scalar);
 
