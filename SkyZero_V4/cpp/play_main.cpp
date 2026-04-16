@@ -6,10 +6,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <random>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -29,10 +31,48 @@ using skyzero::ParallelMCTS;
 
 namespace {
 
+namespace fs = std::filesystem;
+
+// Default model directory: <exe_dir>/../../data/models
+// (cpp/build/play -> ../../data/models = project_root/data/models)
+std::string default_model_dir(const char* argv0) {
+    fs::path exe(argv0);
+    fs::path exe_dir = exe.parent_path();
+    if (exe_dir.empty()) exe_dir = fs::current_path();
+    return (exe_dir / ".." / ".." / "data" / "models").lexically_normal().string();
+}
+
+// Pick newest model in `dir`. Prefers files matching skyzero-s<S>-e<E>.pt by
+// (epoch desc, step desc); falls back to random_init.pt; returns "" if none.
+std::string find_latest_model(const std::string& dir) {
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) return "";
+    static const std::regex re("^skyzero-s(\\d+)-e(\\d+)\\.pt$");
+    long long best_e = -1, best_s = -1;
+    fs::path best;
+    fs::path random_init;
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        const std::string name = entry.path().filename().string();
+        if (name == "random_init.pt") { random_init = entry.path(); continue; }
+        std::smatch m;
+        if (!std::regex_match(name, m, re)) continue;
+        long long s = std::stoll(m[1].str());
+        long long e = std::stoll(m[2].str());
+        if (e > best_e || (e == best_e && s > best_s)) {
+            best_e = e; best_s = s; best = entry.path();
+        }
+    }
+    if (!best.empty()) return best.string();
+    if (!random_init.empty()) return random_init.string();
+    return "";
+}
+
 void print_usage(const char* prog) {
-    std::cerr << "Usage: " << prog << " --model PATH [options]\n"
-              << "\nRequired:\n"
+    std::cerr << "Usage: " << prog << " [--model PATH | --model-dir DIR] [options]\n"
+              << "\nModel selection (if --model omitted, latest skyzero-s*-e*.pt in --model-dir is used):\n"
               << "  --model PATH           TorchScript model (.pt) to load\n"
+              << "  --model-dir DIR        Directory to search (default: <exe>/../../data/models)\n"
               << "\nGame options:\n"
               << "  --board-size N         Board size (default: 15)\n"
               << "  --no-renju             Disable renju rules (default: renju on)\n"
@@ -136,6 +176,7 @@ struct HistoryEntry {
 
 int main(int argc, char* argv[]) {
     std::string model_path;
+    std::string model_dir;
     int board_size = 15;
     bool use_renju = true;
     bool enable_forbidden_plane = true;
@@ -162,6 +203,7 @@ int main(int argc, char* argv[]) {
         };
         if (arg == "--help" || arg == "-h") { print_usage(argv[0]); return 0; }
         else if (arg == "--model") model_path = next();
+        else if (arg == "--model-dir") model_dir = next();
         else if (arg == "--board-size") board_size = std::stoi(next());
         else if (arg == "--no-renju") { use_renju = false; enable_forbidden_plane = false; }
         else if (arg == "--renju") { use_renju = true; enable_forbidden_plane = true; }
@@ -189,9 +231,15 @@ int main(int argc, char* argv[]) {
     }
 
     if (model_path.empty()) {
-        std::cerr << "--model PATH is required.\n\n";
-        print_usage(argv[0]);
-        return 1;
+        const std::string search_dir = model_dir.empty() ? default_model_dir(argv[0]) : model_dir;
+        model_path = find_latest_model(search_dir);
+        if (model_path.empty()) {
+            std::cerr << "No model found in '" << search_dir
+                      << "'. Pass --model PATH or --model-dir DIR.\n\n";
+            print_usage(argv[0]);
+            return 1;
+        }
+        std::cout << "Auto-selected latest model from " << search_dir << "\n";
     }
 
     const bool use_fp16 = (fp16_mode == 1) || (fp16_mode == -1 && device.is_cuda());
