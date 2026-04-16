@@ -254,10 +254,12 @@ int main(int argc, char* argv[]) {
         auto elements = output.toTuple()->elements();
         auto policy_logits_raw = elements[0].toTensor();  // [B, 1, H, W]
         auto value_logits_raw = elements[2].toTensor();   // [B, 3]
+        // elements[3] is predicted short-term squared value error
+        // (model already applies softplus-with-gradient-floor + 0.25 multiplier)
         torch::Tensor value_error_raw;
         bool has_value_error = (elements.size() >= 4);
         if (has_value_error) {
-            value_error_raw = torch::softplus(elements[3].toTensor().to(torch::kFloat32))
+            value_error_raw = elements[3].toTensor().to(torch::kFloat32)
                                   .reshape({bsz}).to(torch::kCPU).contiguous();
         }
         auto policy = policy_logits_raw.reshape({bsz, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();

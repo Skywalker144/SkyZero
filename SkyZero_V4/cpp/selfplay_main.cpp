@@ -132,7 +132,7 @@ int main(int argc, char* argv[]) {
         else if (arg == "--fork-skip-first-n") cfg.fork_skip_first_n_moves = std::stoi(next());
         // Uncertainty-Weighted MCTS Backup
         else if (arg == "--enable-uncertainty-weighting") cfg.enable_uncertainty_weighting = true;
-        else if (arg == "--uncertainty-prior") cfg.uncertainty_prior = std::stof(next());
+        else if (arg == "--uncertainty-coeff") cfg.uncertainty_coeff = std::stof(next());
         else if (arg == "--uncertainty-exponent") cfg.uncertainty_exponent = std::stof(next());
         else if (arg == "--uncertainty-max-weight") cfg.uncertainty_max_weight = std::stof(next());
         else {
