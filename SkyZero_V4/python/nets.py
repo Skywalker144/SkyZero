@@ -21,6 +21,36 @@ from model_config import ModelConfig
 # Helper functions (from KataGomo model_pytorch.py)
 # ---------------------------------------------------------------------------
 
+SHORTTERM_VALUE_ERROR_MULTIPLIER = 0.25
+
+
+class SoftPlusWithGradientFloorFunction(torch.autograd.Function):
+    """
+    Same as softplus, except on backward pass, we never let the gradient decrease below grad_floor.
+    Equivalent to having a dynamic learning rate depending on stop_grad(x) where x is the input.
+    If square, then also squares the result while halving the input, and still also keeping the same gradient.
+    """
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, grad_floor: float, square: bool):
+        ctx.save_for_backward(x)
+        ctx.grad_floor = grad_floor
+        if square:
+            return torch.square(torch.nn.functional.softplus(0.5 * x))
+        else:
+            return torch.nn.functional.softplus(x)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        (x,) = ctx.saved_tensors
+        grad_floor = ctx.grad_floor
+        grad_x = None
+        grad_grad_floor = None
+        grad_square = None
+        if ctx.needs_input_grad[0]:
+            grad_x = grad_output * (grad_floor + (1.0 - grad_floor) / (1.0 + torch.exp(-x)))
+        return grad_x, grad_grad_floor, grad_square
+
+
 def act(activation, inplace=False):
     if activation == "relu":
         return nn.ReLU(inplace=inplace)
@@ -502,8 +532,8 @@ class ValueHead(nn.Module):
         self.linear2 = nn.Linear(3 * c_v1, c_v2, bias=True)
         self.act2 = act(activation)
         self.linear_valuehead = nn.Linear(c_v2, 3, bias=True)
-        # Shortterm value error head: predicts (utility_pred - actual_outcome)^2
-        # Bias-init negative so initial softplus output is small (uncertainty ~0.1).
+        # Shortterm value error head: predicts (utility_pred - actual_outcome)^2.
+        # Forward applies softplus-with-gradient-floor and multiplier (0.25) like KataGo.
         self.linear_value_error = nn.Linear(c_v2, 1, bias=True)
 
     def initialize(self):
@@ -514,7 +544,7 @@ class ValueHead(nn.Module):
         init_weights(self.linear_valuehead.weight, "identity", scale=1.0)
         init_weights(self.linear_valuehead.bias, "identity", scale=bias_scale, fan_tensor=self.linear_valuehead.weight)
         init_weights(self.linear_value_error.weight, "identity", scale=1.0)
-        # softplus(-2.25) ~= 0.1, gives a sensible "low uncertainty" prior at init.
+        # 0.25 * softplus(-2.25) ~= 0.025, a near-zero uncertainty prior at init.
         nn.init.constant_(self.linear_value_error.bias, -2.25)
 
     def add_reg_dict(self, reg_dict: Dict[str, List]):
@@ -538,8 +568,11 @@ class ValueHead(nn.Module):
         outv2 = self.linear2(outpooled)
         outv2 = self.act2(outv2)
         value_logits = self.linear_valuehead(outv2)          # [B, 3]
-        value_error_logit = self.linear_value_error(outv2)   # [B, 1]
-        return value_logits, value_error_logit
+        value_error_raw = self.linear_value_error(outv2).squeeze(-1)  # [B]
+        value_error_pred = SoftPlusWithGradientFloorFunction.apply(
+            value_error_raw, 0.05, False
+        ) * SHORTTERM_VALUE_ERROR_MULTIPLIER                          # [B]
+        return value_logits, value_error_pred.unsqueeze(-1)           # [B, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +687,7 @@ class Model(nn.Module):
         out = self.act_trunkfinal(out)
 
         policy_out = self.policy_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum)  # [B, 2, H, W]
-        value_out, value_error_logit = self.value_head(
+        value_out, value_error_pred = self.value_head(
             out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum
         )
 
@@ -662,7 +695,7 @@ class Model(nn.Module):
             "policy_logits": policy_out[:, 0:1, :, :],            # [B, 1, H, W]
             "opponent_policy_logits": policy_out[:, 1:2, :, :],   # [B, 1, H, W]
             "value_logits": value_out,                             # [B, 3]
-            "value_error_logit": value_error_logit,                # [B, 1]
+            "value_error_pred": value_error_pred,                  # [B, 1]
         }
 
 
@@ -681,5 +714,5 @@ class ExportWrapper(nn.Module):
             out["policy_logits"],
             out["opponent_policy_logits"],
             out["value_logits"],
-            out["value_error_logit"],
+            out["value_error_pred"],
         )

@@ -39,20 +39,22 @@ def weighted_cross_entropy(logits, targets, weights):
     return torch.mean(weights * per_sample)
 
 
-def compute_value_error_loss(value_logits, value_error_logit, value_targets, sample_weights, delta=0.4):
+def compute_value_error_loss(value_logits, value_error_pred, value_targets, sample_weights, delta=0.4):
     """Shortterm value error head loss.
 
     Predicts (utility_pred - actual_outcome)^2 with Huber loss. utility_pred and
     actual_outcome are detached from the value_logits gradient path so the
     error head supervises a target derived from the (current) value head's own
     output without distorting it. Reference: KataGomo metrics_pytorch.py:238-245.
+    The model already applies softplus-with-gradient-floor + 0.25 multiplier, so
+    value_error_pred is consumed directly here.
     """
     with torch.no_grad():
         value_probs = torch.softmax(value_logits.float(), dim=-1)
         utility_pred = value_probs[:, 0] - value_probs[:, 2]
         actual_outcome = value_targets[:, 0] - value_targets[:, 2]
         actual_sq_err = (utility_pred - actual_outcome) ** 2
-    pred = torch.nn.functional.softplus(value_error_logit.float().squeeze(-1))
+    pred = value_error_pred.float().squeeze(-1)
     huber = torch.nn.functional.huber_loss(pred, actual_sq_err, reduction="none", delta=delta)
     return torch.mean(sample_weights * huber)
 
@@ -308,12 +310,12 @@ def main():
                     policy_logits = outputs["policy_logits"].reshape(-1, board_area)
                     opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
                     value_logits = outputs["value_logits"]
-                    value_error_logit = outputs["value_error_logit"]
+                    value_error_pred = outputs["value_error_pred"]
 
                     p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
                     o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
                     v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
-                    ve_loss = compute_value_error_loss(value_logits, value_error_logit, value_targets, sample_weights)
+                    ve_loss = compute_value_error_loss(value_logits, value_error_pred, value_targets, sample_weights)
                     total_loss = (args.policy_loss_weight * p_loss
                                   + args.opp_policy_loss_weight * o_loss
                                   + args.value_loss_weight * v_loss
@@ -330,12 +332,12 @@ def main():
                 policy_logits = outputs["policy_logits"].reshape(-1, board_area)
                 opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
                 value_logits = outputs["value_logits"]
-                value_error_logit = outputs["value_error_logit"]
+                value_error_pred = outputs["value_error_pred"]
 
                 p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
                 o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
                 v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
-                ve_loss = compute_value_error_loss(value_logits, value_error_logit, value_targets, sample_weights)
+                ve_loss = compute_value_error_loss(value_logits, value_error_pred, value_targets, sample_weights)
                 total_loss = (args.policy_loss_weight * p_loss
                               + args.opp_policy_loss_weight * o_loss
                               + args.value_loss_weight * v_loss
@@ -462,12 +464,12 @@ def main():
                     policy_logits = outputs["policy_logits"].reshape(-1, board_area)
                     opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
                     value_logits = outputs["value_logits"]
-                    value_error_logit = outputs["value_error_logit"]
+                    value_error_pred = outputs["value_error_pred"]
 
                     p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
                     o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
                     v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
-                    ve_loss = compute_value_error_loss(value_logits, value_error_logit, value_targets, sample_weights)
+                    ve_loss = compute_value_error_loss(value_logits, value_error_pred, value_targets, sample_weights)
 
                     val_loss["policy"] += p_loss.item()
                     val_loss["opp_policy"] += o_loss.item()

@@ -59,7 +59,7 @@ def main():
         print(f"  policy_logits shape: {out[0].shape}")
         print(f"  opp_policy_logits shape: {out[1].shape}")
         print(f"  value_logits shape: {out[2].shape}")
-        print(f"  value_error_logit shape: {out[3].shape}")
+        print(f"  value_error_pred shape: {out[3].shape}")
 
     traced = torch.jit.trace(wrapper, dummy_input)
     traced.save(args.output)
