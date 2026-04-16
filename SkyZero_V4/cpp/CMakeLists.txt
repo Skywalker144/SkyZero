@@ -40,3 +40,12 @@ add_executable(selfplay
 target_include_directories(selfplay PRIVATE ${LIBZIP_INCLUDE_DIRS})
 target_link_libraries(selfplay "${TORCH_LIBRARIES}" ${LIBZIP_LIBRARIES})
 set_property(TARGET selfplay PROPERTY CXX_STANDARD 17)
+
+add_executable(play
+    play_main.cpp
+    numpywrite.cpp
+)
+
+target_include_directories(play PRIVATE ${LIBZIP_INCLUDE_DIRS})
+target_link_libraries(play "${TORCH_LIBRARIES}" ${LIBZIP_LIBRARIES})
+set_property(TARGET play PROPERTY CXX_STANDARD 17)
