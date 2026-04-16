@@ -38,7 +38,6 @@ struct AlphaZeroConfig {
     int gumbel_m = 16;
     float gumbel_c_visit = 50.0f;
     float gumbel_c_scale = 1.0f;
-    bool gumbel_stochastic_eval = false;
 
     // Playout Cap Randomization (KataGo-style training efficiency)
     int cheap_simulations = 64;

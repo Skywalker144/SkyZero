@@ -492,8 +492,8 @@ private:
         const auto is_legal = game_.get_is_legal_actions(root.state, root.to_play);
 
         std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
-        if (is_eval && !cfg_.gumbel_stochastic_eval) {
-            // eval mode: no noise
+        if (is_eval) {
+            // eval / cheap-search mode: no noise
         } else {
             std::extreme_value_distribution<float> gumbel_dist(0.0f, 1.0f);
             for (int i = 0; i < action_size; ++i) {
@@ -1198,7 +1198,7 @@ private:
                 num_simulations = std::max(num_simulations / 4, cfg_.min_simulations_in_soft_resign);
             }
 
-            const auto sr = mcts.search(state, to_play, num_simulations, root, /*is_eval=*/false, gumbel_m_override);
+            const auto sr = mcts.search(state, to_play, num_simulations, root, /*is_eval=*/!is_full_search, gumbel_m_override);
             const float v_mix_scalar = sr.v_mix[0] - sr.v_mix[2];
             historical_v_mix.push_back(v_mix_scalar);
 
