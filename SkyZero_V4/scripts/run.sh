@@ -96,6 +96,7 @@ BRENORM_ADJUSTMENT_SCALE="${BRENORM_ADJUSTMENT_SCALE:-50000000}"
 
 TRAIN_PER_DATA="${TRAIN_PER_DATA:-2.0}"
 MIN_GAMES="${MIN_GAMES:-500}"
+MIN_ROWS="${MIN_ROWS:-128000}"
 
 # --- Source config (overrides defaults, but env vars take priority) ---
 CFGFILE="${CFGFILE:-$SCRIPTDIR/run.cfg}"
@@ -273,7 +274,7 @@ do
     echo ""
     echo "--- Stage 2: Shuffle ---"
     cd "$PYTHONDIR"
-    bash shuffle.sh "$BASEDIR" "$BASEDIR/tmp" "$NTHREADS" "$BATCHSIZE"
+    MIN_ROWS="$MIN_ROWS" bash shuffle.sh "$BASEDIR" "$BASEDIR/tmp" "$NTHREADS" "$BATCHSIZE"
 
     # 3. Train (Python)
     echo ""
