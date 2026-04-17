@@ -59,11 +59,14 @@ public:
         const InferenceFn& infer_fn,
         const BatchInferenceFn& batch_infer_fn
     ) {
-        // KataGomo-style infinite retry with rejectProb decay.
+        // KataGomo-style retry with rejectProb decay, plus hard bail-out.
         double reject_prob = cfg_.reject_prob;
         int tries = 0;
+        int total_tries = 0;
+        const int absolute_max = std::max(1, cfg_.max_retries) * 10;
         while (true) {
             opening_stats::tried_count.fetch_add(1, std::memory_order_relaxed);
+            ++total_tries;
 
             // Phase 1: sample move count
             int num_moves = sample_move_count(rng);
@@ -77,6 +80,14 @@ public:
             bool ok = scatter_moves(board, to_play, last_action, last_player,
                                     num_moves, rng);
             if (ok) {
+                // Hard bail: if even the relaxed filter can't pass, skip the
+                // balance check and return the scatter result. Prevents the
+                // infinite retry loop when NN is heavily offense-biased.
+                if (total_tries >= absolute_max) {
+                    opening_stats::succeed_count.fetch_add(1, std::memory_order_relaxed);
+                    return {std::move(board), to_play};
+                }
+
                 // Phase 3: pick one balanced move via NN evaluation
                 int balanced_loc = pick_balanced_move(
                     board, to_play, last_action, last_player,

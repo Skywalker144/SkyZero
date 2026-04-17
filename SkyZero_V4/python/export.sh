@@ -44,7 +44,8 @@ do
         -board-size 15 \
         -num-planes 4 \
         -model-config b6c96 \
-        -use-swa
+        -use-swa \
+        -calibration-data-dir "$BASEDIR/shuffleddata/current/train"
     set +x
 
     # Create selfplay output directory for this model
