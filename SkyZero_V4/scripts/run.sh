@@ -42,8 +42,6 @@ C_PUCT="${C_PUCT:-1.1}"
 HALF_LIFE="${HALF_LIFE:-$BOARD_SIZE}"
 MOVE_TEMP_INIT="${MOVE_TEMP_INIT:-1.1}"
 MOVE_TEMP_FINAL="${MOVE_TEMP_FINAL:-1.0}"
-ENABLE_SVB="${ENABLE_SVB:-true}"
-SVB_FACTOR="${SVB_FACTOR:-0.35}"
 
 MODEL_CONFIG="${MODEL_CONFIG:-b6c96}"
 
@@ -82,14 +80,12 @@ UNCERTAINTY_MAX_WEIGHT="${UNCERTAINTY_MAX_WEIGHT:-8.0}"
 LR="${LR:-1e-4}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-3e-5}"
 USE_FP16="${USE_FP16:-true}"
-SWA_SCALE="${SWA_SCALE:-1.0}"
 LOOKAHEAD_K="${LOOKAHEAD_K:-6}"
 LOOKAHEAD_ALPHA="${LOOKAHEAD_ALPHA:-0.5}"
 SAMPLES_PER_EPOCH="${SAMPLES_PER_EPOCH:-1024000}"
 MAX_EPOCHS="${MAX_EPOCHS:-1}"
 VALUE_ERROR_LOSS_WEIGHT="${VALUE_ERROR_LOSS_WEIGHT:-2.0}"
 NUM_PLANES="${NUM_PLANES:-4}"
-LR_SCALE_AUTO="${LR_SCALE_AUTO:-true}"
 BRENORM_TARGET_RMAX="${BRENORM_TARGET_RMAX:-3.0}"
 BRENORM_TARGET_DMAX="${BRENORM_TARGET_DMAX:-5.0}"
 BRENORM_ADJUSTMENT_SCALE="${BRENORM_ADJUSTMENT_SCALE:-50000000}"
@@ -155,7 +151,6 @@ SELFPLAY_ARGS=(
     --half-life "$HALF_LIFE"
     --move-temp-init "$MOVE_TEMP_INIT"
     --move-temp-final "$MOVE_TEMP_FINAL"
-    --svb-factor "$SVB_FACTOR"
     --num-workers "$NUM_WORKERS"
     --num-servers "$NUM_SERVERS"
     --inference-batch "$INFERENCE_BATCH"
@@ -179,7 +174,6 @@ SELFPLAY_ARGS=(
     --uncertainty-max-weight "$UNCERTAINTY_MAX_WEIGHT"
 )
 [[ "$RENJU" == "false" ]] && SELFPLAY_ARGS+=(--no-renju)
-[[ "$ENABLE_SVB" == "true" ]] && SELFPLAY_ARGS+=(--enable-svb)
 [[ "$ENABLE_UNCERTAINTY_WEIGHTING" == "true" ]] && SELFPLAY_ARGS+=(--enable-uncertainty-weighting)
 [[ -n "$OPENINGS" ]] && SELFPLAY_ARGS+=(--openings "$OPENINGS" --empty-board-prob "$EMPTY_BOARD_PROB")
 if [[ "$ONLINE_OPENINGS" == "true" ]]; then
@@ -197,14 +191,12 @@ fi
 # --- Build train.py extra args ---
 TRAIN_EXTRA_ARGS=()
 TRAIN_EXTRA_ARGS+=(-lr "$LR" -weight-decay "$WEIGHT_DECAY")
-TRAIN_EXTRA_ARGS+=(-swa-scale "$SWA_SCALE")
 TRAIN_EXTRA_ARGS+=(-lookahead-k "$LOOKAHEAD_K" -lookahead-alpha "$LOOKAHEAD_ALPHA")
 TRAIN_EXTRA_ARGS+=(-samples-per-epoch "$SAMPLES_PER_EPOCH")
 TRAIN_EXTRA_ARGS+=(-max-epochs-this-instance "$MAX_EPOCHS")
 TRAIN_EXTRA_ARGS+=(-num-planes "$NUM_PLANES" -model-config "$MODEL_CONFIG")
 TRAIN_EXTRA_ARGS+=(-brenorm-target-rmax "$BRENORM_TARGET_RMAX" -brenorm-target-dmax "$BRENORM_TARGET_DMAX" -brenorm-adjustment-scale "$BRENORM_ADJUSTMENT_SCALE")
 TRAIN_EXTRA_ARGS+=(-value-error-loss-weight "$VALUE_ERROR_LOSS_WEIGHT")
-[[ "$LR_SCALE_AUTO" == "true" ]] && TRAIN_EXTRA_ARGS+=(-lr-scale-auto)
 [[ "$USE_FP16" == "true" ]] && TRAIN_EXTRA_ARGS+=(-use-fp16)
 
 # ==========================================================================

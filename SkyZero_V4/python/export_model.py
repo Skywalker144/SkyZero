@@ -2,8 +2,8 @@
 """
 Export a PyTorch training checkpoint to TorchScript for C++ selfplay.
 
-Loads the SWA model (or regular model) from a checkpoint, wraps it in
-ExportWrapper to produce tuple output, traces it, and saves as .pt.
+Loads the model from a checkpoint, wraps it in ExportWrapper to produce
+tuple output, traces it, and saves as .pt.
 
 Before tracing, recalibrates BatchNorm running stats on a sample of training
 data — essential when total training is small relative to KataGo's 50M+ sample
@@ -92,7 +92,6 @@ def main():
     parser.add_argument("-board-size", type=int, default=15)
     parser.add_argument("-num-planes", type=int, default=4)
     parser.add_argument("-model-config", type=str, default="b6c96", help="Model config name")
-    parser.add_argument("-use-swa", action="store_true", help="Use SWA model weights if available")
     parser.add_argument("-calibration-data-dir", type=str, default=None,
                         help="Dir of .npz files used to recalibrate BN stats. "
                              "If unset or missing, calibration is skipped.")
@@ -107,23 +106,7 @@ def main():
     model_config = CONFIG_BY_NAME[args.model_config]
     model = Model(model_config, args.board_size, args.num_planes)
 
-    if args.use_swa and "swa_model" in state:
-        print("Using SWA model weights")
-        # AveragedModel wraps with 'module.' prefix and adds n_averaged
-        swa_state = state["swa_model"]
-        # Strip 'module.' prefix from SWA state dict keys
-        cleaned = {}
-        for k, v in swa_state.items():
-            if k == "n_averaged":
-                continue
-            new_key = k.replace("module.", "", 1) if k.startswith("module.") else k
-            cleaned[new_key] = v
-        model.load_state_dict(cleaned)
-    elif "model" in state:
-        print("Using regular model weights")
-        model.load_state_dict(state["model"])
-    else:
-        raise ValueError("Checkpoint has neither 'model' nor 'swa_model' key")
+    model.load_state_dict(state["model"])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -52,13 +52,6 @@ public:
           batch_infer_fn_(std::move(batch_infer_fn)),
           rng_(seed)
     {
-        if (cfg_.enable_subtree_value_bias) {
-            svb_table_ = std::make_shared<SubtreeValueBiasTable>(
-                game_.board_size,
-                cfg_.subtree_value_bias_table_shards,
-                cfg_.subtree_value_bias_pattern_radius
-            );
-        }
     }
 
     AlphaZeroConfig& config() { return cfg_; }
@@ -238,8 +231,6 @@ private:
         node.nn_logits = ir.masked_logits;
         node.nn_value_error = ir.value_error;
 
-        const int prev_action = node.parent ? node.parent->action_taken : -1;
-
         node.children.clear();
         for (int a = 0; a < static_cast<int>(ir.policy.size()); ++a) {
             const float p = ir.policy[a];
@@ -251,7 +242,6 @@ private:
                 &node,
                 a
             });
-            bind_svb_entry(*child, prev_action, node.state);
             node.children.push_back(std::move(child));
         }
     }
@@ -494,9 +484,8 @@ private:
             ir.value = value;
             ir.value_error = value_error;
             expand_with(ir, *pending[i].leaf);
-            const auto corrected_value = apply_svb_correction(*pending[i].leaf, ir.value);
             const float w = compute_uncertainty_weight(pending[i].leaf->nn_value_error);
-            backpropagate_path_with_vloss(pending[i].path, corrected_value, w);
+            backpropagate_path_with_vloss(pending[i].path, ir.value, w);
             sims_budget -= 1;
         }
     }
@@ -728,9 +717,6 @@ private:
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             (*it)->update(value, weight);
             (*it)->vloss -= 1;
-            if ((*it)->is_expanded()) {
-                update_svb_for_node(**it);
-            }
             value = flip_wdl(value);
         }
     }
@@ -738,9 +724,6 @@ private:
     void backpropagate(MCTSNode* node, std::array<float, 3> value, float weight) {
         while (node != nullptr) {
             node->update(value, weight);
-            if (node->is_expanded()) {
-                update_svb_for_node(*node);
-            }
             value = flip_wdl(value);
             node = node->parent;
         }
@@ -756,85 +739,12 @@ private:
         return mx;
     }
 
-public:
-    void cleanup_svb_for_tree(MCTSNode* node) {
-        remove_svb_contribution(node);
-    }
-    void cleanup_unused_svb() {
-        if (svb_table_) svb_table_->clear_unused();
-    }
-
-private:
-    void bind_svb_entry(MCTSNode& child, int prev_action, const std::vector<int8_t>& parent_state) {
-        if (!svb_table_) return;
-        const int player = -child.to_play;
-        child.svb_entry = svb_table_->get(player, prev_action, child.action_taken, parent_state);
-    }
-
-    void update_svb_for_node(MCTSNode& node) {
-        if (!svb_table_ || !node.svb_entry || node.n <= 1) return;
-        const float nn_utility = wdl_utility(node.nn_value_probs);
-        float child_utility_sum = 0.0f;
-        float child_weight_sum = 0.0f;
-        for (auto& c : node.children) {
-            if (c && c->n > 0 && c->weighted_n > 0.0f) {
-                const float child_q = (c->v[2] - c->v[0]) / c->weighted_n;
-                const float w = c->weighted_n;
-                child_utility_sum += child_q * w;
-                child_weight_sum += w;
-            }
-        }
-        if (child_weight_sum < 1e-6f) return;
-        const float children_utility = child_utility_sum / child_weight_sum;
-        const float svb_weight = std::pow(child_weight_sum, cfg_.subtree_value_bias_weight_exponent);
-        const float svb_delta = (children_utility - nn_utility) * svb_weight;
-        auto& entry = *node.svb_entry;
-        entry.add(svb_delta - node.last_svb_delta_sum, svb_weight - node.last_svb_weight);
-        node.last_svb_delta_sum = svb_delta;
-        node.last_svb_weight = svb_weight;
-    }
-
-    void remove_svb_contribution(MCTSNode* node) {
-        if (!node) return;
-        if (node->svb_entry) {
-            node->svb_entry->subtract(
-                node->last_svb_delta_sum * cfg_.subtree_value_bias_free_prop,
-                node->last_svb_weight * cfg_.subtree_value_bias_free_prop
-            );
-            node->svb_entry.reset();
-        }
-        for (auto& child : node->children) {
-            remove_svb_contribution(child.get());
-        }
-    }
-
-    std::array<float, 3> apply_svb_correction(const MCTSNode& node, const std::array<float, 3>& value) const {
-        if (!svb_table_ || !node.svb_entry) return value;
-        const float bias = node.svb_entry->get_bias();
-        if (std::fabs(bias) < 1e-8f) return value;
-        // KataGomo-aligned (searchupdatehelpers.cpp:30-32): bias > 0 means NN
-        // underestimates node.to_play's utility, so shift prob mass from loss to
-        // win. Signs were previously flipped.
-        const float correction = cfg_.subtree_value_bias_factor * bias;
-        auto corrected = value;
-        corrected[0] = std::max(0.0f, std::min(1.0f, value[0] + correction * 0.5f));
-        corrected[2] = std::max(0.0f, std::min(1.0f, value[2] - correction * 0.5f));
-        const float sum = corrected[0] + corrected[1] + corrected[2];
-        if (sum > 1e-8f) {
-            corrected[0] /= sum;
-            corrected[1] /= sum;
-            corrected[2] /= sum;
-        }
-        return corrected;
-    }
-
     Game& game_;
     AlphaZeroConfig cfg_;
     int leaf_batch_size_ = 1;
     InferenceFn infer_fn_;
     BatchInferenceFn batch_infer_fn_;
     std::mt19937 rng_;
-    std::shared_ptr<SubtreeValueBiasTable> svb_table_;
 };
 
 // ============================================================================
@@ -1325,25 +1235,12 @@ private:
                 }
             }
             if (next_root) {
-                if (cfg_.enable_subtree_value_bias) {
-                    for (auto& child : root->children) {
-                        if (child) {
-                            mcts.cleanup_svb_for_tree(child.get());
-                        }
-                    }
-                    mcts.cleanup_svb_for_tree(root.get());
-                }
                 next_root->parent = nullptr;
                 root = std::move(next_root);
             } else {
-                if (cfg_.enable_subtree_value_bias && root) {
-                    mcts.cleanup_svb_for_tree(root.get());
-                }
                 root.reset(new MCTSNode{state, to_play});
             }
         }
-
-        mcts.cleanup_unused_svb();
 
         const int winner = game_.get_winner(state, last_action, last_player);
         std::vector<PolicySurpriseSample> return_memory;

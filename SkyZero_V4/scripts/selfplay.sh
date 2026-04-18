@@ -49,8 +49,6 @@ C_PUCT="${C_PUCT:-1.1}"
 HALF_LIFE="${HALF_LIFE:-$BOARD_SIZE}"
 MOVE_TEMP_INIT="${MOVE_TEMP_INIT:-1.1}"
 MOVE_TEMP_FINAL="${MOVE_TEMP_FINAL:-1.0}"
-ENABLE_SVB="${ENABLE_SVB:-true}"
-SVB_FACTOR="${SVB_FACTOR:-0.35}"
 
 NUM_WORKERS="${NUM_WORKERS:-32}"
 NUM_SERVERS="${NUM_SERVERS:-1}"
@@ -141,7 +139,6 @@ SELFPLAY_ARGS=(
     --half-life "$HALF_LIFE"
     --move-temp-init "$MOVE_TEMP_INIT"
     --move-temp-final "$MOVE_TEMP_FINAL"
-    --svb-factor "$SVB_FACTOR"
     --num-workers "$NUM_WORKERS"
     --num-servers "$NUM_SERVERS"
     --inference-batch "$INFERENCE_BATCH"
@@ -165,7 +162,6 @@ SELFPLAY_ARGS=(
     --uncertainty-max-weight "$UNCERTAINTY_MAX_WEIGHT"
 )
 [[ "$RENJU" == "false" ]] && SELFPLAY_ARGS+=(--no-renju)
-[[ "$ENABLE_SVB" == "true" ]] && SELFPLAY_ARGS+=(--enable-svb)
 [[ "$ENABLE_UNCERTAINTY_WEIGHTING" == "true" ]] && SELFPLAY_ARGS+=(--enable-uncertainty-weighting)
 [[ -n "$OPENINGS" ]] && SELFPLAY_ARGS+=(--openings "$OPENINGS" --empty-board-prob "$EMPTY_BOARD_PROB")
 if [[ "$ONLINE_OPENINGS" == "true" ]]; then

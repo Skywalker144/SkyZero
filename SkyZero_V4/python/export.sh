@@ -44,7 +44,6 @@ do
         -board-size 15 \
         -num-planes 4 \
         -model-config b6c96 \
-        -use-swa \
         -calibration-data-dir "$BASEDIR/shuffleddata/current/train"
     set +x
 

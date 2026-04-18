@@ -22,7 +22,6 @@
 #include <torch/torch.h>
 
 #include "policy_surprise_weighting.h"
-#include "subtree_value_bias.h"
 #include "utils.h"
 
 namespace skyzero {
@@ -82,14 +81,6 @@ struct AlphaZeroConfig {
     float uncertainty_exponent = 1.0f;
     float uncertainty_max_weight = 8.0f;
 
-    // Subtree Value Bias
-    bool enable_subtree_value_bias = false;
-    float subtree_value_bias_factor = 0.35f;
-    float subtree_value_bias_weight_exponent = 0.85f;
-    float subtree_value_bias_free_prop = 0.8f;
-    int subtree_value_bias_table_shards = 4096;
-    int subtree_value_bias_pattern_radius = 2;
-
     // Stochastic transform
     bool enable_stochastic_transform_inference_for_root = true;
     bool enable_stochastic_transform_inference_for_child = true;
@@ -146,11 +137,6 @@ struct MCTSNode {
     // Cached NN-predicted value error for this node (post-softplus).
     // Used by uncertainty-weighted backup; 0.0 means uninitialized.
     float nn_value_error = 0.0f;
-
-    // Subtree Value Bias bookkeeping
-    std::shared_ptr<SubtreeValueBiasEntry> svb_entry;
-    float last_svb_delta_sum = 0.0f;
-    float last_svb_weight = 0.0f;
 
     bool is_expanded() const { return !children.empty(); }
 

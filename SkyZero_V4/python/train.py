@@ -22,7 +22,6 @@ from collections import defaultdict
 import torch
 import torch.nn as nn
 import torch.optim
-from torch.optim.swa_utils import AveragedModel
 from torch.cuda.amp import GradScaler, autocast
 
 from nets import Model, ExportWrapper
@@ -59,27 +58,23 @@ def compute_value_error_loss(value_logits, value_error_pred, value_targets, samp
     return torch.mean(sample_weights * huber)
 
 
-def save_checkpoint(model, swa_model, optimizer, scaler, train_state, path):
+def save_checkpoint(model, optimizer, scaler, train_state, path):
     state = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "train_state": train_state,
     }
-    if swa_model is not None:
-        state["swa_model"] = swa_model.state_dict()
     if scaler is not None:
         state["scaler"] = scaler.state_dict()
     torch.save(state, path)
     logging.info(f"Saved checkpoint to {path}")
 
 
-def load_checkpoint(path, model, swa_model, optimizer, scaler, device):
+def load_checkpoint(path, model, optimizer, scaler, device):
     state = torch.load(path, map_location=device)
     model.load_state_dict(state["model"])
     if "optimizer" in state:
         optimizer.load_state_dict(state["optimizer"])
-    if swa_model is not None and "swa_model" in state:
-        swa_model.load_state_dict(state["swa_model"])
     if scaler is not None and "scaler" in state:
         scaler.load_state_dict(state["scaler"])
     train_state = state.get("train_state", {})
@@ -87,62 +82,20 @@ def load_checkpoint(path, model, swa_model, optimizer, scaler, device):
     return train_state
 
 
-def compute_warmup_scale(global_step_samples, norm_kind):
-    """LR warmup schedule for fixbrenorm (from KataGomo train.py:604-622)."""
-    if norm_kind in ("brenorm", "fixbrenorm"):
-        if global_step_samples < 250000: return 1.0 / 20.0
-        if global_step_samples < 500000: return 1.0 / 14.0
-        if global_step_samples < 750000: return 1.0 / 10.0
-        if global_step_samples < 1000000: return 1.0 / 7.0
-        if global_step_samples < 1250000: return 1.0 / 5.0
-        if global_step_samples < 1500000: return 1.0 / 3.0
-        if global_step_samples < 1750000: return 1.0 / 2.0
-        if global_step_samples < 2000000: return 1.0 / 1.4
-        return 1.0
-    else:
-        # fixup/fixscale warmup
-        if global_step_samples < 1000000: return 1.0 / 5.0
-        if global_step_samples < 2000000: return 1.0 / 3.0
-        if global_step_samples < 4000000: return 1.0 / 2.0
-        if global_step_samples < 6000000: return 1.0 / 1.4
-        return 1.0
-
-
-def lr_scale_auto_factor(global_step_samples):
-    """Step-wise LR decay over long training (from KataGomo train.py:257-269)."""
-    if global_step_samples < 60000000: return 8.0
-    if global_step_samples < 110000000: return 4.0
-    if global_step_samples < 160000000: return 2.0
-    if global_step_samples < 200000000: return 1.0
-    return 0.25
-
-
-def compute_adaptive_gnorm_cap(norm_kind, lr_scale, global_step_samples):
+def compute_adaptive_gnorm_cap(norm_kind, lr_scale):
     """Adaptive gradient clipping (from KataGomo train.py:1068-1089)."""
     if norm_kind in ("fixup", "fixscale"):
         gnorm_cap = 2500.0
     else:
         gnorm_cap = 5500.0
-    effective_lr_scale = lr_scale * lr_scale_auto_factor(global_step_samples)
-    gnorm_cap = gnorm_cap / math.sqrt(max(1e-7, effective_lr_scale))
-    return gnorm_cap
+    return gnorm_cap / math.sqrt(max(1e-7, lr_scale))
 
 
-def update_lr(optimizer, base_lr, lr_scale, warmup_scale):
-    """Update optimizer LR per parameter group."""
+def set_lr(optimizer, base_lr, lr_scale):
+    """Set per-parameter-group LR = base_lr * lr_scale * group_scale."""
     for param_group in optimizer.param_groups:
         group_scale = param_group.get("lr_scale", 1.0)
-        param_group["lr"] = base_lr * warmup_scale * lr_scale * lr_scale_auto_factor(0) * group_scale
-
-
-def update_lr_and_wd(optimizer, base_lr, lr_scale, global_step_samples, norm_kind, use_auto_lr):
-    """Update LR and weight decay for all parameter groups."""
-    warmup = compute_warmup_scale(global_step_samples, norm_kind)
-    auto = lr_scale_auto_factor(global_step_samples) if use_auto_lr else 1.0
-    for param_group in optimizer.param_groups:
-        group_scale = param_group.get("lr_scale", 1.0)
-        param_group["lr"] = base_lr * warmup * lr_scale * auto * group_scale
-    return warmup, auto
+        param_group["lr"] = base_lr * lr_scale * group_scale
 
 
 def maybe_update_brenorm_params(model, train_state, last_brenorm_update, norm_kind,
@@ -178,12 +131,10 @@ def main():
     parser.add_argument("-model-config", type=str, default="b6c96", help="Model config name (b6c96, b4c32, b10c128)")
     parser.add_argument("-lr", type=float, default=1e-4, help="Base learning rate")
     parser.add_argument("-lr-scale", type=float, default=1.0, help="LR scale multiplier")
-    parser.add_argument("-lr-scale-auto", action="store_true", help="Enable auto LR decay over training")
     parser.add_argument("-weight-decay", type=float, default=3e-5)
     parser.add_argument("-max-epochs-this-instance", type=int, default=1)
     parser.add_argument("-samples-per-epoch", type=int, default=None, help="Cap samples per epoch (None = all data)")
     parser.add_argument("-use-fp16", action="store_true")
-    parser.add_argument("-swa-scale", type=float, default=None, help="EMA scale for SWA (e.g. 1.0 means new_factor=1.0)")
     parser.add_argument("-lookahead-k", type=int, default=None, help="Lookahead steps (e.g. 6)")
     parser.add_argument("-lookahead-alpha", type=float, default=0.5)
     parser.add_argument("-policy-loss-weight", type=float, default=1.0)
@@ -231,18 +182,11 @@ def main():
     # FP16
     scaler = GradScaler() if args.use_fp16 else None
 
-    # SWA
-    swa_model = None
-    if args.swa_scale is not None:
-        new_factor = 1.0 / args.swa_scale if args.swa_scale > 0 else 1.0
-        ema_avg = lambda avg_param, cur_param, num_averaged: avg_param + new_factor * (cur_param - avg_param)
-        swa_model = AveragedModel(model, avg_fn=ema_avg)
-
     # Load existing checkpoint if present
-    train_state = {"global_step_samples": 0, "epoch": 0, "swa_sample_accum": 0.0}
+    train_state = {"global_step_samples": 0, "epoch": 0}
     ckpt_path = os.path.join(args.traindir, "latest.ckpt")
     if os.path.exists(ckpt_path):
-        train_state = load_checkpoint(ckpt_path, model, swa_model, optimizer, scaler, device)
+        train_state = load_checkpoint(ckpt_path, model, optimizer, scaler, device)
 
     # Initialize brenorm params
     last_brenorm_update_samples = train_state.get("global_step_samples", 0)
@@ -253,8 +197,7 @@ def main():
     )
 
     # Initialize LR
-    update_lr_and_wd(optimizer, args.lr, args.lr_scale,
-                     train_state.get("global_step_samples", 0), norm_kind, args.lr_scale_auto)
+    set_lr(optimizer, args.lr, args.lr_scale)
 
     # Lookahead cache
     lookahead_cache = None
@@ -334,7 +277,7 @@ def main():
 
                 scaler.scale(total_loss).backward()
                 scaler.unscale_(optimizer)
-                gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale, train_state["global_step_samples"])
+                gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gnorm_cap)
                 scaler.step(optimizer)
                 scaler.update()
@@ -355,7 +298,7 @@ def main():
                               + args.value_error_loss_weight * ve_loss)
 
                 total_loss.backward()
-                gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale, train_state["global_step_samples"])
+                gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gnorm_cap)
                 optimizer.step()
 
@@ -368,11 +311,6 @@ def main():
             running_loss["value"] += v_loss.item()
             running_loss["value_error"] += ve_loss.item()
             running_loss["total"] += total_loss.item()
-
-            # Update LR every 10 batches (during first 50M samples)
-            if batch_count % 10 == 0 and train_state["global_step_samples"] <= 50000000:
-                update_lr_and_wd(optimizer, args.lr, args.lr_scale,
-                                 train_state["global_step_samples"], norm_kind, args.lr_scale_auto)
 
             # Update brenorm params every 500 batches
             if batch_count % 500 == 0:
@@ -395,14 +333,6 @@ def main():
                     lookahead_counter = 0
                 else:
                     in_between_lookaheads = True
-
-            # SWA
-            if swa_model is not None and not in_between_lookaheads:
-                train_state["swa_sample_accum"] = train_state.get("swa_sample_accum", 0) + batch_size
-                swa_period = max(batch_size * 10, 10000)  # Update SWA every ~10k samples
-                if train_state["swa_sample_accum"] >= swa_period:
-                    train_state["swa_sample_accum"] = 0
-                    swa_model.update_parameters(model)
 
             # Log every 100 batches
             if batch_count % 100 == 0:
@@ -450,7 +380,7 @@ def main():
         logging.info(f"Epoch done: {batch_count} batches, {samples_this_epoch} samples")
 
         # Save checkpoint
-        save_checkpoint(model, swa_model, optimizer, scaler, train_state, ckpt_path)
+        save_checkpoint(model, optimizer, scaler, train_state, ckpt_path)
 
         # Validation
         val_files = collect_npz_files(vdatadir) if os.path.exists(vdatadir) else []
@@ -518,7 +448,7 @@ def main():
             savepathtmp = savepath + ".tmp"
             if not os.path.exists(savepath):
                 os.makedirs(savepathtmp, exist_ok=True)
-                save_checkpoint(model, swa_model, optimizer, scaler, train_state,
+                save_checkpoint(model, optimizer, scaler, train_state,
                                 os.path.join(savepathtmp, "model.ckpt"))
                 time.sleep(1)
                 os.rename(savepathtmp, savepath)

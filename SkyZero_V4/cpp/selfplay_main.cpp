@@ -33,7 +33,6 @@ static void print_usage(const char* prog) {
               << "  --num-simulations N    MCTS simulations per move (default: 32)\n"
               << "  --gumbel-m N           Gumbel top-k actions (default: 16)\n"
               << "  --c-puct F             Exploration constant (default: 1.1)\n"
-              << "  --enable-svb           Enable Subtree Value Bias\n"
               << "\nNN options:\n"
               << "  --device DEVICE        torch device: cpu or cuda (default: cuda if available)\n"
               << "\nParallel options:\n"
@@ -85,7 +84,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--num-simulations") cfg.num_simulations = std::stoi(next());
         else if (arg == "--gumbel-m") cfg.gumbel_m = std::stoi(next());
         else if (arg == "--c-puct") cfg.c_puct = std::stof(next());
-        else if (arg == "--enable-svb") cfg.enable_subtree_value_bias = true;
         else if (arg == "--device") {
             std::string dev = next();
             if (dev == "cpu") cfg.device = torch::kCPU;
@@ -107,7 +105,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--value-surprise-weight") cfg.value_surprise_data_weight = std::stof(next());
         else if (arg == "--soft-resign-threshold") cfg.soft_resign_threshold = std::stof(next());
         else if (arg == "--soft-resign-prob") cfg.soft_resign_prob = std::stof(next());
-        else if (arg == "--svb-factor") cfg.subtree_value_bias_factor = std::stof(next());
         else if (arg == "--inference-batch-wait-us") pcfg.inference_batch_wait_us = std::stoi(next());
         else if (arg == "--enable-symmetry-root") cfg.enable_symmetry_inference_for_root = true;
         else if (arg == "--enable-symmetry-child") cfg.enable_symmetry_inference_for_child = true;
