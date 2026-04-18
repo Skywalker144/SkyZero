@@ -135,8 +135,6 @@ def main():
     parser.add_argument("-max-epochs-this-instance", type=int, default=1)
     parser.add_argument("-samples-per-epoch", type=int, default=None, help="Cap samples per epoch (None = all data)")
     parser.add_argument("-use-fp16", action="store_true")
-    parser.add_argument("-lookahead-k", type=int, default=None, help="Lookahead steps (e.g. 6)")
-    parser.add_argument("-lookahead-alpha", type=float, default=0.5)
     parser.add_argument("-policy-loss-weight", type=float, default=1.0)
     parser.add_argument("-opp-policy-loss-weight", type=float, default=0.15)
     parser.add_argument("-value-loss-weight", type=float, default=0.6)
@@ -199,14 +197,6 @@ def main():
     # Initialize LR
     set_lr(optimizer, args.lr, args.lr_scale)
 
-    # Lookahead cache
-    lookahead_cache = None
-    if args.lookahead_k is not None:
-        lookahead_cache = {}
-        for param_group in optimizer.param_groups:
-            for param in param_group["params"]:
-                lookahead_cache[param] = param.data.clone()
-
     # Training metrics log
     train_log_path = os.path.join(args.traindir, "train_metrics.json")
 
@@ -232,7 +222,6 @@ def main():
         batch_count = 0
         samples_this_epoch = 0
         t0 = time.perf_counter()
-        lookahead_counter = 0
 
         # Unconditional epoch-start brenorm progression (mirrors KataGomo
         # train.py:988). Guarantees rmax/dmax advance every epoch even when
@@ -320,20 +309,6 @@ def main():
                     args.brenorm_avg_momentum, args.brenorm_adjustment_scale,
                 )
 
-            # Lookahead
-            in_between_lookaheads = False
-            if args.lookahead_k is not None:
-                lookahead_counter += 1
-                if lookahead_counter >= args.lookahead_k:
-                    for param_group in optimizer.param_groups:
-                        for param in param_group["params"]:
-                            slow = lookahead_cache[param]
-                            slow.add_(param.data.detach() - slow, alpha=args.lookahead_alpha)
-                            param.data.copy_(slow)
-                    lookahead_counter = 0
-                else:
-                    in_between_lookaheads = True
-
             # Log every 100 batches
             if batch_count % 100 == 0:
                 avg = {k: v / 100 for k, v in running_loss.items()}
@@ -370,12 +345,6 @@ def main():
             # Cap samples per epoch
             if args.samples_per_epoch is not None and samples_this_epoch >= args.samples_per_epoch:
                 break
-
-        # Discard lookahead in-flight updates at epoch end
-        if args.lookahead_k is not None:
-            for param_group in optimizer.param_groups:
-                for param in param_group["params"]:
-                    param.data.copy_(lookahead_cache[param])
 
         logging.info(f"Epoch done: {batch_count} batches, {samples_this_epoch} samples")
 

@@ -32,8 +32,6 @@ time python ./train.py \
      -lr-scale 1.0 \
      -weight-decay 3e-5 \
      -use-fp16 \
-     -lookahead-k 6 \
-     -lookahead-alpha 0.5 \
      -brenorm-target-rmax 3.0 \
      -brenorm-target-dmax 5.0 \
      -brenorm-adjustment-scale 50000000 \
