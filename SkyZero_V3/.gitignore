@@ -1,0 +1,13 @@
+*.pth
+*.ckpt
+*.ptha
+*.ckpta
+*.png
+*.txt
+*.pdf
+
+**/__pycache__/
+
+.vscode/
+
+KataGo-master/
