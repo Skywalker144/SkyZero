@@ -8,7 +8,7 @@ from typing import Dict, Any
 ModelConfig = Dict[str, Any]
 
 SKYZERO_B6C96 = {
-    "norm_kind": "fixbrenorm",
+    "norm_kind": "bnorm",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
     "initial_conv_1x1": False,
@@ -32,7 +32,7 @@ SKYZERO_B6C96 = {
 }
 
 SKYZERO_B4C32 = {
-    "norm_kind": "fixbrenorm",
+    "norm_kind": "bnorm",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
     "initial_conv_1x1": False,
@@ -54,7 +54,7 @@ SKYZERO_B4C32 = {
 }
 
 SKYZERO_B10C128 = {
-    "norm_kind": "fixbrenorm",
+    "norm_kind": "bnorm",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
     "initial_conv_1x1": False,

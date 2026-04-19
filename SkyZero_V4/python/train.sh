@@ -32,9 +32,6 @@ time python ./train.py \
      -lr-scale 1.0 \
      -weight-decay 3e-5 \
      -use-fp16 \
-     -brenorm-target-rmax 3.0 \
-     -brenorm-target-dmax 5.0 \
-     -brenorm-adjustment-scale 50000000 \
      "$@" \
      2>&1 | tee -a "$BASEDIR"/train/skyzero/stdout.txt
 

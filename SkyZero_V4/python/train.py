@@ -98,27 +98,6 @@ def set_lr(optimizer, base_lr, lr_scale):
         param_group["lr"] = base_lr * lr_scale * group_scale
 
 
-def maybe_update_brenorm_params(model, train_state, last_brenorm_update, norm_kind,
-                                 brenorm_target_rmax, brenorm_target_dmax,
-                                 brenorm_avg_momentum, brenorm_adjustment_scale):
-    """Gradually adjust brenorm rmax/dmax (from KataGomo train.py:665-680)."""
-    if norm_kind not in ("brenorm", "fixbrenorm"):
-        return last_brenorm_update
-
-    if "brenorm_rmax" not in train_state:
-        train_state["brenorm_rmax"] = 1.0
-    if "brenorm_dmax" not in train_state:
-        train_state["brenorm_dmax"] = 0.0
-
-    num_samples_elapsed = train_state["global_step_samples"] - last_brenorm_update
-    factor = math.exp(-num_samples_elapsed / brenorm_adjustment_scale)
-    train_state["brenorm_rmax"] += (1.0 - factor) * (brenorm_target_rmax - train_state["brenorm_rmax"])
-    train_state["brenorm_dmax"] += (1.0 - factor) * (brenorm_target_dmax - train_state["brenorm_dmax"])
-
-    model.set_brenorm_params(brenorm_avg_momentum, train_state["brenorm_rmax"], train_state["brenorm_dmax"])
-    return train_state["global_step_samples"]
-
-
 def main():
     parser = argparse.ArgumentParser(description="SkyZero_V4 Training")
     parser.add_argument("-traindir", required=True, help="Directory for training state and logs")
@@ -140,10 +119,6 @@ def main():
     parser.add_argument("-value-loss-weight", type=float, default=0.6)
     parser.add_argument("-value-error-loss-weight", type=float, default=2.0,
                         help="Weight for shortterm value-error head (KataGo-style)")
-    parser.add_argument("-brenorm-target-rmax", type=float, default=3.0)
-    parser.add_argument("-brenorm-target-dmax", type=float, default=5.0)
-    parser.add_argument("-brenorm-avg-momentum", type=float, default=0.001)
-    parser.add_argument("-brenorm-adjustment-scale", type=float, default=50000000)
     parser.add_argument("-no-export", action="store_true")
     args = parser.parse_args()
 
@@ -186,14 +161,6 @@ def main():
     if os.path.exists(ckpt_path):
         train_state = load_checkpoint(ckpt_path, model, optimizer, scaler, device)
 
-    # Initialize brenorm params
-    last_brenorm_update_samples = train_state.get("global_step_samples", 0)
-    last_brenorm_update_samples = maybe_update_brenorm_params(
-        model, train_state, last_brenorm_update_samples, norm_kind,
-        args.brenorm_target_rmax, args.brenorm_target_dmax,
-        args.brenorm_avg_momentum, args.brenorm_adjustment_scale,
-    )
-
     # Initialize LR
     set_lr(optimizer, args.lr, args.lr_scale)
 
@@ -222,17 +189,6 @@ def main():
         batch_count = 0
         samples_this_epoch = 0
         t0 = time.perf_counter()
-
-        # Unconditional epoch-start brenorm progression (mirrors KataGomo
-        # train.py:988). Guarantees rmax/dmax advance every epoch even when
-        # the epoch runs fewer than 500 batches (the intra-epoch % 500 gate
-        # below is unreliable because read_npz_training_data drops partial
-        # trailing batches per npz).
-        last_brenorm_update_samples = maybe_update_brenorm_params(
-            model, train_state, last_brenorm_update_samples, norm_kind,
-            args.brenorm_target_rmax, args.brenorm_target_dmax,
-            args.brenorm_avg_momentum, args.brenorm_adjustment_scale,
-        )
 
         for batch in read_npz_training_data(train_files, batch_size, pos_len, device, randomize_symmetries=True):
             encoded = batch["encodedInputNCHW"]          # [B, C, H, W]
@@ -301,14 +257,6 @@ def main():
             running_loss["value_error"] += ve_loss.item()
             running_loss["total"] += total_loss.item()
 
-            # Update brenorm params every 500 batches
-            if batch_count % 500 == 0:
-                last_brenorm_update_samples = maybe_update_brenorm_params(
-                    model, train_state, last_brenorm_update_samples, norm_kind,
-                    args.brenorm_target_rmax, args.brenorm_target_dmax,
-                    args.brenorm_avg_momentum, args.brenorm_adjustment_scale,
-                )
-
             # Log every 100 batches
             if batch_count % 100 == 0:
                 avg = {k: v / 100 for k, v in running_loss.items()}
@@ -333,8 +281,6 @@ def main():
                         "value_error_loss": avg["value_error"],
                         "total_loss": avg["total"],
                         "lr": optimizer.param_groups[0]["lr"],
-                        "brenorm_rmax": train_state.get("brenorm_rmax", 1.0),
-                        "brenorm_dmax": train_state.get("brenorm_dmax", 0.0),
                         "speed": speed,
                         "time": datetime.datetime.now().isoformat(),
                     }

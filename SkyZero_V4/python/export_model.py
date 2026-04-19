@@ -50,12 +50,7 @@ def recalibrate_batchnorm(model, batches, device):
 
     Runs the model in train() + no_grad over the given batches so that
     running_mean / running_std become an unbiased mean of batch stats.
-    rmax/dmax are forced to (1.0, 0.0) so the forward takes the pure batchnorm
-    path (brenorm clipping disabled); renorm_avg_momentum is set to 0 so the
-    renorm_running_* buffers stay frozen during calibration.
     """
-    model.set_brenorm_params(renorm_avg_momentum=0.0, rmax=1.0, dmax=0.0)
-
     norm_modules = [m for m in model.modules()
                     if isinstance(m, NormMask) and hasattr(m, "running_mean")]
     if not norm_modules:

@@ -4,7 +4,7 @@ Ported from KataGomo-Gom2024/python/model_pytorch.py with simplifications:
 - Single spatial input only (no global features)
 - Board mask = all-ones (gomoku: all positions valid)
 - Only 3 output heads: policy, opponent_policy, value
-- fixbrenorm normalization
+- bnorm (BatchNorm) normalization
 - No pass move, no attention pool, no RepVGG
 """
 
@@ -112,9 +112,6 @@ class BiasMask(nn.Module):
         else:
             reg_dict["noreg"].append(self.beta)
 
-    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
-        pass
-
     def forward(self, x, mask, mask_sum: float):
         if self.scale is not None:
             return (x * self.scale + self.beta) * mask
@@ -123,7 +120,7 @@ class BiasMask(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# NormMask — supports fixbrenorm, fixup, fixscale, bnorm, brenorm
+# NormMask — supports fixup, fixscale, bnorm
 # ---------------------------------------------------------------------------
 
 class NormMask(nn.Module):
@@ -158,19 +155,6 @@ class NormMask(nn.Module):
             self.register_buffer("running_mean", torch.zeros(c_in))
             self.register_buffer("running_std", torch.ones(c_in))
 
-        elif self.norm_kind in ("brenorm", "fixbrenorm"):
-            self.is_using_batchnorm = True
-            if self.use_gamma:
-                self.gamma = nn.Parameter(torch.ones(1, c_in, 1, 1))
-            self.beta = nn.Parameter(torch.zeros(1, c_in, 1, 1))
-            self.register_buffer("running_mean", torch.zeros(c_in))
-            self.register_buffer("running_std", torch.ones(c_in))
-            self.register_buffer("renorm_running_mean", torch.zeros(c_in))
-            self.register_buffer("renorm_running_std", torch.ones(c_in))
-            self.register_buffer("renorm_upper_rclippage", torch.zeros(()))
-            self.register_buffer("renorm_lower_rclippage", torch.zeros(()))
-            self.register_buffer("renorm_dclippage", torch.zeros(()))
-
         elif self.norm_kind in ("fixup", "fixscale"):
             self.is_using_batchnorm = False
             self.beta = nn.Parameter(torch.zeros(1, c_in, 1, 1))
@@ -191,11 +175,6 @@ class NormMask(nn.Module):
             if self.gamma is not None:
                 reg_dict["normal_gamma"].append(self.gamma)
             reg_dict["noreg"].append(self.beta)
-
-    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
-        self.renorm_avg_momentum = renorm_avg_momentum
-        self.rmax = rmax
-        self.dmax = dmax
 
     def _compute_bnorm_values(self, x, mask, mask_sum: float):
         mean = torch.sum(x * mask, dim=(0, 2, 3), keepdim=True) / mask_sum
@@ -226,42 +205,6 @@ class NormMask(nn.Module):
                     self.running_mean += self.running_avg_momentum * (detached_mean - self.running_mean)
                     self.running_std += self.running_avg_momentum * (detached_std - self.running_std)
                 return self.apply_gamma_beta_scale_mask(zeromean_x / std, mask)
-            else:
-                return self.apply_gamma_beta_scale_mask(
-                    (x - self.running_mean.view(1, self.c_in, 1, 1)) / self.running_std.view(1, self.c_in, 1, 1),
-                    mask,
-                )
-
-        elif self.norm_kind in ("brenorm", "fixbrenorm"):
-            if self.training:
-                zeromean_x, mean, std = self._compute_bnorm_values(x, mask, mask_sum)
-                detached_mean = mean.view(self.c_in).detach()
-                detached_std = std.view(self.c_in).detach()
-                with torch.no_grad():
-                    unclipped_r = detached_std / self.renorm_running_std
-                    unclipped_d = (detached_mean - self.renorm_running_mean) / self.renorm_running_std
-                    r = unclipped_r.clamp(1.0 / self.rmax, self.rmax)
-                    d = unclipped_d.clamp(-self.dmax, self.dmax)
-
-                    self.renorm_running_mean += self.renorm_avg_momentum * (detached_mean - self.renorm_running_mean)
-                    self.renorm_running_std += self.renorm_avg_momentum * (detached_std - self.renorm_running_std)
-                    self.running_mean += self.running_avg_momentum * (detached_mean - self.running_mean)
-                    self.running_std += self.running_avg_momentum * (detached_std - self.running_std)
-
-                    upper_rclippage = torch.mean(F.relu(torch.log(unclipped_r / r)))
-                    lower_rclippage = torch.mean(F.relu(-torch.log(unclipped_r / r)))
-                    dclippage = torch.mean(torch.abs(unclipped_d - d))
-                    self.renorm_upper_rclippage += 0.01 * (upper_rclippage - self.renorm_upper_rclippage)
-                    self.renorm_lower_rclippage += 0.01 * (lower_rclippage - self.renorm_lower_rclippage)
-                    self.renorm_dclippage += 0.01 * (dclippage - self.renorm_dclippage)
-
-                if self.rmax > 1.00000001 or self.dmax > 0.00000001:
-                    return self.apply_gamma_beta_scale_mask(
-                        zeromean_x / std * r.detach().view(1, self.c_in, 1, 1) + d.detach().view(1, self.c_in, 1, 1),
-                        mask,
-                    )
-                else:
-                    return self.apply_gamma_beta_scale_mask(zeromean_x / std, mask)
             else:
                 return self.apply_gamma_beta_scale_mask(
                     (x - self.running_mean.view(1, self.c_in, 1, 1)) / self.running_std.view(1, self.c_in, 1, 1),
@@ -322,7 +265,7 @@ class KataConvAndGPool(nn.Module):
     def initialize(self, scale):
         r_scale = 0.8
         g_scale = 0.6
-        if self.norm_kind in ("fixup", "fixscale", "fixbrenorm"):
+        if self.norm_kind in ("fixup", "fixscale"):
             init_weights(self.conv1r.weight, self.activation, scale=scale * r_scale)
             init_weights(self.conv1g.weight, self.activation, scale=math.sqrt(scale) * math.sqrt(g_scale))
             init_weights(self.linear_g.weight, self.activation, scale=math.sqrt(scale) * math.sqrt(g_scale))
@@ -336,9 +279,6 @@ class KataConvAndGPool(nn.Module):
         reg_dict["normal"].append(self.conv1g.weight)
         self.normg.add_reg_dict(reg_dict)
         reg_dict["normal"].append(self.linear_g.weight)
-
-    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
-        self.normg.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
 
     def forward(self, x, mask, mask_sum_hw, mask_sum: float):
         outr = self.conv1r(x)
@@ -394,11 +334,6 @@ class NormActConv(nn.Module):
         else:
             reg_dict["normal"].append(self.conv.weight)
 
-    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
-        self.norm.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
-        if self.convpool is not None:
-            self.convpool.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
-
     def forward(self, x, mask, mask_sum_hw, mask_sum: float):
         out = self.norm(x, mask=mask, mask_sum=mask_sum)
         out = self.act(out)
@@ -440,7 +375,7 @@ class ResBlock(nn.Module):
         if self.norm_kind == "fixup":
             self.normactconv1.initialize(scale=fixup_scale)
             self.normactconv2.initialize(scale=0.0)
-        elif self.norm_kind in ("fixscale", "fixbrenorm"):
+        elif self.norm_kind == "fixscale":
             self.normactconv1.initialize(scale=1.0, norm_scale=fixup_scale)
             self.normactconv2.initialize(scale=1.0)
         else:
@@ -450,10 +385,6 @@ class ResBlock(nn.Module):
     def add_reg_dict(self, reg_dict: Dict[str, List]):
         self.normactconv1.add_reg_dict(reg_dict)
         self.normactconv2.add_reg_dict(reg_dict)
-
-    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
-        self.normactconv1.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
-        self.normactconv2.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
 
     def forward(self, x, mask, mask_sum_hw, mask_sum: float):
         out = self.normactconv1(x, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum)
@@ -497,9 +428,6 @@ class PolicyHead(nn.Module):
         reg_dict["output"].append(self.conv2p.weight)
         self.biasg.add_reg_dict(reg_dict)
         self.bias2.add_reg_dict(reg_dict)
-
-    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
-        pass
 
     def forward(self, x, mask, mask_sum_hw, mask_sum: float):
         outp = self.conv1p(x)
@@ -556,9 +484,6 @@ class ValueHead(nn.Module):
         reg_dict["output"].append(self.linear_value_error.weight)
         reg_dict["output_noreg"].append(self.linear_value_error.bias)
         self.bias1.add_reg_dict(reg_dict)
-
-    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
-        pass
 
     def forward(self, x, mask, mask_sum_hw, mask_sum: float):
         outv1 = self.conv1(x)
@@ -645,7 +570,7 @@ class Model(nn.Module):
                 fixup_scale = 1.0 / math.sqrt(self.num_total_blocks)
                 for block in self.blocks:
                     block.initialize(fixup_scale=fixup_scale)
-            elif self.norm_kind in ("fixscale", "fixbrenorm"):
+            elif self.norm_kind == "fixscale":
                 for i, block in enumerate(self.blocks):
                     block.initialize(fixup_scale=1.0 / math.sqrt(i + 1.0))
                 self.norm_trunkfinal.set_scale(1.0 / math.sqrt(self.num_total_blocks + 1.0))
@@ -669,13 +594,6 @@ class Model(nn.Module):
         self.norm_trunkfinal.add_reg_dict(reg_dict)
         self.policy_head.add_reg_dict(reg_dict)
         self.value_head.add_reg_dict(reg_dict)
-
-    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
-        for block in self.blocks:
-            block.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
-        self.norm_trunkfinal.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
-        self.policy_head.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
-        self.value_head.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
 
     def forward(self, x):
         # Construct all-ones mask for gomoku (all positions valid)
