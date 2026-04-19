@@ -15,7 +15,6 @@ import json
 import datetime
 import shutil
 import glob
-import math
 import numpy as np
 from collections import defaultdict
 
@@ -82,16 +81,7 @@ def load_checkpoint(path, model, optimizer, scaler, device):
     return train_state
 
 
-def compute_adaptive_gnorm_cap(lr_scale):
-    """Adaptive gradient clipping (KataGomo train.py:1068-1089). BatchNorm trunk → 5500 base."""
-    return 5500.0 / math.sqrt(max(1e-7, lr_scale))
-
-
-def set_lr(optimizer, base_lr, lr_scale):
-    """Set per-parameter-group LR = base_lr * lr_scale * group_scale."""
-    for param_group in optimizer.param_groups:
-        group_scale = param_group.get("lr_scale", 1.0)
-        param_group["lr"] = base_lr * lr_scale * group_scale
+GNORM_CAP = 5500.0  # BatchNorm trunk gradient clip (KataGomo train.py:1068-1089)
 
 
 def main():
@@ -104,8 +94,7 @@ def main():
     parser.add_argument("-batch-size", type=int, required=True)
     parser.add_argument("-num-planes", type=int, default=4, help="Number of input planes")
     parser.add_argument("-model-config", type=str, default="b6c96", help="Model config name (b6c96, b4c32, b10c128)")
-    parser.add_argument("-lr", type=float, default=1e-4, help="Base learning rate")
-    parser.add_argument("-lr-scale", type=float, default=1.0, help="LR scale multiplier")
+    parser.add_argument("-lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("-weight-decay", type=float, default=3e-5)
     parser.add_argument("-max-epochs-this-instance", type=int, default=1)
     parser.add_argument("-samples-per-epoch", type=int, default=None, help="Cap samples per epoch (None = all data)")
@@ -134,16 +123,16 @@ def main():
     model.to(device)
     model.train()
 
-    # Parameter groups with different weight decay and LR scales
+    # Parameter groups with different weight decay
     reg_dict = {}
     model.add_reg_dict(reg_dict)
     wd = args.weight_decay
     param_groups = [
-        {"params": reg_dict["normal"], "weight_decay": wd, "lr_scale": 1.0, "group_name": "normal"},
-        {"params": reg_dict["normal_gamma"], "weight_decay": wd * 0.5, "lr_scale": 1.0, "group_name": "normal_gamma"},
-        {"params": reg_dict["output"], "weight_decay": wd * 0.5, "lr_scale": 0.5, "group_name": "output"},
-        {"params": reg_dict["noreg"], "weight_decay": 0.0, "lr_scale": 1.0, "group_name": "noreg"},
-        {"params": reg_dict["output_noreg"], "weight_decay": 0.0, "lr_scale": 0.5, "group_name": "output_noreg"},
+        {"params": reg_dict["normal"], "weight_decay": wd, "group_name": "normal"},
+        {"params": reg_dict["normal_gamma"], "weight_decay": wd * 0.5, "group_name": "normal_gamma"},
+        {"params": reg_dict["output"], "weight_decay": wd * 0.5, "group_name": "output"},
+        {"params": reg_dict["noreg"], "weight_decay": 0.0, "group_name": "noreg"},
+        {"params": reg_dict["output_noreg"], "weight_decay": 0.0, "group_name": "output_noreg"},
     ]
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
 
@@ -156,8 +145,9 @@ def main():
     if os.path.exists(ckpt_path):
         train_state = load_checkpoint(ckpt_path, model, optimizer, scaler, device)
 
-    # Initialize LR
-    set_lr(optimizer, args.lr, args.lr_scale)
+    # Ensure LR reflects current args (overrides value restored from checkpoint)
+    for pg in optimizer.param_groups:
+        pg["lr"] = args.lr
 
     # Training metrics log
     train_log_path = os.path.join(args.traindir, "train_metrics.json")
@@ -216,8 +206,7 @@ def main():
 
                 scaler.scale(total_loss).backward()
                 scaler.unscale_(optimizer)
-                gnorm_cap = compute_adaptive_gnorm_cap(args.lr_scale)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), gnorm_cap)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), GNORM_CAP)
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -237,8 +226,7 @@ def main():
                               + args.value_error_loss_weight * ve_loss)
 
                 total_loss.backward()
-                gnorm_cap = compute_adaptive_gnorm_cap(args.lr_scale)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), gnorm_cap)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), GNORM_CAP)
                 optimizer.step()
 
             batch_count += 1

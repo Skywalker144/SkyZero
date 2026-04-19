@@ -29,7 +29,6 @@ time python ./train.py \
      -max-epochs-this-instance 1 \
      -samples-per-epoch 2000000 \
      -lr 1e-4 \
-     -lr-scale 1.0 \
      -weight-decay 3e-5 \
      -use-fp16 \
      "$@" \
