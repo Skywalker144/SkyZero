@@ -82,13 +82,9 @@ def load_checkpoint(path, model, optimizer, scaler, device):
     return train_state
 
 
-def compute_adaptive_gnorm_cap(norm_kind, lr_scale):
-    """Adaptive gradient clipping (from KataGomo train.py:1068-1089)."""
-    if norm_kind in ("fixup", "fixscale"):
-        gnorm_cap = 2500.0
-    else:
-        gnorm_cap = 5500.0
-    return gnorm_cap / math.sqrt(max(1e-7, lr_scale))
+def compute_adaptive_gnorm_cap(lr_scale):
+    """Adaptive gradient clipping (KataGomo train.py:1068-1089). BatchNorm trunk → 5500 base."""
+    return 5500.0 / math.sqrt(max(1e-7, lr_scale))
 
 
 def set_lr(optimizer, base_lr, lr_scale):
@@ -133,7 +129,6 @@ def main():
 
     # Create model
     model_config = CONFIG_BY_NAME[args.model_config]
-    norm_kind = model_config["norm_kind"]
     model = Model(model_config, pos_len, args.num_planes)
     model.initialize()
     model.to(device)
@@ -221,7 +216,7 @@ def main():
 
                 scaler.scale(total_loss).backward()
                 scaler.unscale_(optimizer)
-                gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale)
+                gnorm_cap = compute_adaptive_gnorm_cap(args.lr_scale)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gnorm_cap)
                 scaler.step(optimizer)
                 scaler.update()
@@ -242,7 +237,7 @@ def main():
                               + args.value_error_loss_weight * ve_loss)
 
                 total_loss.backward()
-                gnorm_cap = compute_adaptive_gnorm_cap(norm_kind, args.lr_scale)
+                gnorm_cap = compute_adaptive_gnorm_cap(args.lr_scale)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), gnorm_cap)
                 optimizer.step()
 

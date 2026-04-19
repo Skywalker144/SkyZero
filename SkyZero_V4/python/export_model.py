@@ -18,7 +18,9 @@ import os
 import numpy as np
 import torch
 
-from nets import Model, ExportWrapper, NormMask
+import torch.nn as nn
+
+from nets import Model, ExportWrapper
 from model_config import CONFIG_BY_NAME
 
 
@@ -46,21 +48,21 @@ def iter_calibration_batches(data_dir, batch_size, max_batches):
 
 
 def recalibrate_batchnorm(model, batches, device):
-    """Recalibrate NormMask running stats using cumulative averaging.
+    """Recalibrate BatchNorm2d running stats using cumulative averaging.
 
-    Runs the model in train() + no_grad over the given batches so that
-    running_mean / running_std become an unbiased mean of batch stats.
+    Sets each BN's momentum to None (PyTorch's cumulative moving average mode),
+    zeros the tracked counters, then runs the model in train() + no_grad so
+    running_mean / running_var become an unbiased mean of batch stats.
     """
-    norm_modules = [m for m in model.modules()
-                    if isinstance(m, NormMask) and hasattr(m, "running_mean")]
-    if not norm_modules:
-        print("  No NormMask modules with running stats — skipping calibration")
+    bn_modules = [m for m in model.modules() if isinstance(m, nn.BatchNorm2d)]
+    if not bn_modules:
+        print("  No BatchNorm2d modules — skipping calibration")
         return 0
 
-    original_momenta = {m: m.running_avg_momentum for m in norm_modules}
-    for m in norm_modules:
-        m.running_mean.zero_()
-        m.running_std.fill_(1.0)
+    original_momenta = {m: m.momentum for m in bn_modules}
+    for m in bn_modules:
+        m.momentum = None  # Triggers cumulative moving average.
+        m.reset_running_stats()
 
     was_training = model.training
     model.train()
@@ -69,13 +71,10 @@ def recalibrate_batchnorm(model, batches, device):
         with torch.no_grad():
             for batch in batches:
                 n_seen += 1
-                mom = 1.0 / n_seen  # Cumulative average: buffer_n = mean(batch_1..batch_n).
-                for m in norm_modules:
-                    m.running_avg_momentum = mom
                 model(batch.to(device))
     finally:
-        for m in norm_modules:
-            m.running_avg_momentum = original_momenta[m]
+        for m in bn_modules:
+            m.momentum = original_momenta[m]
         model.train(was_training)
     return n_seen
 
