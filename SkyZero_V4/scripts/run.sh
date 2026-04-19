@@ -72,7 +72,6 @@ UNCERTAINTY_EXPONENT="${UNCERTAINTY_EXPONENT:-1.0}"
 UNCERTAINTY_MAX_WEIGHT="${UNCERTAINTY_MAX_WEIGHT:-8.0}"
 
 LR="${LR:-1e-4}"
-LR_SCALE="${LR_SCALE:-1.0}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-3e-5}"
 USE_FP16="${USE_FP16:-true}"
 SAMPLES_PER_EPOCH="${SAMPLES_PER_EPOCH:-1024000}"
@@ -180,7 +179,7 @@ fi
 
 # --- Build train.py extra args ---
 TRAIN_EXTRA_ARGS=()
-TRAIN_EXTRA_ARGS+=(-lr "$LR" -lr-scale "$LR_SCALE" -weight-decay "$WEIGHT_DECAY")
+TRAIN_EXTRA_ARGS+=(-lr "$LR" -weight-decay "$WEIGHT_DECAY")
 TRAIN_EXTRA_ARGS+=(-samples-per-epoch "$SAMPLES_PER_EPOCH")
 TRAIN_EXTRA_ARGS+=(-max-epochs-this-instance "$MAX_EPOCHS")
 TRAIN_EXTRA_ARGS+=(-num-planes "$NUM_PLANES" -model-config "$MODEL_CONFIG")
