@@ -38,12 +38,6 @@ struct AlphaZeroConfig {
     float gumbel_c_visit = 50.0f;
     float gumbel_c_scale = 1.0f;
 
-    // Playout Cap Randomization (KataGo-style training efficiency)
-    int cheap_simulations = 64;
-    int cheap_gumbel_m = 8;
-    float full_search_prob = 0.25f;
-    float cheap_sample_weight = 0.0f;  // KataGomo-aligned: cheap rows drop entirely (cheapSearchTargetWeight=0)
-
     // Exploration temperature
     int half_life = -1;                  // Python: args.get("half_life", game.board_size)
     float move_temperature_init = 1.1f;

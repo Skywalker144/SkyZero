@@ -196,9 +196,8 @@ def main():
             opp_policy_targets = batch["opponentPolicyTargetsN"]  # [B, board_area]
             value_targets = batch["valueTargetsN"]       # [B, 3]
             sample_weights = batch["sampleWeightsN"]     # [B]
-            policy_weights = batch["policyWeightsN"]              # [B] (PCR)
-            opp_policy_weights = batch["oppPolicyWeightsN"]       # [B] (PCR)
-            policy_sw = sample_weights * policy_weights
+            opp_policy_weights = batch["oppPolicyWeightsN"]       # [B]
+            policy_sw = sample_weights
             opp_policy_sw = sample_weights * opp_policy_weights
 
             optimizer.zero_grad()
@@ -311,9 +310,8 @@ def main():
                     opp_policy_targets = batch["opponentPolicyTargetsN"]
                     value_targets = batch["valueTargetsN"]
                     sample_weights = batch["sampleWeightsN"]
-                    policy_weights = batch["policyWeightsN"]
                     opp_policy_weights = batch["oppPolicyWeightsN"]
-                    policy_sw = sample_weights * policy_weights
+                    policy_sw = sample_weights
                     opp_policy_sw = sample_weights * opp_policy_weights
 
                     outputs = model(encoded)

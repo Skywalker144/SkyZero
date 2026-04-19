@@ -65,12 +65,6 @@ VALUE_SURPRISE_WEIGHT="${VALUE_SURPRISE_WEIGHT:-0.1}"
 SOFT_RESIGN_THRESHOLD="${SOFT_RESIGN_THRESHOLD:-0.9}"
 SOFT_RESIGN_PROB="${SOFT_RESIGN_PROB:-0.7}"
 
-# Playout Cap Randomization
-FULL_SEARCH_PROB="${FULL_SEARCH_PROB:-0.25}"
-CHEAP_SIMULATIONS="${CHEAP_SIMULATIONS:-64}"
-CHEAP_GUMBEL_M="${CHEAP_GUMBEL_M:-8}"
-CHEAP_SAMPLE_WEIGHT="${CHEAP_SAMPLE_WEIGHT:-0.0}"
-
 # Fork Side Positions
 FORK_SIDE_PROB="${FORK_SIDE_PROB:-0.04}"
 MAX_FORK_QUEUE="${MAX_FORK_QUEUE:-1000}"
@@ -150,10 +144,6 @@ SELFPLAY_ARGS=(
     --value-surprise-weight "$VALUE_SURPRISE_WEIGHT"
     --soft-resign-threshold "$SOFT_RESIGN_THRESHOLD"
     --soft-resign-prob "$SOFT_RESIGN_PROB"
-    --full-search-prob "$FULL_SEARCH_PROB"
-    --cheap-simulations "$CHEAP_SIMULATIONS"
-    --cheap-gumbel-m "$CHEAP_GUMBEL_M"
-    --cheap-sample-weight "$CHEAP_SAMPLE_WEIGHT"
     --fork-side-prob "$FORK_SIDE_PROB"
     --max-fork-queue "$MAX_FORK_QUEUE"
     --fork-skip-first-n "$FORK_SKIP_FIRST_N"

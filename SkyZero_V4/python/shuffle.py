@@ -29,8 +29,7 @@ KEYS = [
     "opponentPolicyTargetsN",
     "valueTargetsN",
     "sampleWeightsN",
-    "policyWeightsN",        # PCR: 0 for cheap-search rows — dropping this from shuffle
-    "oppPolicyWeightsN",     # causes cheap rows' noisy policy targets to be trained at full weight
+    "oppPolicyWeightsN",
 ]
 
 

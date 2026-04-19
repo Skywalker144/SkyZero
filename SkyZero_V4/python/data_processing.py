@@ -61,11 +61,6 @@ def read_npz_training_data(npz_files, batch_size, pos_len, device, randomize_sym
             opp_policy = npz["opponentPolicyTargetsN"].astype(np.float32)
             value = npz["valueTargetsN"].astype(np.float32)
             weights = npz["sampleWeightsN"].astype(np.float32)
-            # PCR-aware per-row weights; default to 1.0 if absent (legacy npz).
-            if "policyWeightsN" in npz:
-                policy_weights = npz["policyWeightsN"].astype(np.float32)
-            else:
-                policy_weights = np.ones_like(weights)
             if "oppPolicyWeightsN" in npz:
                 opp_policy_weights = npz["oppPolicyWeightsN"].astype(np.float32)
             else:
@@ -83,7 +78,6 @@ def read_npz_training_data(npz_files, batch_size, pos_len, device, randomize_sym
             batch_opp_policy = torch.from_numpy(opp_policy[start:end]).to(device)
             batch_value = torch.from_numpy(value[start:end]).to(device)
             batch_weights = torch.from_numpy(weights[start:end]).to(device)
-            batch_policy_weights = torch.from_numpy(policy_weights[start:end]).to(device)
             batch_opp_policy_weights = torch.from_numpy(opp_policy_weights[start:end]).to(device)
 
             if randomize_symmetries:
@@ -98,7 +92,6 @@ def read_npz_training_data(npz_files, batch_size, pos_len, device, randomize_sym
                 "opponentPolicyTargetsN": batch_opp_policy,
                 "valueTargetsN": batch_value,
                 "sampleWeightsN": batch_weights,
-                "policyWeightsN": batch_policy_weights,
                 "oppPolicyWeightsN": batch_opp_policy_weights,
             }
 

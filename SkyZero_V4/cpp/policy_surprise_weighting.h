@@ -19,8 +19,7 @@ struct TrainSample {
     std::vector<float> opponent_policy_target;
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
     float sample_weight = 1.0f;
-    float policy_weight = 1.0f;       // 0 for cheap-search rows (PCR)
-    float opp_policy_weight = 1.0f;   // 0 if next move was cheap-search
+    float opp_policy_weight = 1.0f;   // 0 if the row has no next move
 };
 
 inline float clampf(float v, float lo, float hi) {
@@ -43,7 +42,6 @@ struct PolicySurpriseSample {
     std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};         // WDL from search root
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
     float sample_weight = 1.0f;
-    float policy_weight = 1.0f;
     float opp_policy_weight = 1.0f;
 };
 
@@ -113,7 +111,7 @@ inline float compute_kl_divergence(
 // ---------------------------------------------------------------------------
 // compute_policy_surprise_weights
 // Aligned to Python V3 policy_surprise_weighting.py
-// Key change: target_weights[i] = sample.sample_weight (not is_full_search)
+// target_weights[i] = sample.sample_weight
 // ---------------------------------------------------------------------------
 inline std::vector<float> compute_policy_surprise_weights(
     const std::vector<PolicySurpriseSample>& game_data,
@@ -217,14 +215,10 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.policy_target = game_data[i].policy_target;
             ts.opponent_policy_target = game_data[i].opponent_policy_target;
             ts.value_target = game_data[i].value_target;
-            // KataGomo-aligned: relative importance is already encoded by the
-            // floor+bernoulli insertion count derived from final_weights[i].
-            // Each written row contributes at full weight (cf. trainingwrite.cpp
-            // addRow with weight=1.0). This also avoids double-discounting
-            // soft-resign / cheap rows (once via insertion rate, once via
-            // per-row loss weight).
+            // Relative importance is already encoded by the floor+bernoulli
+            // insertion count derived from final_weights[i]; each written row
+            // contributes at full weight.
             ts.sample_weight = 1.0f;
-            ts.policy_weight = game_data[i].policy_weight;
             ts.opp_policy_weight = game_data[i].opp_policy_weight;
             return ts;
         };

@@ -118,11 +118,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--opening-reject-prob") opening_cfg.reject_prob = std::stof(next());
         else if (arg == "--opening-reject-prob-fallback") opening_cfg.reject_prob_fallback = std::stof(next());
         else if (arg == "--opening-max-retries") opening_cfg.max_retries = std::stoi(next());
-        // Playout Cap Randomization
-        else if (arg == "--cheap-simulations") cfg.cheap_simulations = std::stoi(next());
-        else if (arg == "--cheap-gumbel-m") cfg.cheap_gumbel_m = std::stoi(next());
-        else if (arg == "--full-search-prob") cfg.full_search_prob = std::stof(next());
-        else if (arg == "--cheap-sample-weight") cfg.cheap_sample_weight = std::stof(next());
         // Fork side positions
         else if (arg == "--fork-side-prob") cfg.fork_side_position_prob = std::stof(next());
         else if (arg == "--max-fork-queue") cfg.max_fork_queue_size = std::stoi(next());

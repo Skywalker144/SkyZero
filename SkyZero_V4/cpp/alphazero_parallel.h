@@ -1077,7 +1077,6 @@ private:
             std::array<float, 3> v_mix{0.0f, 1.0f, 0.0f};
             std::vector<float> next_mcts_policy;
             float sample_weight = 1.0f;
-            float policy_weight = 1.0f;  // 0 for cheap-search rows (PCR)
         };
 
         std::mt19937 worker_rng(seed);
@@ -1122,24 +1121,12 @@ private:
         std::unique_ptr<MCTSNode> root(new MCTSNode{state, to_play});
 
         while (!game_.is_terminal(state, last_action, last_player)) {
-            // Playout Cap Randomization: full search with prob full_search_prob,
-            // cheap search otherwise (lower visits, lower gumbel_m, downweighted
-            // sample, policy target excluded from training).
-            std::uniform_real_distribution<float> uni01(0.0f, 1.0f);
-            const bool is_full_search = (uni01(worker_rng) < cfg_.full_search_prob);
-
-            int num_simulations = is_full_search ? cfg_.num_simulations : cfg_.cheap_simulations;
-            int gumbel_m_override = is_full_search ? -1 : cfg_.cheap_gumbel_m;
+            int num_simulations = cfg_.num_simulations;
             if (in_soft_resign) {
                 num_simulations = std::max(num_simulations / 4, cfg_.min_simulations_in_soft_resign);
             }
 
-            const float saved_root_fpu = mcts.config().root_fpu_reduction_max;
-            if (!is_full_search) {
-                mcts.config().root_fpu_reduction_max = mcts.config().fpu_reduction_max;
-            }
-            const auto sr = mcts.search(state, to_play, num_simulations, root, /*is_eval=*/!is_full_search, gumbel_m_override);
-            mcts.config().root_fpu_reduction_max = saved_root_fpu;
+            const auto sr = mcts.search(state, to_play, num_simulations, root, /*is_eval=*/false, /*gumbel_m_override=*/-1);
             const float v_mix_scalar = sr.v_mix[0] - sr.v_mix[2];
             historical_v_mix.push_back(v_mix_scalar);
 
@@ -1167,10 +1154,7 @@ private:
             ms.nn_policy = sr.nn_policy;
             ms.nn_value_probs = sr.nn_value_probs;
             ms.v_mix = sr.v_mix;
-            float base_weight = in_soft_resign ? cfg_.soft_resign_sample_weight : 1.0f;
-            if (!is_full_search) base_weight *= cfg_.cheap_sample_weight;
-            ms.sample_weight = base_weight;
-            ms.policy_weight = is_full_search ? 1.0f : 0.0f;
+            ms.sample_weight = in_soft_resign ? cfg_.soft_resign_sample_weight : 1.0f;
             memory.push_back(ms);
 
             const int move_count = static_cast<int>(memory.size());
@@ -1193,9 +1177,7 @@ private:
             // Fork side position: with small probability, sample an alternative
             // legal move (by NN policy, excluding the chosen action) and push
             // the resulting (state, opp_to_play) into the global fork queue.
-            // Skip on cheap-search rows: NN policy + Gumbel result less reliable.
             if (cfg_.fork_side_position_prob > 0.0f
-                && is_full_search
                 && move_count > cfg_.fork_skip_first_n_moves) {
                 std::uniform_real_distribution<float> uni(0.0f, 1.0f);
                 if (uni(worker_rng) < cfg_.fork_side_position_prob) {
@@ -1263,10 +1245,7 @@ private:
             ps.nn_value_probs = s.nn_value_probs;
             ps.v_mix = s.v_mix;
             ps.sample_weight = s.sample_weight;
-            ps.policy_weight = s.policy_weight;
-            // KataGo-aligned: opp policy weight only masks the final row (no next move).
-            // Cheap-search next-move targets are kept at full weight, since the 0.15
-            // global scaling on opp policy loss already makes this head noise-tolerant.
+            // opp policy weight masks the final row (no next move).
             const bool has_next = (i + 1 < memory.size());
             ps.opp_policy_weight = has_next ? 1.0f : 0.0f;
             return_memory.push_back(ps);
