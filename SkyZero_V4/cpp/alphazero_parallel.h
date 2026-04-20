@@ -1139,14 +1139,9 @@ private:
         );
 
         std::vector<MemoryStep> memory;
-        ForkPosition fork_init;
-        bool from_fork = fork_queue_.try_pop(fork_init);
         std::vector<int8_t> state;
         int to_play = 1;
-        if (from_fork) {
-            state = std::move(fork_init.state);
-            to_play = fork_init.to_play;
-        } else {
+        {
             GameInitialState init;
             if (opening_cfg_.enabled) {
                 RandomOpeningGenerator opener(game_, opening_cfg_);
@@ -1215,34 +1210,6 @@ private:
             if (action < 0) {
                 std::discrete_distribution<int> action_dist(sr.mcts_policy.begin(), sr.mcts_policy.end());
                 action = action_dist(worker_rng);
-            }
-
-            // Fork side position: with small probability, sample an alternative
-            // legal move (by NN policy, excluding the chosen action) and push
-            // the resulting (state, opp_to_play) into the global fork queue.
-            if (cfg_.fork_side_position_prob > 0.0f
-                && move_count > cfg_.fork_skip_first_n_moves) {
-                std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-                if (uni(worker_rng) < cfg_.fork_side_position_prob) {
-                    int best_alt = -1;
-                    float best_p = -1.0f;
-                    const auto legal = game_.get_is_legal_actions(state, to_play);
-                    for (int a = 0; a < static_cast<int>(sr.nn_policy.size()); ++a) {
-                        if (!legal[a] || a == action) continue;
-                        if (sr.nn_policy[a] > best_p) {
-                            best_p = sr.nn_policy[a];
-                            best_alt = a;
-                        }
-                    }
-                    if (best_alt >= 0) {
-                        ForkPosition fp;
-                        fp.state = game_.get_next_state(state, best_alt, to_play);
-                        fp.to_play = -to_play;
-                        if (!game_.is_terminal(fp.state, best_alt, to_play)) {
-                            fork_queue_.push(std::move(fp), cfg_.max_fork_queue_size);
-                        }
-                    }
-                }
             }
 
             last_action = action;
@@ -1427,9 +1394,6 @@ private:
                   << " | AvgGameLen: " << std::fixed << std::setprecision(1) << avg_game_len
                   << " | BWD: " << std::fixed << std::setprecision(2) << b_rate
                   << " " << w_rate << " " << d_rate
-                  << " | Fork: " << fork_queue_.size()
-                  << " (push=" << fork_queue_.push_count()
-                  << " pop=" << fork_queue_.pop_count() << ")"
                   << " | Model: " << current_model_path_
                   << "\n";
 
@@ -1507,9 +1471,6 @@ private:
 
     // NPZ data writer
     NpzDataWriter<Game> data_writer_;
-
-    // Fork-side-position queue (data diversity)
-    ForkQueue fork_queue_;
 
     // Stats
     std::mt19937 rng_;
