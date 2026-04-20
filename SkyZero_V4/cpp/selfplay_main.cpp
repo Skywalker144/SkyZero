@@ -83,7 +83,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--empty-board-prob") empty_board_prob = std::stof(next());
         else if (arg == "--num-simulations") cfg.num_simulations = std::stoi(next());
         else if (arg == "--gumbel-m") cfg.gumbel_m = std::stoi(next());
-        else if (arg == "--c-puct") cfg.c_puct = std::stof(next());
         else if (arg == "--device") {
             std::string dev = next();
             if (dev == "cpu") cfg.device = torch::kCPU;

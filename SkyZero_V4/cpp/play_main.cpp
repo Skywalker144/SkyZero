@@ -79,9 +79,6 @@ void print_usage(const char* prog) {
               << "\nMCTS options:\n"
               << "  --num-simulations N    MCTS simulations per move (default: 800)\n"
               << "  --gumbel-m N           Gumbel top-k actions (default: 16)\n"
-              << "  --c-puct F             Exploration constant (default: 1.1)\n"
-              << "  --fpu-reduction F      FPU reduction (default: 0.2)\n"
-              << "  --root-fpu-reduction F Root FPU reduction (default: 0.1)\n"
               << "  --enable-symmetry      Average over 8 symmetries at root/child\n"
               << "  --disable-stochastic   Turn off random symmetry transform in inference\n"
               << "\nNN options:\n"
@@ -182,9 +179,6 @@ int main(int argc, char* argv[]) {
     bool enable_forbidden_plane = true;
     int num_simulations = 800;
     int gumbel_m = 16;
-    float c_puct = 1.1f;
-    float fpu_reduction_max = 0.2f;
-    float root_fpu_reduction_max = 0.1f;
     bool enable_symmetry = false;
     bool disable_stochastic = false;
     int human_side = 0;  // 0 => ask
@@ -209,9 +203,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--renju") { use_renju = true; enable_forbidden_plane = true; }
         else if (arg == "--num-simulations") num_simulations = std::stoi(next());
         else if (arg == "--gumbel-m") gumbel_m = std::stoi(next());
-        else if (arg == "--c-puct") c_puct = std::stof(next());
-        else if (arg == "--fpu-reduction") fpu_reduction_max = std::stof(next());
-        else if (arg == "--root-fpu-reduction") root_fpu_reduction_max = std::stof(next());
         else if (arg == "--enable-symmetry") enable_symmetry = true;
         else if (arg == "--disable-stochastic") disable_stochastic = true;
         else if (arg == "--human-side") human_side = std::stoi(next());
@@ -344,9 +335,6 @@ int main(int argc, char* argv[]) {
     cfg.board_size = board_size;
     cfg.num_simulations = num_simulations;
     cfg.gumbel_m = gumbel_m;
-    cfg.c_puct = c_puct;
-    cfg.fpu_reduction_max = fpu_reduction_max;
-    cfg.root_fpu_reduction_max = root_fpu_reduction_max;
     cfg.enable_symmetry_inference_for_root = enable_symmetry;
     cfg.enable_symmetry_inference_for_child = enable_symmetry;
     cfg.enable_stochastic_transform_inference_for_root = !disable_stochastic;
