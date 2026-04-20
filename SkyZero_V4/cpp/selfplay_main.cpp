@@ -117,10 +117,6 @@ int main(int argc, char* argv[]) {
         else if (arg == "--opening-reject-prob") opening_cfg.reject_prob = std::stof(next());
         else if (arg == "--opening-reject-prob-fallback") opening_cfg.reject_prob_fallback = std::stof(next());
         else if (arg == "--opening-max-retries") opening_cfg.max_retries = std::stoi(next());
-        // Fork side positions
-        else if (arg == "--fork-side-prob") cfg.fork_side_position_prob = std::stof(next());
-        else if (arg == "--max-fork-queue") cfg.max_fork_queue_size = std::stoi(next());
-        else if (arg == "--fork-skip-first-n") cfg.fork_skip_first_n_moves = std::stoi(next());
         // Uncertainty-Weighted MCTS Backup
         else if (arg == "--enable-uncertainty-weighting") cfg.enable_uncertainty_weighting = true;
         else if (arg == "--uncertainty-coeff") cfg.uncertainty_coeff = std::stof(next());
