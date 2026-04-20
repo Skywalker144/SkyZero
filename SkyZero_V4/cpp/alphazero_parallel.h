@@ -774,6 +774,9 @@ public:
         std::vector<TrainSample> samples;
         int winner = 0;
         int game_len = 0;
+        std::vector<int8_t> final_state;
+        int last_action = -1;
+        int last_player = 0;
     };
 
     // Main selfplay loop. Blocks until max_games_total games are played.
@@ -798,6 +801,8 @@ public:
                     }
                     data_writer_.add_game(sp.samples);
                     total_samples_ += static_cast<int64_t>(sp.samples.size());
+                    round_games_.push_back({sp.game_len, sp.winner, sp.last_action,
+                                            sp.last_player, std::move(sp.final_state)});
                     recent_game_lengths_.push_back(sp.game_len);
                     black_win_counts_.push_back(sp.winner == 1 ? 1 : 0);
                     white_win_counts_.push_back(sp.winner == -1 ? 1 : 0);
@@ -820,6 +825,7 @@ public:
             data_writer_.flush();
             std::cout << "Selfplay complete. Games: " << game_count_
                       << " | Total rows written: " << data_writer_.total_rows_written() << std::endl;
+            print_median_endgame();
         } catch (...) {
             stop_workers_and_server();
             data_writer_.flush();
@@ -1270,7 +1276,12 @@ private:
         SelfPlayResult out;
         out.samples = std::move(weighted_memory);
         out.winner = winner;
-        out.game_len = static_cast<int>(memory.size());
+        int stone_count = 0;
+        for (int8_t v : state) if (v != 0) ++stone_count;
+        out.game_len = stone_count;
+        out.final_state = state;
+        out.last_action = last_action;
+        out.last_player = last_player;
         return out;
     }
 
@@ -1384,6 +1395,48 @@ private:
                   << " pop=" << fork_queue_.pop_count() << ")"
                   << " | Model: " << current_model_path_
                   << "\n";
+
+    }
+
+    void print_median_endgame() {
+        if (round_games_.empty()) return;
+        auto games = round_games_;
+        std::nth_element(games.begin(), games.begin() + games.size() / 2, games.end(),
+                         [](const RoundGame& a, const RoundGame& b) {
+                             return a.game_len < b.game_len;
+                         });
+        const auto& g = games[games.size() / 2];
+        const int bsz = game_.board_size;
+        if (static_cast<int>(g.final_state.size()) != bsz * bsz) return;
+
+        const char* winner_str = (g.winner == 1) ? "Black" : (g.winner == -1 ? "White" : "Draw");
+        const int last_r = (g.last_action >= 0) ? g.last_action / bsz : -1;
+        const int last_c = (g.last_action >= 0) ? g.last_action % bsz : -1;
+
+        std::cout << "Session median-len endgame (len=" << g.game_len
+                  << ", winner=" << winner_str
+                  << ", n_games=" << round_games_.size() << "):\n";
+
+        std::cout << "     ";
+        for (int c = 0; c < bsz; ++c) {
+            char col = (c < 8) ? static_cast<char>('A' + c) : static_cast<char>('A' + c + 1);
+            std::cout << col << ' ';
+        }
+        std::cout << "\n";
+
+        for (int r = 0; r < bsz; ++r) {
+            std::cout << "  " << std::setw(2) << (bsz - r) << " ";
+            for (int c = 0; c < bsz; ++c) {
+                const int8_t v = g.final_state[r * bsz + c];
+                const bool last = (r == last_r && c == last_c);
+                char ch = (v == 1) ? 'X' : (v == -1) ? 'O' : '.';
+                // Mark last move with lowercase letter so column spacing stays aligned
+                if (last && v == 1) ch = 'x';
+                else if (last && v == -1) ch = 'o';
+                std::cout << ch << ' ';
+            }
+            std::cout << "\n";
+        }
     }
 
     // --- Member variables ---
@@ -1430,6 +1483,15 @@ private:
     std::vector<int> recent_game_lengths_;
     std::vector<int> black_win_counts_;
     std::vector<int> white_win_counts_;
+
+    struct RoundGame {
+        int game_len;
+        int winner;
+        int last_action;
+        int last_player;
+        std::vector<int8_t> final_state;
+    };
+    std::vector<RoundGame> round_games_;
 };
 
 }  // namespace skyzero
