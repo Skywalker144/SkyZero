@@ -268,46 +268,120 @@ private:
         return {ir.policy, ir.value};
     }
 
-    MCTSNode* select(MCTSNode& node) {
-        float visited_policy_mass = 0.0f;
-        for (auto& child_ptr : node.children) {
-            if (child_ptr->n > 0 || child_ptr->vloss > 0) {
-                visited_policy_mass += child_ptr->prior;
+    // Result of σ(completed_Q) computation at an expanded node (parent perspective).
+    struct CompletedQResult {
+        std::vector<std::array<float, 3>> q_wdl;  // parent-perspective WDL, size action_size
+        std::vector<float> n_values;              // weighted_n per action, size action_size
+        std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};
+        std::vector<float> sigma_q;               // (c_visit + max_n_shifted) * c_scale * q_norm
+        std::vector<float> improved_logits;       // logits + sigma_q, -inf for illegal
+        std::vector<float> pi_prime;              // softmax(improved_logits)
+        float max_n_shifted = 0.0f;               // max_child_n - baseline_max_n (>= 0)
+    };
+
+    // Compute completed-Q + v_mix + σ(q) + improved policy π' at a node.
+    // `baseline_max_n` lets the root discount visits inherited from a reused subtree;
+    // non-root callers pass 0 (no inherited-visit bookkeeping below the root).
+    CompletedQResult compute_improved_policy(const MCTSNode& node, float baseline_max_n = 0.0f) const {
+        const int action_size = game_.board_size * game_.board_size;
+        CompletedQResult r;
+        r.q_wdl.assign(static_cast<size_t>(action_size), {0.0f, 0.0f, 0.0f});
+        r.n_values.assign(static_cast<size_t>(action_size), 0.0f);
+        r.sigma_q.assign(static_cast<size_t>(action_size), 0.0f);
+        r.improved_logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
+
+        std::vector<float> logits = node.nn_logits;
+        if (logits.size() != static_cast<size_t>(action_size)) {
+            logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
+        }
+
+        // Gather visited-child Q (flip child WDL into parent perspective).
+        for (const auto& c : node.children) {
+            if (c && c->n > 0 && c->weighted_n > 0.0f) {
+                const int a = c->action_taken;
+                if (a < 0 || a >= action_size) continue;
+                const float wn = c->weighted_n;
+                const float cw = c->v[0] / wn;
+                const float cd = c->v[1] / wn;
+                const float cl = c->v[2] / wn;
+                r.q_wdl[static_cast<size_t>(a)] = {cl, cd, cw};  // flip: child-loss -> parent-win
+                r.n_values[static_cast<size_t>(a)] = wn;
             }
         }
 
-        // KataGomo-aligned (searchexplorehelpers.cpp:316-338): totalChildWeight excludes
-        // virtual losses — they only affect the per-child PUCT term below.
-        const auto sp = compute_select_params(node, node.weighted_n, visited_policy_mass, cfg_);
+        // v_mix: NN value blended with policy-weighted visited Q.
+        const float sum_n = std::accumulate(r.n_values.begin(), r.n_values.end(), 0.0f);
+        r.v_mix = node.nn_value_probs;
+        if (sum_n > 0.0f) {
+            std::array<float, 3> weighted_q{0.0f, 0.0f, 0.0f};
+            float policy_sum = 1e-12f;
+            for (int a = 0; a < action_size; ++a) {
+                if (r.n_values[static_cast<size_t>(a)] > 0.0f
+                    && a < static_cast<int>(node.nn_policy.size())) {
+                    const float p = node.nn_policy[static_cast<size_t>(a)];
+                    weighted_q[0] += p * r.q_wdl[static_cast<size_t>(a)][0];
+                    weighted_q[1] += p * r.q_wdl[static_cast<size_t>(a)][1];
+                    weighted_q[2] += p * r.q_wdl[static_cast<size_t>(a)][2];
+                    policy_sum += p;
+                }
+            }
+            weighted_q[0] /= policy_sum;
+            weighted_q[1] /= policy_sum;
+            weighted_q[2] /= policy_sum;
+            r.v_mix = {
+                (node.nn_value_probs[0] + sum_n * weighted_q[0]) / (1.0f + sum_n),
+                (node.nn_value_probs[1] + sum_n * weighted_q[1]) / (1.0f + sum_n),
+                (node.nn_value_probs[2] + sum_n * weighted_q[2]) / (1.0f + sum_n),
+            };
+        }
 
-        // KataGomo virtual-loss math (searchexplorehelpers.cpp:134-143):
-        // Blend child utility toward loss (-1) using virtualLossWeight = vloss * num_vl_per_thread,
-        // with asymmetric denominator max(0.25, childWeight) in the utility blend but raw addition
-        // into the PUCT denominator.
+        const float c_visit = cfg_.gumbel_c_visit;
+        const float c_scale = cfg_.gumbel_c_scale;
+        r.max_n_shifted = std::max(0.0f, max_child_n(node) - baseline_max_n);
+
+        for (int a = 0; a < action_size; ++a) {
+            const auto& q = (r.n_values[static_cast<size_t>(a)] > 0.0f)
+                              ? r.q_wdl[static_cast<size_t>(a)] : r.v_mix;
+            float s = q[0] - q[2];
+            s = (s + 1.0f) * 0.5f;  // normalize to [0,1]
+            r.sigma_q[static_cast<size_t>(a)] = (c_visit + r.max_n_shifted) * c_scale * s;
+        }
+
+        for (int a = 0; a < action_size; ++a) {
+            const float lg = logits[static_cast<size_t>(a)];
+            if (std::isfinite(lg)) {
+                r.improved_logits[static_cast<size_t>(a)] = lg + r.sigma_q[static_cast<size_t>(a)];
+            }
+        }
+        r.pi_prime = softmax(r.improved_logits);
+        return r;
+    }
+
+    // Gumbel-AlphaZero deterministic non-root selection (Danihelka et al., ICLR 2022):
+    //   a* = argmax_a [ π'(a) - N_eff(a) / (1 + ΣN_eff) ]
+    // where π' = softmax(logits + σ(completed_Q)) and
+    //   N_eff(a) = weighted_n(a) + vloss(a) * num_virtual_losses_per_thread.
+    MCTSNode* select(MCTSNode& node) {
+        const auto r = compute_improved_policy(node);
         const float vl_mult = cfg_.num_virtual_losses_per_thread;
+
+        float sum_n_eff = 0.0f;
+        for (const auto& child_ptr : node.children) {
+            if (!child_ptr) continue;
+            sum_n_eff += child_ptr->weighted_n
+                       + static_cast<float>(child_ptr->vloss) * vl_mult;
+        }
+        const float denom = 1.0f + sum_n_eff;
 
         float best_score = -std::numeric_limits<float>::infinity();
         MCTSNode* best_child = nullptr;
-        for (auto& child_ptr : node.children) {
+        for (const auto& child_ptr : node.children) {
+            if (!child_ptr) continue;
             auto& child = *child_ptr;
-            const float child_weight = child.weighted_n;  // real weight, no vloss
-            float q;
-            if (child_weight > 0.0f) {
-                q = (child.v[2] - child.v[0]) / child_weight;
-            } else {
-                q = sp.fpu_value;
-            }
-
-            float puct_child_weight = child_weight;
-            if (child.vloss > 0) {
-                const float vl_weight = static_cast<float>(child.vloss) * vl_mult;
-                const float vl_frac = vl_weight / (vl_weight + std::max(0.25f, child_weight));
-                q = q + (-1.0f - q) * vl_frac;
-                puct_child_weight = child_weight + vl_weight;
-            }
-
-            const float u = sp.explore_scaling * child.prior / (1.0f + puct_child_weight);
-            const float score = q + u;
+            const int a = child.action_taken;
+            if (a < 0 || a >= static_cast<int>(r.pi_prime.size())) continue;
+            const float n_eff = child.weighted_n + static_cast<float>(child.vloss) * vl_mult;
+            const float score = r.pi_prime[static_cast<size_t>(a)] - n_eff / denom;
             if (score > best_score) {
                 best_score = score;
                 best_child = &child;
@@ -615,62 +689,11 @@ private:
             }
         }
 
-        const float c_visit = cfg_.gumbel_c_visit;
-        const float c_scale = cfg_.gumbel_c_scale;
-        const float max_n = std::max(0.0f, max_child_n(root) - baseline_max_n);
-
-        std::vector<std::array<float, 3>> q_wdl(static_cast<size_t>(action_size), {0.0f, 0.0f, 0.0f});
-        std::vector<float> n_values(static_cast<size_t>(action_size), 0.0f);
-        for (auto& c : root.children) {
-            if (c && c->n > 0 && c->weighted_n > 0.0f) {
-                const float wn = c->weighted_n;
-                const float cw = c->v[0] / wn;
-                const float cd = c->v[1] / wn;
-                const float cl = c->v[2] / wn;
-                q_wdl[static_cast<size_t>(c->action_taken)] = {cl, cd, cw};
-                n_values[static_cast<size_t>(c->action_taken)] = wn;
-            }
-        }
-
-        const float sum_n = std::accumulate(n_values.begin(), n_values.end(), 0.0f);
-        std::array<float, 3> v_mix = root.nn_value_probs;
-        if (sum_n > 0.0f) {
-            std::array<float, 3> weighted_q{0.0f, 0.0f, 0.0f};
-            float policy_sum = 1e-12f;
-            for (int a = 0; a < action_size; ++a) {
-                if (n_values[static_cast<size_t>(a)] > 0.0f && a < static_cast<int>(root.nn_policy.size())) {
-                    const float p = root.nn_policy[static_cast<size_t>(a)];
-                    weighted_q[0] += p * q_wdl[static_cast<size_t>(a)][0];
-                    weighted_q[1] += p * q_wdl[static_cast<size_t>(a)][1];
-                    weighted_q[2] += p * q_wdl[static_cast<size_t>(a)][2];
-                    policy_sum += p;
-                }
-            }
-            weighted_q[0] /= policy_sum;
-            weighted_q[1] /= policy_sum;
-            weighted_q[2] /= policy_sum;
-            v_mix = {
-                (root.nn_value_probs[0] + sum_n * weighted_q[0]) / (1.0f + sum_n),
-                (root.nn_value_probs[1] + sum_n * weighted_q[1]) / (1.0f + sum_n),
-                (root.nn_value_probs[2] + sum_n * weighted_q[2]) / (1.0f + sum_n),
-            };
-        }
-
-        std::vector<float> sigma_q(static_cast<size_t>(action_size), 0.0f);
-        for (int a = 0; a < action_size; ++a) {
-            const auto& q = (n_values[static_cast<size_t>(a)] > 0.0f) ? q_wdl[static_cast<size_t>(a)] : v_mix;
-            float s = q[0] - q[2];
-            s = (s + 1.0f) * 0.5f;
-            sigma_q[static_cast<size_t>(a)] = (c_visit + max_n) * c_scale * s;
-        }
-
-        std::vector<float> improved_logits(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
-        for (int a = 0; a < action_size; ++a) {
-            if (a < static_cast<int>(is_legal.size()) && is_legal[static_cast<size_t>(a)]) {
-                improved_logits[static_cast<size_t>(a)] = logits[static_cast<size_t>(a)] + sigma_q[static_cast<size_t>(a)];
-            }
-        }
-        auto improved_policy = softmax(improved_logits);
+        const auto cq = compute_improved_policy(root, baseline_max_n);
+        const auto& v_mix = cq.v_mix;
+        const auto& sigma_q = cq.sigma_q;
+        const auto& n_values = cq.n_values;
+        auto improved_policy = cq.pi_prime;
 
         auto final_eval = [&](int a) {
             return logits[static_cast<size_t>(a)] + g[static_cast<size_t>(a)] + sigma_q[static_cast<size_t>(a)];
