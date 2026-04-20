@@ -64,11 +64,6 @@ VALUE_SURPRISE_WEIGHT="${VALUE_SURPRISE_WEIGHT:-0.1}"
 SOFT_RESIGN_THRESHOLD="${SOFT_RESIGN_THRESHOLD:-0.9}"
 SOFT_RESIGN_PROB="${SOFT_RESIGN_PROB:-0.7}"
 
-# Fork Side Positions
-FORK_SIDE_PROB="${FORK_SIDE_PROB:-0.04}"
-MAX_FORK_QUEUE="${MAX_FORK_QUEUE:-1000}"
-FORK_SKIP_FIRST_N="${FORK_SKIP_FIRST_N:-3}"
-
 # Uncertainty-Weighted MCTS Backup
 ENABLE_UNCERTAINTY_WEIGHTING="${ENABLE_UNCERTAINTY_WEIGHTING:-true}"
 UNCERTAINTY_COEFF="${UNCERTAINTY_COEFF:-0.25}"
@@ -142,9 +137,6 @@ SELFPLAY_ARGS=(
     --value-surprise-weight "$VALUE_SURPRISE_WEIGHT"
     --soft-resign-threshold "$SOFT_RESIGN_THRESHOLD"
     --soft-resign-prob "$SOFT_RESIGN_PROB"
-    --fork-side-prob "$FORK_SIDE_PROB"
-    --max-fork-queue "$MAX_FORK_QUEUE"
-    --fork-skip-first-n "$FORK_SKIP_FIRST_N"
     --uncertainty-coeff "$UNCERTAINTY_COEFF"
     --uncertainty-exponent "$UNCERTAINTY_EXPONENT"
     --uncertainty-max-weight "$UNCERTAINTY_MAX_WEIGHT"
