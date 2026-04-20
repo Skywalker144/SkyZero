@@ -497,6 +497,19 @@ private:
             logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
         }
 
+        // Subtree reuse: σ(·) should scale with THIS search's new visits only,
+        // not the inherited ones. Snapshot baseline weighted_n per child.
+        const float baseline_max_n = max_child_n(root);
+        std::vector<float> baseline_n(static_cast<size_t>(action_size), 0.0f);
+        for (const auto& c : root.children) {
+            if (c) {
+                const int a = c->action_taken;
+                if (a >= 0 && a < action_size) {
+                    baseline_n[static_cast<size_t>(a)] = c->weighted_n;
+                }
+            }
+        }
+
         const auto is_legal = game_.get_is_legal_actions(root.state, root.to_play);
 
         std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
@@ -573,7 +586,7 @@ private:
                 }
 
                 if (phase < phases - 1 && !surviving_actions.empty()) {
-                    const float max_n = max_child_n(root);
+                    const float max_n = std::max(0.0f, max_child_n(root) - baseline_max_n);
                     const float c_visit = cfg_.gumbel_c_visit;
                     const float c_scale = cfg_.gumbel_c_scale;
 
@@ -604,7 +617,7 @@ private:
 
         const float c_visit = cfg_.gumbel_c_visit;
         const float c_scale = cfg_.gumbel_c_scale;
-        const float max_n = max_child_n(root);
+        const float max_n = std::max(0.0f, max_child_n(root) - baseline_max_n);
 
         std::vector<std::array<float, 3>> q_wdl(static_cast<size_t>(action_size), {0.0f, 0.0f, 0.0f});
         std::vector<float> n_values(static_cast<size_t>(action_size), 0.0f);
@@ -668,7 +681,8 @@ private:
             float max_n_surviving = -1.0f;
             std::vector<int> most_visited;
             for (int a : surviving_actions) {
-                const float nv = n_values[static_cast<size_t>(a)];
+                // Delta visits: which surviving action received the most budget in THIS search.
+                const float nv = n_values[static_cast<size_t>(a)] - baseline_n[static_cast<size_t>(a)];
                 if (nv > max_n_surviving) {
                     max_n_surviving = nv;
                     most_visited.clear();
