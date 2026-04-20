@@ -72,11 +72,6 @@ struct AlphaZeroConfig {
     float soft_resign_sample_weight = 0.1f;
     int min_simulations_in_soft_resign = 8;
 
-    // Fork side positions (KataGo-style data diversity)
-    float fork_side_position_prob = 0.04f;
-    int max_fork_queue_size = 1000;
-    int fork_skip_first_n_moves = 3;  // don't fork during opening
-
     // Selfplay output
     int max_games_total = 4000;
     int max_rows_per_file = 25000;
