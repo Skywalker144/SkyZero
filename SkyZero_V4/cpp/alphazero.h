@@ -60,6 +60,15 @@ struct AlphaZeroConfig {
     float value_surprise_data_weight = 0.1f;
     float value_target_mix_now_factor_constant = 0.2f;
 
+    // Balanced opening (KataGomo-style). Each game samples r ~ U(0,1):
+    //   r <  balance_opening_prob → empty-board start;
+    //   r >= balance_opening_prob → NN-scored random opening.
+    float balance_opening_prob = 0.2f;
+    int balanced_opening_max_tries = 20;
+    float balanced_opening_avg_dist_factor = 0.8f;
+    float balanced_opening_reject_prob = 0.995f;
+    float balanced_opening_reject_prob_fallback = 0.8f;
+
     // Soft resign
     float soft_resign_threshold = 0.9f;
     int soft_resign_step_threshold = 3;
