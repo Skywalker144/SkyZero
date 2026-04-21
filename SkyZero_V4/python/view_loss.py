@@ -37,16 +37,21 @@ def main() -> int:
         header = lines[0].split("\t")
         rows = [ln.split("\t") for ln in lines[1:]]
         cols = {name: [float(r[i]) for r in rows] for i, name in enumerate(header)}
-        x = cols.get("iter", list(range(len(rows))))
-        fig, ax = plt.subplots(figsize=(8, 4))
-        for key in ("policy_loss", "opp_policy_loss", "value_loss", "total_loss"):
-            if key in cols:
-                ax.plot(x, cols[key], label=key)
-        ax.set_xlabel("iter")
-        ax.set_ylabel("loss")
-        ax.legend()
+        x = cols.get("global_step_samples", cols.get("iter", list(range(len(rows)))))
+        xlabel = "samples" if "global_step_samples" in cols else "iter"
+        keys = [k for k in ("policy_loss", "opp_policy_loss", "value_loss", "total_loss") if k in cols]
+        fig, axes = plt.subplots(len(keys), 1, figsize=(8, 2.5 * len(keys)), sharex=True)
+        if len(keys) == 1:
+            axes = [axes]
+        for ax, key in zip(axes, keys):
+            ax.plot(x, cols[key])
+            ax.set_yscale("log")
+            ax.set_ylabel(key)
+            ax.grid(True, which="both", alpha=0.3)
+        axes[-1].set_xlabel(xlabel)
+        fig.tight_layout()
         out = pathlib.Path(args.data_dir) / "logs" / "loss.png"
-        fig.savefig(out, dpi=100)
+        fig.savefig(out, dpi=200)
         print(f"saved plot to {out}")
     return 0
 
