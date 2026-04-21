@@ -63,6 +63,9 @@ while true; do
 
         # (5) export TorchScript
         bash "$SCRIPT_DIR/export.sh" "$iter"
+
+        # (6) plot loss curve
+        ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
     fi
 
     iter=$((iter + 1))
