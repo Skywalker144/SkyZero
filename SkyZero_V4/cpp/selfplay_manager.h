@@ -30,6 +30,7 @@
 #include "alphazero.h"
 #include "alphazero_parallel.h"
 #include "policy_surprise_weighting.h"
+#include "random_opening.h"
 #include "utils.h"
 
 namespace skyzero {
@@ -294,6 +295,15 @@ private:
         auto init = game_.get_initial_state(worker_rng);
         std::vector<int8_t> state = std::move(init.board);
         int to_play = init.to_play;
+
+        {
+            std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+            if (u01(worker_rng) >= cfg_.balance_opening_prob) {
+                RandomOpening<Game> ro(game_, infer_fn, cfg_, worker_rng());
+                ro.initialize(state, to_play);
+            }
+        }
+
         bool in_soft_resign = false;
         std::vector<float> historical_v_mix;
         int last_action = -1;
