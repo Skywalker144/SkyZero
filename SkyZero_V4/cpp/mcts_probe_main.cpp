@@ -133,6 +133,9 @@ int main(int argc, char** argv) {
         cfg.enable_symmetry_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
 
+        // Probe-specific simulation budget: PROBE_NUM_SIMULATIONS in run.cfg
+        // (falls back to NUM_SIMULATIONS). CLI --num-simulations still wins.
+        cfg.num_simulations = cfg_get<int>(cfg_map, "PROBE_NUM_SIMULATIONS", cfg.num_simulations);
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
 
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 4);
