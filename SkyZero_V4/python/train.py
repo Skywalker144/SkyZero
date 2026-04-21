@@ -164,6 +164,10 @@ def main() -> int:
 
     it = iter(loader)
     accum = {"policy": 0.0, "opp_policy": 0.0, "value": 0.0, "total": 0.0}
+    window = max(1, min(10, args.train_steps // 4))
+    first_sum = {"policy": 0.0, "opp_policy": 0.0, "value": 0.0, "total": 0.0}
+    last_sum = {"policy": 0.0, "opp_policy": 0.0, "value": 0.0, "total": 0.0}
+    last_buf: list[dict] = []
     start = time.time()
     step = 0
     while step < args.train_steps:
@@ -202,18 +206,38 @@ def main() -> int:
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         opt.step()
 
-        accum["policy"] += float(policy_loss.detach())
-        accum["opp_policy"] += float(opp_policy_loss.detach())
-        accum["value"] += float(value_loss.detach())
-        accum["total"] += float(total_loss.detach())
+        losses = {
+            "policy": float(policy_loss.detach()),
+            "opp_policy": float(opp_policy_loss.detach()),
+            "value": float(value_loss.detach()),
+            "total": float(total_loss.detach()),
+        }
+        for k, v in losses.items():
+            accum[k] += v
+        if step < window:
+            for k, v in losses.items():
+                first_sum[k] += v
+        last_buf.append(losses)
+        if len(last_buf) > window:
+            last_buf.pop(0)
         step += 1
         global_step += B
 
     dt = time.time() - start
     avg = {k: v / max(1, step) for k, v in accum.items()}
+    first_n = min(window, step)
+    first_avg = {k: first_sum[k] / max(1, first_n) for k in accum}
+    last_n = len(last_buf)
+    for b in last_buf:
+        for k, v in b.items():
+            last_sum[k] += v
+    last_avg = {k: last_sum[k] / max(1, last_n) for k in accum}
+
     print(f"[train] iter={args.iter} steps={step} samples_seen={step * args.batch_size} "
-          f"t={dt:.1f}s | policy={avg['policy']:.4f} opp={avg['opp_policy']:.4f} "
-          f"value={avg['value']:.4f} total={avg['total']:.4f}")
+          f"t={dt:.1f}s (first/last avg over {window} steps)")
+    name_w = max(len(k) for k in accum)
+    for k in ("total", "policy", "opp_policy", "value"):
+        print(f"[train]   {k:<{name_w}} : {first_avg[k]:8.4f} -> {last_avg[k]:8.4f}")
 
     # Save checkpoint
     ckpt_dir = args.data_dir / "checkpoints"
