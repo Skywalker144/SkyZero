@@ -57,3 +57,15 @@ target_link_libraries(mcts_probe PRIVATE
 )
 target_compile_options(mcts_probe PRIVATE -Wall -Wextra -Wno-unused-parameter)
 set_property(TARGET mcts_probe PROPERTY CXX_EXTENSIONS OFF)
+
+# --- gomoku_play binary --------------------------------------------------
+# Interactive human-vs-AI Gomoku. Loads the same TorchScript model as
+# selfplay/probe but reads scripts/play.cfg for its own MCTS knobs.
+add_executable(gomoku_play gomoku_play_main.cpp)
+target_include_directories(gomoku_play PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(gomoku_play PRIVATE
+    ${TORCH_LIBRARIES}
+    Threads::Threads
+)
+target_compile_options(gomoku_play PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET gomoku_play PROPERTY CXX_EXTENSIONS OFF)
