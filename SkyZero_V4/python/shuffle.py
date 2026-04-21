@@ -7,10 +7,19 @@ Window formula (same as CSkyZero_V3 replaybuffer.h):
     total = sum of rows across *.npz on disk
     if total <= linear_threshold: window = total
     else: window = linear_threshold * (total / linear_threshold) ** alpha
+
+Memory strategy: two-pass external shuffle (KataGo-style).
+    Pass 1 (scatter): stream each input file, randomly assign every row to one
+        of K buckets, append per-bucket chunks to disk. Only one input file is
+        resident at a time.
+    Pass 2 (per-bucket shuffle): for each bucket, load its chunks, permute,
+        write the final shard. Only one bucket (~shard_rows) is resident.
+    Peak RAM = O(max(input_file_rows, shard_rows)), independent of window.
 """
 from __future__ import annotations
 
 import argparse
+import gc
 import math
 import os
 import pathlib
@@ -53,6 +62,7 @@ def main() -> int:
     data_dir = pathlib.Path(args.data_dir)
     selfplay_dir = data_dir / "selfplay"
     shuffled_dir = data_dir / "shuffled" / "current"
+    scatter_dir = data_dir / "shuffled" / "_scatter"
 
     linear_threshold = _env_int("LINEAR_THRESHOLD", 2_000_000)
     alpha = _env_float("REPLAY_ALPHA", 0.8)
@@ -75,51 +85,76 @@ def main() -> int:
 
     rng = np.random.default_rng(None if args.seed < 0 else args.seed)
 
-    # Take newest files until we cover `window` rows. Partial-sample the last.
+    # Take newest files until we cover `window` rows. Partial-sample the oldest.
     chosen_files: list[pathlib.Path] = []
-    chosen_rows: list[int] = []
+    chosen_takes: list[int] = []
     covered = 0
-    partial_n: int | None = None
     for p, r in zip(files, rows_per_file):
         if covered >= window:
             break
         take = min(r, window - covered)
         chosen_files.append(p)
-        chosen_rows.append(take)
-        if take < r:
-            partial_n = take
+        chosen_takes.append(take)
         covered += take
 
-    batches: list[NpzBatch] = []
-    for p, take in zip(chosen_files, chosen_rows):
+    shard_rows = args.shard_rows
+    K = max(1, math.ceil(covered / shard_rows))
+    print(f"[shuffle] pass1: scattering {covered} rows from {len(chosen_files)} "
+          f"files into {K} buckets")
+
+    # Fresh scatter dir.
+    if scatter_dir.exists():
+        shutil.rmtree(scatter_dir)
+    scatter_dir.mkdir(parents=True, exist_ok=True)
+    for k in range(K):
+        (scatter_dir / f"bucket_{k:04d}").mkdir()
+
+    # Pass 1: scatter.
+    for file_idx, (p, take) in enumerate(zip(chosen_files, chosen_takes)):
         b = load_npz(p)
-        if take < len(b):
-            idx = rng.choice(len(b), size=take, replace=False)
-            idx.sort()
-            b = b.select(idx)
-        batches.append(b)
+        n_rows = len(b)
+        if take < n_rows:
+            sel = rng.choice(n_rows, size=take, replace=False)
+            sel.sort()
+            b = b.select(sel)
+        assign = rng.integers(0, K, size=len(b))
+        for k in np.unique(assign):
+            mask = assign == k
+            sub = b.select(mask)
+            out = scatter_dir / f"bucket_{int(k):04d}" / f"file_{file_idx:06d}.npz"
+            save_npz(out, sub)
+            del sub
+        del b, assign
+        gc.collect()
 
-    full = concat_batches(batches)
-    n = len(full)
-    perm = rng.permutation(n)
-    full = full.select(perm)
-
-    # Clean output dir
+    # Pass 2: per-bucket shuffle.
     if shuffled_dir.exists():
         shutil.rmtree(shuffled_dir)
     shuffled_dir.mkdir(parents=True, exist_ok=True)
 
-    shard_rows = args.shard_rows
-    num_shards = max(1, math.ceil(n / shard_rows))
-    for k in range(num_shards):
-        lo = k * shard_rows
-        hi = min(n, lo + shard_rows)
-        idx = np.arange(lo, hi)
-        shard = full.select(idx)
-        path = shuffled_dir / f"shard_{k:04d}.npz"
-        save_npz(path, shard)
+    total_written = 0
+    num_shards_written = 0
+    for k in range(K):
+        bucket_dir = scatter_dir / f"bucket_{k:04d}"
+        chunk_paths = sorted(bucket_dir.glob("*.npz"))
+        if not chunk_paths:
+            continue
+        parts = [load_npz(cp) for cp in chunk_paths]
+        b = concat_batches(parts)
+        del parts
+        perm = rng.permutation(len(b))
+        b = b.select(perm)
+        out = shuffled_dir / f"shard_{k:04d}.npz"
+        save_npz(out, b)
+        total_written += len(b)
+        num_shards_written += 1
+        del b, perm
+        gc.collect()
 
-    print(f"[shuffle] wrote {num_shards} shards, {n} rows total to {shuffled_dir}")
+    shutil.rmtree(scatter_dir, ignore_errors=True)
+
+    print(f"[shuffle] wrote {num_shards_written} shards, "
+          f"{total_written} rows total to {shuffled_dir}")
     return 0
 
 
