@@ -8,12 +8,12 @@ namespace {
 skyzero::AlphaZeroConfig build_gomoku_config() {
     skyzero::AlphaZeroConfig cfg;
     cfg.board_size = 15;
-    cfg.num_blocks = 4;
-    cfg.num_channels = 128;
+    cfg.num_blocks = 6;
+    cfg.num_channels = 96;
     cfg.lr = 1e-4f;
     cfg.weight_decay = 3e-5f;
 
-    cfg.num_simulations = 512;
+    cfg.num_simulations = 64;
     cfg.gumbel_m = 16;
     cfg.gumbel_c_visit = 50.0f;
     cfg.gumbel_c_scale = 1.0f;
@@ -22,7 +22,7 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.move_temperature_final = 0.2f;
 
     cfg.batch_size = 256;
-    cfg.min_buffer_size = 2e5;
+    cfg.min_buffer_size = 1e5;
     cfg.linear_threshold = 2e6;
     cfg.replay_alpha = 0.8f;
     cfg.max_buffer_size = 2e7;
@@ -47,7 +47,7 @@ skyzero::AlphaZeroConfig build_gomoku_config() {
     cfg.cpuct_utility_stdev_scale = 0.85f;
 
     // Subtree Value Bias
-    cfg.enable_subtree_value_bias = true;
+    cfg.enable_subtree_value_bias = false;
     cfg.subtree_value_bias_factor = 0.35f;
     cfg.subtree_value_bias_weight_exponent = 0.85f;
     cfg.subtree_value_bias_free_prop = 0.8f;
@@ -73,7 +73,7 @@ int main() {
     pcfg.idle_sleep_ms = 0;
 
     skyzero::Gomoku game(cfg.board_size, true, true);
-    game.load_openings("envs/gomoku_openings.txt", 0.5f);
+    game.load_openings("envs/gomoku_openings.txt", 0.9f);
     auto model = skyzero::ResNet(game.board_size, game.num_planes, cfg.num_blocks, cfg.num_channels);
     model->to(cfg.device);
 
