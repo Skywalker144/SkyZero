@@ -1,66 +1,61 @@
 #ifndef SKYZERO_ALPHAZERO_H
 #define SKYZERO_ALPHAZERO_H
 
+// Config, MCTSNode, and shared helpers for MCTS.
+// Ported from CSkyZero_V3/alphazero.h with:
+//   * Subtree Value Bias (SVB) removed.
+//   * Dynamic variance-scaled cPUCT removed (stdev_factor == 1.0).
+//   * Single-threaded `MCTS` class removed (selfplay uses ParallelMCTS only).
+//   * Torch save/load `AlphaZero` class removed (Python handles training & checkpoints).
+//   * Training / replay-buffer / playout-cap configuration not included here.
+
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
-#include <filesystem>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <numeric>
-#include <random>
-#include <stdexcept>
-#include <string>
-#include <utility>
 #include <vector>
 
-#include <torch/nn/functional.h>
 #include <torch/torch.h>
-
-#include "policy_surprise_weighting.h"
-#include "utils.h"
 
 namespace skyzero {
 
 // ---------------------------------------------------------------------------
-// Config — aligned to Python V3 args dict
+// Config — only the fields the C++ selfplay path needs.
+// Python side owns everything training-related.
 // ---------------------------------------------------------------------------
 struct AlphaZeroConfig {
     int board_size = 15;
 
     // Gumbel MCTS
-    int num_simulations = 512;
+    int num_simulations = 64;
     int gumbel_m = 16;
     float gumbel_c_visit = 50.0f;
     float gumbel_c_scale = 1.0f;
 
     // Exploration temperature
-    int half_life = -1;                  // Python: args.get("half_life", game.board_size)
-    float move_temperature_init = 1.1f;
-    float move_temperature_final = 1.0f;
+    int half_life = -1;                  // -1 ⇒ use board_size
+    float move_temperature_init = 0.8f;
+    float move_temperature_final = 0.2f;
 
-    // Virtual-loss multiplier: inflates N(a) in the Gumbel selection rule for
-    // in-flight simulations (each pending rollout adds this much to N_eff(a)).
-    float num_virtual_losses_per_thread = 3.0f;
+    // PUCT / FPU
+    float c_puct = 1.1f;
+    float c_puct_log = 0.45f;
+    float c_puct_base = 500.0f;
+    float fpu_pow = 1.0f;
+    float fpu_reduction_max = 0.08f;
+    float root_fpu_reduction_max = 0.0f;
+    float fpu_loss_prop = 0.0f;
 
-    // Uncertainty-Weighted MCTS Backup (KataGo-style; requires value_error head)
-    // Weight formula: w = coeff / (u^exp + coeff/max_weight)
-    bool enable_uncertainty_weighting = false;
-    float uncertainty_coeff = 0.25f;
-    float uncertainty_exponent = 1.0f;
-    float uncertainty_max_weight = 8.0f;
-
-    // Stochastic transform
+    // Stochastic transform / symmetry at inference time
     bool enable_stochastic_transform_inference_for_root = true;
     bool enable_stochastic_transform_inference_for_child = true;
     bool enable_symmetry_inference_for_root = false;
     bool enable_symmetry_inference_for_child = false;
 
-    // Surprise weighting / value target
+    // Surprise weighting / value target mixing
     float policy_surprise_data_weight = 0.5f;
     float value_surprise_data_weight = 0.1f;
     float value_target_mix_now_factor_constant = 0.2f;
@@ -71,12 +66,6 @@ struct AlphaZeroConfig {
     float soft_resign_prob = 0.7f;
     float soft_resign_sample_weight = 0.1f;
     int min_simulations_in_soft_resign = 8;
-
-    // Selfplay output
-    int max_games_total = 4000;
-    int max_rows_per_file = 25000;
-    std::string model_dir = "data/models";
-    std::string output_dir = "data/selfplay";
 
     torch::Device device = torch::kCPU;
 };
@@ -92,30 +81,20 @@ struct MCTSNode {
     int action_taken = -1;
 
     std::vector<std::unique_ptr<MCTSNode>> children;
-    std::vector<float> nn_policy;          // softmax probabilities (legal‑masked)
-    std::vector<float> nn_logits;          // raw logits (legal‑masked, -inf for illegal)
+    std::vector<float> nn_policy;          // softmax probabilities (legal-masked)
+    std::vector<float> nn_logits;          // raw logits (legal-masked, -inf for illegal)
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};  // WDL
 
     std::array<float, 3> v{0.0f, 0.0f, 0.0f};
-    float utility_sq_sum = 0.0f;  // cumulative squared utility (parent perspective)
-    int n = 0;                     // raw visit count (for vloss / soft-resign)
-    float weighted_n = 0.0f;       // backup weight sum (uncertainty-weighted)
+    int n = 0;
     int vloss = 0;
-
-    // Cached NN-predicted value error for this node (post-softplus).
-    // Used by uncertainty-weighted backup; 0.0 means uninitialized.
-    float nn_value_error = 0.0f;
 
     bool is_expanded() const { return !children.empty(); }
 
-    void update(const std::array<float, 3>& value, float weight = 1.0f) {
-        v[0] += weight * value[0];
-        v[1] += weight * value[1];
-        v[2] += weight * value[2];
-        // parent-perspective utility = child_loss - child_win
-        const float u = value[2] - value[0];
-        utility_sq_sum += weight * u * u;
-        weighted_n += weight;
+    void update(const std::array<float, 3>& value) {
+        v[0] += value[0];
+        v[1] += value[1];
+        v[2] += value[2];
         n += 1;
     }
 };
@@ -125,9 +104,9 @@ struct MCTSNode {
 // ---------------------------------------------------------------------------
 struct MCTSSearchOutput {
     std::vector<float> mcts_policy;                         // improved policy (Gumbel)
-    std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};         // WDL v_mix (search root value)
+    std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};          // WDL v_mix (search root value)
     std::vector<float> nn_policy;                           // raw NN policy
-    std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f}; // raw NN value
+    std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};  // raw NN value
     int gumbel_action = -1;                                 // selected action by Gumbel
 };
 
@@ -140,6 +119,47 @@ inline std::array<float, 3> flip_wdl(const std::array<float, 3>& in) {
 
 inline float wdl_utility(const std::array<float, 3>& v) {
     return v[0] - v[2];
+}
+
+// ---------------------------------------------------------------------------
+// PUCT + FPU helpers.
+// (Dynamic variance-scaled cPUCT removed: stdev_factor is fixed at 1.0.)
+// ---------------------------------------------------------------------------
+
+struct SelectParams {
+    float explore_scaling;
+    float fpu_value;
+};
+
+// effective_parent_n = node.n (single-thread) or node.n + node.vloss (parallel).
+inline SelectParams compute_select_params(
+    const MCTSNode& node,
+    int effective_parent_n,
+    float visited_policy_mass,
+    const AlphaZeroConfig& cfg
+) {
+    const float total_child_weight = static_cast<float>(std::max(0, effective_parent_n - 1));
+
+    const float c_puct = cfg.c_puct + cfg.c_puct_log
+        * std::log((total_child_weight + cfg.c_puct_base) / cfg.c_puct_base);
+
+    const float explore_scaling = c_puct * std::sqrt(total_child_weight + 0.01f);
+
+    std::array<float, 3> parent_q{0.0f, 0.0f, 0.0f};
+    if (node.n > 0) {
+        parent_q = {node.v[0] / node.n, node.v[1] / node.n, node.v[2] / node.n};
+    }
+    const float parent_utility = wdl_utility(parent_q);
+    const float nn_utility = wdl_utility(node.nn_value_probs);
+    const float avg_weight = std::min(1.0f, static_cast<float>(std::pow(visited_policy_mass, cfg.fpu_pow)));
+    const float parent_utility_for_fpu = avg_weight * parent_utility + (1.0f - avg_weight) * nn_utility;
+
+    const float fpu_reduction_max = (node.parent == nullptr) ? cfg.root_fpu_reduction_max : cfg.fpu_reduction_max;
+    const float reduction = fpu_reduction_max * std::sqrt(visited_policy_mass);
+    float fpu_value = parent_utility_for_fpu - reduction;
+    fpu_value = fpu_value + ((-1.0f) - fpu_value) * cfg.fpu_loss_prop;
+
+    return {explore_scaling, fpu_value};
 }
 
 }  // namespace skyzero

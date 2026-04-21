@@ -1,359 +1,256 @@
-#!/usr/bin/env python3
-"""
-SkyZero_V4 Training Script.
+"""Train one epoch over data/shuffled/current/.
 
-Loads shuffled NPZ data, trains the neural network for one epoch, and exports
-a checkpoint for the export script to convert to TorchScript.
+One "epoch" here = TRAIN_STEPS_PER_EPOCH mini-batch SGD steps. After training,
+saves model state_dict to data/checkpoints/model_latest.pt and appends an
+entry to data/logs/train.tsv. run.sh invokes export_model.py afterwards to
+produce a TorchScript artifact for the next selfplay round.
 """
+from __future__ import annotations
 
-import sys
-import os
 import argparse
-import time
-import logging
 import json
-import datetime
-import shutil
-import glob
+import math
+import os
+import pathlib
+import sys
+import time
+from dataclasses import dataclass
+
 import numpy as np
-from collections import defaultdict
-
 import torch
-import torch.nn as nn
-import torch.optim
-from torch.cuda.amp import GradScaler, autocast
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
 
-from nets import Model, ExportWrapper
-from model_config import CONFIG_BY_NAME, SKYZERO_B6C96
-from data_processing import read_npz_training_data, collect_npz_files
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+from data_processing import NPZ_KEYS, random_d4_inplace
+from model_config import net_config_from_env
+from nets import build_model
 
 
-def weighted_cross_entropy(logits, targets, weights):
-    """Weighted cross-entropy: mean(weights * sum(-targets * log_softmax(logits), dim=-1))"""
-    log_probs = torch.log_softmax(logits, dim=-1)
-    per_sample = -torch.sum(targets * log_probs, dim=-1)
-    return torch.mean(weights * per_sample)
+# ---------------------------------------------------------------------------
+# Dataset backed by one or more shuffled NPZ shards (loaded into RAM).
+# ---------------------------------------------------------------------------
+
+class ShuffledShardDataset(Dataset):
+    def __init__(self, shard_dir: pathlib.Path) -> None:
+        files = sorted(shard_dir.glob("*.npz"))
+        if not files:
+            raise RuntimeError(f"no shards in {shard_dir}")
+        arrays = {k: [] for k in NPZ_KEYS}
+        for p in files:
+            with np.load(p) as f:
+                for k in NPZ_KEYS:
+                    arrays[k].append(np.asarray(f[k]))
+        self.data = {k: np.concatenate(arrays[k], axis=0) for k in NPZ_KEYS}
+        self.n = int(self.data["state"].shape[0])
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
+        return {
+            "state": torch.from_numpy(self.data["state"][i].astype(np.int8)),
+            "policy_target": torch.from_numpy(self.data["policy_target"][i]),
+            "opponent_policy_target": torch.from_numpy(self.data["opponent_policy_target"][i]),
+            "opponent_policy_mask": torch.tensor(self.data["opponent_policy_mask"][i], dtype=torch.float32),
+            "value_target": torch.from_numpy(self.data["value_target"][i]),
+            "sample_weight": torch.tensor(self.data["sample_weight"][i], dtype=torch.float32),
+        }
 
 
-def compute_value_error_loss(value_logits, value_error_pred, value_targets, sample_weights, delta=0.4):
-    """Shortterm value error head loss.
+# ---------------------------------------------------------------------------
+# Loss: weighted soft-target cross entropy.
+# ---------------------------------------------------------------------------
 
-    Predicts (utility_pred - actual_outcome)^2 with Huber loss. utility_pred and
-    actual_outcome are detached from the value_logits gradient path so the
-    error head supervises a target derived from the (current) value head's own
-    output without distorting it. Reference: KataGomo metrics_pytorch.py:238-245.
-    The model already applies softplus-with-gradient-floor + 0.25 multiplier, so
-    value_error_pred is consumed directly here.
-    """
-    with torch.no_grad():
-        value_probs = torch.softmax(value_logits.float(), dim=-1)
-        utility_pred = value_probs[:, 0] - value_probs[:, 2]
-        actual_outcome = value_targets[:, 0] - value_targets[:, 2]
-        actual_sq_err = (utility_pred - actual_outcome) ** 2
-    pred = value_error_pred.float().squeeze(-1)
-    huber = torch.nn.functional.huber_loss(pred, actual_sq_err, reduction="none", delta=delta)
-    return torch.mean(sample_weights * huber)
+def weighted_soft_ce(logits: torch.Tensor, target: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """logits: (B, C), target: (B, C) (soft distribution, sum<=1), weight: (B,)."""
+    log_probs = F.log_softmax(logits, dim=-1)
+    per_sample = -(target * log_probs).sum(dim=-1)
+    denom = weight.sum().clamp_min(1e-8)
+    return (per_sample * weight).sum() / denom
 
 
-def save_checkpoint(model, optimizer, scaler, train_state, path):
-    state = {
-        "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "train_state": train_state,
-    }
-    if scaler is not None:
-        state["scaler"] = scaler.state_dict()
-    torch.save(state, path)
-    logging.info(f"Saved checkpoint to {path}")
+# ---------------------------------------------------------------------------
+@dataclass
+class TrainArgs:
+    data_dir: pathlib.Path
+    iter: int
+    batch_size: int
+    train_steps: int
+    lr: float
+    weight_decay: float
+    grad_clip: float
+    policy_loss_weight: float
+    opponent_policy_loss_weight: float
+    value_loss_weight: float
+    device: torch.device
+    num_workers: int
 
 
-def load_checkpoint(path, model, optimizer, scaler, device):
-    state = torch.load(path, map_location=device)
-    model.load_state_dict(state["model"])
-    if "optimizer" in state:
-        optimizer.load_state_dict(state["optimizer"])
-    if scaler is not None and "scaler" in state:
-        scaler.load_state_dict(state["scaler"])
-    train_state = state.get("train_state", {})
-    logging.info(f"Loaded checkpoint from {path}")
-    return train_state
+def parse_args() -> TrainArgs:
+    p = argparse.ArgumentParser()
+    p.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
+    p.add_argument("--iter", type=int, required=True)
+    p.add_argument("--num-workers", type=int, default=2)
+    a = p.parse_args()
+    return TrainArgs(
+        data_dir=pathlib.Path(a.data_dir),
+        iter=a.iter,
+        batch_size=int(os.environ.get("BATCH_SIZE", "256")),
+        train_steps=int(os.environ.get("TRAIN_STEPS_PER_EPOCH", "100")),
+        lr=float(os.environ.get("LR", "1e-4")),
+        weight_decay=float(os.environ.get("WEIGHT_DECAY", "3e-5")),
+        grad_clip=float(os.environ.get("GRAD_CLIP", "1.0")),
+        policy_loss_weight=float(os.environ.get("POLICY_LOSS_WEIGHT", "1.0")),
+        opponent_policy_loss_weight=float(os.environ.get("OPP_POLICY_LOSS_WEIGHT", "0.15")),
+        value_loss_weight=float(os.environ.get("VALUE_LOSS_WEIGHT", "1.0")),
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        num_workers=a.num_workers,
+    )
 
 
-GNORM_CAP = 5500.0  # BatchNorm trunk gradient clip (KataGomo train.py:1068-1089)
+def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int]:
+    cfg = net_config_from_env()
+    model = build_model(cfg)
+    ckpt_dir = args.data_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    latest = ckpt_dir / "model_latest.pt"
+    global_step = 0
+    if latest.exists():
+        state = torch.load(latest, map_location="cpu")
+        if isinstance(state, dict) and "model_state_dict" in state:
+            model.load_state_dict(state["model_state_dict"])
+            global_step = int(state.get("global_step", 0))
+        else:
+            model.load_state_dict(state)
+        print(f"[train] loaded checkpoint {latest} (global_step={global_step})")
+    else:
+        print("[train] starting from fresh model (no checkpoint found)")
+    return model, global_step
 
 
-def main():
-    parser = argparse.ArgumentParser(description="SkyZero_V4 Training")
-    parser.add_argument("-traindir", required=True, help="Directory for training state and logs")
-    parser.add_argument("-datadir", required=True, help="Directory with train/ and val/ subdirs of shuffled NPZ")
-    parser.add_argument("-exportdir", required=False, help="Directory to export checkpoints for model export")
-    parser.add_argument("-exportprefix", default="skyzero", help="Prefix for exported model names")
-    parser.add_argument("-pos-len", type=int, required=True, help="Board size (e.g. 15)")
-    parser.add_argument("-batch-size", type=int, required=True)
-    parser.add_argument("-num-planes", type=int, default=4, help="Number of input planes")
-    parser.add_argument("-model-config", type=str, default="b6c96", help="Model config name (b6c96, b4c32, b10c128)")
-    parser.add_argument("-lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("-weight-decay", type=float, default=3e-5)
-    parser.add_argument("-max-epochs-this-instance", type=int, default=1)
-    parser.add_argument("-samples-per-epoch", type=int, default=None, help="Cap samples per epoch (None = all data)")
-    parser.add_argument("-use-fp16", action="store_true")
-    parser.add_argument("-policy-loss-weight", type=float, default=1.0)
-    parser.add_argument("-opp-policy-loss-weight", type=float, default=0.15)
-    parser.add_argument("-value-loss-weight", type=float, default=0.6)
-    parser.add_argument("-value-error-loss-weight", type=float, default=2.0,
-                        help="Weight for shortterm value-error head (KataGo-style)")
-    parser.add_argument("-no-export", action="store_true")
-    args = parser.parse_args()
+def _write_log(log_path: pathlib.Path, row: dict) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    header = "\t".join(row.keys())
+    line = "\t".join(f"{v:.6g}" if isinstance(v, float) else str(v) for v in row.values())
+    exists = log_path.exists()
+    with log_path.open("a") as f:
+        if not exists:
+            f.write(header + "\n")
+        f.write(line + "\n")
 
-    os.makedirs(args.traindir, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logging.info(f"Using device: {device}")
+def main() -> int:
+    args = parse_args()
+    cfg = net_config_from_env()
+    shard_dir = args.data_dir / "shuffled" / "current"
 
-    pos_len = args.pos_len
-    batch_size = args.batch_size
-    board_area = pos_len * pos_len
+    ds = ShuffledShardDataset(shard_dir)
+    print(f"[train] dataset size: {len(ds)} rows")
 
-    # Create model
-    model_config = CONFIG_BY_NAME[args.model_config]
-    model = Model(model_config, pos_len, args.num_planes)
-    model.initialize()
-    model.to(device)
+    loader = DataLoader(
+        ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=True,
+        num_workers=args.num_workers,
+        pin_memory=(args.device.type == "cuda"),
+        persistent_workers=(args.num_workers > 0),
+    )
+
+    model, global_step = _load_or_init_model(args)
+    model = model.to(args.device)
     model.train()
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    # Parameter groups with different weight decay
-    reg_dict = {}
-    model.add_reg_dict(reg_dict)
-    wd = args.weight_decay
-    param_groups = [
-        {"params": reg_dict["normal"], "weight_decay": wd, "group_name": "normal"},
-        {"params": reg_dict["normal_gamma"], "weight_decay": wd * 0.5, "group_name": "normal_gamma"},
-        {"params": reg_dict["output"], "weight_decay": wd * 0.5, "group_name": "output"},
-        {"params": reg_dict["noreg"], "weight_decay": 0.0, "group_name": "noreg"},
-        {"params": reg_dict["output_noreg"], "weight_decay": 0.0, "group_name": "output_noreg"},
-    ]
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
+    it = iter(loader)
+    accum = {"policy": 0.0, "opp_policy": 0.0, "value": 0.0, "total": 0.0}
+    start = time.time()
+    step = 0
+    while step < args.train_steps:
+        try:
+            batch = next(it)
+        except StopIteration:
+            it = iter(loader)
+            batch = next(it)
 
-    # FP16
-    scaler = GradScaler() if args.use_fp16 else None
+        state = batch["state"].to(args.device, non_blocking=True).float()
+        policy_target = batch["policy_target"].to(args.device, non_blocking=True)
+        opp_policy_target = batch["opponent_policy_target"].to(args.device, non_blocking=True)
+        opp_mask = batch["opponent_policy_mask"].to(args.device, non_blocking=True)
+        value_target = batch["value_target"].to(args.device, non_blocking=True)
+        sample_weight = batch["sample_weight"].to(args.device, non_blocking=True)
 
-    # Load existing checkpoint if present
-    train_state = {"global_step_samples": 0, "epoch": 0}
-    ckpt_path = os.path.join(args.traindir, "latest.ckpt")
-    if os.path.exists(ckpt_path):
-        train_state = load_checkpoint(ckpt_path, model, optimizer, scaler, device)
+        state, policy_target, opp_policy_target = random_d4_inplace(
+            state, policy_target, opp_policy_target, cfg.board_size
+        )
 
-    # Ensure LR reflects current args (overrides value restored from checkpoint)
-    for pg in optimizer.param_groups:
-        pg["lr"] = args.lr
+        policy_logits, opp_policy_logits, value_logits = model(state)
+        B = state.shape[0]
+        policy_logits = policy_logits.view(B, -1)
+        opp_policy_logits = opp_policy_logits.view(B, -1)
 
-    # Training metrics log
-    train_log_path = os.path.join(args.traindir, "train_metrics.json")
+        policy_loss = weighted_soft_ce(policy_logits, policy_target, sample_weight)
+        opp_policy_loss = weighted_soft_ce(opp_policy_logits, opp_policy_target, sample_weight * opp_mask)
+        value_loss = weighted_soft_ce(value_logits, value_target, sample_weight)
 
-    # Main training loop
-    for epoch_idx in range(args.max_epochs_this_instance):
-        train_state["epoch"] = train_state.get("epoch", 0) + 1
-        logging.info(f"=== Epoch {train_state['epoch']} ===")
+        total_loss = (args.policy_loss_weight * policy_loss
+                      + args.opponent_policy_loss_weight * opp_policy_loss
+                      + args.value_loss_weight * value_loss)
 
-        # Collect training data files
-        tdatadir = os.path.join(args.datadir, "train")
-        vdatadir = os.path.join(args.datadir, "val")
+        opt.zero_grad(set_to_none=True)
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        opt.step()
 
-        train_files = collect_npz_files(tdatadir) if os.path.exists(tdatadir) else []
-        if len(train_files) == 0:
-            logging.warning("No training data files found!")
-            break
+        accum["policy"] += float(policy_loss.detach())
+        accum["opp_policy"] += float(opp_policy_loss.detach())
+        accum["value"] += float(value_loss.detach())
+        accum["total"] += float(total_loss.detach())
+        step += 1
+        global_step += B
 
-        np.random.shuffle(train_files)
+    dt = time.time() - start
+    avg = {k: v / max(1, step) for k, v in accum.items()}
+    print(f"[train] iter={args.iter} steps={step} samples_seen={step * args.batch_size} "
+          f"t={dt:.1f}s | policy={avg['policy']:.4f} opp={avg['opp_policy']:.4f} "
+          f"value={avg['value']:.4f} total={avg['total']:.4f}")
 
-        # Training
-        model.train()
-        running_loss = defaultdict(float)
-        batch_count = 0
-        samples_this_epoch = 0
-        t0 = time.perf_counter()
+    # Save checkpoint
+    ckpt_dir = args.data_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    latest = ckpt_dir / "model_latest.pt"
+    tmp = latest.with_suffix(latest.suffix + ".tmp")
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "global_step": global_step,
+        "iter": args.iter,
+    }, tmp)
+    os.replace(tmp, latest)
 
-        for batch in read_npz_training_data(train_files, batch_size, pos_len, device, randomize_symmetries=True):
-            encoded = batch["encodedInputNCHW"]          # [B, C, H, W]
-            policy_targets = batch["policyTargetsN"]     # [B, board_area]
-            opp_policy_targets = batch["opponentPolicyTargetsN"]  # [B, board_area]
-            value_targets = batch["valueTargetsN"]       # [B, 3]
-            sample_weights = batch["sampleWeightsN"]     # [B]
-            opp_policy_weights = batch["oppPolicyWeightsN"]       # [B]
-            policy_sw = sample_weights
-            opp_policy_sw = sample_weights * opp_policy_weights
+    # Per-iter snapshot (light — no optimizer)
+    snap = ckpt_dir / f"model_iter_{args.iter:06d}.pt"
+    torch.save(model.state_dict(), snap)
 
-            optimizer.zero_grad()
+    # State json
+    state_json = ckpt_dir / "state.json"
+    state_json.write_text(json.dumps({
+        "iter": args.iter,
+        "global_step_samples": global_step,
+    }, indent=2))
 
-            if args.use_fp16:
-                with autocast():
-                    outputs = model(encoded)
-                    policy_logits = outputs["policy_logits"].reshape(-1, board_area)
-                    opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
-                    value_logits = outputs["value_logits"]
-                    value_error_pred = outputs["value_error_pred"]
-
-                    p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
-                    o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
-                    v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
-                    ve_loss = compute_value_error_loss(value_logits, value_error_pred, value_targets, sample_weights)
-                    total_loss = (args.policy_loss_weight * p_loss
-                                  + args.opp_policy_loss_weight * o_loss
-                                  + args.value_loss_weight * v_loss
-                                  + args.value_error_loss_weight * ve_loss)
-
-                scaler.scale(total_loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), GNORM_CAP)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                outputs = model(encoded)
-                policy_logits = outputs["policy_logits"].reshape(-1, board_area)
-                opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
-                value_logits = outputs["value_logits"]
-                value_error_pred = outputs["value_error_pred"]
-
-                p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
-                o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
-                v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
-                ve_loss = compute_value_error_loss(value_logits, value_error_pred, value_targets, sample_weights)
-                total_loss = (args.policy_loss_weight * p_loss
-                              + args.opp_policy_loss_weight * o_loss
-                              + args.value_loss_weight * v_loss
-                              + args.value_error_loss_weight * ve_loss)
-
-                total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), GNORM_CAP)
-                optimizer.step()
-
-            batch_count += 1
-            samples_this_epoch += batch_size
-            train_state["global_step_samples"] += batch_size
-
-            running_loss["policy"] += p_loss.item()
-            running_loss["opp_policy"] += o_loss.item()
-            running_loss["value"] += v_loss.item()
-            running_loss["value_error"] += ve_loss.item()
-            running_loss["total"] += total_loss.item()
-
-            # Log every 100 batches
-            if batch_count % 100 == 0:
-                avg = {k: v / 100 for k, v in running_loss.items()}
-                t1 = time.perf_counter()
-                speed = (100 * batch_size) / (t1 - t0)
-                current_lr = optimizer.param_groups[0]["lr"]
-                logging.info(
-                    f"  step={batch_count} samples={samples_this_epoch} "
-                    f"loss={avg['total']:.4f} p={avg['policy']:.4f} o={avg['opp_policy']:.4f} "
-                    f"v={avg['value']:.4f} ve={avg['value_error']:.4f} "
-                    f"lr={current_lr:.2e} speed={speed:.0f} samp/s"
-                )
-                # Write to JSON log
-                with open(train_log_path, "a") as f:
-                    log_entry = {
-                        "step": batch_count,
-                        "global_samples": train_state["global_step_samples"],
-                        "epoch": train_state["epoch"],
-                        "policy_loss": avg["policy"],
-                        "opp_policy_loss": avg["opp_policy"],
-                        "value_loss": avg["value"],
-                        "value_error_loss": avg["value_error"],
-                        "total_loss": avg["total"],
-                        "lr": optimizer.param_groups[0]["lr"],
-                        "speed": speed,
-                        "time": datetime.datetime.now().isoformat(),
-                    }
-                    f.write(json.dumps(log_entry) + "\n")
-                running_loss = defaultdict(float)
-                t0 = time.perf_counter()
-
-            # Cap samples per epoch
-            if args.samples_per_epoch is not None and samples_this_epoch >= args.samples_per_epoch:
-                break
-
-        logging.info(f"Epoch done: {batch_count} batches, {samples_this_epoch} samples")
-
-        # Save checkpoint
-        save_checkpoint(model, optimizer, scaler, train_state, ckpt_path)
-
-        # Validation
-        val_files = collect_npz_files(vdatadir) if os.path.exists(vdatadir) else []
-        if len(val_files) > 0:
-            logging.info("Running validation...")
-            model.eval()
-            val_loss = defaultdict(float)
-            val_count = 0
-            with torch.no_grad():
-                for batch in read_npz_training_data(val_files, batch_size, pos_len, device, randomize_symmetries=True):
-                    encoded = batch["encodedInputNCHW"]
-                    policy_targets = batch["policyTargetsN"]
-                    opp_policy_targets = batch["opponentPolicyTargetsN"]
-                    value_targets = batch["valueTargetsN"]
-                    sample_weights = batch["sampleWeightsN"]
-                    opp_policy_weights = batch["oppPolicyWeightsN"]
-                    policy_sw = sample_weights
-                    opp_policy_sw = sample_weights * opp_policy_weights
-
-                    outputs = model(encoded)
-                    policy_logits = outputs["policy_logits"].reshape(-1, board_area)
-                    opp_logits = outputs["opponent_policy_logits"].reshape(-1, board_area)
-                    value_logits = outputs["value_logits"]
-                    value_error_pred = outputs["value_error_pred"]
-
-                    p_loss = weighted_cross_entropy(policy_logits, policy_targets, policy_sw)
-                    o_loss = weighted_cross_entropy(opp_logits, opp_policy_targets, opp_policy_sw)
-                    v_loss = weighted_cross_entropy(value_logits, value_targets, sample_weights)
-                    ve_loss = compute_value_error_loss(value_logits, value_error_pred, value_targets, sample_weights)
-
-                    val_loss["policy"] += p_loss.item()
-                    val_loss["opp_policy"] += o_loss.item()
-                    val_loss["value"] += v_loss.item()
-                    val_loss["value_error"] += ve_loss.item()
-                    val_loss["total"] += (
-                        args.policy_loss_weight * p_loss
-                        + args.opp_policy_loss_weight * o_loss
-                        + args.value_loss_weight * v_loss
-                        + args.value_error_loss_weight * ve_loss
-                    ).item()
-                    val_count += 1
-
-            if val_count > 0:
-                avg = {k: v / val_count for k, v in val_loss.items()}
-                logging.info(
-                    f"Validation: loss={avg['total']:.4f} p={avg['policy']:.4f} "
-                    f"o={avg['opp_policy']:.4f} v={avg['value']:.4f}"
-                )
-                val_log_path = os.path.join(args.traindir, "val_metrics.json")
-                with open(val_log_path, "a") as f:
-                    log_entry = {
-                        "epoch": train_state["epoch"],
-                        "global_samples": train_state["global_step_samples"],
-                        **{f"val_{k}": v for k, v in avg.items()},
-                        "time": datetime.datetime.now().isoformat(),
-                    }
-                    f.write(json.dumps(log_entry) + "\n")
-            model.train()
-
-        # Export model for export.sh
-        if not args.no_export and args.exportdir is not None:
-            modelname = "%s-s%d-e%d" % (args.exportprefix, train_state["global_step_samples"], train_state["epoch"])
-            savepath = os.path.join(args.exportdir, modelname)
-            savepathtmp = savepath + ".tmp"
-            if not os.path.exists(savepath):
-                os.makedirs(savepathtmp, exist_ok=True)
-                save_checkpoint(model, optimizer, scaler, train_state,
-                                os.path.join(savepathtmp, "model.ckpt"))
-                time.sleep(1)
-                os.rename(savepathtmp, savepath)
-                logging.info(f"Exported checkpoint to {savepath}")
-            else:
-                logging.info(f"Export path already exists, skipping: {savepath}")
-
-    logging.info("Training complete.")
+    # Log
+    _write_log(args.data_dir / "logs" / "train.tsv", {
+        "iter": args.iter,
+        "steps": step,
+        "global_step_samples": global_step,
+        "policy_loss": avg["policy"],
+        "opp_policy_loss": avg["opp_policy"],
+        "value_loss": avg["value"],
+        "total_loss": avg["total"],
+        "seconds": dt,
+    })
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

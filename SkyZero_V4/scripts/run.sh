@@ -1,276 +1,73 @@
-#!/bin/bash -eu
-set -o pipefail
-trap 'echo ""; echo "Pipeline interrupted by user. Exiting."; exit 130' INT TERM
-
-# =============================================================================
-# SkyZero V4 — Main training loop
-# Orchestrates: selfplay (C++) -> shuffle (Python) -> train (Python) -> export (Python)
+#!/usr/bin/env bash
+# Main orchestration loop: selfplay -> shuffle -> train -> export, repeat.
 #
-# Usage:
-#   bash run.sh                          # use defaults + run.cfg
-#   GPU=1 MAX_GAMES=8000 bash run.sh     # override via env
-# =============================================================================
+# Usage: bash scripts/run.sh [max_iters]
+#   If max_iters is omitted the loop runs until Ctrl+C.
+set -euo pipefail
 
-SCRIPTDIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECTDIR="$(cd "$SCRIPTDIR/.." && pwd)"
-PYTHONDIR="$PROJECTDIR/python"
-SELFPLAY="$PROJECTDIR/cpp/build/selfplay"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
+ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
+cd "$ROOT"
 
-# --- Defaults ---
-GPU="${GPU:-0}"
-BASEDIR="${BASEDIR:-$PROJECTDIR/data}"
-BATCHSIZE="${BATCHSIZE:-512}"
-NTHREADS="${NTHREADS:-16}"
+# Load config: export every assigned variable
+set -a
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/run.cfg"
+set +a
 
-BOARD_SIZE="${BOARD_SIZE:-15}"
-RENJU="${RENJU:-true}"
-OPENINGS="${OPENINGS:-}"
-EMPTY_BOARD_PROB="${EMPTY_BOARD_PROB:-0.0}"
-ONLINE_OPENINGS="${ONLINE_OPENINGS:-true}"
-OPENING_MIN_MOVES="${OPENING_MIN_MOVES:-0}"
-OPENING_MAX_MOVES="${OPENING_MAX_MOVES:-11}"
-OPENING_BALANCE_POWER="${OPENING_BALANCE_POWER:-4.0}"
-OPENING_REJECT_PROB="${OPENING_REJECT_PROB:-0.995}"
-OPENING_REJECT_PROB_FALLBACK="${OPENING_REJECT_PROB_FALLBACK:-0.8}"
-OPENING_MAX_RETRIES="${OPENING_MAX_RETRIES:-8}"
+DATA_DIR="${DATA_DIR:-$ROOT/data}"
+export DATA_DIR
 
-NUM_SIMULATIONS="${NUM_SIMULATIONS:-256}"
-GUMBEL_M="${GUMBEL_M:-16}"
-GUMBEL_C_VISIT="${GUMBEL_C_VISIT:-50.0}"
-GUMBEL_C_SCALE="${GUMBEL_C_SCALE:-1.0}"
-HALF_LIFE="${HALF_LIFE:-$BOARD_SIZE}"
-MOVE_TEMP_INIT="${MOVE_TEMP_INIT:-1.1}"
-MOVE_TEMP_FINAL="${MOVE_TEMP_FINAL:-1.0}"
+mkdir -p "$DATA_DIR"/{models,selfplay,shuffled/current,checkpoints,logs}
 
-MODEL_CONFIG="${MODEL_CONFIG:-b6c96}"
+PY=${PY:-python}
+SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
 
-NUM_WORKERS="${NUM_WORKERS:-32}"
-NUM_SERVERS="${NUM_SERVERS:-1}"
-INFERENCE_BATCH="${INFERENCE_BATCH:-256}"
-INFERENCE_BATCH_WAIT_US="${INFERENCE_BATCH_WAIT_US:-1500}"
-LEAF_BATCH="${LEAF_BATCH:-32}"
-
-MAX_GAMES="${MAX_GAMES:-4000}"
-MAX_ROWS_PER_FILE="${MAX_ROWS_PER_FILE:-25000}"
-MODEL_CHECK_MS="${MODEL_CHECK_MS:-10000}"
-
-POLICY_SURPRISE_WEIGHT="${POLICY_SURPRISE_WEIGHT:-0.5}"
-VALUE_SURPRISE_WEIGHT="${VALUE_SURPRISE_WEIGHT:-0.1}"
-SOFT_RESIGN_THRESHOLD="${SOFT_RESIGN_THRESHOLD:-0.9}"
-SOFT_RESIGN_PROB="${SOFT_RESIGN_PROB:-0.7}"
-
-# Uncertainty-Weighted MCTS Backup
-ENABLE_UNCERTAINTY_WEIGHTING="${ENABLE_UNCERTAINTY_WEIGHTING:-true}"
-UNCERTAINTY_COEFF="${UNCERTAINTY_COEFF:-0.25}"
-UNCERTAINTY_EXPONENT="${UNCERTAINTY_EXPONENT:-1.0}"
-UNCERTAINTY_MAX_WEIGHT="${UNCERTAINTY_MAX_WEIGHT:-8.0}"
-
-LR="${LR:-1e-4}"
-WEIGHT_DECAY="${WEIGHT_DECAY:-3e-5}"
-USE_FP16="${USE_FP16:-true}"
-SAMPLES_PER_EPOCH="${SAMPLES_PER_EPOCH:-1024000}"
-MAX_EPOCHS="${MAX_EPOCHS:-1}"
-POLICY_LOSS_WEIGHT="${POLICY_LOSS_WEIGHT:-1.0}"
-OPP_POLICY_LOSS_WEIGHT="${OPP_POLICY_LOSS_WEIGHT:-0.15}"
-VALUE_LOSS_WEIGHT="${VALUE_LOSS_WEIGHT:-0.6}"
-VALUE_ERROR_LOSS_WEIGHT="${VALUE_ERROR_LOSS_WEIGHT:-2.0}"
-NO_EXPORT="${NO_EXPORT:-false}"
-NUM_PLANES="${NUM_PLANES:-4}"
-
-TRAIN_PER_DATA="${TRAIN_PER_DATA:-2.0}"
-MIN_GAMES="${MIN_GAMES:-500}"
-MIN_ROWS="${MIN_ROWS:-128000}"
-
-# --- Source config (overrides defaults, but env vars take priority) ---
-CFGFILE="${CFGFILE:-$SCRIPTDIR/run.cfg}"
-if [ -f "$CFGFILE" ]; then
-    source "$CFGFILE"
+# Resume iter from data/checkpoints/state.json if present
+iter=0
+if [[ -f "$DATA_DIR/checkpoints/state.json" ]]; then
+    iter=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['iter'])" \
+        "$DATA_DIR/checkpoints/state.json")
+    iter=$((iter + 1))
 fi
 
-# Resolve BASEDIR to absolute
-mkdir -p "$BASEDIR"
-BASEDIR="$(cd "$BASEDIR" && pwd)"
-
-# Ensure libs (libtorch, libzip, etc.) are on LD_LIBRARY_PATH
-# When a conda env is activated, CONDA_PREFIX points to it; otherwise fall back to base.
-CONDA_LIB="${CONDA_PREFIX:-$(conda info --base 2>/dev/null || echo "$HOME/anaconda3")}/lib"
-export LD_LIBRARY_PATH="${CONDA_LIB}:${LD_LIBRARY_PATH:-}"
-
-echo "=== SkyZero V4 Training Pipeline ==="
-echo "GPU: $GPU | Board: ${BOARD_SIZE}x${BOARD_SIZE} | Renju: $RENJU"
-echo "Model config: $MODEL_CONFIG"
-echo "Sims: $NUM_SIMULATIONS | Workers: $NUM_WORKERS | Servers: $NUM_SERVERS"
-echo "MaxGames/iter: $MAX_GAMES | MinGames: $MIN_GAMES | TrainPerData: $TRAIN_PER_DATA | BatchSize: $BATCHSIZE"
-echo "BASEDIR: $BASEDIR"
-echo ""
-
-# Create directories
-mkdir -p "$BASEDIR"/{selfplay,models,shuffleddata,train/skyzero,torchmodels_toexport}
-
-# Check selfplay binary
-if [ ! -f "$SELFPLAY" ]; then
-    echo "ERROR: selfplay binary not found at $SELFPLAY"
-    echo "Build it first: cd cpp/build && CONDA_PREFIX=$CONDA_BASE cmake -DCMAKE_PREFIX_PATH=\$(python3 -c 'import torch; print(torch.utils.cmake_prefix_path)') .. && make -j"
-    exit 1
+# First-time init: need a TorchScript model for C++ to load
+if [[ ! -f "$DATA_DIR/models/latest.pt" ]]; then
+    echo "[run.sh] bootstrapping random-init model"
+    ( cd "$ROOT/python" && "$PY" init_model.py --data-dir "$DATA_DIR" )
 fi
 
-# Bootstrap: create initial random model if needed
-if [ -z "$(find "$BASEDIR"/models -name '*.pt' -print -quit 2>/dev/null)" ]; then
-    echo "No model found. Creating initial random model..."
-    python "$PYTHONDIR/init_model.py" \
-        -output "$BASEDIR/models/random_init.pt" \
-        -board-size "$BOARD_SIZE" \
-        -num-planes "$NUM_PLANES" \
-        -model-config "$MODEL_CONFIG"
-    echo "Initial model created."
-fi
+max_iters="${1:-}"
 
-# --- Build selfplay args ---
-SELFPLAY_ARGS=(
-    --model-dir "$BASEDIR/models"
-    --output-dir "$BASEDIR/selfplay"
-    --board-size "$BOARD_SIZE"
-    --num-simulations "$NUM_SIMULATIONS"
-    --gumbel-m "$GUMBEL_M"
-    --gumbel-c-visit "$GUMBEL_C_VISIT"
-    --gumbel-c-scale "$GUMBEL_C_SCALE"
-    --half-life "$HALF_LIFE"
-    --move-temp-init "$MOVE_TEMP_INIT"
-    --move-temp-final "$MOVE_TEMP_FINAL"
-    --num-workers "$NUM_WORKERS"
-    --num-servers "$NUM_SERVERS"
-    --inference-batch "$INFERENCE_BATCH"
-    --inference-batch-wait-us "$INFERENCE_BATCH_WAIT_US"
-    --leaf-batch "$LEAF_BATCH"
-    --max-rows-per-file "$MAX_ROWS_PER_FILE"
-    --model-check-ms "$MODEL_CHECK_MS"
-    --policy-surprise-weight "$POLICY_SURPRISE_WEIGHT"
-    --value-surprise-weight "$VALUE_SURPRISE_WEIGHT"
-    --soft-resign-threshold "$SOFT_RESIGN_THRESHOLD"
-    --soft-resign-prob "$SOFT_RESIGN_PROB"
-    --uncertainty-coeff "$UNCERTAINTY_COEFF"
-    --uncertainty-exponent "$UNCERTAINTY_EXPONENT"
-    --uncertainty-max-weight "$UNCERTAINTY_MAX_WEIGHT"
-)
-[[ "$RENJU" == "false" ]] && SELFPLAY_ARGS+=(--no-renju)
-[[ "$ENABLE_UNCERTAINTY_WEIGHTING" == "true" ]] && SELFPLAY_ARGS+=(--enable-uncertainty-weighting)
-[[ -n "$OPENINGS" ]] && SELFPLAY_ARGS+=(--openings "$OPENINGS" --empty-board-prob "$EMPTY_BOARD_PROB")
-if [[ "$ONLINE_OPENINGS" == "true" ]]; then
-    SELFPLAY_ARGS+=(
-        --online-openings
-        --opening-min-moves "$OPENING_MIN_MOVES"
-        --opening-max-moves "$OPENING_MAX_MOVES"
-        --opening-balance-power "$OPENING_BALANCE_POWER"
-        --opening-reject-prob "$OPENING_REJECT_PROB"
-        --opening-reject-prob-fallback "$OPENING_REJECT_PROB_FALLBACK"
-        --opening-max-retries "$OPENING_MAX_RETRIES"
-    )
-fi
-
-# --- Build train.py extra args ---
-TRAIN_EXTRA_ARGS=()
-TRAIN_EXTRA_ARGS+=(-lr "$LR" -weight-decay "$WEIGHT_DECAY")
-TRAIN_EXTRA_ARGS+=(-samples-per-epoch "$SAMPLES_PER_EPOCH")
-TRAIN_EXTRA_ARGS+=(-max-epochs-this-instance "$MAX_EPOCHS")
-TRAIN_EXTRA_ARGS+=(-num-planes "$NUM_PLANES" -model-config "$MODEL_CONFIG")
-TRAIN_EXTRA_ARGS+=(-policy-loss-weight "$POLICY_LOSS_WEIGHT" -opp-policy-loss-weight "$OPP_POLICY_LOSS_WEIGHT")
-TRAIN_EXTRA_ARGS+=(-value-loss-weight "$VALUE_LOSS_WEIGHT" -value-error-loss-weight "$VALUE_ERROR_LOSS_WEIGHT")
-[[ "$USE_FP16" == "true" ]] && TRAIN_EXTRA_ARGS+=(-use-fp16)
-[[ "$NO_EXPORT" == "true" ]] && TRAIN_EXTRA_ARGS+=(-no-export)
-
-# ==========================================================================
-# Main loop
-# ==========================================================================
-ITERATION=0
-while true
-do
-    ITERATION=$((ITERATION + 1))
+while true; do
     echo ""
-    echo "==================== Iteration $ITERATION ===================="
-    echo "Started at $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "=================================================================="
+    echo "[run.sh] === iter $iter ==="
+    date
 
-    # 0. Compute dynamic selfplay game count based on train_per_data ratio
-    DYNAMIC_GAMES=$(python "$PYTHONDIR/compute_games.py" \
-        --traindir "$BASEDIR/train/skyzero" \
-        --selfplay-dir "$BASEDIR/selfplay" \
-        --train-per-data "$TRAIN_PER_DATA" \
-        --samples-per-epoch "$SAMPLES_PER_EPOCH" \
-        --default-games "$MAX_GAMES" \
-        --min-games "$MIN_GAMES" \
-        --max-games "$MAX_GAMES" \
-        || echo "$MAX_GAMES")
-    echo "Dynamic selfplay games: $DYNAMIC_GAMES (train_per_data=$TRAIN_PER_DATA)"
+    # (1) compute games for this iter
+    GAMES=$( cd "$ROOT/python" && "$PY" compute_games.py --data-dir "$DATA_DIR" )
 
-    # 1. Selfplay (C++)
-    echo ""
-    echo "--- Stage 1: Selfplay ---"
-    SP_STDOUT="$BASEDIR/selfplay/.last_run_stdout.txt"
-    set +e
-    CUDA_VISIBLE_DEVICES=$GPU "$SELFPLAY" "${SELFPLAY_ARGS[@]}" --max-games "$DYNAMIC_GAMES" \
-        | tee "$SP_STDOUT"
-    SP_EXIT=${PIPESTATUS[0]}
-    set -e
-    if [ $SP_EXIT -ne 0 ]; then
-        echo "Selfplay exited with code $SP_EXIT. Stopping pipeline."
-        exit $SP_EXIT
+    # (2) selfplay (C++)
+    bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
+
+    # (3) shuffle
+    bash "$SCRIPT_DIR/shuffle.sh"
+
+    # (3a) gate
+    if ! ( cd "$ROOT/python" && "$PY" wait_for_data.py --data-dir "$DATA_DIR" ); then
+        echo "[run.sh] not enough shuffled data yet; skipping train this iter"
+    else
+        # (4) train
+        bash "$SCRIPT_DIR/train.sh" "$iter"
+
+        # (5) export TorchScript
+        bash "$SCRIPT_DIR/export.sh" "$iter"
     fi
 
-    # Capture last-run stats for compute_games.py's avg_rows_per_game estimate.
-    # Parses: "Selfplay complete. Games: G | Total rows written: R"
-    STATS_LINE=$(grep "^Selfplay complete" "$SP_STDOUT" | tail -n 1 || true)
-    if [[ -n "$STATS_LINE" ]]; then
-        GAMES_RUN=$(echo "$STATS_LINE" | sed -n 's/.*Games: \([0-9]\+\).*/\1/p')
-        ROWS_RUN=$(echo "$STATS_LINE" | sed -n 's/.*Total rows written: \([0-9]\+\).*/\1/p')
-        if [[ -n "$GAMES_RUN" && -n "$ROWS_RUN" && "$GAMES_RUN" -gt 0 ]]; then
-            printf '%s\t%s\n' "$GAMES_RUN" "$ROWS_RUN" > "$BASEDIR/selfplay/last_run.tsv"
-        fi
+    iter=$((iter + 1))
+    if [[ -n "$max_iters" && "$iter" -ge "$max_iters" ]]; then
+        echo "[run.sh] reached max_iters=$max_iters; stopping."
+        break
     fi
-    rm -f "$SP_STDOUT"
-
-    # 1.5. Check if total selfplay data satisfies train_per_data ratio;
-    # if not, loop back to selfplay instead of waiting.
-    echo ""
-    echo "--- Stage 1.5: Check data sufficiency ---"
-    if ! python "$PYTHONDIR/wait_for_data.py" \
-        --traindir "$BASEDIR/train/skyzero" \
-        --selfplay-dir "$BASEDIR/selfplay" \
-        --train-per-data "$TRAIN_PER_DATA" \
-        --samples-per-epoch "$SAMPLES_PER_EPOCH" \
-        --once; then
-        echo "Insufficient data, looping back to selfplay..."
-        continue
-    fi
-
-    # 2. Shuffle (Python)
-    echo ""
-    echo "--- Stage 2: Shuffle ---"
-    cd "$PYTHONDIR"
-    MIN_ROWS="$MIN_ROWS" bash shuffle.sh "$BASEDIR" "$BASEDIR/tmp" "$NTHREADS" "$BATCHSIZE"
-
-    # 3. Train (Python)
-    echo ""
-    echo "--- Stage 3: Train ---"
-    mkdir -p "$BASEDIR"/train/skyzero
-    mkdir -p "$BASEDIR"/torchmodels_toexport
-    CUDA_VISIBLE_DEVICES=$GPU python ./train.py \
-        -traindir "$BASEDIR"/train/skyzero \
-        -datadir "$BASEDIR"/shuffleddata/current/ \
-        -exportdir "$BASEDIR"/torchmodels_toexport \
-        -exportprefix skyzero \
-        -pos-len "$BOARD_SIZE" \
-        -batch-size "$BATCHSIZE" \
-        "${TRAIN_EXTRA_ARGS[@]}" \
-        2>&1 | tee -a "$BASEDIR"/train/skyzero/stdout.txt
-
-    # 4. Export (Python)
-    echo ""
-    echo "--- Stage 4: Export ---"
-    CUDA_VISIBLE_DEVICES=$GPU bash export.sh "$BASEDIR"
-    cd "$PROJECTDIR"
-
-    # 5. Plot loss
-    python "$PYTHONDIR/view_loss.py" --traindir "$BASEDIR/train/skyzero" --output "$BASEDIR/loss.png" || true
-
-    echo ""
-    echo "--- Iteration $ITERATION complete at $(date '+%Y-%m-%d %H:%M:%S') ---"
 done

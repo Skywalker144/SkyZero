@@ -1,137 +1,83 @@
-#!/usr/bin/env python3
-"""
-Compute dynamic selfplay game count based on train_per_data ratio.
+"""Compute this iteration's selfplay game count from target_replay_ratio.
 
-Given the current training progress (global_step_samples from checkpoint) and
-the total selfplay rows on disk, calculate how many new selfplay games are
-needed to maintain the target ratio before the next training epoch.
+Formula:
+    needed_samples = ceil(batch_size * train_steps_per_epoch / target_replay_ratio)
+    avg_game_len   = last_run.tsv's rows/games (fallback: AVG_GAME_LEN_BOOTSTRAP)
+    N_games        = clip(ceil(needed_samples / avg_game_len), MIN_GAMES, MAX_GAMES)
 
-Ratio semantics (KataGomo-style train_per_data):
-  train_per_data = 2.0 means every 1 new selfplay row permits 2 training rows.
-  Required new selfplay rows = samples_per_epoch / train_per_data
+Prints N_games to stdout (one integer) so run.sh can `GAMES=$(python ...)`.
 """
-import sys
-import os
+from __future__ import annotations
+
 import argparse
-import multiprocessing
-
-import torch
-
-from shuffle import compute_num_rows
-
-
-def count_total_selfplay_rows(selfplay_dir, num_processes=8):
-    """Count total rows across all NPZ files in selfplay_dir (recursively)."""
-    npz_files = []
-    for dirpath, _, filenames in os.walk(selfplay_dir):
-        for f in filenames:
-            if f.endswith(".npz"):
-                npz_files.append(os.path.join(dirpath, f))
-
-    if not npz_files:
-        return 0, 0  # total_rows, num_files
-
-    with multiprocessing.Pool(min(num_processes, len(npz_files))) as pool:
-        results = pool.map(compute_num_rows, npz_files)
-
-    total_rows = 0
-    valid_files = 0
-    for _, num_rows in results:
-        if num_rows is not None and num_rows > 0:
-            total_rows += num_rows
-            valid_files += 1
-    return total_rows, valid_files
+import math
+import os
+import pathlib
+import sys
 
 
-def load_global_step_samples(traindir):
-    """Load global_step_samples from the latest checkpoint. Returns None if no checkpoint."""
-    ckpt_path = os.path.join(traindir, "latest.ckpt")
-    if not os.path.exists(ckpt_path):
-        return None
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    train_state = ckpt.get("train_state", {})
-    return train_state.get("global_step_samples", 0)
+def _env_int(name: str, default: int) -> int:
+    return int(os.environ.get(name, str(default)))
 
 
-def load_last_run_avg_rows_per_game(selfplay_dir):
-    """Read last_run.tsv (one line: "<games>\\t<rows>") written by run.sh.
-    Returns rows/games as float, or None if missing/unreadable."""
-    path = os.path.join(selfplay_dir, "last_run.tsv")
-    if not os.path.exists(path):
-        return None
+def _env_float(name: str, default: float) -> float:
+    return float(os.environ.get(name, str(default)))
+
+
+def read_avg_game_len(last_run_tsv: pathlib.Path, bootstrap: float) -> float:
+    """Parse last line of last_run.tsv; columns: iter games rows ...
+
+    Returns rows/games for the most recent iteration, or bootstrap on failure.
+    """
     try:
-        with open(path) as f:
-            line = f.readline().strip()
-    except OSError:
-        return None
-    parts = line.split()
-    if len(parts) < 2:
-        return None
-    try:
-        games = int(parts[0])
-        rows = int(parts[1])
-    except ValueError:
-        return None
-    if games <= 0 or rows <= 0:
-        return None
-    return rows / games
+        if not last_run_tsv.exists():
+            return bootstrap
+        lines = [ln.strip() for ln in last_run_tsv.read_text().splitlines() if ln.strip()]
+        if len(lines) < 2:
+            return bootstrap
+        # Skip header if present
+        data = lines[1:] if lines[0].startswith("iter") else lines
+        if not data:
+            return bootstrap
+        fields = data[-1].split("\t")
+        games = float(fields[1])
+        rows = float(fields[2])
+        if games <= 0:
+            return bootstrap
+        return rows / games
+    except Exception:
+        return bootstrap
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Compute dynamic selfplay game count")
-    parser.add_argument("--traindir", required=True, help="Training checkpoint directory")
-    parser.add_argument("--selfplay-dir", required=True, help="Selfplay data directory")
-    parser.add_argument("--train-per-data", type=float, default=2.0,
-                        help="Training rows permitted per selfplay row (default: 2.0)")
-    parser.add_argument("--samples-per-epoch", type=int, default=2000000,
-                        help="Training samples consumed per epoch")
-    parser.add_argument("--default-games", type=int, default=4000,
-                        help="Default game count when no history exists")
-    parser.add_argument("--min-games", type=int, default=500,
-                        help="Minimum games per iteration")
-    parser.add_argument("--max-games", type=int, default=4000,
-                        help="Maximum games per iteration")
-    parser.add_argument("--avg-rows-per-game", type=int, default=60,
-                        help="Estimated rows per game (default: 60 for gomoku/renju)")
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     args = parser.parse_args()
 
-    # If no checkpoint yet, use default
-    global_step_samples = load_global_step_samples(args.traindir)
-    if global_step_samples is None:
-        print(args.default_games)
-        return
+    data_dir = pathlib.Path(args.data_dir)
+    last_run_tsv = data_dir / "logs" / "last_run.tsv"
 
-    # Count existing selfplay data
-    total_sp_rows, num_files = count_total_selfplay_rows(args.selfplay_dir)
-    if total_sp_rows == 0 or num_files == 0:
-        print(args.default_games)
-        return
+    batch_size = _env_int("BATCH_SIZE", 256)
+    train_steps = _env_int("TRAIN_STEPS_PER_EPOCH", 100)
+    ratio = _env_float("TARGET_REPLAY_RATIO", 6.0)
+    min_games = _env_int("MIN_GAMES", 200)
+    max_games = _env_int("MAX_GAMES", 8000)
+    bootstrap = _env_float("AVG_GAME_LEN_BOOTSTRAP", 50.0)
 
-    # Cumulative balance: total training done vs total selfplay generated.
-    # Ideal: global_step_samples <= total_sp_rows * train_per_data
-    # After next epoch: (global_step_samples + samples_per_epoch) <= (total_sp_rows + new_rows) * train_per_data
-    # => new_rows >= (global_step_samples + samples_per_epoch) / train_per_data - total_sp_rows
-    # Negative means remote workers have already over-supplied; main host can fall to MIN_GAMES.
-    cumulative_needed = (global_step_samples + args.samples_per_epoch) / args.train_per_data - total_sp_rows
-    needed_rows = max(0, cumulative_needed)
+    needed_samples = max(1, math.ceil(batch_size * train_steps / max(ratio, 1e-6)))
+    avg_game_len = read_avg_game_len(last_run_tsv, bootstrap)
+    raw_games = math.ceil(needed_samples / max(avg_game_len, 1.0))
+    n_games = max(min_games, min(max_games, raw_games))
 
-    # Prefer empirical rows/game from the previous selfplay run over the static default.
-    measured_avg = load_last_run_avg_rows_per_game(args.selfplay_dir)
-    avg_rows_per_game = measured_avg if measured_avg is not None else args.avg_rows_per_game
-    source = "last_run" if measured_avg is not None else "default"
-
-    games = int(needed_rows / avg_rows_per_game)
-    games = max(args.min_games, min(games, args.max_games))
-
-    # Log to stderr for debugging (stdout is the result)
+    # stderr for humans, stdout for scripts
     print(
-        f"[compute_games] trained={global_step_samples}, sp_rows={total_sp_rows}, "
-        f"needed_rows={needed_rows:.0f}, avg_rows/game={avg_rows_per_game:.2f} ({source}), games={games}",
+        f"[compute_games] needed_samples={needed_samples} avg_game_len={avg_game_len:.1f} "
+        f"raw_games={raw_games} -> N_games={n_games}",
         file=sys.stderr,
     )
-
-    print(games)
+    print(n_games)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

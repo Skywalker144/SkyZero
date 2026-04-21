@@ -1,89 +1,55 @@
-"""
-Plot training and validation losses from JSON-lines log files.
-
-Usage:
-    python view_loss.py                          # defaults: ../data/train/skyzero
-    python view_loss.py --traindir ../data/train/skyzero --output loss.png
-"""
+"""Quick text/plot view of training loss log at data/logs/train.tsv."""
+from __future__ import annotations
 
 import argparse
-import json
 import os
+import pathlib
 import sys
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
-
-def read_jsonl(path, keys):
-    """Read a JSON-lines file, extracting specified keys."""
-    data = {"x": []}
-    for k in keys:
-        data[k] = []
-    if not os.path.exists(path):
-        return data
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if len(line) < 5:
-                continue
-            try:
-                j = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            x = j.get("global_samples", j.get("step", 0))
-            data["x"].append(x)
-            for k in keys:
-                data[k].append(j.get(k, 0.0))
-    return data
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Plot SkyZero training losses")
-    parser.add_argument("--traindir", default="../data/train/skyzero",
-                        help="Training directory containing *_metrics.json files")
-    parser.add_argument("--output", default="../loss.png",
-                        help="Output image path")
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
+    parser.add_argument("--tail", type=int, default=20)
+    parser.add_argument("--plot", action="store_true")
     args = parser.parse_args()
 
-    train_keys = ["total_loss", "policy_loss", "opp_policy_loss", "value_loss"]
-    val_keys = ["val_total", "val_policy", "val_opp_policy", "val_value"]
+    log = pathlib.Path(args.data_dir) / "logs" / "train.tsv"
+    if not log.exists():
+        print(f"no log at {log}", file=sys.stderr)
+        return 1
 
-    train_path = os.path.join(args.traindir, "train_metrics.json")
-    val_path = os.path.join(args.traindir, "val_metrics.json")
+    lines = [ln for ln in log.read_text().splitlines() if ln.strip()]
+    if not lines:
+        print("empty log", file=sys.stderr)
+        return 1
 
-    train_data = read_jsonl(train_path, train_keys)
-    val_data = read_jsonl(val_path, val_keys)
+    print(lines[0])
+    for ln in lines[-args.tail:]:
+        print(ln)
 
-    # Plot layout: total, policy, opp_policy, value
-    plot_configs = [
-        ("Total Loss", "total_loss", "val_total"),
-        ("Policy Loss", "policy_loss", "val_policy"),
-        ("Opp Policy Loss", "opp_policy_loss", "val_opp_policy"),
-        ("Value Loss", "value_loss", "val_value"),
-    ]
-
-    fig, axes = plt.subplots(len(plot_configs), 1, figsize=(8, 3.5 * len(plot_configs)), dpi=150)
-    fig.suptitle("SkyZero V4 Training", fontsize=14)
-    plt.subplots_adjust(hspace=0.4)
-
-    for i, (title, train_key, val_key) in enumerate(plot_configs):
-        ax = axes[i]
-        ax.set_title(title)
-        ax.set_xlabel("samples")
+    if args.plot:
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("matplotlib not installed; skipping plot", file=sys.stderr)
+            return 0
+        header = lines[0].split("\t")
+        rows = [ln.split("\t") for ln in lines[1:]]
+        cols = {name: [float(r[i]) for r in rows] for i, name in enumerate(header)}
+        x = cols.get("iter", list(range(len(rows))))
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for key in ("policy_loss", "opp_policy_loss", "value_loss", "total_loss"):
+            if key in cols:
+                ax.plot(x, cols[key], label=key)
+        ax.set_xlabel("iter")
         ax.set_ylabel("loss")
-
-        if train_data["x"]:
-            ax.plot(train_data["x"], train_data[train_key], label="train", alpha=0.8, linewidth=0.8)
-        if val_data["x"]:
-            ax.plot(val_data["x"], val_data[val_key], label="val", alpha=0.8, linewidth=1.2, linestyle="--")
-        ax.legend(loc="upper right")
-        ax.grid(True, alpha=0.3)
-
-    plt.savefig(args.output, bbox_inches="tight")
-    print(f"Saved loss plot to {args.output}")
+        ax.legend()
+        out = pathlib.Path(args.data_dir) / "logs" / "loss.png"
+        fig.savefig(out, dpi=100)
+        print(f"saved plot to {out}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

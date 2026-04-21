@@ -1,172 +1,271 @@
+// selfplay_main — C++ self-play entry point.
+//
+// Loads a TorchScript model, spins up parallel MCTS workers + inference
+// servers, and writes NPZ files of training samples until --max-games is
+// reached. Reads the same run.cfg that Python uses so both sides stay in
+// lockstep on hyperparameters.
+
+#include <algorithm>
+#include <chrono>
 #include <csignal>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <memory>
+#include <random>
+#include <sstream>
 #include <string>
+#include <unordered_map>
+#include <vector>
+
+#include <torch/script.h>
+#include <torch/torch.h>
 
 #include "alphazero.h"
 #include "alphazero_parallel.h"
 #include "envs/gomoku.h"
-#include "random_opening.h"
+#include "npz_writer.h"
+#include "policy_surprise_weighting.h"
+#include "selfplay_manager.h"
+#include "utils.h"
 
-// Use signal handler from utils.h (sets skyzero::stop_requested)
+namespace fs = std::filesystem;
+using namespace skyzero;
 
-static void print_usage(const char* prog) {
-    std::cerr << "Usage: " << prog << " [options]\n"
-              << "\nSelfplay options:\n"
-              << "  --model-dir DIR        Directory to watch for .pt models (default: data/models)\n"
-              << "  --output-dir DIR       Directory for NPZ output (default: data/selfplay)\n"
-              << "  --max-games N          Max games to play (default: 4000)\n"
-              << "  --max-rows-per-file N  Max rows per NPZ file (default: 25000)\n"
-              << "\nGame options:\n"
-              << "  --board-size N         Board size (default: 15)\n"
-              << "  --renju               Enable renju rules (default: on)\n"
-              << "  --no-renju            Disable renju rules\n"
-              << "  --openings FILE        Opening book file\n"
-              << "  --empty-board-prob F   Probability of empty board vs opening (default: 0.0)\n"
-              << "  --online-openings      Enable online balanced opening generation\n"
-              << "  --opening-min-moves N  Min random scatter moves (default: 0)\n"
-              << "  --opening-max-moves N  Max random scatter moves (default: 11)\n"
-              << "  --opening-balance-power F  Exponent k in (1-V^2)^k (default: 4.0)\n"
-              << "  --opening-reject-prob F  Probabilistic reject strength (default: 0.995)\n"
-              << "  --opening-reject-prob-fallback F  Reject prob after max_retries (default: 0.8)\n"
-              << "  --opening-max-retries N  Retries before reject_prob decays (default: 20)\n"
-              << "\nMCTS options:\n"
-              << "  --num-simulations N    MCTS simulations per move (default: 32)\n"
-              << "  --gumbel-m N           Gumbel top-k actions (default: 16)\n"
-              << "  --c-puct F             Exploration constant (default: 1.1)\n"
-              << "\nNN options:\n"
-              << "  --device DEVICE        torch device: cpu or cuda (default: cuda if available)\n"
-              << "\nParallel options:\n"
-              << "  --num-workers N        Selfplay worker threads (default: auto)\n"
-              << "  --num-servers N        Inference server threads (default: 1)\n"
-              << "  --inference-batch N    Max inference batch size (default: 256)\n"
-              << "  --leaf-batch N         Leaf batch size for MCTS (default: 32)\n"
-              << "  --model-check-ms N     Model check interval in ms (default: 10000)\n"
-              << std::endl;
+// ---------------------------------------------------------------------------
+// Config parser (KEY=VALUE, shell-style) with bash-compatible quoting-lite.
+// ---------------------------------------------------------------------------
+static std::unordered_map<std::string, std::string> parse_cfg(const std::string& path) {
+    std::unordered_map<std::string, std::string> out;
+    std::ifstream f(path);
+    if (!f) {
+        throw std::runtime_error("cannot open config: " + path);
+    }
+    std::string line;
+    while (std::getline(f, line)) {
+        // strip comment
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        // trim
+        const auto a = line.find_first_not_of(" \t\r");
+        if (a == std::string::npos) continue;
+        const auto b = line.find_last_not_of(" \t\r");
+        line = line.substr(a, b - a + 1);
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        // trim value / strip surrounding quotes
+        if (!val.empty() && (val.front() == '"' || val.front() == '\'')) {
+            const char q = val.front();
+            if (val.size() >= 2 && val.back() == q) val = val.substr(1, val.size() - 2);
+        }
+        out[std::move(key)] = std::move(val);
+    }
+    return out;
 }
 
-int main(int argc, char* argv[]) {
-    std::signal(SIGINT, skyzero::signal_handler);
-    std::signal(SIGTERM, skyzero::signal_handler);
+template <typename T>
+static T cfg_get(const std::unordered_map<std::string, std::string>& c,
+                 const std::string& key, T fallback) {
+    auto it = c.find(key);
+    if (it == c.end() || it->second.empty()) return fallback;
+    std::istringstream ss(it->second);
+    T v;
+    ss >> v;
+    if (ss.fail()) return fallback;
+    return v;
+}
 
-    skyzero::AlphaZeroConfig cfg;
-    skyzero::AlphaZeroParallelConfig pcfg;
-    bool use_renju = true;
-    bool enable_forbidden_plane = true;
-    std::string openings_file;
-    float empty_board_prob = 0.0f;
-    skyzero::RandomOpeningConfig opening_cfg;
+static bool cfg_get_bool(const std::unordered_map<std::string, std::string>& c,
+                         const std::string& key, bool fallback) {
+    auto it = c.find(key);
+    if (it == c.end() || it->second.empty()) return fallback;
+    const auto& v = it->second;
+    if (v == "0" || v == "false" || v == "False" || v == "no") return false;
+    if (v == "1" || v == "true" || v == "True" || v == "yes") return true;
+    return fallback;
+}
 
-    // Default device
-    if (torch::cuda::is_available()) {
-        cfg.device = torch::kCUDA;
-    }
+struct CliArgs {
+    std::string model;
+    std::string output_dir;
+    std::string log_dir;
+    std::string config;
+    int iter = 0;
+    int max_games = 0;
+};
 
+static CliArgs parse_cli(int argc, char** argv) {
+    CliArgs a;
     for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        auto next = [&]() -> std::string {
+        std::string k = argv[i];
+        auto need = [&](const char* name) {
             if (i + 1 >= argc) {
-                std::cerr << "Missing value for " << arg << std::endl;
-                std::exit(1);
+                throw std::runtime_error(std::string("missing value for ") + name);
             }
-            return argv[++i];
+            return std::string(argv[++i]);
         };
+        if (k == "--model") a.model = need("--model");
+        else if (k == "--output-dir") a.output_dir = need("--output-dir");
+        else if (k == "--log-dir") a.log_dir = need("--log-dir");
+        else if (k == "--config") a.config = need("--config");
+        else if (k == "--iter") a.iter = std::stoi(need("--iter"));
+        else if (k == "--max-games") a.max_games = std::stoi(need("--max-games"));
+        else throw std::runtime_error("unknown arg: " + k);
+    }
+    if (a.model.empty() || a.output_dir.empty() || a.config.empty() || a.max_games <= 0) {
+        throw std::runtime_error(
+            "usage: selfplay_main --model PATH --output-dir DIR --config PATH "
+            "--iter N --max-games N [--log-dir DIR]"
+        );
+    }
+    if (a.log_dir.empty()) a.log_dir = a.output_dir + "/../logs";
+    return a;
+}
 
-        if (arg == "--help" || arg == "-h") { print_usage(argv[0]); return 0; }
-        else if (arg == "--model-dir") cfg.model_dir = next();
-        else if (arg == "--output-dir") cfg.output_dir = next();
-        else if (arg == "--max-games") cfg.max_games_total = std::stoi(next());
-        else if (arg == "--max-rows-per-file") cfg.max_rows_per_file = std::stoi(next());
-        else if (arg == "--board-size") cfg.board_size = std::stoi(next());
-        else if (arg == "--renju") use_renju = true;
-        else if (arg == "--no-renju") { use_renju = false; enable_forbidden_plane = false; }
-        else if (arg == "--openings") openings_file = next();
-        else if (arg == "--empty-board-prob") empty_board_prob = std::stof(next());
-        else if (arg == "--num-simulations") cfg.num_simulations = std::stoi(next());
-        else if (arg == "--gumbel-m") cfg.gumbel_m = std::stoi(next());
-        else if (arg == "--device") {
-            std::string dev = next();
-            if (dev == "cpu") cfg.device = torch::kCPU;
-            else if (dev == "cuda") cfg.device = torch::kCUDA;
-            else { std::cerr << "Unknown device: " << dev << std::endl; return 1; }
+int main(int argc, char** argv) {
+    try {
+        std::signal(SIGINT, signal_handler);
+        torch::NoGradGuard no_grad;
+        c10::InferenceMode im;
+
+        const auto cli = parse_cli(argc, argv);
+        const auto cfg_map = parse_cfg(cli.config);
+
+        // --- AlphaZeroConfig ---
+        AlphaZeroConfig cfg;
+        cfg.board_size = cfg_get<int>(cfg_map, "BOARD_SIZE", 15);
+        cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 64);
+        cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
+        cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
+        cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
+        cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", -1);
+        cfg.move_temperature_init = cfg_get<float>(cfg_map, "MOVE_TEMPERATURE_INIT", 0.8f);
+        cfg.move_temperature_final = cfg_get<float>(cfg_map, "MOVE_TEMPERATURE_FINAL", 0.2f);
+        cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
+        cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
+        cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
+        cfg.fpu_pow = cfg_get<float>(cfg_map, "FPU_POW", 1.0f);
+        cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.08f);
+        cfg.root_fpu_reduction_max = cfg_get<float>(cfg_map, "ROOT_FPU_REDUCTION_MAX", 0.0f);
+        cfg.fpu_loss_prop = cfg_get<float>(cfg_map, "FPU_LOSS_PROP", 0.0f);
+        cfg.enable_stochastic_transform_inference_for_root =
+            cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", true);
+        cfg.enable_stochastic_transform_inference_for_child =
+            cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", true);
+        cfg.enable_symmetry_inference_for_root =
+            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
+        cfg.enable_symmetry_inference_for_child =
+            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
+        cfg.policy_surprise_data_weight = cfg_get<float>(cfg_map, "POLICY_SURPRISE_DATA_WEIGHT", 0.5f);
+        cfg.value_surprise_data_weight = cfg_get<float>(cfg_map, "VALUE_SURPRISE_DATA_WEIGHT", 0.1f);
+        cfg.value_target_mix_now_factor_constant =
+            cfg_get<float>(cfg_map, "VALUE_TARGET_MIX_NOW_FACTOR_CONSTANT", 0.2f);
+        cfg.soft_resign_threshold = cfg_get<float>(cfg_map, "SOFT_RESIGN_THRESHOLD", 0.9f);
+        cfg.soft_resign_step_threshold = cfg_get<int>(cfg_map, "SOFT_RESIGN_STEP_THRESHOLD", 3);
+        cfg.soft_resign_prob = cfg_get<float>(cfg_map, "SOFT_RESIGN_PROB", 0.7f);
+        cfg.soft_resign_sample_weight = cfg_get<float>(cfg_map, "SOFT_RESIGN_SAMPLE_WEIGHT", 0.1f);
+        cfg.min_simulations_in_soft_resign = cfg_get<int>(cfg_map, "MIN_SIMS_IN_SOFT_RESIGN", 8);
+
+        const bool use_cuda = torch::cuda::is_available();
+        cfg.device = use_cuda ? torch::Device(torch::kCUDA, 0) : torch::Device(torch::kCPU);
+
+        // --- SelfplayParallelConfig ---
+        SelfplayParallelConfig pcfg;
+        pcfg.num_workers = cfg_get<int>(cfg_map, "NUM_WORKERS", 32);
+        pcfg.num_inference_servers = cfg_get<int>(cfg_map, "NUM_INFERENCE_SERVERS", 2);
+        pcfg.inference_batch_size = cfg_get<int>(cfg_map, "INFERENCE_BATCH_SIZE", 128);
+        pcfg.inference_batch_wait_us = cfg_get<int>(cfg_map, "INFERENCE_WAIT_US", 100);
+        pcfg.leaf_batch_size = cfg_get<int>(cfg_map, "LEAF_BATCH_SIZE", 8);
+
+        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 4);
+        const bool forbidden_plane = (num_planes >= 4);
+        Gomoku game(cfg.board_size, /*renju=*/true, forbidden_plane);
+        if (cfg.half_life <= 0) cfg.half_life = game.board_size;
+
+        const int max_rows_per_npz = cfg_get<int>(cfg_map, "MAX_ROWS_PER_NPZ", 25000);
+
+        // --- Writers & engine ---
+        fs::create_directories(cli.output_dir);
+        fs::create_directories(cli.log_dir);
+
+        std::ostringstream prefix_os;
+        prefix_os << "iter_";
+        prefix_os.width(6); prefix_os.fill('0'); prefix_os << cli.iter;
+        const std::string npz_prefix = prefix_os.str();
+        NpzWriter writer(cli.output_dir, npz_prefix, game.board_size, game.num_planes, max_rows_per_npz);
+
+        std::cout << "[selfplay] model=" << cli.model
+                  << " iter=" << cli.iter
+                  << " max_games=" << cli.max_games
+                  << " workers=" << pcfg.num_workers
+                  << " servers=" << pcfg.num_inference_servers
+                  << " device=" << (use_cuda ? "cuda" : "cpu")
+                  << "\n";
+
+        SelfplayEngine<Gomoku> engine(game, cfg, pcfg, cli.model, cfg.device);
+        engine.start();
+
+        // --- Main collection loop ---
+        std::mt19937 rng(std::random_device{}());
+        int games_done = 0;
+        int64_t total_rows = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        int last_report = 0;
+
+        while (games_done < cli.max_games && !stop_requested.load()) {
+            SelfplayEngine<Gomoku>::SelfplayResult r;
+            if (!engine.try_pop_result(r, 200)) continue;
+            if (r.samples.empty()) continue;
+
+            const auto weights = compute_policy_surprise_weights(
+                r.samples, cfg.policy_surprise_data_weight, cfg.value_surprise_data_weight);
+            auto weighted = apply_surprise_weighting_to_game(r.samples, weights, rng);
+
+            for (auto& ts : weighted) {
+                // Expand raw board state (H*W int8, {-1,0,1}) to the 4-plane
+                // encoded state that Python training consumes directly.
+                ts.state = game.encode_state(ts.state, ts.to_play);
+                writer.append(ts);
+                total_rows += 1;
+            }
+            games_done += 1;
+
+            if (games_done - last_report >= 10 || games_done == cli.max_games) {
+                last_report = games_done;
+                const auto dt = std::chrono::duration_cast<std::chrono::duration<double>>(
+                    std::chrono::steady_clock::now() - t0).count();
+                const double sps = (dt > 0.0) ? (static_cast<double>(total_rows) / dt) : 0.0;
+                std::cout << "[selfplay] games=" << games_done << "/" << cli.max_games
+                          << " rows=" << total_rows
+                          << " sps=" << std::fixed << std::setprecision(1) << sps
+                          << " last_game_len=" << r.game_len
+                          << " winner=" << r.winner << "\n";
+            }
         }
-        else if (arg == "--num-workers") pcfg.num_workers = std::stoi(next());
-        else if (arg == "--num-servers") pcfg.num_inference_servers = std::stoi(next());
-        else if (arg == "--inference-batch") pcfg.inference_batch_size = std::stoi(next());
-        else if (arg == "--leaf-batch") pcfg.leaf_batch_size = std::stoi(next());
-        else if (arg == "--model-check-ms") pcfg.model_check_interval_ms = std::stoi(next());
-        // Additional MCTS params
-        else if (arg == "--gumbel-c-visit") cfg.gumbel_c_visit = std::stof(next());
-        else if (arg == "--gumbel-c-scale") cfg.gumbel_c_scale = std::stof(next());
-        else if (arg == "--half-life") cfg.half_life = std::stoi(next());
-        else if (arg == "--move-temp-init") cfg.move_temperature_init = std::stof(next());
-        else if (arg == "--move-temp-final") cfg.move_temperature_final = std::stof(next());
-        else if (arg == "--policy-surprise-weight") cfg.policy_surprise_data_weight = std::stof(next());
-        else if (arg == "--value-surprise-weight") cfg.value_surprise_data_weight = std::stof(next());
-        else if (arg == "--soft-resign-threshold") cfg.soft_resign_threshold = std::stof(next());
-        else if (arg == "--soft-resign-prob") cfg.soft_resign_prob = std::stof(next());
-        else if (arg == "--inference-batch-wait-us") pcfg.inference_batch_wait_us = std::stoi(next());
-        else if (arg == "--enable-symmetry-root") cfg.enable_symmetry_inference_for_root = true;
-        else if (arg == "--enable-symmetry-child") cfg.enable_symmetry_inference_for_child = true;
-        else if (arg == "--disable-stochastic-root") cfg.enable_stochastic_transform_inference_for_root = false;
-        else if (arg == "--disable-stochastic-child") cfg.enable_stochastic_transform_inference_for_child = false;
-        // Online balanced opening generation
-        else if (arg == "--online-openings") opening_cfg.enabled = true;
-        else if (arg == "--opening-min-moves") opening_cfg.min_moves = std::stoi(next());
-        else if (arg == "--opening-max-moves") opening_cfg.max_moves = std::stoi(next());
-        else if (arg == "--opening-balance-power") opening_cfg.balance_power = std::stof(next());
-        else if (arg == "--opening-reject-prob") opening_cfg.reject_prob = std::stof(next());
-        else if (arg == "--opening-reject-prob-fallback") opening_cfg.reject_prob_fallback = std::stof(next());
-        else if (arg == "--opening-max-retries") opening_cfg.max_retries = std::stoi(next());
-        // Uncertainty-Weighted MCTS Backup
-        else if (arg == "--enable-uncertainty-weighting") cfg.enable_uncertainty_weighting = true;
-        else if (arg == "--uncertainty-coeff") cfg.uncertainty_coeff = std::stof(next());
-        else if (arg == "--uncertainty-exponent") cfg.uncertainty_exponent = std::stof(next());
-        else if (arg == "--uncertainty-max-weight") cfg.uncertainty_max_weight = std::stof(next());
-        else {
-            std::cerr << "Unknown option: " << arg << std::endl;
-            print_usage(argv[0]);
-            return 1;
-        }
-    }
 
-    // Defaults
-    if (cfg.half_life < 0) {
-        cfg.half_life = cfg.board_size;
-    }
+        engine.stop();
+        writer.flush();
 
-    skyzero::Gomoku game(cfg.board_size, use_renju, enable_forbidden_plane);
-    if (!openings_file.empty()) {
-        game.load_openings(openings_file, empty_board_prob);
-    }
+        // Append last_run.tsv
+        const fs::path last_run = fs::path(cli.log_dir) / "last_run.tsv";
+        const bool had_header = fs::exists(last_run);
+        std::ofstream lf(last_run, std::ios::app);
+        if (!had_header) lf << "iter\tgames\trows\tseconds\n";
+        const auto dt = std::chrono::duration_cast<std::chrono::duration<double>>(
+            std::chrono::steady_clock::now() - t0).count();
+        lf << cli.iter << "\t" << games_done << "\t" << total_rows << "\t" << dt << "\n";
 
-    std::cout << "=== SkyZero V4 Selfplay ===" << std::endl;
-    std::cout << "Board: " << cfg.board_size << "x" << cfg.board_size
-              << " | Renju: " << (use_renju ? "yes" : "no")
-              << " | Planes: " << game.num_planes << std::endl;
-    std::cout << "Simulations: " << cfg.num_simulations
-              << " | Gumbel-m: " << cfg.gumbel_m
-              << " | Workers: " << pcfg.num_workers
-              << " | Servers: " << pcfg.num_inference_servers << std::endl;
-    std::cout << "Model dir: " << cfg.model_dir
-              << " | Output dir: " << cfg.output_dir << std::endl;
-    std::cout << "Max games: " << cfg.max_games_total
-              << " | Device: " << cfg.device << std::endl;
-    if (opening_cfg.enabled) {
-        std::cout << "Online openings: ON (moves=" << opening_cfg.min_moves
-                  << "-" << opening_cfg.max_moves
-                  << ", power=" << opening_cfg.balance_power
-                  << ", reject_prob=" << opening_cfg.reject_prob
-                  << "->" << opening_cfg.reject_prob_fallback
-                  << ", retries=" << opening_cfg.max_retries << ")" << std::endl;
+        std::cout << "[selfplay] done. games=" << games_done
+                  << " rows=" << total_rows
+                  << " t=" << std::fixed << std::setprecision(1) << dt << "s\n";
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[selfplay] fatal: " << e.what() << "\n";
+        return 2;
     }
-
-    skyzero::AlphaZeroParallel<skyzero::Gomoku> engine(game, cfg, pcfg, opening_cfg);
-    engine.run();
-
-    if (skyzero::stop_requested) {
-        std::cout << "Selfplay interrupted by user." << std::endl;
-        return 130;  // 128 + SIGINT(2), conventional shell exit code for Ctrl+C
-    }
-    std::cout << "Done." << std::endl;
-    return 0;
 }

@@ -1,51 +1,47 @@
-cmake_minimum_required(VERSION 3.10 FATAL_ERROR)
-project(skyzero_selfplay)
+cmake_minimum_required(VERSION 3.18)
+project(skyzero_v4 CXX)
 
 set(CMAKE_CXX_STANDARD 17)
-# Set CUDA arch: override via -DTORCH_CUDA_ARCH_LIST="X.Y" if needed
-# 8.9 = RTX 4090, 12.0 = RTX 5060/5090
-if(NOT DEFINED TORCH_CUDA_ARCH_LIST)
-    set(TORCH_CUDA_ARCH_LIST "8.9")
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# --- LibTorch -------------------------------------------------------------
+# Expect caller to set CMAKE_PREFIX_PATH to LibTorch install dir, e.g.:
+#   cmake -B build -DCMAKE_PREFIX_PATH=/path/to/libtorch
 find_package(Torch REQUIRED)
 
-# Find libzip
-find_package(PkgConfig QUIET)
-if(PKG_CONFIG_FOUND)
-    pkg_check_modules(LIBZIP QUIET libzip)
-endif()
-
-if(NOT LIBZIP_FOUND)
-    # Search in conda environment and standard paths
-    find_path(LIBZIP_INCLUDE_DIR zip.h
-        HINTS $ENV{CONDA_PREFIX}/include /usr/include /usr/local/include)
-    find_library(LIBZIP_LIBRARY zip
-        HINTS $ENV{CONDA_PREFIX}/lib /usr/lib /usr/local/lib)
-
-    if(LIBZIP_INCLUDE_DIR AND LIBZIP_LIBRARY)
-        set(LIBZIP_INCLUDE_DIRS ${LIBZIP_INCLUDE_DIR})
-        set(LIBZIP_LIBRARIES ${LIBZIP_LIBRARY})
-        message(STATUS "Found libzip: ${LIBZIP_LIBRARY}")
-    else()
-        message(FATAL_ERROR "libzip not found. Install via: conda install libzip  OR  apt install libzip-dev")
+# --- libzip --------------------------------------------------------------
+find_package(libzip CONFIG QUIET)
+if(NOT libzip_FOUND)
+    # Fall back to pkg-config / manual find.
+    find_path(LIBZIP_INCLUDE_DIR zip.h)
+    find_library(LIBZIP_LIBRARY NAMES zip)
+    if(NOT LIBZIP_INCLUDE_DIR OR NOT LIBZIP_LIBRARY)
+        message(FATAL_ERROR "libzip not found. Install libzip-dev.")
     endif()
+    add_library(libzip::zip INTERFACE IMPORTED)
+    set_target_properties(libzip::zip PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBZIP_INCLUDE_DIR}"
+        INTERFACE_LINK_LIBRARIES "${LIBZIP_LIBRARY}"
+    )
 endif()
 
-add_executable(selfplay
-    selfplay_main.cpp
-    numpywrite.cpp
+# --- Threads -------------------------------------------------------------
+find_package(Threads REQUIRED)
+
+# --- selfplay binary -----------------------------------------------------
+add_executable(selfplay_main selfplay_main.cpp)
+target_include_directories(selfplay_main PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(selfplay_main PRIVATE
+    ${TORCH_LIBRARIES}
+    libzip::zip
+    Threads::Threads
 )
+target_compile_options(selfplay_main PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-target_include_directories(selfplay PRIVATE ${LIBZIP_INCLUDE_DIRS})
-target_link_libraries(selfplay "${TORCH_LIBRARIES}" ${LIBZIP_LIBRARIES})
-set_property(TARGET selfplay PROPERTY CXX_STANDARD 17)
-
-add_executable(play
-    play_main.cpp
-    numpywrite.cpp
-)
-
-target_include_directories(play PRIVATE ${LIBZIP_INCLUDE_DIRS})
-target_link_libraries(play "${TORCH_LIBRARIES}" ${LIBZIP_LIBRARIES})
-set_property(TARGET play PROPERTY CXX_STANDARD 17)
+# Some LibTorch distributions require an extra ABI flag at link time.
+set_property(TARGET selfplay_main PROPERTY CXX_EXTENSIONS OFF)

@@ -1,6 +1,11 @@
 #ifndef SKYZERO_POLICY_SURPRISE_WEIGHTING_H
 #define SKYZERO_POLICY_SURPRISE_WEIGHTING_H
 
+// Ported from CSkyZero_V3/policy_surprise_weighting.h.
+// `TrainSample` is defined here (not in a replaybuffer.h) since the new
+// architecture has no in-memory replay buffer on the C++ side; selfplay
+// writes TrainSamples directly into NPZ files for Python training.
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -11,7 +16,9 @@
 
 namespace skyzero {
 
-// TrainSample — the data written to NPZ files
+// ---------------------------------------------------------------------------
+// TrainSample — written to NPZ files and consumed by Python training.
+// ---------------------------------------------------------------------------
 struct TrainSample {
     std::vector<int8_t> state;
     int8_t to_play = 1;
@@ -19,16 +26,11 @@ struct TrainSample {
     std::vector<float> opponent_policy_target;
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
     float sample_weight = 1.0f;
-    float opp_policy_weight = 1.0f;   // 0 if the row has no next move
+    bool has_opponent_policy = true;  // false for the last position in a game
 };
 
-inline float clampf(float v, float lo, float hi) {
-    return std::max(lo, std::min(v, hi));
-}
-
 // ---------------------------------------------------------------------------
-// PolicySurpriseSample — intermediate struct during selfplay before weighting
-// Aligned to Python V3 return_memory sample dict
+// PolicySurpriseSample — intermediate per-position record from selfplay.
 // ---------------------------------------------------------------------------
 struct PolicySurpriseSample {
     std::vector<int8_t> state;
@@ -39,15 +41,16 @@ struct PolicySurpriseSample {
     std::array<float, 3> outcome{0.0f, 0.0f, 0.0f};
     std::vector<float> nn_policy;
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};
-    std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};         // WDL from search root
+    std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
     float sample_weight = 1.0f;
-    float opp_policy_weight = 1.0f;
+    bool has_opponent_policy = true;
 };
 
-// ---------------------------------------------------------------------------
-// KL divergence (vector version)
-// ---------------------------------------------------------------------------
+inline float clampf(float v, float lo, float hi) {
+    return std::max(lo, std::min(v, hi));
+}
+
 inline float compute_kl_divergence(
     const std::vector<float>& policy_target,
     const std::vector<float>& policy_prior,
@@ -79,9 +82,6 @@ inline float compute_kl_divergence(
     return std::max(0.0f, kl);
 }
 
-// ---------------------------------------------------------------------------
-// KL divergence (array<3> version — for value WDL)
-// ---------------------------------------------------------------------------
 inline float compute_kl_divergence(
     const std::array<float, 3>& target,
     const std::array<float, 3>& prior,
@@ -108,11 +108,6 @@ inline float compute_kl_divergence(
     return std::max(0.0f, kl);
 }
 
-// ---------------------------------------------------------------------------
-// compute_policy_surprise_weights
-// Aligned to Python V3 policy_surprise_weighting.py
-// target_weights[i] = sample.sample_weight
-// ---------------------------------------------------------------------------
 inline std::vector<float> compute_policy_surprise_weights(
     const std::vector<PolicySurpriseSample>& game_data,
     float policy_surprise_data_weight = 0.5f,
@@ -129,11 +124,8 @@ inline std::vector<float> compute_policy_surprise_weights(
 
     for (int i = 0; i < n; ++i) {
         const auto& s = game_data[i];
-        // Policy Surprise (KL between search policy and NN prior)
         policy_surprises[i] = compute_kl_divergence(s.policy_target, s.nn_policy);
-        // Value Surprise (KL between value_target and NN value probs)
         value_surprises[i] = std::min(compute_kl_divergence(s.value_target, s.nn_value_probs), 1.0f);
-        // Weight = sample_weight (aligned to Python V3)
         target_weights[i] = s.sample_weight;
     }
 
@@ -151,7 +143,6 @@ inline std::vector<float> compute_policy_surprise_weights(
     avg_p_surprise /= sum_weights;
     avg_v_surprise /= sum_weights;
 
-    // Dynamic scaling of value surprise weight if average surprise is very low
     float actual_v_weight = value_surprise_data_weight;
     if (avg_v_surprise < 0.01f) {
         actual_v_weight *= (avg_v_surprise / 0.01f);
@@ -165,7 +156,6 @@ inline std::vector<float> compute_policy_surprise_weights(
         const float w = target_weights[i];
         const float ps = policy_surprises[i];
         const float vs = value_surprises[i];
-        // Surprise weighting logic (aligned to Python V3)
         p_prob_values[i] = w * ps + (1.0f - w) * std::max(0.0f, ps - p_threshold);
         v_prob_values[i] = w * vs;
     }
@@ -184,11 +174,9 @@ inline std::vector<float> compute_policy_surprise_weights(
     return final_weights;
 }
 
-// ---------------------------------------------------------------------------
-// apply_surprise_weighting_to_game
-// Aligned to Python V3: delete outcome/nn_policy/nn_value_probs/v_mix
-// then stochastic rounding by weight
-// ---------------------------------------------------------------------------
+// Stochastic rounding by weight — replicates samples to encode surprise weight.
+// Output TrainSamples all carry the *original* sample_weight (soft-resign level).
+// Aligned to CSkyZero_V3 behavior.
 inline std::vector<TrainSample> apply_surprise_weighting_to_game(
     const std::vector<PolicySurpriseSample>& game_data,
     const std::vector<float>& weights,
@@ -215,11 +203,8 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.policy_target = game_data[i].policy_target;
             ts.opponent_policy_target = game_data[i].opponent_policy_target;
             ts.value_target = game_data[i].value_target;
-            // Relative importance is already encoded by the floor+bernoulli
-            // insertion count derived from final_weights[i]; each written row
-            // contributes at full weight.
-            ts.sample_weight = 1.0f;
-            ts.opp_policy_weight = game_data[i].opp_policy_weight;
+            ts.sample_weight = game_data[i].sample_weight;
+            ts.has_opponent_policy = game_data[i].has_opponent_policy;
             return ts;
         };
 
