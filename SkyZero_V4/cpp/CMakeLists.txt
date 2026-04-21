@@ -45,3 +45,15 @@ target_compile_options(selfplay_main PRIVATE -Wall -Wextra -Wno-unused-parameter
 
 # Some LibTorch distributions require an extra ABI flag at link time.
 set_property(TARGET selfplay_main PROPERTY CXX_EXTENSIONS OFF)
+
+# --- mcts_probe binary ---------------------------------------------------
+# Post-export diagnostic: runs one MCTS search on an empty board and prints
+# the root value. Shares AlphaZeroConfig parsing conventions with selfplay.
+add_executable(mcts_probe mcts_probe_main.cpp)
+target_include_directories(mcts_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mcts_probe PRIVATE
+    ${TORCH_LIBRARIES}
+    Threads::Threads
+)
+target_compile_options(mcts_probe PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET mcts_probe PROPERTY CXX_EXTENSIONS OFF)
