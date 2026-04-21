@@ -64,6 +64,12 @@ while true; do
         # (5) export TorchScript
         bash "$SCRIPT_DIR/export.sh" "$iter"
 
+        # (5b) post-export diagnostic: empty-board MCTS rootValue probe
+        "$ROOT/cpp/build/mcts_probe" \
+            --model "$DATA_DIR/models/latest.pt" \
+            --config "$SCRIPT_DIR/run.cfg" \
+            || echo "[run.sh] mcts_probe failed (non-fatal)"
+
         # (6) plot loss curve
         ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
     fi
