@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -188,10 +189,31 @@ int main(int argc, char** argv) {
         if (cfg.half_life <= 0) cfg.half_life = game.board_size;
 
         const int max_rows_per_npz = cfg_get<int>(cfg_map, "MAX_ROWS_PER_NPZ", 25000);
+        const int64_t linear_threshold = cfg_get<int64_t>(cfg_map, "LINEAR_THRESHOLD", 2000000);
+        const double replay_alpha = cfg_get<double>(cfg_map, "REPLAY_ALPHA", 0.8);
 
         // --- Writers & engine ---
         fs::create_directories(cli.output_dir);
         fs::create_directories(cli.log_dir);
+
+        // Aggregate cumulative games/rows from last_run.tsv (history up to this iter).
+        int64_t cum_games = 0;
+        int64_t cum_rows = 0;
+        {
+            std::ifstream hf(fs::path(cli.log_dir) / "last_run.tsv");
+            std::string line;
+            bool first = true;
+            while (std::getline(hf, line)) {
+                if (first) { first = false; if (line.rfind("iter", 0) == 0) continue; }
+                std::istringstream ls(line);
+                int it; int64_t g, r;
+                if (ls >> it >> g >> r) { cum_games += g; cum_rows += r; }
+            }
+        }
+        const int64_t window_size = (cum_rows <= linear_threshold)
+            ? cum_rows
+            : static_cast<int64_t>(linear_threshold *
+                std::pow(static_cast<double>(cum_rows) / linear_threshold, replay_alpha));
 
         std::ostringstream prefix_os;
         prefix_os << "iter_";
@@ -206,6 +228,9 @@ int main(int argc, char** argv) {
                   << " servers=" << pcfg.num_inference_servers
                   << " device=" << (use_cuda ? "cuda" : "cpu")
                   << "\n";
+        std::cout << "[selfplay] TotalGames=" << cum_games
+                  << " TotalSamples=" << cum_rows
+                  << " WindowSize=" << window_size << "\n";
 
         SelfplayEngine<Gomoku> engine(game, cfg, pcfg, cli.model, cfg.device);
         engine.start();
@@ -214,6 +239,7 @@ int main(int argc, char** argv) {
         std::mt19937 rng(std::random_device{}());
         int games_done = 0;
         int64_t total_rows = 0;
+        int black_wins = 0, white_wins = 0, draws = 0;
         const auto t0 = std::chrono::steady_clock::now();
         int last_report = 0;
 
@@ -234,17 +260,26 @@ int main(int argc, char** argv) {
                 total_rows += 1;
             }
             games_done += 1;
+            if (r.winner == 1) ++black_wins;
+            else if (r.winner == -1) ++white_wins;
+            else ++draws;
 
-            if (games_done - last_report >= 10 || games_done == cli.max_games) {
+            if (games_done - last_report >= 100 || games_done == cli.max_games) {
                 last_report = games_done;
                 const auto dt = std::chrono::duration_cast<std::chrono::duration<double>>(
                     std::chrono::steady_clock::now() - t0).count();
                 const double sps = (dt > 0.0) ? (static_cast<double>(total_rows) / dt) : 0.0;
+                const double avg_len = static_cast<double>(total_rows) / games_done;
+                const double b = static_cast<double>(black_wins) / games_done;
+                const double w = static_cast<double>(white_wins) / games_done;
+                const double d = static_cast<double>(draws) / games_done;
                 std::cout << "[selfplay] games=" << games_done << "/" << cli.max_games
-                          << " rows=" << total_rows
                           << " sps=" << std::fixed << std::setprecision(1) << sps
-                          << " last_game_len=" << r.game_len
-                          << " winner=" << r.winner << "\n";
+                          << " AvgGameLen=" << std::fixed << std::setprecision(1) << avg_len
+                          << " BWD=" << std::fixed << std::setprecision(2) << b
+                          << "/" << std::fixed << std::setprecision(2) << w
+                          << "/" << std::fixed << std::setprecision(2) << d
+                          << "\n";
             }
         }
 
