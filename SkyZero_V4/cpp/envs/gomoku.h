@@ -1,8 +1,9 @@
 #ifndef SKYZERO_ENVS_GOMOKU_H
 #define SKYZERO_ENVS_GOMOKU_H
 
-// Ported from CSkyZero_V3/envs/gomoku.h. Opening-library logic removed:
-// self-play always starts from an empty board.
+// Ported from CSkyZero_V3/envs/gomoku.h. Opening-library logic removed;
+// self-play starts either from an empty board or from a KataGomo-style
+// balanced opening generated in random_opening.h.
 
 #include <algorithm>
 #include <array>
@@ -38,10 +39,10 @@ public:
         std::vector<uint8_t> legal(state.size(), 0);
         const bool empty = std::all_of(state.begin(), state.end(), [](int8_t v) { return v == 0; });
         if (empty) {
-            int center_r = board_size / 2;
-            int center_c = board_size / 2;
-            int center_loc = center_r * board_size + center_c;
-            legal[center_loc] = 1;
+            // Empty board: every square is a legal first move. The proximity
+            // rule below (distance ≤ 3 from an existing stone) would otherwise
+            // mask out every point, so we early-return here.
+            std::fill(legal.begin(), legal.end(), 1);
             return legal;
         }
 
