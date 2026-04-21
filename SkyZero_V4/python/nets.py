@@ -224,3 +224,33 @@ def build_model(cfg: NetConfig | None = None) -> ResNet:
     if cfg is None:
         cfg = NetConfig()
     return ResNet(cfg)
+
+
+def _count_params(model: nn.Module) -> Tuple[int, int]:
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total, trainable
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Report ResNet parameter count.")
+    parser.add_argument("--num_blocks", type=int, required=True)
+    parser.add_argument("--num_channels", type=int, required=True)
+    args = parser.parse_args()
+
+    cfg = NetConfig()
+    cfg.num_blocks = args.num_blocks
+    cfg.num_channels = args.num_channels
+    model = ResNet(cfg)
+
+    total, trainable = _count_params(model)
+    print(
+        f"num_blocks={cfg.num_blocks} num_channels={cfg.num_channels} "
+        f"params={total:,} ({total / 1e6:.2f}M) trainable={trainable:,}"
+    )
+
+
+if __name__ == "__main__":
+    main()
