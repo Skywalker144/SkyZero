@@ -73,6 +73,14 @@ public:
     void start() {
         stop_inference_.store(false);
         stop_workers_.store(false);
+        // Resolve result-queue capacity. 0 = auto, <0 = unbounded.
+        if (pcfg_.max_result_queue_size == 0) {
+            result_queue_cap_ = std::max(1, pcfg_.num_workers * 2);
+        } else if (pcfg_.max_result_queue_size < 0) {
+            result_queue_cap_ = 0;  // unbounded
+        } else {
+            result_queue_cap_ = pcfg_.max_result_queue_size;
+        }
         for (int i = 0; i < pcfg_.num_inference_servers; ++i) {
             inference_threads_.emplace_back([this, i]() { inference_server_loop(i); });
         }
@@ -86,7 +94,14 @@ public:
                     try {
                         auto result = selfplay_once(seed++);
                         {
-                            std::lock_guard<std::mutex> lk(result_mutex_);
+                            std::unique_lock<std::mutex> lk(result_mutex_);
+                            if (result_queue_cap_ > 0) {
+                                result_space_cv_.wait(lk, [this]() {
+                                    return stop_workers_.load()
+                                        || result_queue_.size() < static_cast<size_t>(result_queue_cap_);
+                                });
+                                if (stop_workers_.load()) break;
+                            }
                             result_queue_.push_back(std::move(result));
                         }
                         result_cv_.notify_one();
@@ -110,12 +125,14 @@ public:
         if (result_queue_.empty()) return false;
         out = std::move(result_queue_.front());
         result_queue_.pop_front();
+        result_space_cv_.notify_one();
         return true;
     }
 
     void stop() {
         stop_workers_.store(true);
         result_cv_.notify_all();
+        result_space_cv_.notify_all();
         for (auto& t : selfplay_threads_) if (t.joinable()) t.join();
         selfplay_threads_.clear();
 
@@ -454,7 +471,9 @@ private:
 
     std::mutex result_mutex_;
     std::condition_variable result_cv_;
+    std::condition_variable result_space_cv_;
     std::deque<SelfplayResult> result_queue_;
+    int result_queue_cap_ = 0;  // 0 means unbounded
     std::vector<std::thread> selfplay_threads_;
     std::atomic<bool> stop_workers_{false};
 };
