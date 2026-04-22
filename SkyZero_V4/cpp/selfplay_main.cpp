@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
         cfg.value_surprise_data_weight = cfg_get<float>(cfg_map, "VALUE_SURPRISE_DATA_WEIGHT", 0.1f);
         cfg.value_target_mix_now_factor_constant =
             cfg_get<float>(cfg_map, "VALUE_TARGET_MIX_NOW_FACTOR_CONSTANT", 0.2f);
-        cfg.balance_opening_prob = cfg_get<float>(cfg_map, "BALANCE_OPENING_PROB", 0.2f);
+        cfg.balance_opening_prob = cfg_get<float>(cfg_map, "BALANCE_OPENING_PROB", 0.8f);
         cfg.balanced_opening_max_tries = cfg_get<int>(cfg_map, "BALANCED_OPENING_MAX_TRIES", 20);
         cfg.balanced_opening_avg_dist_factor =
             cfg_get<float>(cfg_map, "BALANCED_OPENING_AVG_DIST_FACTOR", 0.8f);

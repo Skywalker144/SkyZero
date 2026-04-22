@@ -61,9 +61,9 @@ struct AlphaZeroConfig {
     float value_target_mix_now_factor_constant = 0.2f;
 
     // Balanced opening (KataGomo-style). Each game samples r ~ U(0,1):
-    //   r <  balance_opening_prob → empty-board start;
-    //   r >= balance_opening_prob → NN-scored random opening.
-    float balance_opening_prob = 0.2f;
+    //   r <  balance_opening_prob → NN-scored random opening;
+    //   r >= balance_opening_prob → empty-board start.
+    float balance_opening_prob = 0.8f;
     int balanced_opening_max_tries = 20;
     float balanced_opening_avg_dist_factor = 0.8f;
     float balanced_opening_reject_prob = 0.995f;

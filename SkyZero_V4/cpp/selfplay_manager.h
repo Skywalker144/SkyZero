@@ -315,7 +315,7 @@ private:
 
         {
             std::uniform_real_distribution<float> u01(0.0f, 1.0f);
-            if (u01(worker_rng) >= cfg_.balance_opening_prob) {
+            if (u01(worker_rng) < cfg_.balance_opening_prob) {
                 RandomOpening<Game> ro(game_, infer_fn, cfg_, worker_rng());
                 ro.initialize(state, to_play);
             }
