@@ -95,6 +95,16 @@ def count_rows(path: str | pathlib.Path) -> int:
         return int(f["state"].shape[0])
 
 
+def joint_shuffle_take_first_n(n: int, batch: NpzBatch, rng: np.random.Generator) -> NpzBatch:
+    """Permute all fields with one shared permutation and return the first n rows."""
+    total = len(batch)
+    if n >= total:
+        perm = rng.permutation(total)
+    else:
+        perm = rng.permutation(total)[:n]
+    return batch.select(perm)
+
+
 # ---------------------------------------------------------------------------
 # D4 augmentation (torch, batched; used on-the-fly during training)
 # ---------------------------------------------------------------------------
