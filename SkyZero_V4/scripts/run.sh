@@ -68,25 +68,20 @@ while true; do
         bash "$SCRIPT_DIR/shuffle.sh"
     fi
 
-    # (3a) gate
-    if ! ( cd "$ROOT/python" && "$PY" wait_for_data.py --data-dir "$DATA_DIR" ); then
-        echo "[run.sh] not enough shuffled data yet; skipping train this iter"
-    else
-        # (4) train
-        bash "$SCRIPT_DIR/train.sh" "$iter"
+    # (4) train
+    bash "$SCRIPT_DIR/train.sh" "$iter"
 
-        # (5) export TorchScript
-        bash "$SCRIPT_DIR/export.sh" "$iter"
+    # (5) export TorchScript
+    bash "$SCRIPT_DIR/export.sh" "$iter"
 
-        # (5b) post-export diagnostic: empty-board MCTS rootValue probe
-        "$ROOT/cpp/build/mcts_probe" \
-            --model "$DATA_DIR/models/latest.pt" \
-            --config "$SCRIPT_DIR/run.cfg" \
-            || echo "[run.sh] mcts_probe failed (non-fatal)"
+    # (5b) post-export diagnostic: empty-board MCTS rootValue probe
+    "$ROOT/cpp/build/mcts_probe" \
+        --model "$DATA_DIR/models/latest.pt" \
+        --config "$SCRIPT_DIR/run.cfg" \
+        || echo "[run.sh] mcts_probe failed (non-fatal)"
 
-        # (6) plot loss curve
-        ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
-    fi
+    # (6) plot loss curve
+    ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
 
     iter=$((iter + 1))
     if [[ -n "$max_iters" && "$iter" -ge "$max_iters" ]]; then
