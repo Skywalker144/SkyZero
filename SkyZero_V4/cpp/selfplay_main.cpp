@@ -190,6 +190,7 @@ int main(int argc, char** argv) {
         pcfg.inference_batch_size = cfg_get<int>(cfg_map, "INFERENCE_BATCH_SIZE", 128);
         pcfg.inference_batch_wait_us = cfg_get<int>(cfg_map, "INFERENCE_WAIT_US", 100);
         pcfg.leaf_batch_size = cfg_get<int>(cfg_map, "LEAF_BATCH_SIZE", 8);
+        pcfg.max_result_queue_size = cfg_get<int>(cfg_map, "MAX_RESULT_QUEUE_SIZE", 0);
 
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 4);
         const bool forbidden_plane = (num_planes >= 4);
@@ -227,6 +228,29 @@ int main(int argc, char** argv) {
         prefix_os << "iter_";
         prefix_os.width(6); prefix_os.fill('0'); prefix_os << cli.iter;
         const std::string npz_prefix = prefix_os.str();
+
+        // Clean any leftover parts from a previously interrupted run of this
+        // same iter, so NpzWriter's part counter re-aligns with disk state.
+        // last_run.tsv is only appended on clean finish, so these orphans are
+        // not yet accounted for in cum_rows/cum_games and must be discarded.
+        {
+            const std::string part_prefix = npz_prefix + "_part_";
+            int removed = 0;
+            for (const auto& p : fs::directory_iterator(cli.output_dir)) {
+                const auto name = p.path().filename().string();
+                if (name.rfind(part_prefix, 0) == 0) {
+                    std::error_code ec;
+                    fs::remove(p.path(), ec);
+                    if (!ec) ++removed;
+                }
+            }
+            if (removed > 0) {
+                std::cout << "[selfplay] removed " << removed
+                          << " leftover part file(s) from prior run of iter "
+                          << cli.iter << "\n";
+            }
+        }
+
         NpzWriter writer(cli.output_dir, npz_prefix, game.board_size, game.num_planes, max_rows_per_npz);
 
         std::cout << "[selfplay] model=" << cli.model
