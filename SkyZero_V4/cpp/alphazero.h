@@ -117,6 +117,7 @@ struct MCTSSearchOutput {
     std::vector<float> nn_policy;                           // raw NN policy
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};  // raw NN value
     int gumbel_action = -1;                                 // selected action by Gumbel
+    std::vector<float> visit_counts;                        // raw root-child visit counts N(s,a)
 };
 
 // ---------------------------------------------------------------------------

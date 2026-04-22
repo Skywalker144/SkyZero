@@ -103,6 +103,17 @@ public:
         out.nn_policy = std::move(nn_policy);
         out.nn_value_probs = nn_value_probs;
         out.gumbel_action = gumbel.gumbel_action;
+        {
+            const int action_size = game_.board_size * game_.board_size;
+            out.visit_counts.assign(static_cast<size_t>(action_size), 0.0f);
+            for (const auto& c : root->children) {
+                if (!c) continue;
+                const int a = c->action_taken;
+                if (a >= 0 && a < action_size) {
+                    out.visit_counts[static_cast<size_t>(a)] = static_cast<float>(c->n);
+                }
+            }
+        }
         return out;
     }
 

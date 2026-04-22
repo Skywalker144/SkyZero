@@ -14,6 +14,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -435,7 +436,17 @@ int main(int argc, char** argv) {
                 const int row = action / game.board_size;
                 const int col = action % game.board_size;
 
-                print_policy_grid(out.mcts_policy, game.board_size, "MCTS Strategy:");
+                print_policy_grid(out.mcts_policy, game.board_size, "MCTS Strategy (improved policy):");
+                std::vector<float> visit_dist(out.visit_counts.size(), 0.0f);
+                {
+                    const float sum_n = std::accumulate(out.visit_counts.begin(), out.visit_counts.end(), 0.0f);
+                    if (sum_n > 0.0f) {
+                        for (size_t i = 0; i < out.visit_counts.size(); ++i) {
+                            visit_dist[i] = out.visit_counts[i] / sum_n;
+                        }
+                    }
+                }
+                print_policy_grid(visit_dist, game.board_size, "MCTS Visits (N(s,a)/sum):");
                 print_policy_grid(out.nn_policy, game.board_size, "NN Strategy:");
 
                 const float root_value = out.v_mix[0] - out.v_mix[2];
