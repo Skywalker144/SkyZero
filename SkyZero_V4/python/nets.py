@@ -26,7 +26,7 @@ class NormActConv(nn.Module):
         super().__init__()
         padding = kernel_size // 2
         self.bn = nn.BatchNorm2d(c_in)
-        self.act = nn.SiLU()
+        self.act = nn.Mish()
         self.conv = nn.Conv2d(c_in, c_out, kernel_size, padding=padding, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -58,11 +58,11 @@ class GlobalPoolingResidualBlock(nn.Module):
         if gpool_channels <= 0:
             gpool_channels = channels
         self.pre_bn = nn.BatchNorm2d(channels)
-        self.pre_act = nn.SiLU()
+        self.pre_act = nn.Mish()
         self.regular_conv = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
         self.gpool_conv = nn.Conv2d(channels, gpool_channels, 3, padding=1, bias=False)
         self.gpool_bn = nn.BatchNorm2d(gpool_channels)
-        self.gpool_act = nn.SiLU()
+        self.gpool_act = nn.Mish()
         self.gpool = KataGPool()
         self.gpool_to_bias = nn.Linear(gpool_channels * 2, channels, bias=False)
         self.normactconv2 = NormActConv(channels, channels, 3)
@@ -111,11 +111,11 @@ class PolicyHead(nn.Module):
         self.conv_p = nn.Conv2d(in_channels, head_channels, 1, bias=False)
         self.conv_g = nn.Conv2d(in_channels, head_channels, 1, bias=False)
         self.g_bn = nn.BatchNorm2d(head_channels)
-        self.g_act = nn.SiLU()
+        self.g_act = nn.Mish()
         self.gpool = KataGPool()
         self.linear_g = nn.Linear(head_channels * 2, head_channels, bias=False)
         self.p_bn = nn.BatchNorm2d(head_channels)
-        self.p_act = nn.SiLU()
+        self.p_act = nn.Mish()
         self.conv_final = nn.Conv2d(head_channels, out_channels, 1, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -132,10 +132,10 @@ class ValueHead(nn.Module):
         super().__init__()
         self.conv_v = nn.Conv2d(in_channels, head_channels, 1, bias=False)
         self.v_bn = nn.BatchNorm2d(head_channels)
-        self.v_act = nn.SiLU()
+        self.v_act = nn.Mish()
         self.gpool = KataGPool()
         self.fc1 = nn.Linear(head_channels * 2, value_channels)
-        self.act2 = nn.SiLU()
+        self.act2 = nn.Mish()
         self.fc_value = nn.Linear(value_channels, out_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -157,7 +157,7 @@ class ResNet(nn.Module):
         self.start_layer = nn.Sequential(
             nn.Conv2d(cfg.num_planes, cfg.num_channels, 3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(cfg.num_channels),
-            nn.SiLU(),
+            nn.Mish(),
         )
 
         trunk: list[nn.Module] = []
@@ -173,7 +173,7 @@ class ResNet(nn.Module):
             )
         self.trunk_blocks = nn.ModuleList(trunk)
         self.trunk_tip_bn = nn.BatchNorm2d(cfg.num_channels)
-        self.trunk_tip_act = nn.SiLU()
+        self.trunk_tip_act = nn.Mish()
 
         self.total_policy_head = PolicyHead(
             cfg.num_channels, out_channels=2,
@@ -188,11 +188,11 @@ class ResNet(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        silu_gain = math.sqrt(2.35)
+        act_gain = math.sqrt(2.422)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 fan_out = m.weight.size(0) * m.weight.size(2) * m.weight.size(3)
-                stdv = silu_gain / math.sqrt(fan_out)
+                stdv = act_gain / math.sqrt(fan_out)
                 nn.init.normal_(m.weight, 0.0, stdv)
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1.0)
