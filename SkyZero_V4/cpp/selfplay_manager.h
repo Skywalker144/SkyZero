@@ -29,11 +29,24 @@
 
 #include "alphazero.h"
 #include "alphazero_parallel.h"
+#include "alphazero_tree_parallel.h"
 #include "policy_surprise_weighting.h"
 #include "random_opening.h"
 #include "utils.h"
 
 namespace skyzero {
+
+// MCTS backend selector (run.cfg MCTS_BACKEND key).
+//   BatchedLeaf: existing ParallelMCTS — batched leaf parallelism within
+//                one search, single-threaded selection, VL for path diversity.
+//   SharedTree : new TreeParallelMCTS — KataGo-style, multiple search
+//                threads descend the same tree concurrently, VL for
+//                concurrent path diversity.
+struct MCTSBackendConfig {
+    enum Kind { BatchedLeaf = 0, SharedTree = 1 };
+    Kind kind = BatchedLeaf;
+    int search_threads_per_tree = 4;
+};
 
 template <typename Game>
 class SelfplayEngine {
@@ -48,10 +61,11 @@ public:
         Game& game,
         const AlphaZeroConfig& cfg,
         const SelfplayParallelConfig& pcfg,
+        const MCTSBackendConfig& bcfg,
         const std::string& model_path,
         torch::Device device
     )
-        : game_(game), cfg_(cfg), pcfg_(pcfg), device_(device) {
+        : game_(game), cfg_(cfg), pcfg_(pcfg), bcfg_(bcfg), device_(device) {
         const int num_servers = std::max(1, pcfg_.num_inference_servers);
         inference_models_.reserve(num_servers);
         inference_model_mutexes_.reserve(num_servers);
@@ -306,7 +320,26 @@ private:
         auto batch_infer_fn = [this](const std::vector<std::vector<int8_t>>& batch) {
             return request_batch_inference(batch);
         };
-        ParallelMCTS<Game> mcts(game_, cfg_, pcfg_.leaf_batch_size, infer_fn, batch_infer_fn, worker_rng());
+        // Dispatch to the configured MCTS backend. Both classes expose the
+        // same public search() signature; we use a small lambda to forward.
+        std::unique_ptr<ParallelMCTS<Game>> mcts_batched;
+        std::unique_ptr<TreeParallelMCTS<Game>> mcts_tree;
+        std::function<MCTSSearchOutput(const std::vector<int8_t>&, int, int, std::unique_ptr<MCTSNode>&)> search_fn;
+        if (bcfg_.kind == MCTSBackendConfig::SharedTree) {
+            mcts_tree.reset(new TreeParallelMCTS<Game>(
+                game_, cfg_, bcfg_.search_threads_per_tree, infer_fn, batch_infer_fn, worker_rng()));
+            search_fn = [&](const std::vector<int8_t>& s, int tp, int nsim,
+                            std::unique_ptr<MCTSNode>& rp) {
+                return mcts_tree->search(s, tp, nsim, rp);
+            };
+        } else {
+            mcts_batched.reset(new ParallelMCTS<Game>(
+                game_, cfg_, pcfg_.leaf_batch_size, infer_fn, batch_infer_fn, worker_rng()));
+            search_fn = [&](const std::vector<int8_t>& s, int tp, int nsim,
+                            std::unique_ptr<MCTSNode>& rp) {
+                return mcts_batched->search(s, tp, nsim, rp);
+            };
+        }
 
         std::vector<MemoryStep> memory;
         auto init = game_.get_initial_state(worker_rng);
@@ -340,7 +373,7 @@ private:
                 num_simulations = std::max(cfg_.num_simulations / 4, cfg_.min_simulations_in_soft_resign);
             }
 
-            const auto sr = mcts.search(state, to_play, num_simulations, root);
+            const auto sr = search_fn(state, to_play, num_simulations, root);
             const float v_mix_scalar = sr.v_mix[0] - sr.v_mix[2];
             historical_v_mix.push_back(v_mix_scalar);
 
@@ -458,6 +491,7 @@ private:
     Game& game_;
     const AlphaZeroConfig& cfg_;
     SelfplayParallelConfig pcfg_;
+    MCTSBackendConfig bcfg_;
     torch::Device device_;
 
     std::vector<torch::jit::script::Module> inference_models_;

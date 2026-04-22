@@ -192,6 +192,19 @@ int main(int argc, char** argv) {
         pcfg.leaf_batch_size = cfg_get<int>(cfg_map, "LEAF_BATCH_SIZE", 8);
         pcfg.max_result_queue_size = cfg_get<int>(cfg_map, "MAX_RESULT_QUEUE_SIZE", 0);
 
+        // --- MCTSBackendConfig ---
+        MCTSBackendConfig bcfg;
+        {
+            auto it = cfg_map.find("MCTS_BACKEND");
+            const std::string s = (it != cfg_map.end()) ? it->second : "batched_leaf";
+            if (s == "shared_tree" || s == "tree" || s == "1") {
+                bcfg.kind = MCTSBackendConfig::SharedTree;
+            } else {
+                bcfg.kind = MCTSBackendConfig::BatchedLeaf;
+            }
+        }
+        bcfg.search_threads_per_tree = cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 4);
+
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 4);
         const bool forbidden_plane = (num_planes >= 4);
         Gomoku game(cfg.board_size, /*renju=*/true, forbidden_plane);
@@ -264,7 +277,10 @@ int main(int argc, char** argv) {
                   << " TotalSamples=" << cum_rows
                   << " WindowSize=" << window_size << "\n";
 
-        SelfplayEngine<Gomoku> engine(game, cfg, pcfg, cli.model, cfg.device);
+        std::cout << "[selfplay] mcts_backend="
+                  << (bcfg.kind == MCTSBackendConfig::SharedTree ? "shared_tree" : "batched_leaf")
+                  << " search_threads_per_tree=" << bcfg.search_threads_per_tree << "\n";
+        SelfplayEngine<Gomoku> engine(game, cfg, pcfg, bcfg, cli.model, cfg.device);
         engine.start();
 
         // --- Main collection loop ---
