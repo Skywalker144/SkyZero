@@ -39,6 +39,8 @@ fi
 
 max_iters="${1:-}"
 
+OVERLAP_SHUFFLE="${OVERLAP_SHUFFLE:-0}"
+
 while true; do
     echo ""
     echo "=================================================================="
@@ -48,11 +50,23 @@ while true; do
     # (1) compute games for this iter
     GAMES=$( cd "$ROOT/python" && "$PY" compute_games.py --data-dir "$DATA_DIR" )
 
-    # (2) selfplay (C++)
-    bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
-
-    # (3) shuffle
-    bash "$SCRIPT_DIR/shuffle.sh"
+    if [[ "$OVERLAP_SHUFFLE" == "1" && "$iter" -gt 0 ]]; then
+        # Pipelined mode: shuffle (CPU) runs concurrently with selfplay (GPU).
+        # The shuffle sees data collected up through the previous iter; the
+        # training step that follows therefore trains on a 1-iter-lagged
+        # window. Selfplay's new iter-N files are written but ignored by this
+        # shuffle (shuffle.py snapshots the file list once at start).
+        echo "[run.sh] shuffle (bg) || selfplay (fg)"
+        bash "$SCRIPT_DIR/shuffle.sh" &
+        SHUFFLE_PID=$!
+        bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
+        wait "$SHUFFLE_PID"
+    else
+        # (2) selfplay (C++)
+        bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
+        # (3) shuffle
+        bash "$SCRIPT_DIR/shuffle.sh"
+    fi
 
     # (3a) gate
     if ! ( cd "$ROOT/python" && "$PY" wait_for_data.py --data-dir "$DATA_DIR" ); then
