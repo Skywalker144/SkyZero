@@ -358,10 +358,26 @@ int main(int argc, char** argv) {
         const fs::path last_run = fs::path(cli.log_dir) / "last_run.tsv";
         const bool had_header = fs::exists(last_run);
         std::ofstream lf(last_run, std::ios::app);
-        if (!had_header) lf << "iter\tgames\trows\tseconds\n";
+        if (!had_header) lf << "iter\tgames\trows\tseconds"
+                               "\tmin_len\tmax_len\tavg_len"
+                               "\tblack_win_rate\twhite_win_rate\tdraw_rate\n";
         const auto dt = std::chrono::duration_cast<std::chrono::duration<double>>(
             std::chrono::steady_clock::now() - t0).count();
-        lf << cli.iter << "\t" << games_done << "\t" << total_rows << "\t" << dt << "\n";
+        lf << cli.iter << "\t" << games_done << "\t" << total_rows << "\t" << dt;
+        if (games_done > 0) {
+            const double avg_len = sum_len / games_done;
+            const double bwr = static_cast<double>(black_wins) / games_done;
+            const double wwr = static_cast<double>(white_wins) / games_done;
+            const double dwr = static_cast<double>(draws) / games_done;
+            lf << "\t" << min_len << "\t" << max_len
+               << "\t" << std::fixed << std::setprecision(3) << avg_len
+               << "\t" << std::fixed << std::setprecision(4) << bwr
+               << "\t" << std::fixed << std::setprecision(4) << wwr
+               << "\t" << std::fixed << std::setprecision(4) << dwr;
+        } else {
+            lf << "\t\t\t\t\t\t";
+        }
+        lf << "\n";
 
         std::cout << "[selfplay] done. games=" << games_done
                   << " rows=" << total_rows
