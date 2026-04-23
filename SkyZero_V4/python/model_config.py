@@ -13,8 +13,8 @@ from dataclasses import dataclass
 class NetConfig:
     board_size: int = 15
     num_planes: int = 4  # own, opp, forbidden_black, forbidden_white
-    num_blocks: int = 6
-    num_channels: int = 96
+    num_blocks: int = 12
+    num_channels: int = 128
 
     @property
     def mid_channels(self) -> int:
