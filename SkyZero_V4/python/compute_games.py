@@ -69,11 +69,15 @@ def main() -> int:
     max_games = _env_int("MAX_GAMES", 8000)
     bootstrap = _env_float("AVG_GAME_LEN_BOOTSTRAP", 50.0)
     min_buffer = _env_int("MIN_BUFFER_SIZE", 100000)
+    cold_start_multiplier = _env_float("COLD_START_MULTIPLIER", 2.0)
 
     avg_game_len = read_avg_game_len(last_run_tsv)
     if avg_game_len is None:
-        # Cold start: no history. Size the first iter to seed a minimum replay buffer.
-        needed_samples = min_buffer
+        # Cold start: no history. Size the first iter so the seed buffer is at
+        # least `multiplier` times the per-epoch steady-state draw, so each
+        # sample isn't over-replayed before steady state kicks in.
+        steady_needed = math.ceil(batch_size * train_steps / max(ratio, 1e-6))
+        needed_samples = max(min_buffer, math.ceil(steady_needed * cold_start_multiplier))
         avg_game_len_used = bootstrap
         mode = "cold-start"
     else:
@@ -84,8 +88,9 @@ def main() -> int:
     n_games = max(min_games, min(max_games, raw_games))
 
     # stderr for humans, stdout for scripts
+    extra = f" multiplier={cold_start_multiplier}" if mode == "cold-start" else ""
     print(
-        f"[compute_games] mode={mode} needed_samples={needed_samples} "
+        f"[compute_games] mode={mode}{extra} needed_samples={needed_samples} "
         f"avg_game_len={avg_game_len_used:.1f} raw_games={raw_games} -> N_games={n_games}",
         file=sys.stderr,
     )
