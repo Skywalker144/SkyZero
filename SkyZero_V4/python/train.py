@@ -109,6 +109,9 @@ class TrainArgs:
     device: torch.device
     num_workers: int
     amp: bool
+    enable_swa: bool
+    swa_scale: float
+    swa_period_steps: int
 
 
 def parse_args() -> TrainArgs:
@@ -135,12 +138,15 @@ def parse_args() -> TrainArgs:
         device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         num_workers=a.num_workers,
         amp=int(os.environ.get("ENABLE_AMP", "1")) != 0,
+        enable_swa=int(os.environ.get("ENABLE_SWA", "0")) != 0,
+        swa_scale=float(os.environ.get("SWA_SCALE", "8")),
+        swa_period_steps=int(os.environ.get("SWA_PERIOD_STEPS", "200")),
     )
 
 
-def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | None, dict | None]:
-    """Returns (model, global_step, optim_state, scaler_state).
-    optim_state / scaler_state are None if absent (fresh run or legacy ckpt).
+def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | None, dict | None, dict | None, int]:
+    """Returns (model, global_step, optim_state, scaler_state, swa_state, swa_accum_steps).
+    Any of the state dicts are None if absent (fresh run or legacy ckpt).
     """
     cfg = net_config_from_env()
     model = build_model(cfg)
@@ -150,6 +156,8 @@ def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | N
     global_step = 0
     optim_state: dict | None = None
     scaler_state: dict | None = None
+    swa_state: dict | None = None
+    swa_accum_steps = 0
     if latest.exists():
         state = torch.load(latest, map_location="cpu")
         if isinstance(state, dict) and "model_state_dict" in state:
@@ -157,14 +165,19 @@ def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | N
             global_step = int(state.get("global_step", 0))
             optim_state = state.get("optimizer_state_dict")
             scaler_state = state.get("scaler_state_dict")
+            swa_state = state.get("swa_model_state_dict")
+            swa_accum_steps = int(state.get("swa_accum_steps", 0))
         else:
             model.load_state_dict(state)
+        tags = []
+        if optim_state: tags.append("+optim")
+        if scaler_state: tags.append("+scaler")
+        if swa_state: tags.append("+swa")
         print(f"[train] loaded checkpoint {latest} (global_step={global_step}"
-              f"{', +optim' if optim_state else ''}"
-              f"{', +scaler' if scaler_state else ''})")
+              f"{''.join(', '+t for t in tags)})")
     else:
         print("[train] starting from fresh model (no checkpoint found)")
-    return model, global_step, optim_state, scaler_state
+    return model, global_step, optim_state, scaler_state, swa_state, swa_accum_steps
 
 
 def _write_log(log_path: pathlib.Path, row: dict) -> None:
@@ -185,7 +198,7 @@ def main() -> int:
 
     it = iterate_batches(shard_dir, args.batch_size, args.device, infinite=True)
 
-    model, global_step, optim_state, scaler_state = _load_or_init_model(args)
+    model, global_step, optim_state, scaler_state, swa_state, swa_accum_steps = _load_or_init_model(args)
     print(f"[train] moving model to {args.device}...", flush=True)
     t = time.time()
     model = model.to(args.device)
@@ -205,6 +218,28 @@ def main() -> int:
             scaler.load_state_dict(scaler_state)
         except Exception as e:
             print(f"[train] warning: failed to restore GradScaler state ({e})")
+
+    # SWA (EMA variant, mirrors KataGomo train.py:426-430, 1164-1171). We pass
+    # `use_buffers=True` so BN running_mean / running_var are EMA-averaged too —
+    # SkyZero keeps BN at start_layer/trunk_tip/heads, so the SWA weights must
+    # carry matching stats or inference will diverge.
+    swa_model: torch.optim.swa_utils.AveragedModel | None = None
+    if args.enable_swa:
+        from torch.optim.swa_utils import AveragedModel
+        new_factor = 1.0 / args.swa_scale
+        def ema_avg(avg_p, cur_p, num_averaged):
+            return avg_p + new_factor * (cur_p - avg_p)
+        swa_model = AveragedModel(model, avg_fn=ema_avg, use_buffers=True)
+        if swa_state is not None:
+            try:
+                swa_model.load_state_dict(swa_state)
+                print(f"[train] restored SWA model (accum_steps={swa_accum_steps})")
+            except Exception as e:
+                print(f"[train] warning: failed to restore SWA state ({e}); starting fresh")
+                swa_accum_steps = 0
+        print(f"[train] SWA enabled: scale={args.swa_scale} period_steps={args.swa_period_steps}")
+    else:
+        swa_accum_steps = 0
 
     accum = {"policy": 0.0, "opp_policy": 0.0, "value": 0.0, "total": 0.0}
     window = max(1, min(10, args.train_steps // 4))
@@ -259,6 +294,12 @@ def main() -> int:
         scaler.step(opt)
         scaler.update()
 
+        if swa_model is not None:
+            swa_accum_steps += 1
+            if swa_accum_steps >= args.swa_period_steps:
+                swa_accum_steps = 0
+                swa_model.update_parameters(model)
+
         losses = {
             "policy": float(policy_loss.detach()),
             "opp_policy": float(opp_policy_loss.detach()),
@@ -309,14 +350,22 @@ def main() -> int:
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": opt.state_dict(),
         "scaler_state_dict": scaler.state_dict() if use_amp else None,
+        "swa_model_state_dict": swa_model.state_dict() if swa_model is not None else None,
+        "swa_accum_steps": swa_accum_steps,
         "global_step": global_step,
         "iter": args.iter,
     }, tmp)
     os.replace(tmp, latest)
 
-    # Per-iter snapshot (light — no optimizer)
+    # Per-iter snapshot (light — no optimizer). When SWA is enabled, the
+    # snapshot is the EMA-averaged weights so selfplay / export pick those up
+    # (mirrors KataGomo's save path in train.py:291-292). `swa_model.module`
+    # is the underlying bare model.
     snap = ckpt_dir / f"model_iter_{args.iter:06d}.pt"
-    torch.save(model.state_dict(), snap)
+    if swa_model is not None:
+        torch.save(swa_model.module.state_dict(), snap)
+    else:
+        torch.save(model.state_dict(), snap)
 
     # State json
     state_json = ckpt_dir / "state.json"

@@ -31,9 +31,20 @@ def main() -> int:
     cfg = net_config_from_env()
     model = build_model(cfg)
     state = torch.load(args.ckpt, map_location="cpu")
-    if isinstance(state, dict) and "model_state_dict" in state:
-        state = state["model_state_dict"]
-    model.load_state_dict(state)
+    # Prefer SWA weights when present — mirrors KataGomo's export path
+    # (load_model.load_swa_model_state_dict). `swa_model_state_dict` comes
+    # from a torch.optim.swa_utils.AveragedModel, whose params live under
+    # the "module." prefix plus an "n_averaged" buffer we strip.
+    if isinstance(state, dict) and state.get("swa_model_state_dict") is not None:
+        swa_sd = state["swa_model_state_dict"]
+        stripped = {k[len("module."):]: v for k, v in swa_sd.items() if k.startswith("module.")}
+        model.load_state_dict(stripped)
+        print(f"[export_model] loaded SWA weights from {args.ckpt}")
+    else:
+        if isinstance(state, dict) and "model_state_dict" in state:
+            state = state["model_state_dict"]
+        model.load_state_dict(state)
+        print(f"[export_model] loaded raw weights from {args.ckpt}")
     model.eval()
 
     with torch.no_grad():
