@@ -69,6 +69,13 @@ struct AlphaZeroConfig {
     float balanced_opening_reject_prob = 0.995f;
     float balanced_opening_reject_prob_fallback = 0.8f;
 
+    // Policy-initialization (KataGomo initGamesWithPolicy). After balanced
+    // opening, play ~Exp(1)*policy_init_avg_move_num extra moves sampled from
+    // the NN policy^(1/temperature) to push the game off the balance plateau.
+    // Set avg_move_num <= 0 to disable.
+    float policy_init_avg_move_num = 0.0f;
+    float policy_init_temperature = 1.0f;
+
     // Soft resign
     float soft_resign_threshold = 0.9f;
     int soft_resign_step_threshold = 3;
