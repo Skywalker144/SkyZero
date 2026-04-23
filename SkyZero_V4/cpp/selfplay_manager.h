@@ -30,6 +30,7 @@
 #include "alphazero.h"
 #include "alphazero_parallel.h"
 #include "alphazero_tree_parallel.h"
+#include "policy_init.h"
 #include "policy_surprise_weighting.h"
 #include "random_opening.h"
 #include "utils.h"
@@ -359,6 +360,20 @@ private:
                 used_balanced_opening = true;
             }
         }
+
+        // KataGomo initGamesWithPolicy (play.cpp:1271-1282): after the balanced
+        // opening, play a few extra policy-sampled moves to shake the position
+        // off the "both sides look balanced" plateau. If the sampled trajectory
+        // ends the game, drop this game and produce an empty result — consistent
+        // with how a balanced_opening terminal would be handled.
+        if (cfg_.policy_init_avg_move_num > 0.0f) {
+            PolicyInit<Game> pi(game_, infer_fn, cfg_, worker_rng());
+            if (!pi.initialize(state, to_play)) {
+                SelfplayResult empty;
+                return empty;
+            }
+        }
+
         std::vector<int8_t> initial_state_snapshot = state;
         const int initial_to_play_snapshot = to_play;
 

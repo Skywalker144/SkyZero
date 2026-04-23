@@ -73,13 +73,14 @@ private:
         return d(rng_);
     }
 
-    // Truncated normal: sample in (-1, 1). We use a simple rejection loop on
-    // a Gaussian with stddev `stddev` (analogue of KataGomo's nextGaussianTruncated).
-    double rand_truncated_gaussian(double stddev) {
-        std::normal_distribution<double> d(0.0, stddev);
+    // KataGomo core/rand.h:299-306: sample from standard Gaussian N(0,1),
+    // reject outside [-bound, bound]. `bound` is the *truncation limit*, not
+    // the stddev — the previous port had those two swapped.
+    double rand_truncated_gaussian(double bound) {
+        std::normal_distribution<double> d(0.0, 1.0);
         for (int i = 0; i < 64; ++i) {
             const double x = d(rng_);
-            if (x > -1.0 && x < 1.0) return x;
+            if (x > -bound && x < bound) return x;
         }
         return 0.0;
     }
@@ -160,10 +161,29 @@ private:
             if (rand_bool(reject_factor) && rand_bool(reject_prob)) return -1;
         }
 
+        const int N = game_.board_size;
+        const bool has_stones =
+            std::any_of(state.begin(), state.end(), [](int8_t v) { return v != 0; });
+        const bool check_nearby = (root_value_opp > 0.0) && has_stones;
+
         std::vector<double> prob(area, 0.0);
         double max_prob = 0.0;
         for (int a = 0; a < area; ++a) {
             if (a >= static_cast<int>(legal.size()) || !legal[a]) continue;
+            if (check_nearby) {
+                const int x = a % N;
+                const int y = a / N;
+                bool near_stone = false;
+                for (int dy = -3; dy <= 3 && !near_stone; ++dy) {
+                    for (int dx = -3; dx <= 3 && !near_stone; ++dx) {
+                        const int xx = x + dx;
+                        const int yy = y + dy;
+                        if (xx < 0 || xx >= N || yy < 0 || yy >= N) continue;
+                        if (state[yy * N + xx] != 0) near_stone = true;
+                    }
+                }
+                if (!near_stone) continue;
+            }
             auto next_state = game_.get_next_state(state, a, next_player);
             if (game_.is_terminal(next_state, a, next_player)) continue;
             // Value of the resulting position, from the *opponent's* POV

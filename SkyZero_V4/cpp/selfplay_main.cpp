@@ -175,6 +175,10 @@ int main(int argc, char** argv) {
             cfg_get<float>(cfg_map, "BALANCED_OPENING_REJECT_PROB", 0.995f);
         cfg.balanced_opening_reject_prob_fallback =
             cfg_get<float>(cfg_map, "BALANCED_OPENING_REJECT_PROB_FALLBACK", 0.8f);
+        cfg.policy_init_avg_move_num =
+            cfg_get<float>(cfg_map, "POLICY_INIT_AVG_MOVE_NUM", 0.0f);
+        cfg.policy_init_temperature =
+            cfg_get<float>(cfg_map, "POLICY_INIT_TEMPERATURE", 1.0f);
         cfg.soft_resign_threshold = cfg_get<float>(cfg_map, "SOFT_RESIGN_THRESHOLD", 0.9f);
         cfg.soft_resign_step_threshold = cfg_get<int>(cfg_map, "SOFT_RESIGN_STEP_THRESHOLD", 3);
         cfg.soft_resign_prob = cfg_get<float>(cfg_map, "SOFT_RESIGN_PROB", 0.7f);
