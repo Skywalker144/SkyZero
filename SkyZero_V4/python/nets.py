@@ -21,16 +21,49 @@ import torch.nn as nn
 from model_config import NetConfig
 
 
+class FixScaleNorm(nn.Module):
+    """Channel-wise affine with a fixed (non-learnable) scale and learnable beta.
+
+    Mirrors KataGo's `NormMask` under `norm_kind="fixscale"` / the non-tip
+    branch of `"fixscaleonenorm"` (see KataGomo model_pytorch.py:207-213,
+    319-320). The scalar `fixed_scale` is baked at block-init time based on
+    the block's depth index (1/sqrt(i+1)); no running statistics, no BN.
+    """
+
+    def __init__(self, num_channels: int, use_gamma: bool = False) -> None:
+        super().__init__()
+        self.register_buffer("fixed_scale", torch.ones(1, num_channels, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.gamma = nn.Parameter(torch.ones(1, num_channels, 1, 1)) if use_gamma else None
+
+    def set_scale(self, s: float) -> None:
+        with torch.no_grad():
+            self.fixed_scale.fill_(s)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.gamma is not None:
+            return x * (self.gamma * self.fixed_scale) + self.beta
+        return x * self.fixed_scale + self.beta
+
+
+def _make_norm(c: int, norm_kind: str) -> nn.Module:
+    if norm_kind == "bn":
+        return nn.BatchNorm2d(c)
+    if norm_kind == "fixscale":
+        return FixScaleNorm(c)
+    raise ValueError(f"unknown norm_kind: {norm_kind!r}")
+
+
 class NormActConv(nn.Module):
-    def __init__(self, c_in: int, c_out: int, kernel_size: int) -> None:
+    def __init__(self, c_in: int, c_out: int, kernel_size: int, norm_kind: str = "bn") -> None:
         super().__init__()
         padding = kernel_size // 2
-        self.bn = nn.BatchNorm2d(c_in)
+        self.norm = _make_norm(c_in, norm_kind)
         self.act = nn.Mish()
         self.conv = nn.Conv2d(c_in, c_out, kernel_size, padding=padding, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.conv(self.act(self.bn(x)))
+        return self.conv(self.act(self.norm(x)))
 
 
 class KataGPool(nn.Module):
@@ -41,10 +74,10 @@ class KataGPool(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels: int, norm_kind: str = "bn") -> None:
         super().__init__()
-        self.normactconv1 = NormActConv(channels, channels, 3)
-        self.normactconv2 = NormActConv(channels, channels, 3)
+        self.normactconv1 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
+        self.normactconv2 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.normactconv1(x)
@@ -53,24 +86,24 @@ class ResBlock(nn.Module):
 
 
 class GlobalPoolingResidualBlock(nn.Module):
-    def __init__(self, channels: int, gpool_channels: int = -1) -> None:
+    def __init__(self, channels: int, gpool_channels: int = -1, norm_kind: str = "bn") -> None:
         super().__init__()
         if gpool_channels <= 0:
             gpool_channels = channels
-        self.pre_bn = nn.BatchNorm2d(channels)
+        self.pre_norm = _make_norm(channels, norm_kind)
         self.pre_act = nn.Mish()
         self.regular_conv = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
         self.gpool_conv = nn.Conv2d(channels, gpool_channels, 3, padding=1, bias=False)
-        self.gpool_bn = nn.BatchNorm2d(gpool_channels)
+        self.gpool_norm = _make_norm(gpool_channels, norm_kind)
         self.gpool_act = nn.Mish()
         self.gpool = KataGPool()
         self.gpool_to_bias = nn.Linear(gpool_channels * 2, channels, bias=False)
-        self.normactconv2 = NormActConv(channels, channels, 3)
+        self.normactconv2 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.pre_act(self.pre_bn(x))
+        out = self.pre_act(self.pre_norm(x))
         regular = self.regular_conv(out)
-        g = self.gpool_act(self.gpool_bn(self.gpool_conv(out)))
+        g = self.gpool_act(self.gpool_norm(self.gpool_conv(out)))
         bias = self.gpool_to_bias(self.gpool(g)).unsqueeze(-1).unsqueeze(-1)
         regular = regular + bias
         regular = self.normactconv2(regular)
@@ -84,17 +117,18 @@ class NestedBottleneckResBlock(nn.Module):
         mid_channels: int,
         internal_length: int = 2,
         use_gpool: bool = False,
+        norm_kind: str = "bn",
     ) -> None:
         super().__init__()
-        self.normactconvp = NormActConv(channels, mid_channels, 1)
+        self.normactconvp = NormActConv(channels, mid_channels, 1, norm_kind=norm_kind)
         blocks: list[nn.Module] = []
         for i in range(internal_length):
             if use_gpool and i == 0:
-                blocks.append(GlobalPoolingResidualBlock(mid_channels))
+                blocks.append(GlobalPoolingResidualBlock(mid_channels, norm_kind=norm_kind))
             else:
-                blocks.append(ResBlock(mid_channels))
+                blocks.append(ResBlock(mid_channels, norm_kind=norm_kind))
         self.blockstack = nn.ModuleList(blocks)
-        self.normactconvq = NormActConv(mid_channels, channels, 1)
+        self.normactconvq = NormActConv(mid_channels, channels, 1, norm_kind=norm_kind)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.normactconvp(x)
@@ -169,9 +203,12 @@ class ResNet(nn.Module):
                     cfg.mid_channels,
                     internal_length=2,
                     use_gpool=use_gpool,
+                    norm_kind="fixscale",
                 )
             )
         self.trunk_blocks = nn.ModuleList(trunk)
+        # Single BN at trunk tip even under fixscale — this is the "one norm"
+        # in KataGo's fixscaleonenorm scheme (see model_pytorch.py:1486).
         self.trunk_tip_bn = nn.BatchNorm2d(cfg.num_channels)
         self.trunk_tip_act = nn.Mish()
 
@@ -202,10 +239,14 @@ class ResNet(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
 
-        fixup_scale = 1.0 / math.sqrt(max(self.num_blocks, 1))
-        for block in self.trunk_blocks:
-            if isinstance(block, NestedBottleneckResBlock):
-                nn.init.normal_(block.normactconvq.conv.weight, 0.0, fixup_scale * 0.01)
+        # Fixup/FixScale depth-aware scaling, matching KataGo's fixscaleonenorm
+        # (model_pytorch.py:1539-1542): each block sets every FixScaleNorm
+        # inside it to scale = 1/sqrt(i+1), where i is the block index.
+        for i, block in enumerate(self.trunk_blocks):
+            scale = 1.0 / math.sqrt(i + 1.0)
+            for m in block.modules():
+                if isinstance(m, FixScaleNorm):
+                    m.set_scale(scale)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         out = self.start_layer(x)
