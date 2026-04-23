@@ -5,7 +5,7 @@
 #   If max_iters is omitted the loop runs until Ctrl+C.
 set -euo pipefail
 
-trap 'echo "[run.sh] interrupted by signal; stopping."; kill 0 2>/dev/null; exit 130' INT TERM
+trap 'trap - INT TERM; echo "[run.sh] interrupted; stopping."; kill 0 2>/dev/null; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
