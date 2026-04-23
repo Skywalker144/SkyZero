@@ -46,6 +46,19 @@ class FixScaleNorm(nn.Module):
         return x * self.fixed_scale + self.beta
 
 
+class BiasMask(nn.Module):
+    """Bias-only affine (no scale). Mirrors KataGomo's BiasMask
+    (model_pytorch.py:90). Used in the heads where KataGo applies a plain
+    per-channel bias instead of a fixscale norm."""
+
+    def __init__(self, num_channels: int) -> None:
+        super().__init__()
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.beta
+
+
 def _make_norm(c: int, norm_kind: str) -> nn.Module:
     if norm_kind == "bn":
         return nn.BatchNorm2d(c)
@@ -144,20 +157,20 @@ class PolicyHead(nn.Module):
         self.board_size = board_size
         self.conv_p = nn.Conv2d(in_channels, head_channels, 1, bias=False)
         self.conv_g = nn.Conv2d(in_channels, head_channels, 1, bias=False)
-        self.g_bn = nn.BatchNorm2d(head_channels)
+        self.g_norm = BiasMask(head_channels)
         self.g_act = nn.Mish()
         self.gpool = KataGPool()
         self.linear_g = nn.Linear(head_channels * 2, head_channels, bias=False)
-        self.p_bn = nn.BatchNorm2d(head_channels)
+        self.p_norm = BiasMask(head_channels)
         self.p_act = nn.Mish()
         self.conv_final = nn.Conv2d(head_channels, out_channels, 1, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         p = self.conv_p(x)
-        g = self.g_act(self.g_bn(self.conv_g(x)))
+        g = self.g_act(self.g_norm(self.conv_g(x)))
         g = self.linear_g(self.gpool(g)).unsqueeze(-1).unsqueeze(-1)
         p = p + g
-        p = self.p_act(self.p_bn(p))
+        p = self.p_act(self.p_norm(p))
         return self.conv_final(p)
 
 
@@ -165,7 +178,7 @@ class ValueHead(nn.Module):
     def __init__(self, in_channels: int, out_channels: int = 3, head_channels: int = 32, value_channels: int = 64) -> None:
         super().__init__()
         self.conv_v = nn.Conv2d(in_channels, head_channels, 1, bias=False)
-        self.v_bn = nn.BatchNorm2d(head_channels)
+        self.v_norm = BiasMask(head_channels)
         self.v_act = nn.Mish()
         self.gpool = KataGPool()
         self.fc1 = nn.Linear(head_channels * 2, value_channels)
@@ -173,7 +186,7 @@ class ValueHead(nn.Module):
         self.fc_value = nn.Linear(value_channels, out_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        v = self.v_act(self.v_bn(self.conv_v(x)))
+        v = self.v_act(self.v_norm(self.conv_v(x)))
         v_pooled = self.gpool(v)
         out = self.act2(self.fc1(v_pooled))
         return self.fc_value(out)
@@ -188,10 +201,10 @@ class ResNet(nn.Module):
         self.num_blocks = cfg.num_blocks
         self.num_channels = cfg.num_channels
 
-        self.start_layer = nn.Sequential(
-            nn.Conv2d(cfg.num_planes, cfg.num_channels, 3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(cfg.num_channels),
-            nn.Mish(),
+        # KataGomo-style stem: a single bare Conv2d (no norm, no activation).
+        # The first trunk block's NormActConv provides the first norm+act.
+        self.start_layer = nn.Conv2d(
+            cfg.num_planes, cfg.num_channels, 3, stride=1, padding=1, bias=False
         )
 
         trunk: list[nn.Module] = []
@@ -207,9 +220,12 @@ class ResNet(nn.Module):
                 )
             )
         self.trunk_blocks = nn.ModuleList(trunk)
-        # Single BN at trunk tip even under fixscale — this is the "one norm"
-        # in KataGo's fixscaleonenorm scheme (see model_pytorch.py:1486).
-        self.trunk_tip_bn = nn.BatchNorm2d(cfg.num_channels)
+        # Trunk tip: per-sample GroupNorm(num_groups=1) over (C, H, W). This is
+        # mathematically LayerNorm-over-all-features but kept as GroupNorm to
+        # avoid TorchScript quirks. No running stats → SWA-safe, and it resets
+        # the residual-accumulated variance before the heads (which assume
+        # roughly unit-variance input under the fixscale scheme).
+        self.trunk_tip_norm = nn.GroupNorm(num_groups=1, num_channels=cfg.num_channels)
         self.trunk_tip_act = nn.Mish()
 
         self.total_policy_head = PolicyHead(
@@ -225,17 +241,17 @@ class ResNet(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
-        act_gain = math.sqrt(2.422)
+        # Mish gain per KataGomo compute_gain (model_pytorch.py:39).
+        act_gain = math.sqrt(2.210277)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                fan_out = m.weight.size(0) * m.weight.size(2) * m.weight.size(3)
-                stdv = act_gain / math.sqrt(fan_out)
+                fan_in = m.weight.size(1) * m.weight.size(2) * m.weight.size(3)
+                stdv = act_gain / math.sqrt(fan_in)
                 nn.init.normal_(m.weight, 0.0, stdv)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1.0)
-                nn.init.constant_(m.bias, 0.0)
             elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0.0, 0.01)
+                fan_in = m.weight.size(1)
+                stdv = act_gain / math.sqrt(fan_in)
+                nn.init.normal_(m.weight, 0.0, stdv)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.0)
 
@@ -248,11 +264,25 @@ class ResNet(nn.Module):
                 if isinstance(m, FixScaleNorm):
                     m.set_scale(scale)
 
+        # Head output layers (identity init with small scale): without BN the
+        # logits would otherwise sit far from zero at init. Matches KataGomo
+        # PolicyHead.initialize / ValueHead.initialize (scale_output=0.3).
+        scale_output = 0.3
+        for layer in (self.total_policy_head.conv_final, self.value_head.fc_value):
+            fan_in = (
+                layer.weight.size(1) * layer.weight.size(2) * layer.weight.size(3)
+                if isinstance(layer, nn.Conv2d)
+                else layer.weight.size(1)
+            )
+            nn.init.normal_(layer.weight, 0.0, scale_output / math.sqrt(fan_in))
+            if getattr(layer, "bias", None) is not None:
+                nn.init.constant_(layer.bias, 0.0)
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         out = self.start_layer(x)
         for block in self.trunk_blocks:
             out = block(out)
-        out = self.trunk_tip_act(self.trunk_tip_bn(out))
+        out = self.trunk_tip_act(self.trunk_tip_norm(out))
 
         total_policy_logits = self.total_policy_head(out)        # (B, 2, H, W)
         policy_logits = total_policy_logits[:, 0:1, :, :]        # (B, 1, H, W)
