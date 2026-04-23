@@ -446,8 +446,10 @@ private:
         const int winner = game_.get_winner(state, last_action, last_player);
         SelfplayResult result;
         result.winner = winner;
-        result.game_len = static_cast<int>(memory.size());
         result.final_state = state;
+        int total_moves = 0;
+        for (int8_t v : state) if (v != 0) ++total_moves;
+        result.game_len = total_moves;
         result.samples.reserve(memory.size());
         for (size_t i = 0; i < memory.size(); ++i) {
             const auto& s = memory[i];
