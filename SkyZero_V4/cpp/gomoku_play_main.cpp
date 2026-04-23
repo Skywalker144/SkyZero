@@ -180,25 +180,6 @@ struct Snapshot {
     int last_player = 0;
 };
 
-static void advance_root(int action, const std::vector<int8_t>& next_state, int next_to_play,
-                         std::unique_ptr<MCTSNode>& root) {
-    std::unique_ptr<MCTSNode> next_root;
-    if (root) {
-        for (auto& child : root->children) {
-            if (child && child->action_taken == action) {
-                next_root = std::move(child);
-                break;
-            }
-        }
-    }
-    if (next_root) {
-        next_root->parent = nullptr;
-        root = std::move(next_root);
-    } else {
-        root.reset(new MCTSNode{next_state, next_to_play});
-    }
-}
-
 int main(int argc, char** argv) {
     try {
         // Line-buffer stdout so GUI front-ends see prompts/boards promptly.
@@ -425,7 +406,7 @@ int main(int argc, char** argv) {
                     last_action = action;
                     last_player = to_play;
                     to_play = -to_play;
-                    advance_root(action, state, to_play, root);
+                    root.reset(new MCTSNode{state, to_play});
                     break;
                 }
             } else {
@@ -488,7 +469,7 @@ int main(int argc, char** argv) {
                 last_action = action;
                 last_player = to_play;
                 to_play = -to_play;
-                advance_root(action, state, to_play, root);
+                root.reset(new MCTSNode{state, to_play});
             }
 
             print_board(state, game.board_size, last_action);

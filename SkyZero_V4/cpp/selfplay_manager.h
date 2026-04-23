@@ -448,21 +448,7 @@ private:
             state = game_.get_next_state(state, action, to_play);
             to_play = -to_play;
 
-            std::unique_ptr<MCTSNode> next_root;
-            if (root) {
-                for (auto& child : root->children) {
-                    if (child && child->action_taken == action) {
-                        next_root = std::move(child);
-                        break;
-                    }
-                }
-            }
-            if (next_root) {
-                next_root->parent = nullptr;
-                root = std::move(next_root);
-            } else {
-                root.reset(new MCTSNode{state, to_play});
-            }
+            root.reset(new MCTSNode{state, to_play});
         }
 
         const int winner = game_.get_winner(state, last_action, last_player);
