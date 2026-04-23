@@ -103,6 +103,7 @@ public:
         out.nn_policy = std::move(nn_policy);
         out.nn_value_probs = nn_value_probs;
         out.gumbel_action = gumbel.gumbel_action;
+        out.gumbel_phases = std::move(gumbel.phase_survivors);
         {
             const int action_size = game_.board_size * game_.board_size;
             out.visit_counts.assign(static_cast<size_t>(action_size), 0.0f);
@@ -537,6 +538,7 @@ private:
         std::vector<float> improved_policy;
         int gumbel_action = -1;
         std::array<float, 3> v_mix{0.0f, 1.0f, 0.0f};
+        std::vector<std::vector<int>> phase_survivors;  // snapshots: [0]=initial m, then after each halving
     };
 
     GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations) {
@@ -576,6 +578,8 @@ private:
 
         current_root_ = &root;
 
+        std::vector<std::vector<int>> phase_survivors;
+        if (m > 0) phase_survivors.push_back(surviving_actions);
         if (m > 0) {
             const int phases = (m > 1) ? static_cast<int>(std::ceil(std::log2(static_cast<double>(m)))) : 1;
             int sims_budget = num_simulations;
@@ -627,6 +631,7 @@ private:
                     });
                     surviving_actions.resize(static_cast<size_t>(
                         std::max(1, static_cast<int>(surviving_actions.size()) / 2)));
+                    phase_survivors.push_back(surviving_actions);
                 }
             }
         }
@@ -719,7 +724,8 @@ private:
                 improved_policy.begin(), std::max_element(improved_policy.begin(), improved_policy.end())
             ));
         }
-        return {improved_policy, gumbel_action, v_mix};
+        if (gumbel_action >= 0) phase_survivors.push_back({gumbel_action});
+        return {improved_policy, gumbel_action, v_mix, std::move(phase_survivors)};
     }
 
     float max_child_n(const MCTSNode& root) {

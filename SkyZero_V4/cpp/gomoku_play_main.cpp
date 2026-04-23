@@ -27,7 +27,7 @@
 #include <torch/torch.h>
 
 #include "alphazero.h"
-#include "alphazero_parallel.h"
+#include "alphazero_tree_parallel.h"
 #include "envs/gomoku.h"
 
 using namespace skyzero;
@@ -201,6 +201,9 @@ static void advance_root(int action, const std::vector<int8_t>& next_state, int 
 
 int main(int argc, char** argv) {
     try {
+        // Line-buffer stdout so GUI front-ends see prompts/boards promptly.
+        std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
         torch::NoGradGuard no_grad;
         c10::InferenceMode im;
 
@@ -304,11 +307,13 @@ int main(int argc, char** argv) {
         };
 
         std::mt19937 rng(std::random_device{}());
-        ParallelMCTS<Gomoku> mcts(game, cfg, /*leaf_batch_size=*/1, infer_fn, batch_infer_fn, rng());
+        const int search_threads = cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 8);
+        TreeParallelMCTS<Gomoku> mcts(game, cfg, search_threads, infer_fn, batch_infer_fn, rng());
 
         std::cout << "[gomoku_play] model=" << cli.model
                   << " device=" << (use_cuda ? "cuda" : "cpu")
                   << " simulations=" << cfg.num_simulations
+                  << " search_threads=" << search_threads
                   << " symmetry_root=" << cfg.enable_symmetry_inference_for_root
                   << " symmetry_child=" << cfg.enable_symmetry_inference_for_child
                   << "\n";
@@ -378,7 +383,8 @@ int main(int argc, char** argv) {
 
             if (to_play == human_side) {
                 while (true) {
-                    std::cout << "Human step (row col / 'u' for undo / 'q' for quit): ";
+                    std::cout << "Human step (row col / 'u' for undo / 'q' for quit):\n";
+                    std::cout.flush();
                     std::string input;
                     if (!std::getline(std::cin, input)) return 0;
 
@@ -467,6 +473,15 @@ int main(int argc, char** argv) {
                     << std::setw(6) << std::fixed << std::setprecision(2) << (out.nn_value_probs[1] * 100.0f) << "%  "
                     << std::setw(6) << std::fixed << std::setprecision(2) << (out.nn_value_probs[2] * 100.0f) << "%  "
                     << std::showpos << std::fixed << std::setprecision(2) << nn_value << std::noshowpos << '\n';
+                for (size_t i = 0; i < out.gumbel_phases.size(); ++i) {
+                    std::cout << "Gumbel Phase " << i
+                              << " (" << out.gumbel_phases[i].size() << "):";
+                    for (int a : out.gumbel_phases[i]) {
+                        std::cout << ' ' << (a / game.board_size)
+                                  << ',' << (a % game.board_size);
+                    }
+                    std::cout << '\n';
+                }
                 std::cout << "AI move: (" << row << ", " << col << ")\n";
 
                 state = game.get_next_state(state, action, to_play);

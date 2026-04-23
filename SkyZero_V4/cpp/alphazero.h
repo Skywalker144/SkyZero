@@ -125,6 +125,7 @@ struct MCTSSearchOutput {
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};  // raw NN value
     int gumbel_action = -1;                                 // selected action by Gumbel
     std::vector<float> visit_counts;                        // raw root-child visit counts N(s,a)
+    std::vector<std::vector<int>> gumbel_phases;            // surviving actions at each halving phase (16,8,4,2,1)
 };
 
 // ---------------------------------------------------------------------------
