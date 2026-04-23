@@ -257,6 +257,7 @@ int main(int argc, char** argv) {
             torch::jit::IValue out_iv;
             {
                 std::lock_guard<std::mutex> lk(model_mu);
+                torch::NoGradGuard no_grad;
                 out_iv = model.forward({input});
             }
             auto tuple = out_iv.toTuple();
