@@ -55,6 +55,7 @@ public:
         std::vector<PolicySurpriseSample> samples;  // one per (state, to_play) step
         int winner = 0;                             // +1 black, -1 white, 0 draw
         int game_len = 0;
+        std::vector<int8_t> final_state;            // board after last move was played
     };
 
     SelfplayEngine(
@@ -446,6 +447,7 @@ private:
         SelfplayResult result;
         result.winner = winner;
         result.game_len = static_cast<int>(memory.size());
+        result.final_state = state;
         result.samples.reserve(memory.size());
         for (size_t i = 0; i < memory.size(); ++i) {
             const auto& s = memory[i];

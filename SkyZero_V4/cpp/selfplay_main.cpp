@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <random>
 #include <sstream>
@@ -288,6 +289,10 @@ int main(int argc, char** argv) {
         int games_done = 0;
         int64_t total_rows = 0;
         int black_wins = 0, white_wins = 0, draws = 0;
+        int min_len = std::numeric_limits<int>::max();
+        int max_len = 0;
+        double sum_len = 0.0, sum_sq_len = 0.0;
+        SelfplayEngine<Gomoku>::SelfplayResult min_game, max_game;
         const auto t0 = std::chrono::steady_clock::now();
         int last_report = 0;
 
@@ -307,6 +312,12 @@ int main(int argc, char** argv) {
                 writer.append(ts);
                 total_rows += 1;
             }
+            const int L = r.game_len;
+            sum_len += L;
+            sum_sq_len += static_cast<double>(L) * L;
+            if (L < min_len) { min_len = L; min_game = r; }
+            if (L > max_len) { max_len = L; max_game = r; }
+
             games_done += 1;
             if (r.winner == 1) ++black_wins;
             else if (r.winner == -1) ++white_wins;
@@ -317,13 +328,18 @@ int main(int argc, char** argv) {
                 const auto dt = std::chrono::duration_cast<std::chrono::duration<double>>(
                     std::chrono::steady_clock::now() - t0).count();
                 const double sps = (dt > 0.0) ? (static_cast<double>(total_rows) / dt) : 0.0;
-                const double avg_len = static_cast<double>(total_rows) / games_done;
+                const double avg_len = sum_len / games_done;
+                const double var_len = std::max(0.0, sum_sq_len / games_done - avg_len * avg_len);
+                const double std_len = std::sqrt(var_len);
                 const double b = static_cast<double>(black_wins) / games_done;
                 const double w = static_cast<double>(white_wins) / games_done;
                 const double d = static_cast<double>(draws) / games_done;
                 std::cout << "[selfplay] games=" << games_done << "/" << cli.max_games
                           << " sps=" << std::fixed << std::setprecision(1) << sps
                           << " AvgGameLen=" << std::fixed << std::setprecision(1) << avg_len
+                          << " MinLen=" << min_len
+                          << " MaxLen=" << max_len
+                          << " StdLen=" << std::fixed << std::setprecision(1) << std_len
                           << " BWD=" << std::fixed << std::setprecision(2) << b
                           << "/" << std::fixed << std::setprecision(2) << w
                           << "/" << std::fixed << std::setprecision(2) << d
@@ -346,6 +362,25 @@ int main(int argc, char** argv) {
         std::cout << "[selfplay] done. games=" << games_done
                   << " rows=" << total_rows
                   << " t=" << std::fixed << std::setprecision(1) << dt << "s\n";
+
+        auto print_board = [&](const char* tag, const SelfplayEngine<Gomoku>::SelfplayResult& r) {
+            std::cout << "[selfplay] " << tag << " game_len=" << r.game_len
+                      << " winner=" << r.winner << "\n";
+            const int N = game.board_size;
+            for (int i = 0; i < N; ++i) {
+                std::cout << "  ";
+                for (int j = 0; j < N; ++j) {
+                    const int8_t v = r.final_state[i * N + j];
+                    const char c = (v == 1) ? 'X' : (v == -1) ? 'O' : '.';
+                    std::cout << c << ' ';
+                }
+                std::cout << "\n";
+            }
+        };
+        if (games_done > 0) {
+            print_board("min-len game:", min_game);
+            print_board("max-len game:", max_game);
+        }
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[selfplay] fatal: " << e.what() << "\n";
