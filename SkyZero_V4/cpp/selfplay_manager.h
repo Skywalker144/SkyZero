@@ -56,6 +56,9 @@ public:
         int winner = 0;                             // +1 black, -1 white, 0 draw
         int game_len = 0;
         std::vector<int8_t> final_state;            // board after last move was played
+        std::vector<int8_t> initial_state;          // board after opening setup, before first MCTS
+        bool balanced_opening = false;              // true=random balanced opening, false=empty
+        int initial_to_play = 1;                    // side to move after opening setup
     };
 
     SelfplayEngine(
@@ -347,13 +350,17 @@ private:
         std::vector<int8_t> state = std::move(init.board);
         int to_play = init.to_play;
 
+        bool used_balanced_opening = false;
         {
             std::uniform_real_distribution<float> u01(0.0f, 1.0f);
             if (u01(worker_rng) < cfg_.balance_opening_prob) {
                 RandomOpening<Game> ro(game_, infer_fn, cfg_, worker_rng());
                 ro.initialize(state, to_play);
+                used_balanced_opening = true;
             }
         }
+        std::vector<int8_t> initial_state_snapshot = state;
+        const int initial_to_play_snapshot = to_play;
 
         bool in_soft_resign = false;
         std::vector<float> historical_v_mix;
@@ -447,6 +454,9 @@ private:
         SelfplayResult result;
         result.winner = winner;
         result.final_state = state;
+        result.initial_state = std::move(initial_state_snapshot);
+        result.initial_to_play = initial_to_play_snapshot;
+        result.balanced_opening = used_balanced_opening;
         int total_moves = 0;
         for (int8_t v : state) if (v != 0) ++total_moves;
         result.game_len = total_moves;

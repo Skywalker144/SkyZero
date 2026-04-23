@@ -364,18 +364,29 @@ int main(int argc, char** argv) {
                   << " t=" << std::fixed << std::setprecision(1) << dt << "s\n";
 
         auto print_board = [&](const char* tag, const SelfplayEngine<Gomoku>::SelfplayResult& r) {
-            std::cout << "[selfplay] " << tag << " game_len=" << r.game_len
+            const char* opening = r.balanced_opening ? "balanced" : "empty";
+            std::cout << "[selfplay] " << tag
+                      << " opening=" << opening
+                      << " game_len=" << r.game_len
                       << " winner=" << r.winner << "\n";
             const int N = game.board_size;
-            for (int i = 0; i < N; ++i) {
-                std::cout << "  ";
-                for (int j = 0; j < N; ++j) {
-                    const int8_t v = r.final_state[i * N + j];
-                    const char c = (v == 1) ? 'X' : (v == -1) ? 'O' : '.';
-                    std::cout << c << ' ';
+            auto dump = [&](const std::vector<int8_t>& board) {
+                for (int i = 0; i < N; ++i) {
+                    std::cout << "  ";
+                    for (int j = 0; j < N; ++j) {
+                        const int8_t v = board[i * N + j];
+                        const char c = (v == 1) ? 'X' : (v == -1) ? 'O' : '.';
+                        std::cout << c << ' ';
+                    }
+                    std::cout << "\n";
                 }
-                std::cout << "\n";
+            };
+            if (r.balanced_opening && !r.initial_state.empty()) {
+                std::cout << "  initial (to_play=" << r.initial_to_play << "):\n";
+                dump(r.initial_state);
+                std::cout << "  final:\n";
             }
+            dump(r.final_state);
         };
         if (games_done > 0) {
             print_board("min-len game:", min_game);
