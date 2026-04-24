@@ -49,6 +49,11 @@ while true; do
     echo "[run.sh] === iter $iter ==="
     date
 
+    # Cumulative selfplay totals so far (through previous iter)
+    awk 'NR>1 {g+=$2; r+=$3} END {printf "[run.sh] cumulative so far: games=%d samples=%d\n", g+0, r+0}' \
+        "$DATA_DIR/logs/last_run.tsv" 2>/dev/null \
+        || echo "[run.sh] cumulative so far: games=0 samples=0"
+
     # (1) compute games for this iter
     GAMES=$( cd "$ROOT/python" && "$PY" compute_games.py --data-dir "$DATA_DIR" )
 
