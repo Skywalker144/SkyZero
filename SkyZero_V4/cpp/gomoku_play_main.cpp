@@ -425,6 +425,20 @@ int main(int argc, char** argv) {
                     if (try_handle_setting(input)) {
                         continue;
                     }
+                    {
+                        std::istringstream iss(input);
+                        std::string kw;
+                        if ((iss >> kw) && kw == "side") {
+                            int s = 0;
+                            if (!(iss >> s) || (s != 1 && s != -1)) {
+                                std::cout << "Invalid input: side requires 1 or -1.\n";
+                                continue;
+                            }
+                            human_side = s;
+                            std::cout << "[setting] human_side=" << s << "\n";
+                            break;  // re-check whose turn it is
+                        }
+                    }
 
                     int row = -1, col = -1;
                     if (!parse_row_col(input, row, col)) {
