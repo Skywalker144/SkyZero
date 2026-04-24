@@ -34,6 +34,7 @@ struct AlphaZeroConfig {
     int gumbel_m = 16;
     float gumbel_c_visit = 50.0f;
     float gumbel_c_scale = 1.0f;
+    bool gumbel_noise_enabled = true;
 
     // Exploration temperature
     int half_life = -1;                  // -1 ⇒ use board_size

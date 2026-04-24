@@ -550,7 +550,7 @@ private:
         const auto is_legal = game_.get_is_legal_actions(root.state, root.to_play);
 
         std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
-        {
+        if (cfg_.gumbel_noise_enabled) {
             std::extreme_value_distribution<float> gumbel_dist(0.0f, 1.0f);
             for (int i = 0; i < action_size; ++i) {
                 g[static_cast<size_t>(i)] = gumbel_dist(rng_);

@@ -197,6 +197,7 @@ int main(int argc, char** argv) {
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
+        cfg.gumbel_noise_enabled = cfg_get_bool(cfg_map, "GUMBEL_NOISE_ENABLED", true);
         cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", -1);
         cfg.move_temperature_init = cfg_get<float>(cfg_map, "MOVE_TEMPERATURE_INIT", 0.0f);
         cfg.move_temperature_final = cfg_get<float>(cfg_map, "MOVE_TEMPERATURE_FINAL", 0.0f);
@@ -329,6 +330,44 @@ int main(int argc, char** argv) {
             history.push_back(Snapshot{state, to_play, last_action, last_player});
         };
 
+        // Returns true if `input` was a recognised setting command (handled).
+        auto try_handle_setting = [&](const std::string& input) -> bool {
+            std::istringstream iss(input);
+            std::string kw;
+            if (!(iss >> kw)) return false;
+            if (kw == "sims") {
+                int n = 0;
+                if (!(iss >> n) || n < 1) {
+                    std::cout << "Invalid input: sims requires N >= 1.\n";
+                    return true;
+                }
+                cfg.num_simulations = n;
+                std::cout << "[setting] num_simulations=" << n << "\n";
+                return true;
+            }
+            if (kw == "gm") {
+                int m = 0;
+                if (!(iss >> m) || m < 1) {
+                    std::cout << "Invalid input: gm requires M >= 1.\n";
+                    return true;
+                }
+                cfg.gumbel_m = m;
+                std::cout << "[setting] gumbel_m=" << m << "\n";
+                return true;
+            }
+            if (kw == "noise") {
+                int v = -1;
+                if (!(iss >> v) || (v != 0 && v != 1)) {
+                    std::cout << "Invalid input: noise requires 0 or 1.\n";
+                    return true;
+                }
+                cfg.gumbel_noise_enabled = (v == 1);
+                std::cout << "[setting] gumbel_noise_enabled=" << v << "\n";
+                return true;
+            }
+            return false;
+        };
+
         auto undo_two_moves = [&]() -> bool {
             if (history.size() < 2) return false;
             history.pop_back();
@@ -382,6 +421,9 @@ int main(int argc, char** argv) {
                     if (input == "q" || input == "Q") {
                         std::cout << "Exiting game.\n";
                         return 0;
+                    }
+                    if (try_handle_setting(input)) {
+                        continue;
                     }
 
                     int row = -1, col = -1;
