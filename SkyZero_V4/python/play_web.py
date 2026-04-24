@@ -326,6 +326,13 @@ HTML_PAGE = r"""<!doctype html>
   }
   .toggle input:checked + .track { background: var(--accent); }
   .toggle input:checked + .track::after { transform: translateX(16px); }
+  .num {
+    width: 64px; padding: 4px 6px; font-size: 13px;
+    border: 1px solid var(--border); border-radius: 6px;
+    font-family: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 
   .board-panel {
     padding: 14px;
@@ -377,6 +384,20 @@ HTML_PAGE = r"""<!doctype html>
         <input type="checkbox" id="gumbel_toggle" checked>
         <span class="track"></span>
         <span>Gumbel overlay</span>
+      </label>
+      <div class="sep"></div>
+      <label class="field">sims
+        <input class="num" type="number" id="sims_input" min="1" step="1" value="800">
+      </label>
+      <button onclick="applySims()">Apply</button>
+      <label class="field">gumbel_m
+        <input class="num" type="number" id="gm_input" min="1" step="1" value="8">
+      </label>
+      <button onclick="applyGm()">Apply</button>
+      <label class="toggle">
+        <input type="checkbox" id="noise_toggle" checked onchange="applyNoise()">
+        <span class="track"></span>
+        <span>Gumbel noise</span>
       </label>
       <div class="sep"></div>
       <span id="status">idle</span>
@@ -608,6 +629,18 @@ async function sendCmd(cmd) {
   await fetch('/move', {method:'POST', headers:{'Content-Type':'application/json'},
                         body: JSON.stringify({cmd})});
   refresh();
+}
+function applySims() {
+  const n = parseInt(document.getElementById('sims_input').value, 10);
+  if (Number.isFinite(n) && n >= 1) sendCmd('sims ' + n);
+}
+function applyGm() {
+  const m = parseInt(document.getElementById('gm_input').value, 10);
+  if (Number.isFinite(m) && m >= 1) sendCmd('gm ' + m);
+}
+function applyNoise() {
+  const v = document.getElementById('noise_toggle').checked ? 1 : 0;
+  sendCmd('noise ' + v);
 }
 async function newGame(side) {
   await fetch('/new', {method:'POST', headers:{'Content-Type':'application/json'},
