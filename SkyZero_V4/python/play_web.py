@@ -169,6 +169,16 @@ class EngineSession:
                 "l": float(m.group(3)), "wl": float(m.group(4)),
             }
             return
+        if "[setting] human_side=" in line:
+            try:
+                self.human_side = int(line.strip().split("=")[-1])
+            except ValueError:
+                pass
+            return
+        if "Undo successful" in line:
+            self.game_over = False
+            self.status = "Undo"
+            return
         if "Human step" in line:
             if not self.game_over:
                 self.status = "Your turn"
@@ -258,18 +268,108 @@ class App:
 
 
 HTML_PAGE = r"""<!doctype html>
-<html><head><meta charset="utf-8"><title>SkyZero Gomoku</title>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkyZero Gomoku</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+  // Set theme before first paint to avoid flash.
+  (function(){
+    try {
+      var saved = localStorage.getItem('skz_theme');
+      var prefer = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.dataset.theme = saved || prefer;
+    } catch(e) { document.documentElement.dataset.theme = 'light'; }
+  })();
+</script>
 <style>
   :root {
-    --bg: #f4f2ee;
-    --panel: #ffffff;
-    --ink: #1f2328;
-    --muted: #57606a;
-    --border: #d0d7de;
-    --accent: #2563eb;
-    --accent-ink: #ffffff;
-    --board: #e8c583;
-    --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.05);
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
+                 "Microsoft YaHei", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono",
+                 Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono",
+                 "Noto Sans Mono", "Courier New", monospace;
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f6f8fa;
+    --surface-sunken: #fafbfc;
+    --border: #d8dee4;
+    --border-strong: #afb8c1;
+    --fg: #1f2328;
+    --fg-muted: #59636e;
+    --fg-subtle: #8b949e;
+    --accent: #0969da;
+    --accent-hover: #0860c7;
+    --accent-fg: #ffffff;
+    --success: #1a7f37;
+    --success-bg: #dafbe1;
+    --info: #0969da;
+    --info-bg: #ddf4ff;
+    --warn: #9a6700;
+    --warn-bg: #fff8c5;
+    --danger: #cf222e;
+    --danger-bg: #ffebe9;
+    --done: #8250df;
+    --done-bg: #fbefff;
+    --board-bg: #e8c583;
+    --board-line: #6b5a3a;
+    --board-star: #3a2e1a;
+    --stone-black-0: #555;
+    --stone-black-1: #000;
+    --stone-white-0: #ffffff;
+    --stone-white-1: #d5d5d5;
+    --stone-outline: #1a1a1a;
+    --stone-shadow: rgba(0,0,0,0.18);
+    --heat-bg: #ffffff;
+    --heat-grid: #e5e7eb;
+    --heat-text: #111;
+    --heat-text-inv: #ffffff;
+    --shadow-xs: 0 1px 0 rgba(27,31,36,0.04);
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #21262d;
+    --surface-sunken: #010409;
+    --border: #30363d;
+    --border-strong: #6e7681;
+    --fg: #e6edf3;
+    --fg-muted: #9198a1;
+    --fg-subtle: #6e7681;
+    --accent: #4493f8;
+    --accent-hover: #539bff;
+    --accent-fg: #0d1117;
+    --success: #3fb950;
+    --success-bg: #0f2a1a;
+    --info: #4493f8;
+    --info-bg: #0f2238;
+    --warn: #d29922;
+    --warn-bg: #2d2200;
+    --danger: #f85149;
+    --danger-bg: #2d0d10;
+    --done: #ab7df8;
+    --done-bg: #1f1430;
+    --board-bg: #c9a460;
+    --board-line: #4a3a1f;
+    --board-star: #2a1f0e;
+    --stone-black-0: #2a2a2a;
+    --stone-black-1: #000;
+    --stone-white-0: #fafafa;
+    --stone-white-1: #c2c2c2;
+    --stone-outline: #000;
+    --stone-shadow: rgba(0,0,0,0.35);
+    --heat-bg: #0d1117;
+    --heat-grid: #30363d;
+    --heat-text: #e6edf3;
+    --heat-text-inv: #ffffff;
+    --shadow-xs: 0 1px 0 rgba(0,0,0,0.3);
   }
   * { box-sizing: border-box; }
   html, body {
@@ -278,162 +378,476 @@ HTML_PAGE = r"""<!doctype html>
     text-rendering: optimizeLegibility;
   }
   body {
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
-                 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-                 system-ui, sans-serif;
+    font-family: var(--font-sans);
     font-size: 14px; line-height: 1.5;
-    margin: 0; padding: 24px 20px 40px; background: var(--bg); color: var(--ink);
-    font-feature-settings: "cv11", "ss01", "tnum";
-  }
-  .wrap { max-width: 1100px; margin: 0 auto; }
-  h1 {
-    font-size: 18px; font-weight: 600; margin: 0 0 14px;
-    letter-spacing: -0.01em; text-align: center; color: var(--ink);
-  }
-  .panel {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 14px 16px; box-shadow: var(--shadow); margin-bottom: 14px;
-  }
-  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  button {
-    padding: 6px 14px; font-size: 13px; font-weight: 500;
-    background: #fff; color: var(--ink);
-    border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
-    transition: background 0.12s, border-color 0.12s;
-  }
-  button:hover { background: #f6f8fa; border-color: #adb5bd; }
-  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-  button.primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
-  .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
-  #status { font-weight: 600; font-size: 13px; color: var(--ink); }
-  #values {
-    font-family: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12.5px; color: var(--muted); white-space: pre; line-height: 1.6;
     font-variant-numeric: tabular-nums;
+    font-feature-settings: "cv11", "ss01", "tnum";
+    margin: 0; background: var(--bg); color: var(--fg);
   }
-  .warn { color: #b45309; font-weight: 500; }
-  /* toggle switch */
-  .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-size: 13px; }
-  .toggle input { display: none; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  .app { max-width: 1320px; margin: 0 auto; padding: 16px 24px 48px; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  .brand { display: flex; flex-direction: column; gap: 2px; }
+  .brand-title {
+    font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+    color: var(--fg);
+  }
+  .brand-sub {
+    font-size: 12px; color: var(--fg-muted); letter-spacing: 0.01em;
+  }
+  .icon-btn {
+    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    color: var(--fg-muted); cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--fg); border-color: var(--border-strong); }
+  .icon-btn svg { width: 16px; height: 16px; display: block; }
+  html[data-theme="dark"] .sun-icon { display: none; }
+  html[data-theme="light"] .moon-icon,
+  html:not([data-theme="dark"]) .moon-icon { display: none; }
+
+  /* ---------- Layout ---------- */
+  .main {
+    display: grid;
+    grid-template-columns: 260px minmax(0, auto) 300px;
+    gap: 20px;
+    align-items: start;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 1199px) {
+    .main { grid-template-columns: 1fr; }
+  }
+  .board-col {
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    min-width: 0;
+  }
+  .side-col {
+    display: flex; flex-direction: column; gap: 12px;
+    min-width: 0;
+  }
+  .side-col.fill > .card { flex: 1; display: flex; flex-direction: column; }
+  .side-col.fill > .card > .card-body { flex: 1; display: flex; flex-direction: column; }
+  .seg-row { display: flex; gap: 8px; }
+  .seg-btn {
+    flex: 1; height: 34px; font-size: 13px; font-weight: 500;
+    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .seg-btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
+  .seg-btn[aria-pressed="true"] {
+    background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
+  }
+  .seg-stone {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 1px solid var(--stone-outline);
+    flex-shrink: 0;
+  }
+  .seg-stone.black { background: radial-gradient(circle at 30% 30%, var(--stone-black-0), var(--stone-black-1)); }
+  .seg-stone.white { background: radial-gradient(circle at 30% 30%, var(--stone-white-0), var(--stone-white-1)); }
+  .board-actions {
+    display: flex; gap: 8px; width: 100%; max-width: 560px; justify-content: center;
+  }
+
+  /* ---------- Card ---------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xs);
+  }
+  .card-body { padding: 14px 16px; }
+  .card-title {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--fg-subtle);
+    margin: 0 0 10px;
+  }
+
+  /* ---------- Status pill ---------- */
+  .status-card { padding: 12px 16px; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 10px 4px 8px;
+    border-radius: 999px;
+    font-size: 12.5px; font-weight: 500;
+    background: var(--surface-2); color: var(--fg);
+    border: 1px solid var(--border);
+  }
+  .status-pill .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: var(--fg-subtle);
+  }
+  .status-pill[data-variant="active"] { background: var(--success-bg); color: var(--success); border-color: transparent; }
+  .status-pill[data-variant="active"] .dot { background: var(--success); }
+  .status-pill[data-variant="thinking"] { background: var(--info-bg); color: var(--info); border-color: transparent; }
+  .status-pill[data-variant="thinking"] .dot { background: var(--info); animation: pulse 1.2s ease-in-out infinite; }
+  .status-pill[data-variant="info"] { background: var(--info-bg); color: var(--info); border-color: transparent; }
+  .status-pill[data-variant="info"] .dot { background: var(--info); }
+  .status-pill[data-variant="done"] { background: var(--done-bg); color: var(--done); border-color: transparent; }
+  .status-pill[data-variant="done"] .dot { background: var(--done); }
+  .status-pill[data-variant="warn"] { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .status-pill[data-variant="warn"] .dot { background: var(--warn); }
+  .status-pill[data-variant="error"] { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
+  .status-pill[data-variant="error"] .dot { background: var(--danger); }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.35); opacity: 0.55; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .status-pill .dot { animation: none !important; }
+  }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    height: 30px; padding: 0 12px; font-size: 13px; font-weight: 500;
+    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    cursor: pointer; white-space: nowrap;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
+  .btn:active { background: var(--surface-sunken); }
+  .btn.primary {
+    background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
+  }
+  .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn.danger-ghost { color: var(--fg-muted); }
+  .btn.danger-ghost:hover { color: var(--danger); border-color: var(--danger); }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* ---------- Toggle ---------- */
+  .toggle {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; cursor: pointer; user-select: none;
+    font-size: 13px; color: var(--fg);
+    padding: 6px 0;
+  }
+  .toggle input { position: absolute; opacity: 0; pointer-events: none; }
   .toggle .track {
-    width: 34px; height: 18px; background: #d0d7de; border-radius: 999px;
-    position: relative; transition: background 0.15s;
+    width: 30px; height: 18px; background: var(--border-strong); border-radius: 999px;
+    position: relative; transition: background 0.15s; flex-shrink: 0;
   }
   .toggle .track::after {
     content: ""; position: absolute; top: 2px; left: 2px;
     width: 14px; height: 14px; border-radius: 50%; background: #fff;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.2); transition: transform 0.15s;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 0.15s;
   }
   .toggle input:checked + .track { background: var(--accent); }
-  .toggle input:checked + .track::after { transform: translateX(16px); }
+  .toggle input:checked + .track::after { transform: translateX(12px); }
+  @media (prefers-reduced-motion: reduce) {
+    .toggle .track, .toggle .track::after { transition: none; }
+  }
+
+  /* ---------- Number input ---------- */
+  .field-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 6px 0;
+  }
+  .field-row label {
+    font-size: 13px; color: var(--fg-muted);
+    font-family: var(--font-mono);
+  }
   .num {
-    width: 64px; padding: 4px 6px; font-size: 13px;
-    border: 1px solid var(--border); border-radius: 6px;
-    font-family: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    width: 80px; height: 28px; padding: 0 8px; font-size: 13px;
+    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .num:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+
+  .divider {
+    height: 1px; background: var(--border); margin: 4px 0;
+  }
+
+  /* ---------- WDL ---------- */
+  .wdl-row {
+    display: grid;
+    grid-template-columns: 42px minmax(0,1fr) 64px;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+  }
+  .wdl-label {
+    font-family: var(--font-mono);
+    font-size: 11.5px; color: var(--fg-muted);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .wdl-bar {
+    display: flex; height: 8px; width: 100%;
+    background: var(--surface-2);
+    border-radius: 999px; overflow: hidden;
+  }
+  .wdl-bar .seg { height: 100%; transition: width 0.2s ease-out; }
+  .wdl-bar .seg.w { background: var(--success); }
+  .wdl-bar .seg.d { background: var(--fg-subtle); opacity: 0.45; }
+  .wdl-bar .seg.l { background: var(--danger); }
+  @media (prefers-reduced-motion: reduce) {
+    .wdl-bar .seg { transition: none; }
+  }
+  .wdl-wl {
+    font-family: var(--font-mono);
+    font-size: 12px; text-align: right; color: var(--fg);
     font-variant-numeric: tabular-nums;
   }
-  .field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
-
-  .board-panel {
-    padding: 14px;
+  .wdl-wl.pos { color: var(--success); }
+  .wdl-wl.neg { color: var(--danger); }
+  .wdl-empty { color: var(--fg-subtle); font-size: 12px; padding: 8px 0; text-align: center; }
+  .wdl-detail {
+    margin-top: 6px; font-size: 11.5px; color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    display: flex; gap: 10px;
+  }
+  .wdl-detail .k { color: var(--fg-subtle); }
+  .value-chart-wrap {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 140px;
+  }
+  .value-chart-legend {
+    display: flex; align-items: center; gap: 12px;
+    font-size: 11px; color: var(--fg-muted);
+    font-family: var(--font-mono);
+    margin-bottom: 6px;
+  }
+  .vc-item { display: inline-flex; align-items: center; gap: 5px; }
+  .vc-swatch { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
+  .vc-axis { margin-left: auto; color: var(--fg-subtle); font-size: 10.5px; }
+  #value_chart { display: block; width: 100%; flex: 1; min-height: 120px; }
+  /* ---------- Board ---------- */
+  .board-card {
+    padding: 16px;
     display: inline-flex; flex-direction: column; align-items: center;
   }
-  .board-wrap { display: flex; justify-content: center; margin-bottom: 14px; }
-  #board { background: var(--board); border-radius: 6px; display: block; cursor: crosshair; }
-
+  #board {
+    background: var(--board-bg); border-radius: var(--radius-sm);
+    display: block; cursor: crosshair;
+  }
   #gumbel_legend {
-    font-family: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 12px; color: var(--muted); margin-top: 12px;
+    font-size: 11.5px; color: var(--fg-muted);
+    margin-top: 14px;
     display: flex; align-items: center; justify-content: center;
-    flex-wrap: wrap; gap: 4px 14px;
+    flex-wrap: wrap; gap: 6px 10px;
   }
-  #gumbel_legend .lbl { display: inline-flex; align-items: center; gap: 5px; }
+  #gumbel_legend .legend-head {
+    font-weight: 600; color: var(--fg-subtle);
+    text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px;
+    margin-right: 2px;
+  }
+  #gumbel_legend .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px; border-radius: 999px;
+    background: var(--surface-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
   #gumbel_legend .dot {
-    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
   }
 
+  /* ---------- Heat grid ---------- */
   .grids {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
   }
-  .grid-card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px; box-shadow: var(--shadow); text-align: center;
+  @media (max-width: 900px) {
+    .grids { grid-template-columns: 1fr; }
   }
-  .grid-card .title {
-    font-size: 12px; font-weight: 500; color: var(--muted); margin-bottom: 8px;
-    font-family: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    letter-spacing: 0.01em;
+  .grid-card { padding: 16px; text-align: center; }
+  .grid-card .grid-title {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--fg-subtle);
+    margin-bottom: 12px; text-align: left;
   }
   .heat {
-    background: #fff; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--heat-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     display: block; margin: 0 auto;
   }
+
   .hidden { display: none !important; }
 </style></head>
 <body>
-<div class="wrap">
-  <h1>SkyZero Gomoku</h1>
+<div class="app">
 
-  <div class="panel">
-    <div class="row">
-      <button class="primary" onclick="newGame(1)">New · Black (first)</button>
-      <button class="primary" onclick="newGame(-1)">New · White (second)</button>
-      <button onclick="sendCmd('u')">Undo</button>
-      <div class="sep"></div>
-      <label class="toggle">
-        <input type="checkbox" id="gumbel_toggle" checked>
-        <span class="track"></span>
-        <span>Gumbel overlay</span>
-      </label>
-      <div class="sep"></div>
-      <label class="field">sims
-        <input class="num" type="number" id="sims_input" min="1" step="1" value="800">
-      </label>
-      <button onclick="applySims()">Apply</button>
-      <label class="field">gumbel_m
-        <input class="num" type="number" id="gm_input" min="1" step="1" value="8">
-      </label>
-      <button onclick="applyGm()">Apply</button>
-      <label class="toggle">
-        <input type="checkbox" id="noise_toggle" checked onchange="applyNoise()">
-        <span class="track"></span>
-        <span>Gumbel noise</span>
-      </label>
-      <div class="sep"></div>
-      <span id="status">idle</span>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-title">SkyZero Gomoku</div>
+      <div class="brand-sub">AlphaZero-style self-play · local inspector</div>
     </div>
-    <div id="values" style="margin-top:10px;"></div>
-  </div>
+    <button class="icon-btn" id="theme_toggle" aria-label="Toggle color theme" title="Toggle theme">
+      <svg class="sun-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="8" cy="8" r="3"></circle>
+        <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"></path>
+      </svg>
+      <svg class="moon-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
+      </svg>
+    </button>
+  </header>
 
-  <div class="board-wrap">
-    <div class="panel board-panel">
-      <canvas id="board"></canvas>
-      <div id="gumbel_legend">
-        <span>Gumbel Sequential Halving:</span>
-        <span class="lbl"><span class="dot" style="background:#9ca3af;"></span>16</span>
-        <span class="lbl"><span class="dot" style="background:#3b82f6;"></span>8</span>
-        <span class="lbl"><span class="dot" style="background:#10b981;"></span>4</span>
-        <span class="lbl"><span class="dot" style="background:#f59e0b;"></span>2</span>
-        <span class="lbl"><span class="dot" style="background:#ef4444;"></span>1 (picked)</span>
+  <div class="main">
+    <aside class="side-col" id="left_col">
+      <div class="card status-card">
+        <div class="status-pill" id="status_pill" data-variant="idle">
+          <span class="dot"></span>
+          <span id="status">idle</span>
+        </div>
       </div>
-    </div>
+
+      <div class="card">
+        <div class="card-body">
+          <div class="card-title">Human side</div>
+          <div class="seg-row">
+            <button class="seg-btn" id="side_black" aria-pressed="true" onclick="setSide(1)">
+              <span class="seg-stone black"></span>Black
+            </button>
+            <button class="seg-btn" id="side_white" aria-pressed="false" onclick="setSide(-1)">
+              <span class="seg-stone white"></span>White
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-body">
+          <div class="card-title">Search</div>
+          <div class="field-row">
+            <label for="sims_input">sims</label>
+            <input class="num" type="number" id="sims_input" min="1" step="1" value="800">
+          </div>
+          <div class="field-row">
+            <label for="gm_input">gumbel_m</label>
+            <input class="num" type="number" id="gm_input" min="1" step="1" value="8">
+          </div>
+          <div class="divider"></div>
+          <label class="toggle">
+            <span>Gumbel noise</span>
+            <span style="display:inline-flex;">
+              <input type="checkbox" id="noise_toggle">
+              <span class="track"></span>
+            </span>
+          </label>
+          <label class="toggle">
+            <span>Gumbel overlay</span>
+            <span style="display:inline-flex;">
+              <input type="checkbox" id="gumbel_toggle" checked>
+              <span class="track"></span>
+            </span>
+          </label>
+        </div>
+      </div>
+    </aside>
+
+    <section class="board-col">
+      <div class="card board-card">
+        <canvas id="board"></canvas>
+        <div id="gumbel_legend">
+          <span class="legend-head">Gumbel Sequential Halving</span>
+          <span class="chip"><span class="dot" style="background:#9ca3af;"></span>16</span>
+          <span class="chip"><span class="dot" style="background:#3b82f6;"></span>8</span>
+          <span class="chip"><span class="dot" style="background:#10b981;"></span>4</span>
+          <span class="chip"><span class="dot" style="background:#f59e0b;"></span>2</span>
+          <span class="chip"><span class="dot" style="background:#ef4444;"></span>1 (picked)</span>
+        </div>
+      </div>
+      <div class="board-actions">
+        <button class="btn primary" onclick="newGame()">New game</button>
+        <button class="btn danger-ghost" onclick="sendCmd('u')">Undo</button>
+      </div>
+    </section>
+
+    <aside class="side-col fill" id="right_col">
+      <div class="card">
+        <div class="card-body">
+          <div class="card-title">Value estimates</div>
+          <div class="wdl-row">
+            <span class="wdl-label">root</span>
+            <div class="wdl-bar" id="wdl_root_bar">
+              <span class="seg w" style="width:0"></span>
+              <span class="seg d" style="width:0"></span>
+              <span class="seg l" style="width:0"></span>
+            </div>
+            <span class="wdl-wl" id="wdl_root_wl">—</span>
+          </div>
+          <div class="wdl-detail" id="wdl_root_detail"></div>
+          <div class="wdl-row" style="margin-top:4px;">
+            <span class="wdl-label">nn</span>
+            <div class="wdl-bar" id="wdl_nn_bar">
+              <span class="seg w" style="width:0"></span>
+              <span class="seg d" style="width:0"></span>
+              <span class="seg l" style="width:0"></span>
+            </div>
+            <span class="wdl-wl" id="wdl_nn_wl">—</span>
+          </div>
+          <div class="wdl-detail" id="wdl_nn_detail"></div>
+          <div class="value-chart-wrap">
+            <div class="value-chart-legend">
+              <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span>root</span>
+              <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span>nn</span>
+              <span class="vc-axis">W/L · −1…+1</span>
+            </div>
+            <canvas id="value_chart"></canvas>
+          </div>
+        </div>
+      </div>
+    </aside>
   </div>
 
   <div class="grids">
-    <div class="grid-card"><div class="title">MCTS Strategy (improved policy)</div>
-      <canvas class="heat" id="h_mcts_policy"></canvas></div>
-    <div class="grid-card"><div class="title">MCTS Visits (N/sum)</div>
-      <canvas class="heat" id="h_mcts_visits"></canvas></div>
-    <div class="grid-card"><div class="title">NN Strategy</div>
-      <canvas class="heat" id="h_nn_policy"></canvas></div>
+    <div class="card grid-card">
+      <div class="grid-title">MCTS Strategy · improved policy</div>
+      <canvas class="heat" id="h_mcts_policy"></canvas>
+    </div>
+    <div class="card grid-card">
+      <div class="grid-title">MCTS Visits · N / sum</div>
+      <canvas class="heat" id="h_mcts_visits"></canvas>
+    </div>
+    <div class="card grid-card">
+      <div class="grid-title">NN Strategy · prior</div>
+      <canvas class="heat" id="h_nn_policy"></canvas>
+    </div>
   </div>
 </div>
 
 <script>
 const N = 15, CELL = 36, MARGIN = 28;
+const MONO_FONT = '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
 const BOARD_LOGICAL = MARGIN*2 + CELL*(N-1); // 2*28 + 36*14 = 560
-const HEAT_LOGICAL = 300;
+const HEAT_LOGICAL = 280;
 const DPR = window.devicePixelRatio || 1;
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
 
 function setupCanvas(canvas, logicalW, logicalH) {
   canvas.width = Math.round(logicalW * DPR);
@@ -450,6 +864,33 @@ function clearLogical(ctx) { ctx.clearRect(0, 0, ctx._logicalW, ctx._logicalH); 
 
 const cv = document.getElementById('board');
 const ctx = setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
+const vcCanvas = document.getElementById('value_chart');
+let vctx = setupCanvas(vcCanvas, 280, 160);
+vcCanvas.style.width = '100%';
+vcCanvas.style.height = '100%';
+function resizeValueChart() {
+  const rect = vcCanvas.getBoundingClientRect();
+  const w = Math.max(120, Math.floor(rect.width));
+  const h = Math.max(120, Math.floor(rect.height));
+  if (vctx._logicalW === w && vctx._logicalH === h) return;
+  vctx = setupCanvas(vcCanvas, w, h);
+  drawValueChart();
+}
+new ResizeObserver(resizeValueChart).observe(vcCanvas);
+const leftCol = document.getElementById('left_col');
+const rightCol = document.getElementById('right_col');
+function syncRightColHeight() {
+  if (!leftCol || !rightCol) return;
+  if (window.matchMedia('(max-width: 1199px)').matches) {
+    rightCol.style.height = '';
+    return;
+  }
+  rightCol.style.height = leftCol.offsetHeight + 'px';
+}
+new ResizeObserver(syncRightColHeight).observe(leftCol);
+window.addEventListener('resize', syncRightColHeight);
+syncRightColHeight();
+let valueHistory = []; // [{step, root, nn}]  step = stone count when recorded
 const heatCtxs = {
   h_mcts_policy: setupCanvas(document.getElementById('h_mcts_policy'), HEAT_LOGICAL, HEAT_LOGICAL),
   h_mcts_visits: setupCanvas(document.getElementById('h_mcts_visits'), HEAT_LOGICAL, HEAT_LOGICAL),
@@ -458,6 +899,24 @@ const heatCtxs = {
 
 let state = null;
 let showGumbel = true;
+// Side-swap perspective tracking. `side X` only flips human_side in the engine;
+// it does not trigger a new search, so the cached root_value/nn_value in the
+// snapshot remain in the OLD AI's perspective until the next AI think. To keep
+// display consistent, we record (a) the snapshot values at the moment the user
+// swapped and (b) the parity of pending swaps. While incoming snapshot values
+// still match that baseline, we flip them for display iff parity is odd. Once
+// the engine emits new values (mismatch), we drop the pending state.
+let pendingSwapBaseline = null;
+let pendingSwapParity = 0;
+function valuesEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.w === b.w && a.d === b.d && a.l === b.l && a.wl === b.wl;
+}
+function flipWDL(v) {
+  if (!v) return null;
+  return {w: v.l, d: v.d, l: v.w, wl: -v.wl};
+}
 const gumbelToggle = document.getElementById('gumbel_toggle');
 const gumbelLegend = document.getElementById('gumbel_legend');
 gumbelToggle.addEventListener('change', () => {
@@ -466,11 +925,32 @@ gumbelToggle.addEventListener('change', () => {
   draw();
 });
 
+/* ---------- Theme toggle ---------- */
+const themeBtn = document.getElementById('theme_toggle');
+themeBtn.addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('skz_theme', next); } catch(e) {}
+  draw();
+  drawValueChart();
+  if (state) {
+    drawHeat('h_mcts_policy', state.mcts_policy);
+    drawHeat('h_mcts_visits', state.mcts_visits);
+    drawHeat('h_nn_policy',   state.nn_policy);
+  } else {
+    drawHeat('h_mcts_policy', null);
+    drawHeat('h_mcts_visits', null);
+    drawHeat('h_nn_policy',   null);
+  }
+});
+
+/* ---------- Heat map ---------- */
 function drawHeat(canvasId, grid) {
   const g = heatCtxs[canvasId];
   clearLogical(g);
   const W = g._logicalW;
   const cell = W / N;
+  const gridCol = cssVar('--heat-grid') || '#e5e7eb';
   let maxV = 0;
   if (grid) for (let r=0;r<N;r++) for (let k=0;k<N;k++) if (grid[r][k]>maxV) maxV=grid[r][k];
   for (let r=0;r<N;r++) for (let k=0;k<N;k++) {
@@ -479,32 +959,41 @@ function drawHeat(canvasId, grid) {
     const a = (maxV>0 && v>0) ? Math.min(1, v/maxV) : 0;
     g.fillStyle = `rgba(220,38,38,${a.toFixed(3)})`;
     g.fillRect(x, y, cell, cell);
-    g.strokeStyle = '#e5e7eb';
+    g.strokeStyle = gridCol;
     g.strokeRect(x + 0.5, y + 0.5, cell, cell);
     if (v >= 0.01) {
-      g.fillStyle = a > 0.5 ? '#fff' : '#111';
-      g.font = `${Math.floor(cell*0.38)}px ui-monospace, monospace`;
+      g.fillStyle = a > 0.5 ? '#fff' : cssVar('--heat-text');
+      g.font = `${Math.floor(cell*0.38)}px ${MONO_FONT}`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText((v*100).toFixed(0), x + cell/2, y + cell/2);
     }
   }
 }
 
+/* ---------- Board ---------- */
 function draw() {
   clearLogical(ctx);
-  // Grid lines: +0.5 for crisp 1px strokes.
-  ctx.strokeStyle = '#6b5a3a'; ctx.lineWidth = 1;
+  const boardLine = cssVar('--board-line') || '#6b5a3a';
+  const boardStar = cssVar('--board-star') || '#3a2e1a';
+  const stoneB0 = cssVar('--stone-black-0');
+  const stoneB1 = cssVar('--stone-black-1');
+  const stoneW0 = cssVar('--stone-white-0');
+  const stoneW1 = cssVar('--stone-white-1');
+  const stoneOutline = cssVar('--stone-outline');
+  const stoneShadow = cssVar('--stone-shadow') || 'rgba(0,0,0,0.18)';
+
+  ctx.strokeStyle = boardLine; ctx.lineWidth = 1;
   for (let i=0;i<N;i++){
     const p = Math.round(MARGIN + i*CELL) + 0.5;
     ctx.beginPath(); ctx.moveTo(MARGIN, p); ctx.lineTo(MARGIN + CELL*(N-1), p); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(p, MARGIN); ctx.lineTo(p, MARGIN + CELL*(N-1)); ctx.stroke();
   }
-  ctx.fillStyle = '#3a2e1a';
+  ctx.fillStyle = boardStar;
   for (const [r,c] of [[3,3],[3,11],[11,3],[11,11],[7,7]]) {
     ctx.beginPath(); ctx.arc(MARGIN+c*CELL, MARGIN+r*CELL, 3.5, 0, Math.PI*2); ctx.fill();
   }
-  ctx.fillStyle = '#6b5a3a';
-  ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = boardLine;
+  ctx.font = `11px ${MONO_FONT}`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (let i=0;i<N;i++){
     ctx.fillText(i, MARGIN + i*CELL, 12);
@@ -512,7 +1001,6 @@ function draw() {
   }
   if (!state) return;
 
-  // Gumbel Sequential Halving overlay (toggleable).
   const phases = state.gumbel_phases;
   if (showGumbel && phases && phases.length > 0) {
     const COLORS = ['#9ca3af', '#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
@@ -537,33 +1025,31 @@ function draw() {
       ctx.lineWidth = 1;
       if (state.board[r][c] === 0) {
         ctx.fillStyle = COLORS[bucket];
-        ctx.font = 'bold 10px ui-monospace, monospace';
+        ctx.font = `bold 10px ${MONO_FONT}`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(sizeLabel, x, y);
       }
     }
   }
 
-  // Stones.
   const b = state.board, lm = state.last_move;
   for (let r=0;r<N;r++) for (let c=0;c<N;c++){
     const v = b[r][c]; if (!v) continue;
     const x = MARGIN+c*CELL, y = MARGIN+r*CELL;
-    // subtle stone shadow
     ctx.beginPath(); ctx.arc(x+0.5, y+1.5, 14, 0, Math.PI*2);
-    ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fill();
+    ctx.fillStyle = stoneShadow; ctx.fill();
     ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI*2);
     if (v === 1) {
       const grad = ctx.createRadialGradient(x-4, y-4, 2, x, y, 14);
-      grad.addColorStop(0, '#555'); grad.addColorStop(1, '#000');
+      grad.addColorStop(0, stoneB0); grad.addColorStop(1, stoneB1);
       ctx.fillStyle = grad;
     } else {
       const grad = ctx.createRadialGradient(x-4, y-4, 2, x, y, 14);
-      grad.addColorStop(0, '#ffffff'); grad.addColorStop(1, '#d5d5d5');
+      grad.addColorStop(0, stoneW0); grad.addColorStop(1, stoneW1);
       ctx.fillStyle = grad;
     }
     ctx.fill();
-    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = stoneOutline; ctx.lineWidth = 1; ctx.stroke();
     if (lm && lm[0]===r && lm[1]===c) {
       ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2);
       ctx.fillStyle = '#ef4444'; ctx.fill();
@@ -571,9 +1057,99 @@ function draw() {
   }
 }
 
-// Renormalizes raw W/D/L so they display summing to ~100%. Returns
-// {w,d,l,wl,sum} all in percent; `sum` is the *raw* sum (pre-normalize)
-// so the caller can flag big deviations.
+/* ---------- Value chart ---------- */
+function stoneCount(board) {
+  let n = 0;
+  for (let r=0;r<N;r++) for (let c=0;c<N;c++) if (board[r][c]) n++;
+  return n;
+}
+function normWL(v) {
+  if (!v) return null;
+  const s = v.w + v.d + v.l;
+  if (s > 1e-4) return (v.w - v.l) / s;
+  return v.wl;
+}
+function recordValues(st) {
+  if (!st || !st.board) return;
+  const step = stoneCount(st.board);
+  const rw = normWL(st.root_value);
+  const nw = normWL(st.nn_value);
+  while (valueHistory.length && valueHistory[valueHistory.length - 1].step > step) {
+    valueHistory.pop();
+  }
+  if (rw == null && nw == null) return;
+  const last = valueHistory[valueHistory.length - 1];
+  if (last && last.step === step) {
+    if (rw != null) last.root = rw;
+    if (nw != null) last.nn = nw;
+  } else if (!last || step > last.step) {
+    valueHistory.push({step, root: rw, nn: nw});
+  }
+}
+function drawValueChart() {
+  clearLogical(vctx);
+  const W = vctx._logicalW, H = vctx._logicalH;
+  const padL = 22, padR = 6, padT = 6, padB = 14;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const axis = cssVar('--border') || '#d8dee4';
+  const grid = cssVar('--heat-grid') || '#e5e7eb';
+  const muted = cssVar('--fg-muted') || '#59636e';
+  const subtle = cssVar('--fg-subtle') || '#8b949e';
+  vctx.strokeStyle = grid; vctx.lineWidth = 1;
+  for (const v of [-1, 0, 1]) {
+    const y = padT + ((1 - v) / 2) * innerH + 0.5;
+    vctx.beginPath(); vctx.moveTo(padL, y); vctx.lineTo(W - padR, y); vctx.stroke();
+  }
+  vctx.fillStyle = subtle;
+  vctx.font = `10px ${MONO_FONT}`;
+  vctx.textAlign = 'right'; vctx.textBaseline = 'middle';
+  for (const v of [1, 0, -1]) {
+    const y = padT + ((1 - v) / 2) * innerH;
+    vctx.fillText((v > 0 ? '+' : '') + v.toFixed(0), padL - 4, y);
+  }
+  vctx.strokeStyle = axis;
+  vctx.beginPath();
+  vctx.moveTo(padL + 0.5, padT); vctx.lineTo(padL + 0.5, H - padB);
+  vctx.lineTo(W - padR, H - padB); vctx.stroke();
+
+  if (valueHistory.length === 0) {
+    vctx.fillStyle = subtle;
+    vctx.font = `11px ${MONO_FONT}`;
+    vctx.textAlign = 'center'; vctx.textBaseline = 'middle';
+    vctx.fillText('no data', padL + innerW/2, padT + innerH/2);
+    return;
+  }
+  const maxStep = Math.max(1, valueHistory[valueHistory.length - 1].step);
+  const xOf = s => padL + (s / maxStep) * innerW;
+  const yOf = v => padT + ((1 - v) / 2) * innerH;
+  vctx.fillStyle = muted;
+  vctx.textAlign = 'center'; vctx.textBaseline = 'top';
+  vctx.fillText('0', xOf(0), H - padB + 2);
+  vctx.fillText(String(maxStep), xOf(maxStep), H - padB + 2);
+
+  function plot(key, color) {
+    const pts = valueHistory.filter(p => p[key] != null);
+    if (pts.length === 0) return;
+    vctx.strokeStyle = color; vctx.lineWidth = 1.5;
+    vctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = xOf(p.step), y = yOf(p[key]);
+      if (i === 0) vctx.moveTo(x, y); else vctx.lineTo(x, y);
+    });
+    vctx.stroke();
+    vctx.fillStyle = color;
+    for (const p of pts) {
+      vctx.beginPath();
+      vctx.arc(xOf(p.step), yOf(p[key]), 2, 0, Math.PI*2);
+      vctx.fill();
+    }
+  }
+  plot('root', '#0969da');
+  plot('nn', '#cf222e');
+}
+
+/* ---------- WDL ---------- */
+// Renormalizes raw W/D/L so they display summing to ~100%.
 function normalizeVal(v) {
   if (!v) return null;
   const s = v.w + v.d + v.l;
@@ -584,28 +1160,77 @@ function normalizeVal(v) {
   return { w: v.w, d: v.d, l: v.l, wl: v.wl, sum: s };
 }
 
-function fmtVal(v) {
+function renderWDL(prefix, v) {
+  const bar = document.getElementById('wdl_' + prefix + '_bar');
+  const wlEl = document.getElementById('wdl_' + prefix + '_wl');
+  const det = document.getElementById('wdl_' + prefix + '_detail');
   const n = normalizeVal(v);
-  if (!n) return '—';
-  const pad = x => x.toFixed(1).padStart(5);
-  let s = `W:${pad(n.w)}%  D:${pad(n.d)}%  L:${pad(n.l)}%  (W-L ${n.wl>=0?'+':''}${n.wl.toFixed(2)})`;
-  // Flag if the underlying three components don't sum to ~100%.
-  if (n.sum < 0.9 || n.sum > 1.1) {
-    s += `  [raw sum ${(n.sum*100).toFixed(1)}%]`;
+  const segs = bar.querySelectorAll('.seg');
+  if (!n) {
+    segs[0].style.width = '0';
+    segs[1].style.width = '100%';
+    segs[2].style.width = '0';
+    wlEl.textContent = '—';
+    wlEl.classList.remove('pos', 'neg');
+    det.textContent = '';
+    return;
   }
-  return s;
+  segs[0].style.width = n.w.toFixed(2) + '%';
+  segs[1].style.width = n.d.toFixed(2) + '%';
+  segs[2].style.width = n.l.toFixed(2) + '%';
+  const wl = n.wl;
+  wlEl.textContent = (wl >= 0 ? '+' : '') + wl.toFixed(2);
+  wlEl.classList.toggle('pos', wl > 0.01);
+  wlEl.classList.toggle('neg', wl < -0.01);
+  det.innerHTML =
+    '<span><span class="k">W</span> ' + n.w.toFixed(1) + '%</span>' +
+    '<span><span class="k">D</span> ' + n.d.toFixed(1) + '%</span>' +
+    '<span><span class="k">L</span> ' + n.l.toFixed(1) + '%</span>';
+}
+
+/* ---------- Status pill ---------- */
+function statusVariant(s) {
+  if (!s) return 'idle';
+  const t = s.toLowerCase();
+  if (t.includes('thinking')) return 'thinking';
+  if (t.includes('your turn')) return 'active';
+  if (t.includes('wins') || t.includes('draw')) return 'done';
+  if (t.includes('invalid') || t.includes('exited')) return 'error';
+  if (t.includes('launching')) return 'warn';
+  if (t.includes('played')) return 'info';
+  return 'idle';
 }
 
 async function refresh() {
   try {
     const r = await fetch('/state'); state = await r.json();
-    document.getElementById('status').textContent = state.status;
-    const rootN = normalizeVal(state.root_value);
-    const warn = (rootN && (rootN.sum < 0.9 || rootN.sum > 1.1))
-      ? '<span class="warn">⚠ root WDL raw sum ≠ 1 (likely v_mix bug); shown values are renormalized</span>\n' : '';
-    document.getElementById('values').innerHTML =
-      warn +
-      'root: ' + fmtVal(state.root_value) + '\n  nn: ' + fmtVal(state.nn_value);
+    if (pendingSwapBaseline) {
+      const stale = valuesEqual(state.root_value, pendingSwapBaseline.root)
+                 && valuesEqual(state.nn_value,   pendingSwapBaseline.nn);
+      if (stale) {
+        if (pendingSwapParity === 1) {
+          state.root_value = flipWDL(state.root_value);
+          state.nn_value   = flipWDL(state.nn_value);
+        }
+      } else {
+        pendingSwapBaseline = null;
+        pendingSwapParity = 0;
+      }
+    }
+    const statusText = state.status || 'idle';
+    document.getElementById('status').textContent = statusText;
+    document.getElementById('status_pill').dataset.variant = statusVariant(statusText);
+
+    if (!sideSynced && (state.human_side === 1 || state.human_side === -1)) {
+      selectedSide = state.human_side;
+      updateSideButtons();
+      sideSynced = true;
+    }
+    renderWDL('root', state.root_value);
+    renderWDL('nn', state.nn_value);
+    recordValues(state);
+    drawValueChart();
+
     draw();
     drawHeat('h_mcts_policy', state.mcts_policy);
     drawHeat('h_mcts_visits', state.mcts_visits);
@@ -631,24 +1256,83 @@ async function sendCmd(cmd) {
   refresh();
 }
 function applySims() {
-  const n = parseInt(document.getElementById('sims_input').value, 10);
+  const el = document.getElementById('sims_input');
+  const n = parseInt(el.value, 10);
   if (Number.isFinite(n) && n >= 1) sendCmd('sims ' + n);
 }
 function applyGm() {
-  const m = parseInt(document.getElementById('gm_input').value, 10);
+  const el = document.getElementById('gm_input');
+  const m = parseInt(el.value, 10);
   if (Number.isFinite(m) && m >= 1) sendCmd('gm ' + m);
 }
 function applyNoise() {
   const v = document.getElementById('noise_toggle').checked ? 1 : 0;
   sendCmd('noise ' + v);
 }
+let selectedSide = 1;
+let sideSynced = false;
+function updateSideButtons() {
+  document.getElementById('side_black').setAttribute('aria-pressed', selectedSide === 1 ? 'true' : 'false');
+  document.getElementById('side_white').setAttribute('aria-pressed', selectedSide === -1 ? 'true' : 'false');
+}
+function setSide(side) {
+  if (side !== 1 && side !== -1) return;
+  if (selectedSide === side) return;
+  // If no session yet or game over, start fresh. Otherwise swap mid-game.
+  if (!state || state.game_over) {
+    selectedSide = side;
+    updateSideButtons();
+    newGame(side);
+    return;
+  }
+  selectedSide = side;
+  updateSideButtons();
+  // Historical values were from the previous AI's perspective; flip so chart stays AI-relative.
+  for (const p of valueHistory) {
+    if (p.root != null) p.root = -p.root;
+    if (p.nn != null) p.nn = -p.nn;
+  }
+  if (pendingSwapBaseline === null && state) {
+    pendingSwapBaseline = {
+      root: state.root_value ? {...state.root_value} : null,
+      nn:   state.nn_value   ? {...state.nn_value}   : null,
+    };
+  }
+  pendingSwapParity ^= 1;
+  drawValueChart();
+  sendCmd('side ' + side);
+}
 async function newGame(side) {
+  if (side === undefined) side = selectedSide;
+  else { selectedSide = side; updateSideButtons(); }
+  valueHistory = [];
+  pendingSwapBaseline = null;
+  pendingSwapParity = 0;
+  drawValueChart();
   await fetch('/new', {method:'POST', headers:{'Content-Type':'application/json'},
                        body: JSON.stringify({human_side: side})});
   refresh();
 }
 
+// Auto-apply sims/gumbel_m on change (blur) or Enter, replacing Apply buttons.
+function bindNumInput(id, apply) {
+  const el = document.getElementById(id);
+  let last = el.value;
+  el.addEventListener('change', () => { if (el.value !== last) { last = el.value; apply(); } });
+  el.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); el.blur(); }
+  });
+}
+bindNumInput('sims_input', applySims);
+bindNumInput('gm_input', applyGm);
+document.getElementById('noise_toggle').addEventListener('change', applyNoise);
+applyNoise(); // sync initial noise state to engine (default off)
+
 draw();
+drawValueChart();
+drawHeat('h_mcts_policy', null);
+drawHeat('h_mcts_visits', null);
+drawHeat('h_nn_policy', null);
 setInterval(refresh, 250);
 refresh();
 </script>
