@@ -233,7 +233,6 @@ def main() -> int:
         if swa_state is not None:
             try:
                 swa_model.load_state_dict(swa_state)
-                print(f"[train] restored SWA model (accum_steps={swa_accum_steps})")
             except Exception as e:
                 print(f"[train] warning: failed to restore SWA state ({e}); starting fresh")
                 swa_accum_steps = 0
