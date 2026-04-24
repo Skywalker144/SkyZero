@@ -30,14 +30,8 @@
 
 namespace skyzero {
 
-struct SelfplayParallelConfig {
-    int num_workers = 32;
-    int num_inference_servers = 2;
-    int inference_batch_size = 128;
-    int inference_batch_wait_us = 100;
-    int leaf_batch_size = 8;
-    int max_result_queue_size = 0;  // 0 = auto (2 * num_workers); <0 = unbounded
-};
+// SelfplayParallelConfig moved to alphazero.h so TreeParallelMCTS can reuse it
+// without forcing a dependency on this header.
 
 template <typename Game>
 class ParallelMCTS {

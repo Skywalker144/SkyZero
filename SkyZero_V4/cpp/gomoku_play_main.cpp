@@ -26,8 +26,7 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
-#include "alphazero.h"
-#include "alphazero_tree_parallel.h"
+#include "alphazero_tree_parallel.h"  // transitively provides alphazero.h
 #include "envs/gomoku.h"
 
 using namespace skyzero;

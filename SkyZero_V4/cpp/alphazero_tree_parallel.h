@@ -33,7 +33,6 @@
 #include <vector>
 
 #include "alphazero.h"
-#include "alphazero_parallel.h"  // SelfplayParallelConfig
 #include "utils.h"
 
 namespace skyzero {
