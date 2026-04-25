@@ -36,10 +36,8 @@ struct AlphaZeroConfig {
     float gumbel_c_scale = 1.0f;
     bool gumbel_noise_enabled = true;
 
-    // Exploration temperature
-    int half_life = -1;                  // -1 ⇒ use board_size
-    float move_temperature_init = 0.8f;
-    float move_temperature_final = 0.2f;
+    // Opening exploration window: sample first `half_life` moves ∝ visit counts.
+    int half_life = -1;                  // -1 ⇒ use board_size; 0 ⇒ disable
 
     // PUCT / FPU
     float c_puct = 1.1f;
