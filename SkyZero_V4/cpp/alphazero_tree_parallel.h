@@ -254,7 +254,8 @@ private:
         const std::vector<int8_t>& state,
         int to_play,
         bool use_stochastic_transform,
-        std::mt19937* local_rng
+        std::mt19937* local_rng,
+        bool is_root
     ) {
         auto encoded = game_.encode_state(state, to_play);
         int k = 0;
@@ -273,7 +274,9 @@ private:
             logits = undo_transform_flat(logits, game_.board_size, k, do_flip);
         }
 
-        const auto legal = game_.get_is_legal_actions(state, to_play);
+        const auto legal = (is_root && cfg_.root_symmetry_pruning)
+            ? game_.get_canonical_legal_actions(state, to_play)
+            : game_.get_is_legal_actions(state, to_play);
         for (size_t i = 0; i < logits.size(); ++i) {
             if (i >= legal.size() || !legal[i]) {
                 logits[i] = -std::numeric_limits<float>::infinity();
@@ -333,7 +336,8 @@ private:
         const auto ir = inference(
             node.state, node.to_play,
             cfg_.enable_stochastic_transform_inference_for_root,
-            /*local_rng=*/nullptr
+            /*local_rng=*/nullptr,
+            /*is_root=*/true
         );
         std::lock_guard<std::mutex> lk(node_mutex(&node));
         expand_with_locked(ir, node);
@@ -509,7 +513,8 @@ private:
             ir = inference(
                 node->state, node->to_play,
                 cfg_.enable_stochastic_transform_inference_for_child,
-                &local_rng
+                &local_rng,
+                /*is_root=*/false
             );
         } catch (...) {
             finish_expansion(node);
@@ -546,7 +551,16 @@ private:
         if (logits.size() != static_cast<size_t>(action_size)) {
             logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
         }
-        const auto is_legal = game_.get_is_legal_actions(root.state, root.to_play);
+        // Derive legal mask from masked logits so root_symmetry_pruning (which
+        // sets non-canonical positions to -inf during root_expand) is honored
+        // here too, and so this mask never disagrees with what expand_with
+        // actually built children for.
+        std::vector<uint8_t> is_legal(static_cast<size_t>(action_size), 0);
+        for (int a = 0; a < action_size && a < static_cast<int>(logits.size()); ++a) {
+            if (logits[a] > -std::numeric_limits<float>::infinity()) {
+                is_legal[a] = 1;
+            }
+        }
 
         std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
         if (cfg_.gumbel_noise_enabled) {

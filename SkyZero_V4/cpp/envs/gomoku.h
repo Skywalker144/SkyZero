@@ -62,6 +62,72 @@ public:
         return legal;
     }
 
+    // Transform a single board location under D4 symmetry.
+    // sym ∈ [0,8): low 2 bits = number of 90° rotations (k), bit 2 = horizontal flip.
+    // Mapping matches utils.h::transform_encoded_state: (r,c) source → (rr,cc) dest.
+    int transform_loc(int loc, int sym) const {
+        int r = loc / board_size;
+        int c = loc % board_size;
+        const int k = sym & 3;
+        const bool do_flip = (sym & 4) != 0;
+        int rr = r;
+        int cc = c;
+        for (int t = 0; t < k; ++t) {
+            const int nr = board_size - 1 - cc;
+            const int nc = rr;
+            rr = nr;
+            cc = nc;
+        }
+        if (do_flip) {
+            cc = board_size - 1 - cc;
+        }
+        return rr * board_size + cc;
+    }
+
+    // Returns the D4 subgroup that leaves `state` invariant. Always contains 0 (identity).
+    std::vector<int> get_board_symmetries(const std::vector<int8_t>& state) const {
+        std::vector<int> out;
+        out.push_back(0);
+        const int n = board_size * board_size;
+        for (int sym = 1; sym < 8; ++sym) {
+            bool ok = true;
+            for (int i = 0; i < n; ++i) {
+                if (state[i] != state[transform_loc(i, sym)]) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) out.push_back(sym);
+        }
+        return out;
+    }
+
+    // Like get_is_legal_actions, but among each symmetry orbit only the
+    // representative with the smallest loc index stays legal. When the board
+    // has only the trivial symmetry, returns the original mask unchanged.
+    std::vector<uint8_t> get_canonical_legal_actions(
+        const std::vector<int8_t>& state, int to_play
+    ) const {
+        auto legal = get_is_legal_actions(state, to_play);
+        auto syms = get_board_symmetries(state);
+        if (syms.size() <= 1) {
+            return legal;
+        }
+        const int n = board_size * board_size;
+        for (int loc = 0; loc < n; ++loc) {
+            if (!legal[loc]) continue;
+            for (int sym : syms) {
+                if (sym == 0) continue;
+                const int mapped = transform_loc(loc, sym);
+                if (mapped < loc) {
+                    legal[loc] = 0;
+                    break;
+                }
+            }
+        }
+        return legal;
+    }
+
     std::vector<int8_t> get_next_state(const std::vector<int8_t>& state, int action, int to_play) const {
         auto next = state;
         next[action] = static_cast<int8_t>(to_play);

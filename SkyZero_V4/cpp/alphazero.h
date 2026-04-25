@@ -54,6 +54,14 @@ struct AlphaZeroConfig {
     bool enable_symmetry_inference_for_root = false;
     bool enable_symmetry_inference_for_child = false;
 
+    // KataGo-style root symmetry pruning. At root, symmetry-equivalent legal
+    // moves are masked to -inf logit so only the orbit's canonical
+    // representative (smallest loc) is searched. Leave OFF for training even
+    // when the dataloader does D4 augmentation: pruning still prevents the
+    // NN from receiving visit-count signal at 7/8 of equivalent positions.
+    // Recommended ON for eval / human play.
+    bool root_symmetry_pruning = false;
+
     // Surprise weighting / value target mixing
     float policy_surprise_data_weight = 0.5f;
     float value_surprise_data_weight = 0.1f;

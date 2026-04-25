@@ -213,6 +213,8 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", true);
         cfg.enable_symmetry_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", true);
+        cfg.root_symmetry_pruning =
+            cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
 
