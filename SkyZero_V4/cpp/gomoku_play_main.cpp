@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -288,6 +290,52 @@ int main(int argc, char** argv) {
             return run_forward(batch);
         };
 
+        // Single forward to extract the opponent-policy head (elements()[1]).
+        // Run independently from MCTS so the search engine's infer_fn signature
+        // stays unchanged. Applies legal-move masking + softmax, mirroring the
+        // policy-head pipeline in inference().
+        auto forward_opp_policy = [&](const std::vector<int8_t>& state, int to_play) {
+            auto encoded = game.encode_state(state, to_play);
+            std::vector<float> input_buf(static_cast<size_t>(c) * area, 0.0f);
+            for (int j = 0; j < c * area; ++j) {
+                input_buf[j] = static_cast<float>(encoded[j]);
+            }
+            auto input = torch::from_blob(input_buf.data(), {1, c, board, board}, torch::kFloat32)
+                             .clone().to(device);
+            if (device.is_cuda()) input = input.to(torch::kHalf);
+
+            torch::jit::IValue out_iv;
+            {
+                std::lock_guard<std::mutex> lk(model_mu);
+                torch::NoGradGuard no_grad;
+                out_iv = model.forward({input});
+            }
+            auto opp_logits = out_iv.toTuple()->elements()[1].toTensor();
+            auto opp = opp_logits.reshape({1, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
+            const float* op = opp.data_ptr<float>();
+
+            std::vector<float> logits(static_cast<size_t>(area), 0.0f);
+            std::memcpy(logits.data(), op, static_cast<size_t>(area) * sizeof(float));
+            const auto legal = game.get_is_legal_actions(state, to_play);
+            for (size_t i = 0; i < logits.size(); ++i) {
+                if (i >= legal.size() || !legal[i]) {
+                    logits[i] = -std::numeric_limits<float>::infinity();
+                }
+            }
+            float maxv = -std::numeric_limits<float>::infinity();
+            for (float v : logits) if (v > maxv) maxv = v;
+            std::vector<float> probs(logits.size(), 0.0f);
+            float sum = 0.0f;
+            if (std::isfinite(maxv)) {
+                for (size_t i = 0; i < logits.size(); ++i) {
+                    probs[i] = std::isfinite(logits[i]) ? std::exp(logits[i] - maxv) : 0.0f;
+                    sum += probs[i];
+                }
+                if (sum > 0.0f) for (auto& v : probs) v /= sum;
+            }
+            return probs;
+        };
+
         std::mt19937 rng(std::random_device{}());
         const int search_threads = cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 8);
         TreeParallelMCTS<Gomoku> mcts(game, cfg, search_threads, infer_fn, batch_infer_fn, rng());
@@ -362,6 +410,16 @@ int main(int argc, char** argv) {
                 }
                 cfg.gumbel_noise_enabled = (v == 1);
                 std::cout << "[setting] gumbel_noise_enabled=" << v << "\n";
+                return true;
+            }
+            if (kw == "prune") {
+                int v = -1;
+                if (!(iss >> v) || (v != 0 && v != 1)) {
+                    std::cout << "Invalid input: prune requires 0 or 1.\n";
+                    return true;
+                }
+                cfg.root_symmetry_pruning = (v == 1);
+                std::cout << "[setting] root_symmetry_pruning=" << v << "\n";
                 return true;
             }
             return false;
@@ -491,6 +549,10 @@ int main(int argc, char** argv) {
                 }
                 print_policy_grid(visit_dist, game.board_size, "MCTS Visits (N(s,a)/sum):");
                 print_policy_grid(out.nn_policy, game.board_size, "NN Strategy:");
+                {
+                    auto opp_policy = forward_opp_policy(state, to_play);
+                    print_policy_grid(opp_policy, game.board_size, "NN Opp Strategy:");
+                }
 
                 const float root_value = out.v_mix[0] - out.v_mix[2];
                 const float nn_value = out.nn_value_probs[0] - out.nn_value_probs[2];
