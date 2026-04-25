@@ -149,9 +149,7 @@ int main(int argc, char** argv) {
         // Force Gumbel noise OFF for evaluation regardless of cfg — we want
         // deterministic-ish play so Elo reflects strength, not sampling luck.
         cfg.gumbel_noise_enabled = false;
-        cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", -1);
-        cfg.move_temperature_init = 0.0f;
-        cfg.move_temperature_final = 0.0f;
+        cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", 0);
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
         cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
