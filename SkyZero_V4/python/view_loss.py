@@ -45,7 +45,8 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
     ax1.plot(x, col("avg_len"), label="avg")
     ax1.plot(x, col("max_len"), label="max")
     ax1.set_ylabel("game length")
-    ax1.grid(True, alpha=0.3)
+    ax1.set_yscale("symlog", linthresh=1)
+    ax1.grid(True, alpha=0.3, which="both")
     ax1.legend(loc="best")
 
     ax2.plot(x, col("black_win_rate"), label="black")
