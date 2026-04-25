@@ -115,8 +115,6 @@ int main(int argc, char** argv) {
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
         cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", -1);
-        cfg.move_temperature_init = cfg_get<float>(cfg_map, "MOVE_TEMPERATURE_INIT", 0.8f);
-        cfg.move_temperature_final = cfg_get<float>(cfg_map, "MOVE_TEMPERATURE_FINAL", 0.2f);
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
         cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
