@@ -428,15 +428,16 @@ private:
             memory.push_back(ms);
 
             const int move_count = static_cast<int>(memory.size());
-            const float t = cfg_.move_temperature_init
-                - (static_cast<float>(move_count) / static_cast<float>(half_life))
-                    * (cfg_.move_temperature_init - cfg_.move_temperature_final);
 
             int action = sr.gumbel_action;
             if (move_count < half_life) {
-                const auto move_probs = temperature_transform(sr.mcts_policy, t);
-                std::discrete_distribution<int> action_dist(move_probs.begin(), move_probs.end());
-                action = action_dist(worker_rng);
+                float sum_n = 0.0f;
+                for (float n : sr.visit_counts) sum_n += n;
+                if (sum_n > 0.0f) {
+                    std::discrete_distribution<int> action_dist(
+                        sr.visit_counts.begin(), sr.visit_counts.end());
+                    action = action_dist(worker_rng);
+                }
             }
             if (action < 0) {
                 std::discrete_distribution<int> action_dist(sr.mcts_policy.begin(), sr.mcts_policy.end());
