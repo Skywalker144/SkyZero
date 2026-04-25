@@ -249,15 +249,22 @@ class EngineSession:
 
 
 class App:
-    def __init__(self, play_bin, model, config):
+    def __init__(self, play_bin, config, models, current_model_id):
         self.play_bin = play_bin
-        self.model = model
         self.config = config
+        self.models = models  # id -> abs Path
+        self.current_model_id = current_model_id
         self.session = None
         self.session_lock = threading.Lock()
 
-    def start(self, human_side):
+    @property
+    def model(self):
+        return self.models[self.current_model_id]
+
+    def start(self, human_side, model_id=None):
         with self.session_lock:
+            if model_id is not None and model_id in self.models:
+                self.current_model_id = model_id
             if self.session is not None:
                 self.session.stop()
             self.session = EngineSession(self.play_bin, self.model, self.config, human_side)
@@ -265,6 +272,11 @@ class App:
     def current(self):
         with self.session_lock:
             return self.session
+
+    def model_listing(self):
+        items = [{"id": mid, "label": Path(p).name, "group": mid.split("/", 1)[0]}
+                 for mid, p in self.models.items()]
+        return {"current": self.current_model_id, "items": items}
 
 
 HTML_PAGE = r"""<!doctype html>
@@ -720,6 +732,13 @@ HTML_PAGE = r"""<!doctype html>
         <div class="status-pill" id="status_pill" data-variant="idle">
           <span class="dot"></span>
           <span id="status">idle</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-body">
+          <div class="card-title">Model</div>
+          <select id="model_select" class="num" style="width:100%; height:32px; text-align:left; font-family: var(--font-mono);"></select>
         </div>
       </div>
 
@@ -1302,17 +1321,61 @@ function setSide(side) {
   drawValueChart();
   sendCmd('side ' + side);
 }
-async function newGame(side) {
+async function newGame(side, modelId) {
   if (side === undefined) side = selectedSide;
   else { selectedSide = side; updateSideButtons(); }
   valueHistory = [];
   pendingSwapBaseline = null;
   pendingSwapParity = 0;
   drawValueChart();
+  const payload = {human_side: side};
+  if (modelId) payload.model = modelId;
   await fetch('/new', {method:'POST', headers:{'Content-Type':'application/json'},
-                       body: JSON.stringify({human_side: side})});
+                       body: JSON.stringify(payload)});
   refresh();
 }
+
+async function loadModels() {
+  try {
+    const r = await fetch('/models');
+    const data = await r.json();
+    const sel = document.getElementById('model_select');
+    sel.innerHTML = '';
+    const groups = {};
+    for (const it of data.items) {
+      (groups[it.group] = groups[it.group] || []).push(it);
+    }
+    const order = ['models', 'anchors', 'custom'];
+    const seen = new Set();
+    for (const g of order) {
+      if (!groups[g]) continue;
+      seen.add(g);
+      const og = document.createElement('optgroup');
+      og.label = g;
+      for (const it of groups[g]) {
+        const o = document.createElement('option');
+        o.value = it.id; o.textContent = it.label;
+        og.appendChild(o);
+      }
+      sel.appendChild(og);
+    }
+    for (const g of Object.keys(groups)) {
+      if (seen.has(g)) continue;
+      const og = document.createElement('optgroup');
+      og.label = g;
+      for (const it of groups[g]) {
+        const o = document.createElement('option');
+        o.value = it.id; o.textContent = it.label;
+        og.appendChild(o);
+      }
+      sel.appendChild(og);
+    }
+    sel.value = data.current;
+  } catch(e) { /* ignore */ }
+}
+document.getElementById('model_select').addEventListener('change', (ev) => {
+  newGame(selectedSide, ev.target.value);
+});
 
 // Auto-apply sims/gumbel_m on change (blur) or Enter, replacing Apply buttons.
 function bindNumInput(id, apply) {
@@ -1334,6 +1397,7 @@ drawHeat('h_mcts_policy', null);
 drawHeat('h_mcts_visits', null);
 drawHeat('h_nn_policy', null);
 setInterval(refresh, 250);
+loadModels();
 refresh();
 </script>
 </body></html>
@@ -1372,6 +1436,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path == "/models":
+            self._send_json(200, Handler.app.model_listing())
+            return
         if self.path == "/state":
             sess = Handler.app.current()
             if sess is None:
@@ -1392,8 +1459,11 @@ class Handler(BaseHTTPRequestHandler):
             side = int(body.get("human_side", 1))
             if side not in (1, -1):
                 side = 1
-            Handler.app.start(side)
-            self._send_json(200, {"ok": True})
+            model_id = body.get("model")
+            if model_id is not None and not isinstance(model_id, str):
+                model_id = None
+            Handler.app.start(side, model_id=model_id)
+            self._send_json(200, {"ok": True, "model": Handler.app.current_model_id})
             return
         if self.path == "/move":
             sess = Handler.app.current()
@@ -1408,6 +1478,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
             return
         self.send_response(404); self.end_headers()
+
+
+def discover_models(root_dir):
+    """Scan data/models/*.pt and anchors/*.pt; returns ordered dict id -> abs Path."""
+    out = {}
+    models_dir = root_dir / "data" / "models"
+    if models_dir.is_dir():
+        files = sorted(models_dir.glob("*.pt"), key=lambda p: p.name, reverse=True)
+        # surface latest.pt first if present
+        files.sort(key=lambda p: 0 if p.name == "latest.pt" else 1)
+        for p in files:
+            out[f"models/{p.name}"] = p.resolve()
+    anchors_dir = root_dir / "anchors"
+    if anchors_dir.is_dir():
+        for p in sorted(anchors_dir.glob("*.pt"), key=lambda p: p.name):
+            out[f"anchors/{p.name}"] = p.resolve()
+    return out
 
 
 def main():
@@ -1425,7 +1512,18 @@ def main():
         if not Path(p).exists():
             raise SystemExit(f"{name} not found: {p}")
 
-    app = App(Path(args.bin), Path(args.model), Path(args.config))
+    models = discover_models(root_dir)
+    init_path = Path(args.model).resolve()
+    init_id = None
+    for mid, p in models.items():
+        if p == init_path:
+            init_id = mid
+            break
+    if init_id is None:
+        init_id = f"custom/{init_path.name}"
+        models = {init_id: init_path, **models}
+
+    app = App(Path(args.bin), Path(args.config), models, init_id)
     app.start(args.human_side)
     Handler.app = app
 
