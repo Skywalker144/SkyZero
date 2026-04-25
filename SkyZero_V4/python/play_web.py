@@ -47,6 +47,7 @@ class EngineSession:
         self.mcts_policy = None  # 15x15
         self.mcts_visits = None
         self.nn_policy = None
+        self.nn_opp_policy = None
         self.gumbel_phases = None  # list of list of [r,c], index 0 = initial 16, last = final 1
 
         self._pending_rows = None
@@ -111,6 +112,10 @@ class EngineSession:
             return
         if "MCTS Visits" in line:
             self._pending_grid_key = "mcts_visits"
+            self._pending_grid_rows = []
+            return
+        if "NN Opp Strategy" in line:
+            self._pending_grid_key = "nn_opp_policy"
             self._pending_grid_rows = []
             return
         if "NN Strategy" in line:
@@ -244,6 +249,7 @@ class EngineSession:
                 "mcts_policy": self.mcts_policy,
                 "mcts_visits": self.mcts_visits,
                 "nn_policy": self.nn_policy,
+                "nn_opp_policy": self.nn_opp_policy,
                 "gumbel_phases": self.gumbel_phases,
             }
 
@@ -403,7 +409,7 @@ HTML_PAGE = r"""<!doctype html>
     border-radius: 4px;
   }
 
-  .app { max-width: 1320px; margin: 0 auto; padding: 16px 24px 48px; }
+  .app { max-width: 2000px; margin: 0 auto; padding: 16px 24px 48px; }
 
   /* ---------- Top bar ---------- */
   .topbar {
@@ -435,12 +441,12 @@ HTML_PAGE = r"""<!doctype html>
   /* ---------- Layout ---------- */
   .main {
     display: grid;
-    grid-template-columns: 260px minmax(0, auto) 300px;
+    grid-template-columns: 260px minmax(0, auto) minmax(0, auto);
     gap: 20px;
     align-items: start;
     margin-bottom: 20px;
   }
-  @media (max-width: 1199px) {
+  @media (max-width: 1399px) {
     .main { grid-template-columns: 1fr; }
   }
   .board-col {
@@ -451,9 +457,9 @@ HTML_PAGE = r"""<!doctype html>
     display: flex; flex-direction: column; gap: 12px;
     min-width: 0;
   }
-  .side-col.fill > .card { flex: 1; display: flex; flex-direction: column; }
-  .side-col.fill > .card > .card-body { flex: 1; display: flex; flex-direction: column; }
   .seg-row { display: flex; gap: 8px; }
+  .side-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .side-row .seg-row { flex: 1; max-width: 180px; }
   .seg-btn {
     flex: 1; height: 34px; font-size: 13px; font-weight: 500;
     background: var(--surface); color: var(--fg);
@@ -633,16 +639,16 @@ HTML_PAGE = r"""<!doctype html>
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     display: flex; gap: 10px;
+    min-height: 18px;
   }
   .wdl-detail .k { color: var(--fg-subtle); }
   .value-chart-wrap {
     margin-top: 12px;
     padding-top: 12px;
     border-top: 1px solid var(--border);
-    flex: 1;
     display: flex;
     flex-direction: column;
-    min-height: 140px;
+    min-height: 160px;
   }
   .value-chart-legend {
     display: flex; align-items: center; gap: 12px;
@@ -653,7 +659,7 @@ HTML_PAGE = r"""<!doctype html>
   .vc-item { display: inline-flex; align-items: center; gap: 5px; }
   .vc-swatch { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
   .vc-axis { margin-left: auto; color: var(--fg-subtle); font-size: 10.5px; }
-  #value_chart { display: block; width: 100%; flex: 1; min-height: 120px; }
+  #value_chart { display: block; width: 100%; height: 140px; min-height: 120px; }
   /* ---------- Board ---------- */
   .board-card {
     padding: 16px;
@@ -686,23 +692,36 @@ HTML_PAGE = r"""<!doctype html>
   }
 
   /* ---------- Heat grid ---------- */
+  #right_col { min-width: 0; }
   .grids {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    height: 100%;
   }
-  @media (max-width: 900px) {
+  @media (max-width: 1399px) {
+    .grids { grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto; }
+  }
+  @media (max-width: 720px) {
     .grids { grid-template-columns: 1fr; }
   }
-  .grid-card { padding: 16px; text-align: center; }
+  .grid-card {
+    padding: 12px; text-align: center;
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
   .grid-card .grid-title {
-    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--fg-subtle);
+    font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+    color: var(--fg-subtle);
     margin-bottom: 12px; text-align: left;
+    flex-shrink: 0;
   }
   .heat {
     background: var(--heat-bg);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    display: block; margin: 0 auto;
+    display: block;
+    margin: auto;
   }
 
   .hidden { display: none !important; }
@@ -743,8 +762,8 @@ HTML_PAGE = r"""<!doctype html>
       </div>
 
       <div class="card">
-        <div class="card-body">
-          <div class="card-title">Human side</div>
+        <div class="card-body side-row">
+          <div class="card-title" style="margin:0;">Human side</div>
           <div class="seg-row">
             <button class="seg-btn" id="side_black" aria-pressed="true" onclick="setSide(1)">
               <span class="seg-stone black"></span>Black
@@ -769,42 +788,22 @@ HTML_PAGE = r"""<!doctype html>
           </div>
           <div class="divider"></div>
           <label class="toggle">
-            <span>Gumbel noise</span>
-            <span style="display:inline-flex;">
-              <input type="checkbox" id="noise_toggle">
-              <span class="track"></span>
-            </span>
-          </label>
-          <label class="toggle">
             <span>Gumbel overlay</span>
             <span style="display:inline-flex;">
               <input type="checkbox" id="gumbel_toggle" checked>
               <span class="track"></span>
             </span>
           </label>
+          <label class="toggle">
+            <span>Root symmetry prune</span>
+            <span style="display:inline-flex;">
+              <input type="checkbox" id="prune_toggle" checked>
+              <span class="track"></span>
+            </span>
+          </label>
         </div>
       </div>
-    </aside>
 
-    <section class="board-col">
-      <div class="card board-card">
-        <canvas id="board"></canvas>
-        <div id="gumbel_legend">
-          <span class="legend-head">Gumbel Sequential Halving</span>
-          <span class="chip"><span class="dot" style="background:#9ca3af;"></span>16</span>
-          <span class="chip"><span class="dot" style="background:#3b82f6;"></span>8</span>
-          <span class="chip"><span class="dot" style="background:#10b981;"></span>4</span>
-          <span class="chip"><span class="dot" style="background:#f59e0b;"></span>2</span>
-          <span class="chip"><span class="dot" style="background:#ef4444;"></span>1 (picked)</span>
-        </div>
-      </div>
-      <div class="board-actions">
-        <button class="btn primary" onclick="newGame()">New game</button>
-        <button class="btn danger-ghost" onclick="sendCmd('u')">Undo</button>
-      </div>
-    </section>
-
-    <aside class="side-col fill" id="right_col">
       <div class="card">
         <div class="card-body">
           <div class="card-title">Value estimates</div>
@@ -839,40 +838,68 @@ HTML_PAGE = r"""<!doctype html>
         </div>
       </div>
     </aside>
-  </div>
 
-  <div class="grids">
-    <div class="card grid-card">
-      <div class="grid-title">MCTS Strategy · improved policy</div>
-      <canvas class="heat" id="h_mcts_policy"></canvas>
-    </div>
-    <div class="card grid-card">
-      <div class="grid-title">MCTS Visits · N / sum</div>
-      <canvas class="heat" id="h_mcts_visits"></canvas>
-    </div>
-    <div class="card grid-card">
-      <div class="grid-title">NN Strategy · prior</div>
-      <canvas class="heat" id="h_nn_policy"></canvas>
-    </div>
+    <section class="board-col">
+      <div class="card board-card">
+        <canvas id="board"></canvas>
+        <div id="gumbel_legend">
+          <span class="legend-head">Gumbel Sequential Halving</span>
+          <span class="chip"><span class="dot" style="background:#9ca3af;"></span>16</span>
+          <span class="chip"><span class="dot" style="background:#3b82f6;"></span>8</span>
+          <span class="chip"><span class="dot" style="background:#10b981;"></span>4</span>
+          <span class="chip"><span class="dot" style="background:#f59e0b;"></span>2</span>
+          <span class="chip"><span class="dot" style="background:#ef4444;"></span>1 (picked)</span>
+        </div>
+      </div>
+      <div class="board-actions">
+        <button class="btn primary" onclick="newGame()">New game</button>
+        <button class="btn danger-ghost" onclick="sendCmd('u')">Undo</button>
+      </div>
+    </section>
+
+    <aside class="side-col" id="right_col">
+      <div class="grids">
+        <div class="card grid-card">
+          <div class="grid-title">Improved Policy</div>
+          <canvas class="heat" id="h_mcts_policy"></canvas>
+        </div>
+        <div class="card grid-card">
+          <div class="grid-title">Visits Dist</div>
+          <canvas class="heat" id="h_mcts_visits"></canvas>
+        </div>
+        <div class="card grid-card">
+          <div class="grid-title">NN Policy</div>
+          <canvas class="heat" id="h_nn_policy"></canvas>
+        </div>
+        <div class="card grid-card">
+          <div class="grid-title">NN Opp Policy</div>
+          <canvas class="heat" id="h_nn_opp_policy"></canvas>
+        </div>
+      </div>
+    </aside>
   </div>
 </div>
 
 <script>
-const N = 15, CELL = 36, MARGIN = 28;
+const N = 15;
+const MARGIN = 28;
+let CELL = 36;
+let BOARD_LOGICAL = MARGIN*2 + CELL*(N-1); // recomputed in syncBoardSize()
 const MONO_FONT = '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
-const BOARD_LOGICAL = MARGIN*2 + CELL*(N-1); // 2*28 + 36*14 = 560
-const HEAT_LOGICAL = 280;
+const HEAT_LOGICAL = 240;
 const DPR = window.devicePixelRatio || 1;
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-function setupCanvas(canvas, logicalW, logicalH) {
+function setupCanvas(canvas, logicalW, logicalH, setStyle = true) {
   canvas.width = Math.round(logicalW * DPR);
   canvas.height = Math.round(logicalH * DPR);
-  canvas.style.width = logicalW + 'px';
-  canvas.style.height = logicalH + 'px';
+  if (setStyle) {
+    canvas.style.width = logicalW + 'px';
+    canvas.style.height = logicalH + 'px';
+  }
   const ctx = canvas.getContext('2d');
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx._logicalW = logicalW;
@@ -896,25 +923,92 @@ function resizeValueChart() {
   drawValueChart();
 }
 new ResizeObserver(resizeValueChart).observe(vcCanvas);
+
 const leftCol = document.getElementById('left_col');
 const rightCol = document.getElementById('right_col');
-function syncRightColHeight() {
-  if (!leftCol || !rightCol) return;
-  if (window.matchMedia('(max-width: 1199px)').matches) {
+const boardCol = document.querySelector('.board-col');
+const boardCard = document.querySelector('.board-card');
+const boardActions = document.querySelector('.board-actions');
+function syncBoardSize() {
+  if (window.matchMedia('(max-width: 1399px)').matches) {
     rightCol.style.height = '';
+    rightCol.style.width = '';
+    if (BOARD_LOGICAL !== 560) {
+      CELL = 36;
+      BOARD_LOGICAL = MARGIN*2 + CELL*(N-1);
+      setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      draw();
+    }
     return;
   }
-  rightCol.style.height = leftCol.offsetHeight + 'px';
+  // Make .board-col total height match #left_col by reverse-computing the
+  // canvas size from measured surroundings (no hard-coded constants).
+  const target = leftCol.offsetHeight;
+  const cardCS = getComputedStyle(boardCard);
+  const cardPadY = parseFloat(cardCS.paddingTop) + parseFloat(cardCS.paddingBottom);
+  const legendCS = getComputedStyle(gumbelLegend);
+  const legendH = gumbelLegend.classList.contains('hidden')
+      ? 0
+      : gumbelLegend.offsetHeight + parseFloat(legendCS.marginTop || 0);
+  // Match .board-card height (canvas + legend + padding) to leftCol height.
+  // Actions row sits below and is intentionally excluded.
+  let size = target - cardPadY - legendH;
+  size = Math.max(360, size);
+  CELL = Math.max(20, Math.floor((size - 2*MARGIN) / (N-1)));
+  BOARD_LOGICAL = MARGIN*2 + CELL*(N-1);
+  rightCol.style.height = boardCard.offsetHeight + 'px';
+  rightCol.style.width = boardCard.offsetWidth + 'px';
+  if (cv.width === Math.round(BOARD_LOGICAL * DPR)) return;
+  setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
+  draw();
 }
-new ResizeObserver(syncRightColHeight).observe(leftCol);
-window.addEventListener('resize', syncRightColHeight);
-syncRightColHeight();
+new ResizeObserver(syncBoardSize).observe(leftCol);
+window.addEventListener('resize', syncBoardSize);
+
 let valueHistory = []; // [{step, root, nn}]  step = stone count when recorded
 const heatCtxs = {
-  h_mcts_policy: setupCanvas(document.getElementById('h_mcts_policy'), HEAT_LOGICAL, HEAT_LOGICAL),
-  h_mcts_visits: setupCanvas(document.getElementById('h_mcts_visits'), HEAT_LOGICAL, HEAT_LOGICAL),
-  h_nn_policy:   setupCanvas(document.getElementById('h_nn_policy'),   HEAT_LOGICAL, HEAT_LOGICAL),
+  h_mcts_policy: setupCanvas(document.getElementById('h_mcts_policy'), HEAT_LOGICAL, HEAT_LOGICAL, false),
+  h_mcts_visits: setupCanvas(document.getElementById('h_mcts_visits'), HEAT_LOGICAL, HEAT_LOGICAL, false),
+  h_nn_policy:   setupCanvas(document.getElementById('h_nn_policy'),   HEAT_LOGICAL, HEAT_LOGICAL, false),
+  h_nn_opp_policy: setupCanvas(document.getElementById('h_nn_opp_policy'), HEAT_LOGICAL, HEAT_LOGICAL, false),
 };
+const HEAT_GRID_KEYS = {
+  h_mcts_policy: 'mcts_policy',
+  h_mcts_visits: 'mcts_visits',
+  h_nn_policy: 'nn_policy',
+  h_nn_opp_policy: 'nn_opp_policy',
+};
+function fitHeatCanvas(canvasId) {
+  const c = document.getElementById(canvasId);
+  const card = c.parentElement;
+  const cardCS = getComputedStyle(card);
+  const padX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
+  const padY = parseFloat(cardCS.paddingTop) + parseFloat(cardCS.paddingBottom);
+  const title = card.querySelector('.grid-title');
+  let titleH = 0;
+  if (title) {
+    const tCS = getComputedStyle(title);
+    titleH = title.offsetHeight + parseFloat(tCS.marginTop || 0) + parseFloat(tCS.marginBottom || 0);
+  }
+  const availW = card.clientWidth - padX;
+  const availH = card.clientHeight - padY - titleH;
+  const size = Math.max(60, Math.floor(Math.min(availW, availH > 0 ? availH : availW)));
+  c.style.width = size + 'px';
+  c.style.height = size + 'px';
+  if (heatCtxs[canvasId]._logicalW === size) return false;
+  heatCtxs[canvasId] = setupCanvas(c, size, size, false);
+  return true;
+}
+for (const id of Object.keys(heatCtxs)) {
+  const c = document.getElementById(id);
+  new ResizeObserver(() => {
+    if (!fitHeatCanvas(id)) return;
+    const grid = state ? state[HEAT_GRID_KEYS[id]] : null;
+    drawHeat(id, grid);
+  }).observe(c.parentElement);
+  fitHeatCanvas(id);
+}
 
 let state = null;
 let showGumbel = true;
@@ -941,7 +1035,12 @@ const gumbelLegend = document.getElementById('gumbel_legend');
 gumbelToggle.addEventListener('change', () => {
   showGumbel = gumbelToggle.checked;
   gumbelLegend.classList.toggle('hidden', !showGumbel);
+  syncBoardSize();
   draw();
+});
+const pruneToggle = document.getElementById('prune_toggle');
+pruneToggle.addEventListener('change', () => {
+  sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
 });
 
 /* ---------- Theme toggle ---------- */
@@ -956,10 +1055,12 @@ themeBtn.addEventListener('click', () => {
     drawHeat('h_mcts_policy', state.mcts_policy);
     drawHeat('h_mcts_visits', state.mcts_visits);
     drawHeat('h_nn_policy',   state.nn_policy);
+    drawHeat('h_nn_opp_policy', state.nn_opp_policy);
   } else {
     drawHeat('h_mcts_policy', null);
     drawHeat('h_mcts_visits', null);
     drawHeat('h_nn_policy',   null);
+    drawHeat('h_nn_opp_policy', null);
   }
 });
 
@@ -985,6 +1086,27 @@ function drawHeat(canvasId, grid) {
       g.font = `${Math.floor(cell*0.38)}px ${MONO_FONT}`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText((v*100).toFixed(0), x + cell/2, y + cell/2);
+    }
+  }
+  if (state && state.board) {
+    const r0 = cell * 0.32;
+    for (let r=0;r<N;r++) for (let k=0;k<N;k++) {
+      const sv = state.board[r][k]; if (!sv) continue;
+      const cx = k*cell + cell/2, cy = r*cell + cell/2;
+      g.beginPath(); g.arc(cx, cy, r0, 0, Math.PI*2);
+      if (sv === 1) {
+        g.fillStyle = 'rgba(0,0,0,0.7)';
+        g.fill();
+        g.lineWidth = 1;
+        g.strokeStyle = 'rgba(255,255,255,0.6)';
+        g.stroke();
+      } else {
+        g.fillStyle = 'rgba(255,255,255,0.85)';
+        g.fill();
+        g.lineWidth = 1;
+        g.strokeStyle = 'rgba(0,0,0,0.5)';
+        g.stroke();
+      }
     }
   }
 }
@@ -1020,6 +1142,14 @@ function draw() {
   }
   if (!state) return;
 
+  const stoneR    = Math.max(6, Math.round(CELL * 0.39));
+  const gumbelR   = Math.max(6, Math.round(CELL * 0.34));
+  const lastDotR  = Math.max(2, Math.round(CELL * 0.11));
+  const shadowDx  = Math.max(0, Math.round(CELL * 0.015));
+  const shadowDy  = Math.max(1, Math.round(CELL * 0.045));
+  const gradInner = Math.max(1, Math.round(CELL * 0.11));
+  const gumbelFontPx = Math.max(8, Math.round(CELL * 0.28));
+
   const phases = state.gumbel_phases;
   if (showGumbel && phases && phases.length > 0) {
     const COLORS = ['#9ca3af', '#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
@@ -1037,14 +1167,14 @@ function draw() {
       let bucket = LABELS.indexOf(sizeLabel);
       if (bucket < 0) bucket = Math.min(idx, COLORS.length-1);
       const x = MARGIN+c*CELL, y = MARGIN+r*CELL;
-      ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI*2);
+      ctx.beginPath(); ctx.arc(x, y, gumbelR, 0, Math.PI*2);
       ctx.lineWidth = 2.5;
       ctx.strokeStyle = COLORS[bucket];
       ctx.stroke();
       ctx.lineWidth = 1;
       if (state.board[r][c] === 0) {
         ctx.fillStyle = COLORS[bucket];
-        ctx.font = `bold 10px ${MONO_FONT}`;
+        ctx.font = `bold ${gumbelFontPx}px ${MONO_FONT}`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(sizeLabel, x, y);
       }
@@ -1055,22 +1185,22 @@ function draw() {
   for (let r=0;r<N;r++) for (let c=0;c<N;c++){
     const v = b[r][c]; if (!v) continue;
     const x = MARGIN+c*CELL, y = MARGIN+r*CELL;
-    ctx.beginPath(); ctx.arc(x+0.5, y+1.5, 14, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(x+shadowDx, y+shadowDy, stoneR, 0, Math.PI*2);
     ctx.fillStyle = stoneShadow; ctx.fill();
-    ctx.beginPath(); ctx.arc(x, y, 14, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(x, y, stoneR, 0, Math.PI*2);
     if (v === 1) {
-      const grad = ctx.createRadialGradient(x-4, y-4, 2, x, y, 14);
+      const grad = ctx.createRadialGradient(x-gradInner, y-gradInner, 2, x, y, stoneR);
       grad.addColorStop(0, stoneB0); grad.addColorStop(1, stoneB1);
       ctx.fillStyle = grad;
     } else {
-      const grad = ctx.createRadialGradient(x-4, y-4, 2, x, y, 14);
+      const grad = ctx.createRadialGradient(x-gradInner, y-gradInner, 2, x, y, stoneR);
       grad.addColorStop(0, stoneW0); grad.addColorStop(1, stoneW1);
       ctx.fillStyle = grad;
     }
     ctx.fill();
     ctx.strokeStyle = stoneOutline; ctx.lineWidth = 1; ctx.stroke();
     if (lm && lm[0]===r && lm[1]===c) {
-      ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2);
+      ctx.beginPath(); ctx.arc(x, y, lastDotR, 0, Math.PI*2);
       ctx.fillStyle = '#ef4444'; ctx.fill();
     }
   }
@@ -1254,6 +1384,7 @@ async function refresh() {
     drawHeat('h_mcts_policy', state.mcts_policy);
     drawHeat('h_mcts_visits', state.mcts_visits);
     drawHeat('h_nn_policy',   state.nn_policy);
+    drawHeat('h_nn_opp_policy', state.nn_opp_policy);
   } catch(e) { /* ignore */ }
 }
 
@@ -1283,10 +1414,6 @@ function applyGm() {
   const el = document.getElementById('gm_input');
   const m = parseInt(el.value, 10);
   if (Number.isFinite(m) && m >= 1) sendCmd('gm ' + m);
-}
-function applyNoise() {
-  const v = document.getElementById('noise_toggle').checked ? 1 : 0;
-  sendCmd('noise ' + v);
 }
 let selectedSide = 1;
 let sideSynced = false;
@@ -1332,6 +1459,12 @@ async function newGame(side, modelId) {
   if (modelId) payload.model = modelId;
   await fetch('/new', {method:'POST', headers:{'Content-Type':'application/json'},
                        body: JSON.stringify(payload)});
+  sendCmd('noise 0');
+  sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
+  const sims = parseInt(document.getElementById('sims_input').value, 10);
+  if (Number.isFinite(sims) && sims >= 1) sendCmd('sims ' + sims);
+  const gm = parseInt(document.getElementById('gm_input').value, 10);
+  if (Number.isFinite(gm) && gm >= 1) sendCmd('gm ' + gm);
   refresh();
 }
 
@@ -1388,14 +1521,16 @@ function bindNumInput(id, apply) {
 }
 bindNumInput('sims_input', applySims);
 bindNumInput('gm_input', applyGm);
-document.getElementById('noise_toggle').addEventListener('change', applyNoise);
-applyNoise(); // sync initial noise state to engine (default off)
+sendCmd('noise 0'); // ensure engine starts with Gumbel noise off
+sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
 
 draw();
 drawValueChart();
 drawHeat('h_mcts_policy', null);
 drawHeat('h_mcts_visits', null);
 drawHeat('h_nn_policy', null);
+drawHeat('h_nn_opp_policy', null);
+syncBoardSize();
 setInterval(refresh, 250);
 loadModels();
 refresh();
@@ -1447,7 +1582,7 @@ class Handler(BaseHTTPRequestHandler):
                                       "root_value": None, "nn_value": None,
                                       "game_over": False, "human_side": 1,
                                       "mcts_policy": None, "mcts_visits": None, "nn_policy": None,
-                                      "gumbel_phases": None})
+                                      "nn_opp_policy": None, "gumbel_phases": None})
                 return
             self._send_json(200, sess.snapshot())
             return
