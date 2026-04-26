@@ -136,19 +136,25 @@ def test_nested_bottleneck_with_gpool():
 def test_nested_bottleneck_returns_residual_only():
     """坑 1: NestedBottleneckResBlock.forward 只返残差, 不在内部加回 x.
 
-    主循环必须 out = out + block(out).
+    主循环必须由 KataGoNet 的外层做 out = out + block(out).
+
+    检测方法: 把所有 conv/linear 权重置零. 此时:
+      - FixscaleNorm(x) = (gamma+1)*x + beta = x  (gamma=0, beta=0)
+      - 任何 conv(x, weights=0) = 0
+      - 内层 ResBlock 输出 0; 内层 out = out + 0 = out
+      - normactconvp 输出 0; 整条链路输出 0
+    所以正确实现下 forward(x=100*ones) = 0.
+    若错误实现 `return x + out`, forward(x=100*ones) = 100*ones + 0 = 100.
     """
     nbb = NestedBottleneckResBlock(internal_length=2, c_main=8, c_mid=4, c_gpool=None)
-    nbb.initialize(fixup_scale=1.0)
-    x = torch.zeros(1, 8, 5, 5)
+    # 把所有 Parameter 置零 (gamma, beta, conv weights, linear weights)
+    for p in nbb.parameters():
+        p.data.zero_()
+    x = torch.ones(1, 8, 5, 5) * 100.0
     mask = torch.ones(1, 1, 5, 5)
     out = nbb(x, mask)
-    # 主断言: 对 x=100, output 应在残差量级 (远小于 100)
-    x2 = torch.ones(1, 8, 5, 5) * 100.0
-    out2 = nbb(x2, mask)
-    # 如果代码错误地做了 x + 残差, out2 会 ≈ 100
-    # 正确实现: out2 是残差量级
-    assert out2.abs().max() < 50.0, (
-        "NestedBottleneckResBlock.forward likely incorrectly returns x + residual; "
-        f"got max abs {out2.abs().max().item()}"
+    # 正确实现: out ≈ 0 (容忍 FP 误差)
+    assert torch.allclose(out, torch.zeros_like(out), atol=1e-5), (
+        "NestedBottleneckResBlock.forward likely returns x + residual (TRAP 1); "
+        f"with all weights zeroed, output should be 0 but got max abs {out.abs().max().item()}"
     )
