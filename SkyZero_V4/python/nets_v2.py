@@ -606,7 +606,7 @@ class KataGoNet(nn.Module):
         self.norm_trunkfinal.set_scale(1.0 / math.sqrt(self.num_blocks + 1.0))
 
     def forward(self, input_spatial: torch.Tensor,
-                input_global: torch.Tensor) -> Dict[str, Any]:
+                input_global: torch.Tensor) -> Dict[str, torch.Tensor]:
         # SkyZero 固定 15×15: mask 在网络内部硬编码为 ones, mask_sum_hw=225
         B = input_spatial.shape[0]
         mask = torch.ones(B, 1, self.pos_len, self.pos_len,
@@ -618,6 +618,8 @@ class KataGoNet(nn.Module):
         x_global = self.linear_global(input_global).unsqueeze(-1).unsqueeze(-1)
         out = x_spatial + x_global
 
+        result: Dict[str, torch.Tensor] = {}
+
         if self.has_intermediate_head:
             for block in self.blocks[: self.intermediate_head_blocks]:
                 out = out + block(out, mask, mask_sum_hw)
@@ -626,113 +628,37 @@ class KataGoNet(nn.Module):
             iout = self.act_intermediate_trunkfinal(iout)
             iout_policy = self.intermediate_policy_head(iout, mask, mask_sum_hw)
             iout_value = self.intermediate_value_head(iout, mask, mask_sum_hw)
+            result["intermediate_policy"] = iout_policy
+            result["intermediate_value_wdl"] = iout_value[0]
+            result["intermediate_value_td"] = iout_value[1]
+            result["intermediate_value_st_error"] = iout_value[2]
+            result["intermediate_value_var_time"] = iout_value[3]
+            result["intermediate_value_ownership"] = iout_value[4]
+            result["intermediate_value_futurepos"] = iout_value[5]
 
             for block in self.blocks[self.intermediate_head_blocks:]:
                 out = out + block(out, mask, mask_sum_hw)
-
-            out = self.norm_trunkfinal(out, mask)
-            out = self.act_trunkfinal(out)
-
-            out_policy = self.policy_head(out, mask, mask_sum_hw)
-            out_value = self.value_head(out, mask, mask_sum_hw)
-
-            return {
-                "policy": out_policy,
-                "value": out_value,
-                "intermediate_policy": iout_policy,
-                "intermediate_value": iout_value,
-            }
         else:
             for block in self.blocks:
                 out = out + block(out, mask, mask_sum_hw)
 
-            out = self.norm_trunkfinal(out, mask)
-            out = self.act_trunkfinal(out)
+        out = self.norm_trunkfinal(out, mask)
+        out = self.act_trunkfinal(out)
 
-            out_policy = self.policy_head(out, mask, mask_sum_hw)
-            out_value = self.value_head(out, mask, mask_sum_hw)
+        out_policy = self.policy_head(out, mask, mask_sum_hw)
+        out_value = self.value_head(out, mask, mask_sum_hw)
 
-            return {
-                "policy": out_policy,
-                "value": out_value,
-            }
-
-
-# ============================================================
-# TorchScript 导出 Wrapper
-# ============================================================
-
-class KataGoNetForExport(nn.Module):
-    """Wrapper for TorchScript export with all-tensor dict outputs.
-
-    Wraps KataGoNet.forward() to flatten the value tuple into individual
-    tensor entries in the output dict, making it TorchScript-compatible.
-    """
-
-    def __init__(self, model: KataGoNet):
-        super().__init__()
-        self.model = model
-
-    def forward(self, input_spatial: torch.Tensor,
-                input_global: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """Forward pass with flattened output dict."""
-        out = self.model(input_spatial, input_global)
-
-        # Flatten the tuple outputs into individual tensor entries
-        result: Dict[str, torch.Tensor] = {}
-
-        for key, val in out.items():
-            if isinstance(val, tuple):
-                # Store each element of the tuple with indexed names
-                for i, tensor in enumerate(val):
-                    result[f"{key}_{i}"] = tensor
-            elif val is not None:
-                result[key] = val
+        result["policy"] = out_policy
+        result["value_wdl"] = out_value[0]
+        result["value_td"] = out_value[1]
+        result["value_st_error"] = out_value[2]
+        result["value_var_time"] = out_value[3]
+        result["value_ownership"] = out_value[4]
+        result["value_futurepos"] = out_value[5]
 
         return result
 
 
-def _unflatten_export_output(flat_dict: Dict[str, torch.Tensor]) -> Dict[str, Any]:
-    """Convert flattened export output back to original format.
-
-    Reverses the flattening done by KataGoNetForExport.
-    """
-    result: Dict[str, Any] = {}
-    value_parts: List[Optional[torch.Tensor]] = []
-    ivalue_parts: List[Optional[torch.Tensor]] = []
-
-    for key, val in flat_dict.items():
-        if key.startswith("value_") and not key.startswith("value_"):
-            # This is a policy key
-            result[key] = val
-        elif key == "policy" or key == "intermediate_policy":
-            result[key] = val
-        elif key.startswith("value_") and key != "value":
-            try:
-                idx = int(key.split("_", 1)[1])
-                while len(value_parts) <= idx:
-                    value_parts.append(None)
-                value_parts[idx] = val
-            except (ValueError, IndexError):
-                result[key] = val
-        elif key.startswith("intermediate_value_"):
-            try:
-                idx = int(key.split("_", 2)[2])
-                while len(ivalue_parts) <= idx:
-                    ivalue_parts.append(None)
-                ivalue_parts[idx] = val
-            except (ValueError, IndexError):
-                result[key] = val
-        else:
-            result[key] = val
-
-    if value_parts and any(p is not None for p in value_parts):
-        result["value"] = tuple(p for p in value_parts if p is not None)
-
-    if ivalue_parts and any(p is not None for p in ivalue_parts):
-        result["intermediate_value"] = tuple(p for p in ivalue_parts if p is not None)
-
-    return result
 
 
 # ============================================================

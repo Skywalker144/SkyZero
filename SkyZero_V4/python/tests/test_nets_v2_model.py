@@ -34,7 +34,7 @@ def test_katago_net_gpool_only_at_i_mod_3_eq_2():
 
 
 def test_katago_net_forward_returns_dict():
-    """forward 返回 dict, 含 policy + value tuple + intermediate_*."""
+    """forward 返回 flat dict (all tensor values), 含 policy + value_* + intermediate_*."""
     model = KataGoNet(**_make_b8c96_kwargs())
     model.initialize()
     model.eval()
@@ -42,17 +42,20 @@ def test_katago_net_forward_returns_dict():
     global_features = torch.zeros(1, 12)
     with torch.no_grad():
         out = model(state, global_features)
-    assert "policy" in out
-    assert "value" in out
-    assert "intermediate_policy" in out
-    assert "intermediate_value" in out
     # policy: (B, 6, H*W) — 无 pass logit
+    assert "policy" in out
     assert out["policy"].shape == (1, 6, 225)
-    # value: 6-tuple
-    assert isinstance(out["value"], tuple) and len(out["value"]) == 6
-    assert out["value"][0].shape == (1, 3)   # WDL
+    # value 拆成 6 个独立 key
+    assert out["value_wdl"].shape == (1, 3)
+    assert out["value_td"].shape == (1, 9)
+    assert out["value_st_error"].shape == (1, 1)
+    assert out["value_var_time"].shape == (1, 1)
+    assert out["value_ownership"].shape == (1, 1, 15, 15)
+    assert out["value_futurepos"].shape == (1, 2, 15, 15)
     # intermediate 同形状
+    assert "intermediate_policy" in out
     assert out["intermediate_policy"].shape == (1, 6, 225)
+    assert out["intermediate_value_wdl"].shape == (1, 3)
 
 
 def test_katago_net_internal_mask_is_ones_for_15x15():
@@ -78,7 +81,7 @@ def test_katago_net_initialize_does_not_blow_up():
     g = torch.zeros(1, 12)
     with torch.no_grad():
         out = model(state, g)
-    wdl_logits = out["value"][0]
+    wdl_logits = out["value_wdl"]
     wdl_probs = torch.softmax(wdl_logits, dim=1)
     # 初始化后应接近 (1/3, 1/3, 1/3) — head scale_output=0.3 让 logits 接近 0
     for i in range(3):
@@ -94,13 +97,12 @@ def test_katago_net_no_nan():
     g = torch.randn(2, 12)
     with torch.no_grad():
         out = model(state, g)
-    assert not torch.isnan(out["policy"]).any()
-    for v in out["value"]:
-        assert not torch.isnan(v).any()
+    for k, v in out.items():
+        assert not torch.isnan(v).any(), f"NaN in {k}"
 
 
 def test_katago_net_no_intermediate_head():
-    """has_intermediate_head=False → intermediate_* 不在 dict 里."""
+    """has_intermediate_head=False → intermediate_* keys 不在 dict 里."""
     kwargs = _make_b8c96_kwargs()
     kwargs["has_intermediate_head"] = False
     model = KataGoNet(**kwargs)
@@ -111,4 +113,4 @@ def test_katago_net_no_intermediate_head():
     with torch.no_grad():
         out = model(state, g)
     assert "intermediate_policy" not in out
-    assert "intermediate_value" not in out
+    assert "intermediate_value_wdl" not in out
