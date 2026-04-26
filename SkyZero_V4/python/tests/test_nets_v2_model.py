@@ -100,7 +100,7 @@ def test_katago_net_no_nan():
 
 
 def test_katago_net_no_intermediate_head():
-    """has_intermediate_head=False → intermediate_* 不在 dict 里 (或值是 None)."""
+    """has_intermediate_head=False → intermediate_* 不在 dict 里."""
     kwargs = _make_b8c96_kwargs()
     kwargs["has_intermediate_head"] = False
     model = KataGoNet(**kwargs)
@@ -110,5 +110,5 @@ def test_katago_net_no_intermediate_head():
     g = torch.zeros(1, 12)
     with torch.no_grad():
         out = model(state, g)
-    assert out["intermediate_policy"] is None
-    assert out["intermediate_value"] is None
+    assert "intermediate_policy" not in out
+    assert "intermediate_value" not in out
