@@ -213,3 +213,41 @@ def init_weights(tensor: torch.Tensor, activation: str, scale: float,
             tensor.fill_(0.0)
         else:
             nn.init.trunc_normal_(tensor, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
+
+
+# ============================================================
+# 卷积 + 全局池化模块
+# ============================================================
+
+class ConvAndGPool(nn.Module):
+    """合并到 ResBlock 内层第一个 conv 的位置 (不是独立残差块).
+
+    out = conv1r(x) + linear_g(gpool(act(normg(conv1g(x)))))   [as conv bias]
+    """
+
+    def __init__(self, c_in: int, c_out: int, c_gpool: int, activation: str = "mish") -> None:
+        super().__init__()
+        self.activation = activation
+        self.conv1r = nn.Conv2d(c_in, c_out, kernel_size=3, padding=1, bias=False)
+        self.conv1g = nn.Conv2d(c_in, c_gpool, kernel_size=3, padding=1, bias=False)
+        self.normg = FixscaleNorm(c_gpool, use_gamma=True)
+        self.actg = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.gpool = KataGPool()
+        self.linear_g = nn.Linear(3 * c_gpool, c_out, bias=False)
+
+    def initialize(self, scale: float) -> None:
+        # KataGo master 538-549 (fixscaleonenorm path)
+        r_scale, g_scale = 0.8, 0.6
+        init_weights(self.conv1r.weight, self.activation, scale=scale * r_scale)
+        init_weights(self.conv1g.weight, self.activation, scale=math.sqrt(scale) * math.sqrt(g_scale))
+        init_weights(self.linear_g.weight, self.activation, scale=math.sqrt(scale) * math.sqrt(g_scale))
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        out_r = self.conv1r(x)
+        out_g = self.conv1g(x)
+        out_g = self.normg(out_g, mask)
+        out_g = self.actg(out_g)
+        out_g = self.gpool(out_g, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
+        out_g = self.linear_g(out_g).unsqueeze(-1).unsqueeze(-1)
+        return out_r + out_g
