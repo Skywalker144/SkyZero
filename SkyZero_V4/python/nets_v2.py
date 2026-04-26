@@ -124,3 +124,28 @@ class LastBatchNorm(nn.Module):
         else:
             out = normed * g + self.beta
         return out * mask
+
+
+# ============================================================
+# 池化模块
+# ============================================================
+
+class KataGPool(nn.Module):
+    """3 个统计量: mean, mean * board_factor, max.
+
+    board_factor = (sqrt(mask_sum_hw) - 14) / 10 — 让网络对棋盘大小有显式感知.
+    15×15 时退化为 0.1 (常数).
+    """
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if mask_sum_hw is None:
+            mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
+        sqrt_off = torch.sqrt(mask_sum_hw) - 14.0
+        layer_mean = torch.sum(x * mask, dim=(2, 3), keepdim=True, dtype=torch.float32) / mask_sum_hw
+        layer_max = (x + (mask - 1.0)).to(torch.float32).amax(dim=(2, 3), keepdim=True)
+        return torch.cat((
+            layer_mean,
+            layer_mean * (sqrt_off / 10.0),
+            layer_max,
+        ), dim=1)
