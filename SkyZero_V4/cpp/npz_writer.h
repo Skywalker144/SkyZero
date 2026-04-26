@@ -171,6 +171,16 @@ public:
         return total_rows_written_;
     }
 
+    // Daemon mode: drain the current chunk + writer queue, then switch to a
+    // new file_prefix and reset the part counter. After this returns, the
+    // next append() lands in <new_prefix>_part_0000.npz.
+    void rotate(std::string new_prefix) {
+        flush();
+        std::lock_guard<std::mutex> lock(m_);
+        file_prefix_ = std::move(new_prefix);
+        part_counter_ = 0;
+    }
+
 private:
     struct FlushJob {
         std::filesystem::path path;
