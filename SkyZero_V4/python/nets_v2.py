@@ -369,3 +369,61 @@ class NestedBottleneckResBlock(nn.Module):
             out = out + block(out, mask, mask_sum_hw)        # 内层加法
         out = self.normactconvq(out, mask, mask_sum_hw)
         return out
+
+
+# ============================================================
+# Policy Head (v15, no pass — Gomoku 不需要)
+# ============================================================
+
+class PolicyHead(nn.Module):
+    """v15 PolicyHead 6 输出 (main/aux/soft/soft_aux/opt/opp), 删 pass 路径.
+
+    KataGo 原版: forward 输出 cat([spatial logits, pass logit]) → (B, 6, H*W+1).
+    SkyZero 改: 只输出 (B, 6, H*W) — Gomoku 无 pass 着法.
+    """
+
+    def __init__(self, c_in: int, c_p1: int, c_g1: int,
+                 activation: str = "mish", version: int = 15) -> None:
+        super().__init__()
+        self.activation = activation
+        self.version = version
+        # v15 → 6 outputs (我们固定 v15)
+        if version <= 11:
+            self.num_policy_outputs = 4
+        elif version <= 15:
+            self.num_policy_outputs = 6
+        else:
+            self.num_policy_outputs = 8
+
+        self.conv1p = nn.Conv2d(c_in, c_p1, kernel_size=1, bias=False)
+        self.conv1g = nn.Conv2d(c_in, c_g1, kernel_size=1, bias=False)
+        self.biasg = BiasMask(c_g1)
+        self.actg = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.gpool = KataGPool()
+        self.linear_g = nn.Linear(3 * c_g1, c_p1, bias=False)
+        self.bias2 = BiasMask(c_p1)
+        self.act2 = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.conv2p = nn.Conv2d(c_p1, self.num_policy_outputs, kernel_size=1, bias=False)
+
+    def initialize(self) -> None:
+        # KataGo master 2416-2432
+        p_scale, g_scale, scale_output = 0.8, 0.6, 0.3
+        init_weights(self.conv1p.weight, self.activation, scale=p_scale)
+        init_weights(self.conv1g.weight, self.activation, scale=1.0)
+        init_weights(self.linear_g.weight, self.activation, scale=g_scale)
+        init_weights(self.conv2p.weight, "identity", scale=scale_output)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        outp = self.conv1p(x)
+        outg = self.conv1g(x)
+        outg = self.biasg(outg, mask)
+        outg = self.actg(outg)
+        outg = self.gpool(outg, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
+        outg = self.linear_g(outg).unsqueeze(-1).unsqueeze(-1)
+        outp = outp + outg
+        outp = self.bias2(outp, mask)
+        outp = self.act2(outp)
+        outp = self.conv2p(outp)
+        outp = outp - (1.0 - mask) * 5000.0   # mask 外 cell push 到极小
+        return outp.view(outp.shape[0], outp.shape[1], -1)
