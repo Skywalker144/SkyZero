@@ -4,9 +4,31 @@
 基础设计: norm_kind=fixscaleonenorm, trunk_normless=True, bnorm_use_gamma=True,
          gamma_weight_decay_center_1=True, use_repvgg_init=True, version=15.
 
-陷阱（来自 NOTES.md §3）:
-1. NestedBottleneckResBlock.forward 只返残差; 调用方负责 out + block(out) 加回主干
-2. gamma 张量是 delta, forward 必须用 (gamma + 1)
+使用:
+    from nets_v2 import build_b8c96, build_b12c128
+
+    # (A) 从零训
+    model = build_b8c96()
+    model.initialize()           # 必调一次
+
+    # (B) 加载 ckpt
+    model.load_state_dict(state_dict, strict=True)
+    model.set_norm_scales()      # 必调一次 (scale 不在 state_dict)
+
+forward 签名: model(input_spatial, input_global) → Dict[str, Tensor]
+返回 dict 平铺所有输出 (适合 torch.jit.trace):
+    policy:                     (B, 6, H*W)         # main/aux/soft/soft_aux/opt/opp
+    value_wdl:                  (B, 3)              # W/L/draw logits
+    value_td:                   (B, 9)              # 3 horizons (long/mid/short) × 3 wdl
+    value_st_error:             (B, 1)              # shortterm value pred error
+    value_var_time:             (B, 1)              # variance time (placeholder)
+    value_ownership:            (B, 1, H, W)        # 终局每格 ±1
+    value_futurepos:            (B, 2, H, W)        # +N / +2N 步占据
+    intermediate_*:             同上 (when has_intermediate_head=True)
+
+陷阱（NOTES.md §3）:
+1. NestedBottleneckResBlock.forward 只返残差; 调用方 out + block(out)
+2. gamma 张量是 delta, forward 必须 (gamma + 1)
 3. NormMask.scale 是 plain Python float, 不在 state_dict
 """
 from __future__ import annotations
