@@ -49,8 +49,12 @@ def _env_float(name: str, default: float) -> float:
 
 
 def list_selfplay_npz_newest_first(selfplay_dir: pathlib.Path) -> list[pathlib.Path]:
+    # mtime descending. Daemon-produced files (`daemon_v*_*.npz`) and main-loop
+    # files (`iter_*_*.npz`) interleave by wall-clock production order; lex sort
+    # by name would group all daemon files after iter files regardless of when
+    # each was written.
     files = [p for p in selfplay_dir.glob("*.npz") if p.is_file()]
-    files.sort(key=lambda p: p.name, reverse=True)  # names encode iter + part
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return files
 
 
