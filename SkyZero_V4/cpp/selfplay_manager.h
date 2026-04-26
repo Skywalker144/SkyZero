@@ -208,6 +208,18 @@ private:
         const int board = game_.board_size;
         const int area = board * board;
         const int max_batch = std::max(1, pcfg_.inference_batch_size);
+        const bool on_cuda = device_.is_cuda();
+
+        // Per-server pinned host buffers (allocated once, reused every batch).
+        // - input is int8 because requests carry int8 encoded states; the
+        //   int8->half cast happens on GPU as part of .to(device, kHalf).
+        // - policy/value outputs are float32 and copied D2H asynchronously
+        //   into pinned memory, then read by CPU after a single sync.
+        auto pinned_i8 = torch::TensorOptions().dtype(torch::kInt8).pinned_memory(on_cuda);
+        auto pinned_f32 = torch::TensorOptions().dtype(torch::kFloat32).pinned_memory(on_cuda);
+        torch::Tensor pinned_input = torch::empty({max_batch, c, board, board}, pinned_i8);
+        torch::Tensor pinned_policy = torch::empty({max_batch, area}, pinned_f32);
+        torch::Tensor pinned_value = torch::empty({max_batch, 3}, pinned_f32);
 
         while (true) {
             std::vector<std::unique_ptr<InferenceRequest>> batch;
@@ -244,38 +256,60 @@ private:
 
             try {
                 const int bsz = static_cast<int>(batch.size());
-                std::vector<float> input_buf(static_cast<size_t>(bsz) * c * area, 0.0f);
+
+                // Pack int8 encodings directly into the pinned host buffer.
+                auto pinned_input_view = pinned_input.narrow(0, 0, bsz);
+                int8_t* in_ptr = pinned_input_view.data_ptr<int8_t>();
+                const size_t per_sample = static_cast<size_t>(c) * area;
                 for (int i = 0; i < bsz; ++i) {
                     const auto& enc = batch[i]->encoded;
-                    if (enc.size() != static_cast<size_t>(c * area)) {
+                    if (enc.size() != per_sample) {
                         throw std::runtime_error("inference request encoded size mismatch");
                     }
-                    const size_t base = static_cast<size_t>(i) * c * area;
-                    for (int j = 0; j < c * area; ++j) {
-                        input_buf[base + j] = static_cast<float>(enc[j]);
-                    }
+                    std::memcpy(in_ptr + static_cast<size_t>(i) * per_sample,
+                                enc.data(), per_sample);
                 }
 
-                auto input = torch::from_blob(input_buf.data(), {bsz, c, board, board}, torch::kFloat32)
-                                 .clone().to(device_);
-                if (device_.is_cuda()) input = input.to(torch::kHalf);
+                // Async H2D + dtype cast on GPU. .to(device, dtype, non_blocking)
+                // from a pinned source enqueues the copy on the current stream.
+                torch::Tensor input_gpu;
+                if (on_cuda) {
+                    input_gpu = pinned_input_view.to(device_, torch::kHalf, /*non_blocking=*/true);
+                } else {
+                    input_gpu = pinned_input_view.to(torch::kFloat32);
+                }
 
                 torch::NoGradGuard no_grad;
                 torch::jit::IValue out_iv;
                 {
                     std::lock_guard<std::mutex> mlk(*inference_model_mutexes_[server_idx]);
-                    out_iv = inference_models_[server_idx].forward({input});
+                    out_iv = inference_models_[server_idx].forward({input_gpu});
                 }
 
                 auto tuple = out_iv.toTuple();
                 auto policy_logits = tuple->elements()[0].toTensor();
                 auto value_logits = tuple->elements()[2].toTensor();
 
-                auto policy = policy_logits.reshape({bsz, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
-                auto value = torch::softmax(value_logits.to(torch::kFloat32), 1).to(torch::kCPU).contiguous();
-                const float* pp = policy.data_ptr<float>();
-                const float* vp = value.data_ptr<float>();
+                // Stay on GPU for reshape / cast / softmax; one async D2H per output.
+                auto policy_gpu = policy_logits.reshape({bsz, area});
+                if (policy_gpu.scalar_type() != torch::kFloat32) {
+                    policy_gpu = policy_gpu.to(torch::kFloat32);
+                }
+                auto value_prob_gpu = torch::softmax(value_logits.to(torch::kFloat32), 1);
 
+                auto pinned_policy_view = pinned_policy.narrow(0, 0, bsz);
+                auto pinned_value_view = pinned_value.narrow(0, 0, bsz);
+                if (on_cuda) {
+                    pinned_policy_view.copy_(policy_gpu, /*non_blocking=*/true);
+                    pinned_value_view.copy_(value_prob_gpu, /*non_blocking=*/true);
+                    torch::cuda::synchronize(device_.index());
+                } else {
+                    pinned_policy_view.copy_(policy_gpu);
+                    pinned_value_view.copy_(value_prob_gpu);
+                }
+
+                const float* pp = pinned_policy_view.data_ptr<float>();
+                const float* vp = pinned_value_view.data_ptr<float>();
                 for (int i = 0; i < bsz; ++i) {
                     std::vector<float> logits(static_cast<size_t>(area), 0.0f);
                     std::memcpy(logits.data(), pp + static_cast<size_t>(i) * area,
@@ -431,11 +465,16 @@ private:
 
             int action = sr.gumbel_action;
             if (move_count < half_life) {
-                float sum_n = 0.0f;
-                for (float n : sr.visit_counts) sum_n += n;
-                if (sum_n > 0.0f) {
-                    std::discrete_distribution<int> action_dist(
-                        sr.visit_counts.begin(), sr.visit_counts.end());
+                const float inv_t = 1.0f / std::max(cfg_.move_temperature, 1e-6f);
+                std::vector<float> w(sr.visit_counts.size());
+                float sum_w = 0.0f;
+                for (size_t i = 0; i < w.size(); ++i) {
+                    w[i] = (sr.visit_counts[i] > 0.0f)
+                        ? std::pow(sr.visit_counts[i], inv_t) : 0.0f;
+                    sum_w += w[i];
+                }
+                if (sum_w > 0.0f) {
+                    std::discrete_distribution<int> action_dist(w.begin(), w.end());
                     action = action_dist(worker_rng);
                 }
             }
