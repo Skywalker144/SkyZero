@@ -8,9 +8,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <exception>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -19,6 +25,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -130,6 +137,174 @@ static std::unique_ptr<ModelHandle> load_model(const std::string& path, const to
     return h;
 }
 
+// Batched inference server: one thread that drains a request queue, builds a
+// tensor batch (capped at batch_size, waiting up to wait_us for fill-up), runs
+// one forward pass under the model's mutex, and scatters results back via
+// per-request promises. Thread-safe; multiple game threads may submit
+// concurrently. Owns one ModelHandle (caller-supplied).
+class BatchedInferenceServer {
+public:
+    using Output = std::pair<std::vector<float>, std::array<float, 3>>;
+
+    BatchedInferenceServer(ModelHandle* h, torch::Device device, int channels,
+                           int board_size, int batch_size, int wait_us)
+        : h_(h), device_(device), c_(channels), board_(board_size),
+          area_(board_size * board_size),
+          batch_size_(std::max(1, batch_size)),
+          wait_us_(std::max(0, wait_us)) {
+        thread_ = std::thread([this] { loop(); });
+    }
+
+    ~BatchedInferenceServer() {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    BatchedInferenceServer(const BatchedInferenceServer&) = delete;
+    BatchedInferenceServer& operator=(const BatchedInferenceServer&) = delete;
+
+    Output infer(const std::vector<int8_t>& encoded) {
+        auto req = std::make_unique<Request>();
+        req->encoded = encoded;
+        auto fut = req->p.get_future();
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            queue_.push_back(std::move(req));
+        }
+        cv_.notify_one();
+        return fut.get();
+    }
+
+    std::vector<Output> infer_batch(const std::vector<std::vector<int8_t>>& batch) {
+        std::vector<std::future<Output>> futs;
+        futs.reserve(batch.size());
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            for (const auto& enc : batch) {
+                auto req = std::make_unique<Request>();
+                req->encoded = enc;
+                futs.push_back(req->p.get_future());
+                queue_.push_back(std::move(req));
+            }
+        }
+        cv_.notify_all();
+        std::vector<Output> out;
+        out.reserve(futs.size());
+        for (auto& f : futs) out.push_back(f.get());
+        return out;
+    }
+
+private:
+    struct Request {
+        std::vector<int8_t> encoded;
+        std::promise<Output> p;
+    };
+
+    void loop() {
+        for (;;) {
+            std::vector<std::unique_ptr<Request>> batch;
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                cv_.wait(lk, [&] { return stop_ || !queue_.empty(); });
+                if (stop_ && queue_.empty()) return;
+                batch.push_back(std::move(queue_.front()));
+                queue_.pop_front();
+                // Briefly wait for more requests to fill the batch.
+                if (wait_us_ > 0 && static_cast<int>(batch.size()) < batch_size_) {
+                    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::microseconds(wait_us_);
+                    while (static_cast<int>(batch.size()) < batch_size_) {
+                        while (!queue_.empty()
+                               && static_cast<int>(batch.size()) < batch_size_) {
+                            batch.push_back(std::move(queue_.front()));
+                            queue_.pop_front();
+                        }
+                        if (static_cast<int>(batch.size()) >= batch_size_) break;
+                        if (cv_.wait_until(lk, deadline) == std::cv_status::timeout) break;
+                    }
+                } else {
+                    while (!queue_.empty()
+                           && static_cast<int>(batch.size()) < batch_size_) {
+                        batch.push_back(std::move(queue_.front()));
+                        queue_.pop_front();
+                    }
+                }
+            }
+            try {
+                run_forward(batch);
+            } catch (...) {
+                auto exc = std::current_exception();
+                for (auto& r : batch) r->p.set_exception(exc);
+            }
+        }
+    }
+
+    void run_forward(std::vector<std::unique_ptr<Request>>& batch) {
+        const int bsz = static_cast<int>(batch.size());
+        std::vector<float> input_buf(static_cast<size_t>(bsz) * c_ * area_, 0.0f);
+        for (int i = 0; i < bsz; ++i) {
+            const auto& enc = batch[i]->encoded;
+            if (enc.size() != static_cast<size_t>(c_ * area_)) {
+                throw std::runtime_error("encoded size mismatch");
+            }
+            const size_t base = static_cast<size_t>(i) * c_ * area_;
+            for (int j = 0; j < c_ * area_; ++j) {
+                input_buf[base + j] = static_cast<float>(enc[j]);
+            }
+        }
+        auto input = torch::from_blob(input_buf.data(), {bsz, c_, board_, board_},
+                                      torch::kFloat32)
+                         .clone()
+                         .to(device_);
+        if (device_.is_cuda()) input = input.to(torch::kHalf);
+
+        torch::jit::IValue out_iv;
+        {
+            std::lock_guard<std::mutex> lk(h_->mu);
+            torch::NoGradGuard no_grad2;
+            out_iv = h_->module.forward({input});
+        }
+        auto tuple = out_iv.toTuple();
+        auto policy_logits = tuple->elements()[0].toTensor();
+        auto value_logits = tuple->elements()[2].toTensor();
+        auto policy = policy_logits.reshape({bsz, area_})
+                          .to(torch::kFloat32)
+                          .to(torch::kCPU)
+                          .contiguous();
+        auto value = torch::softmax(value_logits.to(torch::kFloat32), 1)
+                         .to(torch::kCPU)
+                         .contiguous();
+        const float* pp = policy.data_ptr<float>();
+        const float* vp = value.data_ptr<float>();
+        for (int i = 0; i < bsz; ++i) {
+            std::vector<float> logits(static_cast<size_t>(area_), 0.0f);
+            std::memcpy(logits.data(), pp + static_cast<size_t>(i) * area_,
+                        static_cast<size_t>(area_) * sizeof(float));
+            const size_t vi = static_cast<size_t>(i) * 3;
+            std::array<float, 3> v{vp[vi], vp[vi + 1], vp[vi + 2]};
+            batch[i]->p.set_value({std::move(logits), v});
+        }
+    }
+
+    ModelHandle* h_;
+    torch::Device device_;
+    int c_;
+    int board_;
+    int area_;
+    int batch_size_;
+    int wait_us_;
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::deque<std::unique_ptr<Request>> queue_;
+    bool stop_ = false;
+    std::thread thread_;
+};
+
+
 int main(int argc, char** argv) {
     try {
         std::setvbuf(stdout, nullptr, _IOLBF, 0);
@@ -184,65 +359,26 @@ int main(int argc, char** argv) {
 
         const int c = game.num_planes;
         const int board = game.board_size;
-        const int area = board * board;
 
-        auto make_run_forward = [&](ModelHandle* h) {
-            return [&, h](const std::vector<std::vector<int8_t>>& batch)
-                       -> std::vector<std::pair<std::vector<float>, std::array<float, 3>>> {
-                const int bsz = static_cast<int>(batch.size());
-                std::vector<float> input_buf(static_cast<size_t>(bsz) * c * area, 0.0f);
-                for (int i = 0; i < bsz; ++i) {
-                    const auto& enc = batch[i];
-                    if (enc.size() != static_cast<size_t>(c * area)) {
-                        throw std::runtime_error("encoded size mismatch");
-                    }
-                    const size_t base = static_cast<size_t>(i) * c * area;
-                    for (int j = 0; j < c * area; ++j) {
-                        input_buf[base + j] = static_cast<float>(enc[j]);
-                    }
-                }
-                auto input = torch::from_blob(input_buf.data(), {bsz, c, board, board}, torch::kFloat32)
-                                 .clone().to(device);
-                if (device.is_cuda()) input = input.to(torch::kHalf);
+        const int infer_batch = cfg_get<int>(cfg_map, "INFERENCE_BATCH_SIZE", 64);
+        const int infer_wait_us = cfg_get<int>(cfg_map, "INFERENCE_WAIT_US", 200);
+        const int num_concurrent = std::max(
+            1, cfg_get<int>(cfg_map, "NUM_CONCURRENT_GAMES", 4));
+        const int default_search_threads =
+            cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 8);
+        const int search_threads = std::max(
+            1, cfg_get<int>(cfg_map, "EVAL_SEARCH_THREADS_PER_TREE",
+                             default_search_threads));
 
-                torch::jit::IValue out_iv;
-                {
-                    std::lock_guard<std::mutex> lk(h->mu);
-                    torch::NoGradGuard no_grad2;
-                    out_iv = h->module.forward({input});
-                }
-                auto tuple = out_iv.toTuple();
-                auto policy_logits = tuple->elements()[0].toTensor();
-                auto value_logits = tuple->elements()[2].toTensor();
-                auto policy = policy_logits.reshape({bsz, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
-                auto value = torch::softmax(value_logits.to(torch::kFloat32), 1).to(torch::kCPU).contiguous();
-                const float* pp = policy.data_ptr<float>();
-                const float* vp = value.data_ptr<float>();
-                std::vector<std::pair<std::vector<float>, std::array<float, 3>>> out;
-                out.reserve(bsz);
-                for (int i = 0; i < bsz; ++i) {
-                    std::vector<float> logits(static_cast<size_t>(area), 0.0f);
-                    std::memcpy(logits.data(), pp + static_cast<size_t>(i) * area,
-                                static_cast<size_t>(area) * sizeof(float));
-                    const size_t vi = static_cast<size_t>(i) * 3;
-                    std::array<float, 3> v{vp[vi], vp[vi + 1], vp[vi + 2]};
-                    out.emplace_back(std::move(logits), v);
-                }
-                return out;
-            };
-        };
+        BatchedInferenceServer server_a(ha.get(), device, c, board, infer_batch, infer_wait_us);
+        BatchedInferenceServer server_b(hb.get(), device, c, board, infer_batch, infer_wait_us);
 
-        auto fwd_a = make_run_forward(ha.get());
-        auto fwd_b = make_run_forward(hb.get());
-        auto infer_a = [&](const std::vector<int8_t>& e) { return fwd_a({e}).front(); };
-        auto infer_b = [&](const std::vector<int8_t>& e) { return fwd_b({e}).front(); };
+        auto infer_a = [&](const std::vector<int8_t>& e) { return server_a.infer(e); };
+        auto infer_b = [&](const std::vector<int8_t>& e) { return server_b.infer(e); };
+        auto fwd_a = [&](const std::vector<std::vector<int8_t>>& b) { return server_a.infer_batch(b); };
+        auto fwd_b = [&](const std::vector<std::vector<int8_t>>& b) { return server_b.infer_batch(b); };
 
-        const int search_threads = cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 8);
         const uint64_t seed = cli.seed_set ? cli.seed : std::random_device{}();
-        std::mt19937 rng(seed);
-
-        TreeParallelMCTS<Gomoku> mcts_a(game, cfg, search_threads, infer_a, fwd_a, rng());
-        TreeParallelMCTS<Gomoku> mcts_b(game, cfg, search_threads, infer_b, fwd_b, rng());
 
         std::ofstream out(cli.output, std::ios::app);
         if (!out) throw std::runtime_error("cannot open output: " + cli.output);
@@ -252,78 +388,118 @@ int main(int argc, char** argv) {
                   << "              device=" << (use_cuda ? "cuda" : "cpu")
                   << " sims=" << cfg.num_simulations
                   << " threads=" << search_threads
+                  << " concurrent=" << num_concurrent
+                  << " infer_batch=" << infer_batch
                   << " games=" << cli.num_games
                   << " seed=" << seed << "\n";
 
-        int a_wins = 0, b_wins = 0, draws = 0;
+        std::atomic<int> next_game_idx{0};
+        std::atomic<int> a_wins{0}, b_wins{0}, draws{0};
+        std::mutex out_mu, log_mu;
+        std::atomic<bool> abort_flag{false};
+        std::mutex err_mu;
+        std::exception_ptr first_err;
 
-        for (int g = 0; g < cli.num_games; ++g) {
-            // Even g: A plays black (to_play=1). Odd g: B plays black.
-            const bool a_is_black = (g % 2 == 0);
-            auto init = game.get_initial_state(rng);
-            std::vector<int8_t> state = std::move(init.board);
-            int to_play = init.to_play;
-            int last_action = -1;
-            int last_player = 0;
-            int plies = 0;
+        auto worker = [&](int tid) {
+            try {
+                std::mt19937 rng(seed
+                    + 0x9E3779B97F4A7C15ULL * static_cast<uint64_t>(tid + 1));
+                TreeParallelMCTS<Gomoku> mcts_a(game, cfg, search_threads, infer_a, fwd_a, rng());
+                TreeParallelMCTS<Gomoku> mcts_b(game, cfg, search_threads, infer_b, fwd_b, rng());
+                std::unique_ptr<MCTSNode> root_a, root_b;
 
-            std::unique_ptr<MCTSNode> root_a(new MCTSNode{state, to_play});
-            std::unique_ptr<MCTSNode> root_b(new MCTSNode{state, to_play});
+                while (!abort_flag.load()) {
+                    const int g = next_game_idx.fetch_add(1);
+                    if (g >= cli.num_games) break;
 
-            while (!game.is_terminal(state, last_action, last_player)) {
-                // Which model moves? Black = to_play==1.
-                const bool a_to_move = (a_is_black && to_play == 1) || (!a_is_black && to_play == -1);
-                auto& mcts = a_to_move ? mcts_a : mcts_b;
-                auto& root = a_to_move ? root_a : root_b;
+                    // Even g: A plays black (to_play=1). Odd g: B plays black.
+                    const bool a_is_black = (g % 2 == 0);
+                    auto init = game.get_initial_state(rng);
+                    std::vector<int8_t> state = std::move(init.board);
+                    int to_play = init.to_play;
+                    int last_action = -1;
+                    int last_player = 0;
+                    int plies = 0;
 
-                root.reset(new MCTSNode{state, to_play});
-                const auto res = mcts.search(state, to_play, cfg.num_simulations, root);
-                int action = res.gumbel_action;
-                if (action < 0) {
-                    // Fallback: first legal.
-                    const auto legal = game.get_is_legal_actions(state, to_play);
-                    for (int i = 0; i < static_cast<int>(legal.size()); ++i) {
-                        if (legal[i]) { action = i; break; }
+                    root_a.reset(new MCTSNode{state, to_play});
+                    root_b.reset(new MCTSNode{state, to_play});
+
+                    while (!game.is_terminal(state, last_action, last_player)) {
+                        const bool a_to_move = (a_is_black && to_play == 1)
+                                            || (!a_is_black && to_play == -1);
+                        auto& mcts = a_to_move ? mcts_a : mcts_b;
+                        auto& root = a_to_move ? root_a : root_b;
+
+                        root.reset(new MCTSNode{state, to_play});
+                        const auto res = mcts.search(state, to_play, cfg.num_simulations, root);
+                        int action = res.gumbel_action;
+                        if (action < 0) {
+                            const auto legal = game.get_is_legal_actions(state, to_play);
+                            for (int i = 0; i < static_cast<int>(legal.size()); ++i) {
+                                if (legal[i]) { action = i; break; }
+                            }
+                        }
+                        if (action < 0) break;
+
+                        state = game.get_next_state(state, action, to_play);
+                        last_action = action;
+                        last_player = to_play;
+                        to_play = -to_play;
+                        ++plies;
+                    }
+
+                    const int winner = game.get_winner(state, last_action, last_player);
+                    int winner_a = 0;
+                    if (winner != 0) {
+                        const int a_side = a_is_black ? 1 : -1;
+                        winner_a = (winner == a_side) ? 1 : -1;
+                    }
+                    if (winner_a > 0) a_wins.fetch_add(1);
+                    else if (winner_a < 0) b_wins.fetch_add(1);
+                    else draws.fetch_add(1);
+                    const int aw = a_wins.load();
+                    const int bw = b_wins.load();
+                    const int dr = draws.load();
+
+                    {
+                        std::lock_guard<std::mutex> lk(out_mu);
+                        out << "{\"a\":\"" << cli.model_a << "\","
+                            << "\"b\":\"" << cli.model_b << "\","
+                            << "\"a_black\":" << (a_is_black ? "true" : "false") << ","
+                            << "\"winner_a\":" << winner_a << ","
+                            << "\"plies\":" << plies << "}\n";
+                        out.flush();
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(log_mu);
+                        std::cerr << "[gomoku_eval] game " << (g + 1) << "/" << cli.num_games
+                                  << " a_black=" << (a_is_black ? 1 : 0)
+                                  << " winner_a=" << winner_a
+                                  << " plies=" << plies
+                                  << " | A:" << aw << " D:" << dr << " B:" << bw << "\n";
                     }
                 }
-                if (action < 0) break;
-
-                state = game.get_next_state(state, action, to_play);
-                last_action = action;
-                last_player = to_play;
-                to_play = -to_play;
-                ++plies;
+            } catch (...) {
+                std::lock_guard<std::mutex> lk(err_mu);
+                if (!first_err) first_err = std::current_exception();
+                abort_flag.store(true);
             }
+        };
 
-            const int winner = game.get_winner(state, last_action, last_player);
-            // winner_a: +1 if A won, -1 if B won, 0 draw.
-            int winner_a = 0;
-            if (winner != 0) {
-                const int a_side = a_is_black ? 1 : -1;
-                winner_a = (winner == a_side) ? 1 : -1;
-            }
-            if (winner_a > 0) ++a_wins;
-            else if (winner_a < 0) ++b_wins;
-            else ++draws;
+        std::vector<std::thread> workers;
+        workers.reserve(num_concurrent);
+        for (int t = 0; t < num_concurrent; ++t) workers.emplace_back(worker, t);
+        for (auto& w : workers) w.join();
+        if (first_err) std::rethrow_exception(first_err);
 
-            out << "{\"a\":\"" << cli.model_a << "\","
-                << "\"b\":\"" << cli.model_b << "\","
-                << "\"a_black\":" << (a_is_black ? "true" : "false") << ","
-                << "\"winner_a\":" << winner_a << ","
-                << "\"plies\":" << plies << "}\n";
-            out.flush();
-
-            std::cerr << "[gomoku_eval] game " << (g + 1) << "/" << cli.num_games
-                      << " a_black=" << (a_is_black ? 1 : 0)
-                      << " winner_a=" << winner_a
-                      << " plies=" << plies
-                      << " | A:" << a_wins << " D:" << draws << " B:" << b_wins << "\n";
-        }
-
-        const float n = static_cast<float>(cli.num_games);
-        const float score = (a_wins + 0.5f * draws) / n;
+        const int aw = a_wins.load();
+        const int bw = b_wins.load();
+        const int dr = draws.load();
+        const int played = aw + bw + dr;
+        const float n = static_cast<float>(std::max(1, played));
+        const float score = (aw + 0.5f * dr) / n;
         std::cerr << "[gomoku_eval] done. A score=" << std::fixed << std::setprecision(3) << score
-                  << " (" << a_wins << "W " << draws << "D " << b_wins << "L)\n";
+                  << " (" << aw << "W " << dr << "D " << bw << "L)\n";
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[gomoku_eval] fatal: " << e.what() << "\n";
