@@ -18,8 +18,9 @@ namespace skyzero {
 inline std::atomic<bool> stop_requested{false};
 
 inline void signal_handler(int signal) {
-    if (signal == SIGINT) {
-        std::cout << "\n[Signal] Ctrl+C detected. Requesting graceful shutdown...\n";
+    if (signal == SIGINT || signal == SIGTERM) {
+        std::cout << "\n[Signal] " << (signal == SIGINT ? "SIGINT" : "SIGTERM")
+                  << " detected. Requesting graceful shutdown...\n";
         stop_requested = true;
     }
 }
