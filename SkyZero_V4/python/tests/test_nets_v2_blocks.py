@@ -74,3 +74,36 @@ def test_norm_act_conv_initialize_sets_norm_scale():
     m = NormActConv(c_in=8, c_out=4, kernel_size=3)
     m.initialize(scale=1.0, norm_scale=0.5)
     assert m.norm.scale == 0.5
+
+
+from nets_v2 import ResBlock
+
+
+def test_res_block_no_gpool():
+    rb = ResBlock(c_mid=16, c_gpool=None, activation="mish")
+    x = torch.randn(1, 16, 15, 15)
+    mask = torch.ones(1, 1, 15, 15)
+    out = rb(x, mask)
+    assert out.shape == (1, 16, 15, 15)
+
+
+def test_res_block_with_gpool():
+    """c_gpool 不为 None 时, normactconv1 用 ConvAndGPool, c_out1 = c_mid - c_gpool."""
+    rb = ResBlock(c_mid=24, c_gpool=8, activation="mish")
+    x = torch.randn(1, 24, 15, 15)
+    mask = torch.ones(1, 1, 15, 15)
+    out = rb(x, mask)
+    assert out.shape == (1, 24, 15, 15)
+
+
+def test_res_block_returns_residual_only():
+    """ResBlock.forward 返回 normactconv1→normactconv2 的输出, 不含 x.
+
+    主调用方 NestedBottleneckResBlock 负责 out + block(out).
+    """
+    rb = ResBlock(c_mid=16, c_gpool=None)
+    rb.initialize(fixup_scale=1.0)
+    x = torch.randn(1, 16, 5, 5)
+    mask = torch.ones(1, 1, 5, 5)
+    out = rb(x, mask)
+    assert out is not x and not torch.equal(out, x)

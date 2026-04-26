@@ -301,3 +301,30 @@ class NormActConv(nn.Module):
         if self.convpool is not None:
             return self.convpool(out, mask, mask_sum_hw)
         return self.conv(out)
+
+
+# ============================================================
+# 残差块 (ResBlock 只返残差; 调用方负责加回主干)
+# ============================================================
+
+class ResBlock(nn.Module):
+    def __init__(self, c_mid: int, c_gpool: Optional[int] = None,
+                 activation: str = "mish") -> None:
+        super().__init__()
+        c_out1 = c_mid - (0 if c_gpool is None else c_gpool)
+        self.normactconv1 = NormActConv(c_mid, c_out1, activation,
+                                        kernel_size=3, c_gpool=c_gpool,
+                                        fixup_use_gamma=True)
+        self.normactconv2 = NormActConv(c_out1, c_mid, activation,
+                                        kernel_size=3, c_gpool=None,
+                                        fixup_use_gamma=True)
+
+    def initialize(self, fixup_scale: float) -> None:
+        self.normactconv1.initialize(scale=1.0, norm_scale=fixup_scale)
+        self.normactconv2.initialize(scale=1.0, norm_scale=None)
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        out = self.normactconv1(x, mask, mask_sum_hw)
+        out = self.normactconv2(out, mask, mask_sum_hw)
+        return out
