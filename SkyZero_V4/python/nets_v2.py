@@ -648,3 +648,33 @@ class KataGoNet(nn.Module):
             "intermediate_policy": iout_policy,
             "intermediate_value": iout_value,
         }
+
+
+# ============================================================
+# 工厂函数 — 与 spec §3.1 表对齐
+# ============================================================
+
+def build_b8c96(activation: str = "mish") -> KataGoNet:
+    """初版测试规模: 8 块 × 96 trunk × 48 mid × 16 gpool, ~1.5-2M 参数."""
+    return KataGoNet(
+        num_blocks=8, c_main=96, c_mid=48, c_gpool=16,
+        internal_length=2,
+        num_in_channels=4, num_global_features=12,
+        activation=activation, version=15,
+        has_intermediate_head=True, intermediate_head_blocks=5,
+        c_p1=24, c_g1=24, c_v1=24, c_v2=32,
+        pos_len=15,
+    )
+
+
+def build_b12c128(activation: str = "mish") -> KataGoNet:
+    """生产规模: 12 块 × 128 trunk × 64 mid × 16 gpool, ~4-5M 参数."""
+    return KataGoNet(
+        num_blocks=12, c_main=128, c_mid=64, c_gpool=16,
+        internal_length=2,
+        num_in_channels=4, num_global_features=12,
+        activation=activation, version=15,
+        has_intermediate_head=True, intermediate_head_blocks=8,
+        c_p1=32, c_g1=32, c_v1=32, c_v2=48,
+        pos_len=15,
+    )
