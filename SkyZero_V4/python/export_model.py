@@ -7,6 +7,7 @@ data/models/latest.pt (plus writes a per-iter snapshot).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import sys
@@ -58,6 +59,16 @@ def main() -> int:
     tmp = latest.with_suffix(latest.suffix + ".tmp")
     scripted.save(str(tmp))
     os.replace(tmp, latest)
+
+    # Sidecar consumed by the selfplay daemon to tag NPZ filenames with the
+    # model version it was generated under. Atomic via tmp+os.replace so a
+    # daemon polling latest.pt mtime never sees a torn meta.
+    meta = {"iter": int(args.iter), "mtime": latest.stat().st_mtime}
+    meta_path = models_dir / "latest.meta.json"
+    meta_tmp = meta_path.with_suffix(meta_path.suffix + ".tmp")
+    with meta_tmp.open("w") as f:
+        json.dump(meta, f)
+    os.replace(meta_tmp, meta_path)
 
     print(f"[export_model] wrote {iter_path} and updated {latest}")
     return 0
