@@ -251,3 +251,53 @@ class ConvAndGPool(nn.Module):
         out_g = self.gpool(out_g, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
         out_g = self.linear_g(out_g).unsqueeze(-1).unsqueeze(-1)
         return out_r + out_g
+
+
+# ============================================================
+# norm → act → (conv | conv-and-gpool) 组合
+# ============================================================
+
+class NormActConv(nn.Module):
+    """norm → act → (conv | conv-and-gpool)."""
+
+    def __init__(self, c_in: int, c_out: int, activation: str = "mish",
+                 kernel_size: int = 3, c_gpool: Optional[int] = None,
+                 fixup_use_gamma: bool = True,
+                 use_repvgg_init: bool = True) -> None:
+        super().__init__()
+        self.activation = activation
+        self.kernel_size = kernel_size
+        self.norm = FixscaleNorm(c_in, use_gamma=fixup_use_gamma)
+        self.act = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.use_repvgg_init = use_repvgg_init and kernel_size > 1
+        if c_gpool is not None:
+            self.convpool = ConvAndGPool(c_in, c_out, c_gpool, activation)
+            self.conv = None
+        else:
+            padding = kernel_size // 2
+            self.conv = nn.Conv2d(c_in, c_out, kernel_size=kernel_size,
+                                  padding=padding, bias=False)
+            self.convpool = None
+
+    def initialize(self, scale: float, norm_scale: Optional[float] = None) -> None:
+        self.norm.set_scale(norm_scale)
+        if self.convpool is not None:
+            self.convpool.initialize(scale=scale)
+        else:
+            if self.use_repvgg_init:
+                init_weights(self.conv.weight, self.activation, scale=scale * 0.8)
+                w = self.conv.weight
+                center_bonus = w.new_zeros((w.shape[0], w.shape[1]), requires_grad=False)
+                init_weights(center_bonus, self.activation, scale=scale * 0.6)
+                with torch.no_grad():
+                    self.conv.weight[:, :, 1, 1] += center_bonus
+            else:
+                init_weights(self.conv.weight, self.activation, scale=scale)
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        out = self.norm(x, mask)
+        out = self.act(out)
+        if self.convpool is not None:
+            return self.convpool(out, mask, mask_sum_hw)
+        return self.conv(out)

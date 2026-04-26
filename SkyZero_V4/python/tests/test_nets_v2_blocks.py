@@ -1,6 +1,6 @@
 import pytest
 import torch
-from nets_v2 import ConvAndGPool
+from nets_v2 import ConvAndGPool, NormActConv
 
 
 def test_conv_and_gpool_forward_shape():
@@ -39,3 +39,38 @@ def test_conv_and_gpool_with_mask_sum_hw():
     out_implicit = m(x, mask)
     out_explicit = m(x, mask, mask_sum_hw=mask_sum_hw)
     assert torch.allclose(out_implicit, out_explicit)
+
+
+def test_norm_act_conv_basic():
+    m = NormActConv(c_in=16, c_out=12, activation="mish", kernel_size=3,
+                    c_gpool=None, fixup_use_gamma=True)
+    x = torch.randn(1, 16, 15, 15)
+    mask = torch.ones(1, 1, 15, 15)
+    out = m(x, mask)
+    assert out.shape == (1, 12, 15, 15)
+    assert m.conv is not None
+    assert m.convpool is None
+
+
+def test_norm_act_conv_with_gpool():
+    """When c_gpool is given, uses ConvAndGPool inside."""
+    m = NormActConv(c_in=16, c_out=12, activation="mish", kernel_size=3,
+                    c_gpool=4, fixup_use_gamma=True)
+    x = torch.randn(1, 16, 15, 15)
+    mask = torch.ones(1, 1, 15, 15)
+    out = m(x, mask)
+    assert out.shape == (1, 12, 15, 15)
+    assert m.conv is None
+    assert m.convpool is not None
+
+
+def test_norm_act_conv_kernel_size_1_skips_repvgg():
+    """kernel_size=1 (bottleneck pre/post) shouldn't use RepVGG init."""
+    m = NormActConv(c_in=16, c_out=8, kernel_size=1)
+    assert m.use_repvgg_init is False
+
+
+def test_norm_act_conv_initialize_sets_norm_scale():
+    m = NormActConv(c_in=8, c_out=4, kernel_size=3)
+    m.initialize(scale=1.0, norm_scale=0.5)
+    assert m.norm.scale == 0.5
