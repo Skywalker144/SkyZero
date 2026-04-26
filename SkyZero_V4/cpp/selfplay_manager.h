@@ -167,6 +167,29 @@ public:
         inference_threads_.clear();
     }
 
+    // Daemon hot-reload: replace each inference server's TorchScript module
+    // in place. Worker threads keep producing search requests during the
+    // swap; pending forward() calls block on the per-server mutex and pick
+    // up the new module when released. Lock all mutexes in index order
+    // (workers only ever take one) so there's no deadlock.
+    void reload_model(const std::string& path) {
+        const int num_servers = static_cast<int>(inference_models_.size());
+        std::vector<std::unique_lock<std::mutex>> locks;
+        locks.reserve(num_servers);
+        for (int i = 0; i < num_servers; ++i) {
+            locks.emplace_back(*inference_model_mutexes_[i]);
+        }
+        for (int i = 0; i < num_servers; ++i) {
+            const auto& dev = devices_[i];
+            auto mod = torch::jit::load(path, dev);
+            mod.eval();
+            if (dev.is_cuda()) {
+                mod.to(torch::kHalf);
+            }
+            inference_models_[i] = std::move(mod);
+        }
+    }
+
 private:
     // ---- Inference request plumbing ----
     struct InferenceRequest {
