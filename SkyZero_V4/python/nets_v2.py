@@ -82,3 +82,45 @@ class BiasMask(nn.Module):
         if mask is not None:
             out = out * mask
         return out
+
+
+class LastBatchNorm(nn.Module):
+    """fixscaleonenorm 全网唯一的 batchnorm: 用在 intermediate head 入口.
+
+    训练: mask-aware mini-batch mean/std + running 统计量 EMA 更新.
+    推理: running stats.
+    """
+
+    def __init__(self, num_channels: int, eps: float = 1e-4, momentum: float = 0.001) -> None:
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.register_buffer("running_mean", torch.zeros(num_channels))
+        self.register_buffer("running_std", torch.ones(num_channels))
+        self.eps = eps
+        self.momentum = momentum
+        self.scale: Optional[float] = None
+
+    def set_scale(self, scale: Optional[float]) -> None:
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        c = x.shape[1]
+        if self.training:
+            mask_sum = mask.sum()
+            mean = (x * mask).sum(dim=(0, 2, 3), keepdim=True) / mask_sum
+            zeromean_x = x - mean
+            var = ((zeromean_x * mask) ** 2).sum(dim=(0, 2, 3), keepdim=True) / mask_sum
+            std = (var + self.eps).sqrt()
+            with torch.no_grad():
+                self.running_mean.add_(self.momentum * (mean.view(c).detach() - self.running_mean))
+                self.running_std.add_(self.momentum * (std.view(c).detach() - self.running_std))
+            normed = zeromean_x / std
+        else:
+            normed = (x - self.running_mean.view(1, c, 1, 1)) / self.running_std.view(1, c, 1, 1)
+        g = self.gamma + 1.0
+        if self.scale is not None:
+            out = normed * (g * self.scale) + self.beta
+        else:
+            out = normed * g + self.beta
+        return out * mask
