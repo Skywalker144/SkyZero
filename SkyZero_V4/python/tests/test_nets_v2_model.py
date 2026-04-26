@@ -114,3 +114,55 @@ def test_katago_net_no_intermediate_head():
         out = model(state, g)
     assert "intermediate_policy" not in out
     assert "intermediate_value_wdl" not in out
+
+
+def test_b8c96_from_scratch_sanity():
+    """NOTES.md §8 风格自检 — 从零 init 后空棋盘 + 0 global 的 trunk 量级.
+
+    Note: forward() now returns flat dict (per Task 15 refactor), so we use
+    out["value_wdl"] instead of out["value"][0].
+    """
+    from nets_v2 import build_b8c96
+
+    torch.manual_seed(42)
+    model = build_b8c96()
+    model.initialize()
+    model.eval()
+
+    state = torch.zeros(1, 4, 15, 15)
+    state[:, 0:1] = 0.0   # 全 0 = 空棋盘
+    g = torch.zeros(1, 12)
+
+    with torch.no_grad():
+        out = model(state, g)
+
+    # WDL probs 接近均匀 (head scale_output=0.3 + 全 0 输入)
+    wdl_logits = out["value_wdl"]
+    wdl_probs = torch.softmax(wdl_logits, dim=1)
+    print(f"WDL probs (b8c96 init): {wdl_probs[0].tolist()}")
+    for i in range(3):
+        # 容忍范围放大 (小模型方差更大)
+        assert 0.15 < wdl_probs[0, i].item() < 0.55
+
+    # Policy 也应该接近均匀, KL 距均匀分布 < 1.0
+    main_policy_logits = out["policy"][0, 0, :]   # main head, batch 0
+    p = torch.softmax(main_policy_logits, dim=0)
+    kl_to_uniform = (p * (p.log() - torch.log(torch.full_like(p, 1.0 / 225.0)))).sum().item()
+    print(f"main policy KL to uniform: {kl_to_uniform:.3f}")
+    assert kl_to_uniform < 1.0
+
+
+def test_b12c128_from_scratch_sanity():
+    from nets_v2 import build_b12c128
+
+    torch.manual_seed(42)
+    model = build_b12c128()
+    model.initialize()
+    model.eval()
+    state = torch.zeros(1, 4, 15, 15)
+    g = torch.zeros(1, 12)
+    with torch.no_grad():
+        out = model(state, g)
+    wdl_probs = torch.softmax(out["value_wdl"], dim=1)
+    for i in range(3):
+        assert 0.15 < wdl_probs[0, i].item() < 0.55
