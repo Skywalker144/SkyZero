@@ -38,6 +38,9 @@ struct AlphaZeroConfig {
 
     // Opening exploration window: sample first `half_life` moves ∝ visit counts.
     int half_life = -1;                  // -1 ⇒ use board_size; 0 ⇒ disable
+    // Opening sampling temperature: p(a) ∝ N(a)^(1/move_temperature).
+    // 1.0 = raw visit counts; <1 sharpens toward SH finalists; →0 = argmax(N).
+    float move_temperature = 1.0f;
 
     // PUCT / FPU
     float c_puct = 1.1f;
