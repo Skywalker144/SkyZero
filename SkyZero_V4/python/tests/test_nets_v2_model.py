@@ -166,3 +166,45 @@ def test_b12c128_from_scratch_sanity():
     wdl_probs = torch.softmax(out["value_wdl"], dim=1)
     for i in range(3):
         assert 0.15 < wdl_probs[0, i].item() < 0.55
+
+
+def test_set_norm_scales_survives_state_dict_round_trip():
+    """TRAP 3 防御测试: scale 不在 state_dict 里, load 后必须 set_norm_scales().
+
+    场景: 训练完成后 save state_dict → 推理 init 模型 → load_state_dict.
+    若忘记调 set_norm_scales(), trunk 末端 norm.scale=None, 网络输出过自信.
+    """
+    import math
+    from nets_v2 import build_b8c96
+
+    # 训练侧
+    model_train = build_b8c96()
+    model_train.initialize()
+    # initialize 后 norm_trunkfinal.scale 应该被设为 1/sqrt(num_blocks+1) = 1/sqrt(9)
+    expected_scale = 1.0 / math.sqrt(9.0)
+    assert abs(model_train.norm_trunkfinal.scale - expected_scale) < 1e-6, (
+        f"initialize() 应设 trunk_final scale={expected_scale}, "
+        f"got {model_train.norm_trunkfinal.scale}"
+    )
+
+    # save → load 跨进程模拟
+    sd = model_train.state_dict()
+
+    model_infer = build_b8c96()
+    # 关键: 注意 build_b8c96() 返回的模型 norm_trunkfinal.scale=None (未 init)
+    assert model_infer.norm_trunkfinal.scale is None
+    model_infer.load_state_dict(sd)
+    # load_state_dict 后 scale 仍然 None (TRAP 3)
+    assert model_infer.norm_trunkfinal.scale is None, (
+        "TRAP 3: scale 不在 state_dict, load_state_dict 不会恢复它"
+    )
+
+    # 必须手动调 set_norm_scales()
+    model_infer.set_norm_scales()
+    assert abs(model_infer.norm_trunkfinal.scale - expected_scale) < 1e-6
+
+    # 也验证一个内层 block 的 scale 被正确设置
+    # 第 0 个 block 的 normactconvp.norm.scale = 1/sqrt(1) = 1.0
+    assert abs(model_infer.blocks[0].normactconvp.norm.scale - 1.0) < 1e-6
+    # 第 7 个 block 的 normactconvp.norm.scale = 1/sqrt(8)
+    assert abs(model_infer.blocks[7].normactconvp.norm.scale - 1.0 / math.sqrt(8.0)) < 1e-6

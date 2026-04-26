@@ -484,6 +484,7 @@ class ValueHead(nn.Module):
         # WDL 输出 (KataGo: linear_valuehead 输出 3, 我们保留)
         self.linear_valuehead = nn.Linear(c_v2, 3, bias=True)
         # td_value 多 horizon: 3 horizons × 3 wdl = 9 输出
+        # 切片顺序: TD_LONG_SLICE / TD_MID_SLICE / TD_SHORT_SLICE (定义在文件顶层)
         self.linear_miscvaluehead = nn.Linear(c_v2, 9, bias=True)
         # shortterm error + variance_time (合并 2 维)
         self.linear_moremiscvaluehead = nn.Linear(c_v2, 2, bias=True)
@@ -522,12 +523,25 @@ class ValueHead(nn.Module):
         td_value = self.linear_miscvaluehead(outv2)                 # (B, 9) = 3 horizons × 3
         more_misc = self.linear_moremiscvaluehead(outv2)            # (B, 2)
         st_error = more_misc[:, 0:1]
+        # variance_time: KataGo 残留输出, Gomoku 无对应 target.
+        # Phase B: 不要给 var_time 加 loss, 或权重设 0.
         var_time = more_misc[:, 1:2]
 
         ownership = self.conv_ownership(outv1) * mask               # (B, 1, H, W)
         futurepos = self.conv_futurepos(x) * mask                   # (B, 2, H, W)
 
         return wdl, td_value, st_error, var_time, ownership, futurepos
+
+
+# ============================================================
+# 输出语义常量 (Phase B 训练 loss 用)
+# ============================================================
+
+# td_value 输出 (B, 9) 的 horizon 切片 (long/mid/short × WDL).
+# Phase B loss 必须用这些常量切片, 不要硬编码 0:3 / 3:6 / 6:9.
+TD_LONG_SLICE = slice(0, 3)
+TD_MID_SLICE = slice(3, 6)
+TD_SHORT_SLICE = slice(6, 9)
 
 
 # ============================================================
