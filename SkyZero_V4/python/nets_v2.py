@@ -58,3 +58,27 @@ class FixscaleNorm(nn.Module):
         if mask is not None:
             out = out * mask
         return out
+
+
+class BiasMask(nn.Module):
+    """trunk_normless=True 下 trunk-final 的 normless-bias 层.
+
+    forward: out = (x * scale + beta) [* mask]
+    """
+
+    def __init__(self, num_channels: int) -> None:
+        super().__init__()
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.scale: Optional[float] = None
+
+    def set_scale(self, scale: Optional[float]) -> None:
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if self.scale is not None:
+            out = x * self.scale + self.beta
+        else:
+            out = x + self.beta
+        if mask is not None:
+            out = out * mask
+        return out

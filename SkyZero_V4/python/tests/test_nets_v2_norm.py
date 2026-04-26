@@ -58,3 +58,40 @@ def test_fixscale_norm_no_gamma():
     x = torch.ones(1, 4, 3, 3)
     out = n(x)
     assert torch.allclose(out, x)   # beta=0
+
+
+from nets_v2 import BiasMask
+
+
+def test_bias_mask_init():
+    b = BiasMask(num_channels=4)
+    assert torch.all(b.beta == 0.0)
+    assert b.scale is None
+
+
+def test_bias_mask_forward_default():
+    b = BiasMask(num_channels=4)
+    x = torch.randn(1, 4, 3, 3)
+    out = b(x)
+    assert torch.allclose(out, x)   # beta=0, scale=None
+
+
+def test_bias_mask_with_scale():
+    b = BiasMask(num_channels=4)
+    b.set_scale(0.5)
+    b.beta.data.fill_(0.1)
+    x = torch.ones(1, 4, 3, 3) * 2.0
+    out = b(x)
+    expected = torch.full_like(x, 2.0 * 0.5 + 0.1)
+    assert torch.allclose(out, expected)
+
+
+def test_bias_mask_mask():
+    b = BiasMask(num_channels=2)
+    b.beta.data.fill_(0.5)
+    x = torch.ones(1, 2, 3, 3)
+    mask = torch.ones(1, 1, 3, 3)
+    mask[:, :, 0, 0] = 0.0
+    out = b(x, mask=mask)
+    assert out[0, 0, 0, 0] == 0.0
+    assert out[0, 0, 1, 1] == 1.5
