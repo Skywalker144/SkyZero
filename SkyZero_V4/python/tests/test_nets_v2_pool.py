@@ -1,6 +1,6 @@
 import pytest
 import torch
-from nets_v2 import KataGPool
+from nets_v2 import KataGPool, KataValueHeadGPool
 
 
 def test_kata_gpool_output_shape():
@@ -46,3 +46,25 @@ def test_kata_gpool_with_explicit_mask_sum():
     mask_sum = torch.tensor([[[[225.0]]]])
     out = p(x, mask, mask_sum_hw=mask_sum)
     assert torch.allclose(out[0, 0:2], torch.ones(2, 1, 1))   # layer_mean=1.0
+
+
+def test_kata_value_head_gpool_output_shape():
+    p = KataValueHeadGPool()
+    x = torch.randn(2, 8, 15, 15)
+    mask = torch.ones(2, 1, 15, 15)
+    out = p(x, mask)
+    assert out.shape == (2, 24, 1, 1)
+
+
+def test_kata_value_head_gpool_15x15_constants():
+    """3 mean 统计量: mean, mean * (sqrt_off/10), mean * (sqrt_off²/100 - 0.1).
+
+    15×15: sqrt_off=1 → channels = mean * [1, 0.1, 1/100 - 0.1] = mean * [1, 0.1, -0.09]
+    """
+    p = KataValueHeadGPool()
+    x = torch.ones(1, 4, 15, 15) * 2.0
+    mask = torch.ones(1, 1, 15, 15)
+    out = p(x, mask)
+    assert torch.allclose(out[0, 0:4], torch.full((4, 1, 1), 2.0))
+    assert torch.allclose(out[0, 4:8], torch.full((4, 1, 1), 0.2))
+    assert torch.allclose(out[0, 8:12], torch.full((4, 1, 1), 2.0 * (1.0/100.0 - 0.1)))

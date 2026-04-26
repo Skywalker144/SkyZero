@@ -149,3 +149,19 @@ class KataGPool(nn.Module):
             layer_mean * (sqrt_off / 10.0),
             layer_max,
         ), dim=1)
+
+
+class KataValueHeadGPool(nn.Module):
+    """Value head 专用 GPool: 3 个 mean 统计量 (无 max), 二阶 board factor."""
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if mask_sum_hw is None:
+            mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
+        sqrt_off = torch.sqrt(mask_sum_hw) - 14.0
+        layer_mean = torch.sum(x * mask, dim=(2, 3), keepdim=True, dtype=torch.float32) / mask_sum_hw
+        return torch.cat((
+            layer_mean,
+            layer_mean * (sqrt_off / 10.0),
+            layer_mean * ((sqrt_off * sqrt_off) / 100.0 - 0.1),
+        ), dim=1)
