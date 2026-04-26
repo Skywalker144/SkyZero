@@ -506,3 +506,145 @@ class ValueHead(nn.Module):
         futurepos = self.conv_futurepos(x) * mask                   # (B, 2, H, W)
 
         return wdl, td_value, st_error, var_time, ownership, futurepos
+
+
+# ============================================================
+# 完整模型
+# ============================================================
+
+class KataGoNet(nn.Module):
+    def __init__(
+        self,
+        num_blocks: int = 8,
+        c_main: int = 96,
+        c_mid: int = 48,
+        c_gpool: int = 16,
+        internal_length: int = 2,
+        num_in_channels: int = 4,
+        num_global_features: int = 12,
+        activation: str = "mish",
+        version: int = 15,
+        has_intermediate_head: bool = True,
+        intermediate_head_blocks: int = 5,
+        c_p1: int = 24,
+        c_g1: int = 24,
+        c_v1: int = 24,
+        c_v2: int = 32,
+        pos_len: int = 15,
+    ) -> None:
+        super().__init__()
+        self.activation = activation
+        self.version = version
+        self.num_blocks = num_blocks
+        self.pos_len = pos_len
+        self.has_intermediate_head = has_intermediate_head
+        self.intermediate_head_blocks = intermediate_head_blocks
+        self.num_in_channels = num_in_channels
+        self.num_global_features = num_global_features
+
+        # 输入投影
+        self.conv_spatial = nn.Conv2d(num_in_channels, c_main, kernel_size=3,
+                                      padding=1, bias=False)
+        self.linear_global = nn.Linear(num_global_features, c_main, bias=False)
+
+        # 主干 — gpool 仅在 i % 3 == 2 的块上
+        self.blocks = nn.ModuleList()
+        for i in range(num_blocks):
+            use_gpool = c_gpool if (i % 3 == 2) else None
+            self.blocks.append(NestedBottleneckResBlock(
+                internal_length=internal_length, c_main=c_main, c_mid=c_mid,
+                c_gpool=use_gpool, activation=activation,
+            ))
+
+        self.norm_trunkfinal = BiasMask(c_main)
+        self.act_trunkfinal = nn.Mish() if activation == "mish" else nn.ReLU()
+
+        if has_intermediate_head:
+            self.norm_intermediate_trunkfinal = LastBatchNorm(c_main)
+            self.act_intermediate_trunkfinal = nn.Mish() if activation == "mish" else nn.ReLU()
+            self.intermediate_policy_head = PolicyHead(c_main, c_p1, c_g1,
+                                                       activation=activation, version=version)
+            self.intermediate_value_head = ValueHead(c_main, c_v1, c_v2,
+                                                     activation=activation, pos_len=pos_len)
+
+        self.policy_head = PolicyHead(c_main, c_p1, c_g1,
+                                      activation=activation, version=version)
+        self.value_head = ValueHead(c_main, c_v1, c_v2,
+                                    activation=activation, pos_len=pos_len)
+
+    def initialize(self) -> None:
+        """KataGo RepVGG-style fixscaleonenorm 初始化 + 设置所有 NormMask.scale.
+
+        从零训前调用一次.
+        """
+        with torch.no_grad():
+            init_weights(self.conv_spatial.weight, self.activation, scale=0.8)
+            init_weights(self.linear_global.weight, self.activation, scale=0.6)
+
+            for i, block in enumerate(self.blocks):
+                block.initialize(fixup_scale=1.0 / math.sqrt(i + 1.0))
+
+            self.norm_trunkfinal.set_scale(1.0 / math.sqrt(self.num_blocks + 1.0))
+
+            self.policy_head.initialize()
+            self.value_head.initialize()
+            if self.has_intermediate_head:
+                self.intermediate_policy_head.initialize()
+                self.intermediate_value_head.initialize()
+
+    def set_norm_scales(self) -> None:
+        """加载预训练 ckpt 时调用: 仅设置 scale, 不重置权重.
+
+        scale 不在 state_dict (plain attribute), load_state_dict 后必须手动调.
+        """
+        for i, block in enumerate(self.blocks):
+            block.normactconvp.norm.set_scale(1.0 / math.sqrt(i + 1.0))
+            block.normactconvq.norm.set_scale(1.0 / math.sqrt(block.internal_length + 1.0))
+            for j, inner in enumerate(block.blockstack):
+                inner.normactconv1.norm.set_scale(1.0 / math.sqrt(j + 1.0))
+                inner.normactconv2.norm.set_scale(None)
+        self.norm_trunkfinal.set_scale(1.0 / math.sqrt(self.num_blocks + 1.0))
+
+    def forward(self, input_spatial: torch.Tensor,
+                input_global: torch.Tensor) -> Dict[str, torch.Tensor]:
+        # SkyZero 固定 15×15: mask 在网络内部硬编码为 ones, mask_sum_hw=225
+        B = input_spatial.shape[0]
+        mask = torch.ones(B, 1, self.pos_len, self.pos_len,
+                          dtype=input_spatial.dtype, device=input_spatial.device)
+        mask_sum_hw = torch.full((B, 1, 1, 1), float(self.pos_len * self.pos_len),
+                                 dtype=input_spatial.dtype, device=input_spatial.device)
+
+        x_spatial = self.conv_spatial(input_spatial)
+        x_global = self.linear_global(input_global).unsqueeze(-1).unsqueeze(-1)
+        out = x_spatial + x_global
+
+        iout_policy: Optional[torch.Tensor] = None
+        iout_value = None
+
+        if self.has_intermediate_head:
+            for block in self.blocks[: self.intermediate_head_blocks]:
+                out = out + block(out, mask, mask_sum_hw)
+
+            iout = self.norm_intermediate_trunkfinal(out, mask)
+            iout = self.act_intermediate_trunkfinal(iout)
+            iout_policy = self.intermediate_policy_head(iout, mask, mask_sum_hw)
+            iout_value = self.intermediate_value_head(iout, mask, mask_sum_hw)
+
+            for block in self.blocks[self.intermediate_head_blocks:]:
+                out = out + block(out, mask, mask_sum_hw)
+        else:
+            for block in self.blocks:
+                out = out + block(out, mask, mask_sum_hw)
+
+        out = self.norm_trunkfinal(out, mask)
+        out = self.act_trunkfinal(out)
+
+        out_policy = self.policy_head(out, mask, mask_sum_hw)
+        out_value = self.value_head(out, mask, mask_sum_hw)
+
+        return {
+            "policy": out_policy,
+            "value": out_value,
+            "intermediate_policy": iout_policy,
+            "intermediate_value": iout_value,
+        }
