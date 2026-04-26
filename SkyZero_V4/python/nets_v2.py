@@ -328,3 +328,44 @@ class ResBlock(nn.Module):
         out = self.normactconv1(x, mask, mask_sum_hw)
         out = self.normactconv2(out, mask, mask_sum_hw)
         return out
+
+
+# ============================================================
+# 嵌套瓶颈残差块 (NestedBottleneckResBlock)
+# ============================================================
+
+class NestedBottleneckResBlock(nn.Module):
+    """1×1 (c_main → c_mid) → N 个内层 ResBlock → 1×1 (c_mid → c_main).
+
+    ⚠️ forward 只返残差; 调用方必须 `out = out + block(out, mask, mask_sum_hw)`.
+    """
+
+    def __init__(self, internal_length: int, c_main: int, c_mid: int,
+                 c_gpool: Optional[int] = None, activation: str = "mish") -> None:
+        super().__init__()
+        self.internal_length = internal_length
+        # 1×1 conv => 不走 RepVGG (在 NormActConv 内部 use_repvgg_init=ks>1)
+        self.normactconvp = NormActConv(c_main, c_mid, activation,
+                                        kernel_size=1, fixup_use_gamma=True)
+        self.blockstack = nn.ModuleList()
+        for i in range(internal_length):
+            use_gpool = c_gpool if i == 0 else None
+            self.blockstack.append(ResBlock(c_mid, c_gpool=use_gpool, activation=activation))
+        self.normactconvq = NormActConv(c_mid, c_main, activation,
+                                        kernel_size=1, fixup_use_gamma=True)
+
+    def initialize(self, fixup_scale: float) -> None:
+        self.normactconvp.initialize(scale=1.0, norm_scale=fixup_scale)
+        for j, block in enumerate(self.blockstack):
+            block.initialize(fixup_scale=1.0 / math.sqrt(j + 1.0))
+        self.normactconvq.initialize(scale=1.0,
+                                     norm_scale=1.0 / math.sqrt(self.internal_length + 1.0))
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # ⚠️ 只返残差, 调用方负责 out + block(out, mask)
+        out = self.normactconvp(x, mask, mask_sum_hw)
+        for block in self.blockstack:
+            out = out + block(out, mask, mask_sum_hw)        # 内层加法
+        out = self.normactconvq(out, mask, mask_sum_hw)
+        return out

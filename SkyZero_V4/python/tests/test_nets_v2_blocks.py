@@ -107,3 +107,48 @@ def test_res_block_returns_residual_only():
     mask = torch.ones(1, 1, 5, 5)
     out = rb(x, mask)
     assert out is not x and not torch.equal(out, x)
+
+
+from nets_v2 import NestedBottleneckResBlock
+
+
+def test_nested_bottleneck_forward_shape():
+    nbb = NestedBottleneckResBlock(internal_length=2, c_main=64, c_mid=32, c_gpool=None)
+    x = torch.randn(1, 64, 15, 15)
+    mask = torch.ones(1, 1, 15, 15)
+    out = nbb(x, mask)
+    assert out.shape == (1, 64, 15, 15)
+
+
+def test_nested_bottleneck_with_gpool():
+    """c_gpool 仅用于内层第一个 ResBlock."""
+    nbb = NestedBottleneckResBlock(internal_length=2, c_main=64, c_mid=32, c_gpool=8)
+    x = torch.randn(1, 64, 15, 15)
+    mask = torch.ones(1, 1, 15, 15)
+    out = nbb(x, mask)
+    assert out.shape == (1, 64, 15, 15)
+    # 内层第 0 个 block 应该是 gpool 版
+    assert nbb.blockstack[0].normactconv1.convpool is not None
+    # 内层第 1 个 block 应该是普通版
+    assert nbb.blockstack[1].normactconv1.convpool is None
+
+
+def test_nested_bottleneck_returns_residual_only():
+    """坑 1: NestedBottleneckResBlock.forward 只返残差, 不在内部加回 x.
+
+    主循环必须 out = out + block(out).
+    """
+    nbb = NestedBottleneckResBlock(internal_length=2, c_main=8, c_mid=4, c_gpool=None)
+    nbb.initialize(fixup_scale=1.0)
+    x = torch.zeros(1, 8, 5, 5)
+    mask = torch.ones(1, 1, 5, 5)
+    out = nbb(x, mask)
+    # 主断言: 对 x=100, output 应在残差量级 (远小于 100)
+    x2 = torch.ones(1, 8, 5, 5) * 100.0
+    out2 = nbb(x2, mask)
+    # 如果代码错误地做了 x + 残差, out2 会 ≈ 100
+    # 正确实现: out2 是残差量级
+    assert out2.abs().max() < 50.0, (
+        "NestedBottleneckResBlock.forward likely incorrectly returns x + residual; "
+        f"got max abs {out2.abs().max().item()}"
+    )
