@@ -427,3 +427,82 @@ class PolicyHead(nn.Module):
         outp = self.conv2p(outp)
         outp = outp - (1.0 - mask) * 5000.0   # mask 外 cell push 到极小
         return outp.view(outp.shape[0], outp.shape[1], -1)
+
+
+# ============================================================
+# Value Head (Gomoku-only outputs)
+# ============================================================
+
+class ValueHead(nn.Module):
+    """简化的 ValueHead — 删去围棋特化的 score-belief / scoring / seki.
+
+    输出 6 元 tuple:
+        wdl:                 (B, 3)         W/L/draw logits
+        td_value:            (B, 9)         3 horizons × 3 wdl (long/mid/short × W/L/draw)
+        shortterm_error:     (B, 1)         pretanh, 短 horizon Q 预测误差幅度
+        variance_time:       (B, 1)         残留 KataGo 输出 (Gomoku 可选, 占位)
+        ownership_pretanh:   (B, 1, H, W)   终局每格占有 ±1
+        futurepos_pretanh:   (B, 2, H, W)   +N / +2N 步占据
+    """
+
+    def __init__(self, c_in: int, c_v1: int, c_v2: int, activation: str = "mish",
+                 pos_len: int = 15) -> None:
+        super().__init__()
+        self.activation = activation
+        self.pos_len = pos_len
+
+        self.conv1 = nn.Conv2d(c_in, c_v1, kernel_size=1, bias=False)
+        self.bias1 = BiasMask(c_v1)
+        self.act1 = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.gpool = KataValueHeadGPool()
+
+        self.linear2 = nn.Linear(3 * c_v1, c_v2, bias=True)
+        self.act2 = nn.Mish() if activation == "mish" else nn.ReLU()
+
+        # WDL 输出 (KataGo: linear_valuehead 输出 3, 我们保留)
+        self.linear_valuehead = nn.Linear(c_v2, 3, bias=True)
+        # td_value 多 horizon: 3 horizons × 3 wdl = 9 输出
+        self.linear_miscvaluehead = nn.Linear(c_v2, 9, bias=True)
+        # shortterm error + variance_time (合并 2 维)
+        self.linear_moremiscvaluehead = nn.Linear(c_v2, 2, bias=True)
+
+        # 空间 head
+        self.conv_ownership = nn.Conv2d(c_v1, 1, kernel_size=1, bias=False)
+        self.conv_futurepos = nn.Conv2d(c_in, 2, kernel_size=1, bias=False)
+
+    def initialize(self) -> None:
+        bias_scale = 0.2
+        init_weights(self.conv1.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.bias, self.activation, scale=bias_scale,
+                     fan_tensor=self.linear2.weight)
+
+        for lin in (self.linear_valuehead, self.linear_miscvaluehead, self.linear_moremiscvaluehead):
+            init_weights(lin.weight, "identity", scale=1.0)
+            init_weights(lin.bias, "identity", scale=bias_scale, fan_tensor=lin.weight)
+
+        aux_scale = 0.2
+        for c in (self.conv_ownership, self.conv_futurepos):
+            init_weights(c.weight, "identity", scale=aux_scale)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None
+               ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+                          torch.Tensor, torch.Tensor, torch.Tensor]:
+        outv1 = self.conv1(x)
+        outv1 = self.bias1(outv1, mask)
+        outv1 = self.act1(outv1)
+
+        outpooled = self.gpool(outv1, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
+        outv2 = self.act2(self.linear2(outpooled))
+
+        wdl = self.linear_valuehead(outv2)                          # (B, 3)
+        td_value = self.linear_miscvaluehead(outv2)                 # (B, 9) = 3 horizons × 3
+        more_misc = self.linear_moremiscvaluehead(outv2)            # (B, 2)
+        st_error = more_misc[:, 0:1]
+        var_time = more_misc[:, 1:2]
+
+        ownership = self.conv_ownership(outv1) * mask               # (B, 1, H, W)
+        futurepos = self.conv_futurepos(x) * mask                   # (B, 2, H, W)
+
+        return wdl, td_value, st_error, var_time, ownership, futurepos
