@@ -16,7 +16,23 @@ if [[ ! -x "$SELFPLAY_BIN" ]]; then
     exit 1
 fi
 
-echo "[selfplay.sh] iter=$iter games=$games"
+# Multi-GPU: if GPU_NUM>1 and INFERENCE_SERVER_DEVICES isn't already set
+# (in run.cfg or env), round-robin distribute the inference servers across
+# GPUs and pass via env. NUM_INFERENCE_SERVERS comes from run.cfg (exported
+# by run.sh's `set -a` + source). GPU_NUM=1 (or unset) is a no-op, so the
+# binary falls back to "all servers on cuda:0" — identical to single-GPU.
+GPU_NUM="${GPU_NUM:-1}"
+if [[ -z "${INFERENCE_SERVER_DEVICES:-}" && "$GPU_NUM" -gt 1 ]]; then
+    n="${NUM_INFERENCE_SERVERS:-2}"
+    devices=""
+    for ((i=0; i<n; i++)); do
+        [[ -n "$devices" ]] && devices+=","
+        devices+="$((i % GPU_NUM))"
+    done
+    export INFERENCE_SERVER_DEVICES="$devices"
+fi
+
+echo "[selfplay.sh] iter=$iter games=$games gpu_num=$GPU_NUM devices=${INFERENCE_SERVER_DEVICES:-<default cuda:0>}"
 "$SELFPLAY_BIN" \
     --model "$DATA_DIR/models/latest.pt" \
     --output-dir "$DATA_DIR/selfplay" \

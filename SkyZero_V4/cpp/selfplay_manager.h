@@ -68,16 +68,22 @@ public:
         const SelfplayParallelConfig& pcfg,
         const MCTSBackendConfig& bcfg,
         const std::string& model_path,
-        torch::Device device
+        std::vector<torch::Device> devices
     )
-        : game_(game), cfg_(cfg), pcfg_(pcfg), bcfg_(bcfg), device_(device) {
+        : game_(game), cfg_(cfg), pcfg_(pcfg), bcfg_(bcfg), devices_(std::move(devices)) {
         const int num_servers = std::max(1, pcfg_.num_inference_servers);
+        if (static_cast<int>(devices_.size()) != num_servers) {
+            throw std::runtime_error(
+                "SelfplayEngine: devices.size()=" + std::to_string(devices_.size())
+                + " must equal num_inference_servers=" + std::to_string(num_servers));
+        }
         inference_models_.reserve(num_servers);
         inference_model_mutexes_.reserve(num_servers);
         for (int i = 0; i < num_servers; ++i) {
-            auto mod = torch::jit::load(model_path, device_);
+            const auto& dev = devices_[i];
+            auto mod = torch::jit::load(model_path, dev);
             mod.eval();
-            if (device_.is_cuda()) {
+            if (dev.is_cuda()) {
                 mod.to(torch::kHalf);
             }
             inference_models_.push_back(std::move(mod));
@@ -208,7 +214,8 @@ private:
         const int board = game_.board_size;
         const int area = board * board;
         const int max_batch = std::max(1, pcfg_.inference_batch_size);
-        const bool on_cuda = device_.is_cuda();
+        const torch::Device device = devices_[server_idx];
+        const bool on_cuda = device.is_cuda();
 
         // Per-server pinned host buffers (allocated once, reused every batch).
         // - input is int8 because requests carry int8 encoded states; the
@@ -274,7 +281,7 @@ private:
                 // from a pinned source enqueues the copy on the current stream.
                 torch::Tensor input_gpu;
                 if (on_cuda) {
-                    input_gpu = pinned_input_view.to(device_, torch::kHalf, /*non_blocking=*/true);
+                    input_gpu = pinned_input_view.to(device, torch::kHalf, /*non_blocking=*/true);
                 } else {
                     input_gpu = pinned_input_view.to(torch::kFloat32);
                 }
@@ -302,7 +309,7 @@ private:
                 if (on_cuda) {
                     pinned_policy_view.copy_(policy_gpu, /*non_blocking=*/true);
                     pinned_value_view.copy_(value_prob_gpu, /*non_blocking=*/true);
-                    torch::cuda::synchronize(device_.index());
+                    torch::cuda::synchronize(device.index());
                 } else {
                     pinned_policy_view.copy_(policy_gpu);
                     pinned_value_view.copy_(value_prob_gpu);
@@ -547,7 +554,7 @@ private:
     const AlphaZeroConfig& cfg_;
     SelfplayParallelConfig pcfg_;
     MCTSBackendConfig bcfg_;
-    torch::Device device_;
+    std::vector<torch::Device> devices_;
 
     std::vector<torch::jit::script::Module> inference_models_;
     std::vector<std::unique_ptr<std::mutex>> inference_model_mutexes_;

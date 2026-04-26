@@ -136,7 +136,12 @@ int main(int argc, char** argv) {
         c10::InferenceMode im;
 
         const auto cli = parse_cli(argc, argv);
-        const auto cfg_map = parse_cfg(cli.config);
+        auto cfg_map = parse_cfg(cli.config);
+        // Allow env var to override the cfg file (used by selfplay.sh's GPU_NUM
+        // wrapper, which derives this list at run time).
+        if (const char* env = std::getenv("INFERENCE_SERVER_DEVICES")) {
+            cfg_map["INFERENCE_SERVER_DEVICES"] = env;
+        }
 
         // --- AlphaZeroConfig ---
         AlphaZeroConfig cfg;
@@ -195,6 +200,51 @@ int main(int argc, char** argv) {
         pcfg.inference_batch_wait_us = cfg_get<int>(cfg_map, "INFERENCE_WAIT_US", 100);
         pcfg.leaf_batch_size = cfg_get<int>(cfg_map, "LEAF_BATCH_SIZE", 8);
         pcfg.max_result_queue_size = cfg_get<int>(cfg_map, "MAX_RESULT_QUEUE_SIZE", 0);
+
+        // --- Per-inference-server device assignment (KataGo-style multi-GPU) ---
+        // Empty / unset INFERENCE_SERVER_DEVICES preserves single-GPU behavior:
+        // every server lands on cuda:0 (or CPU if CUDA unavailable). A non-empty
+        // comma-separated list of GPU indices must have exactly num_inference_servers
+        // entries. e.g. "0,1,0,1" with NUM_INFERENCE_SERVERS=4 -> 2-GPU round-robin.
+        std::vector<torch::Device> server_devices;
+        {
+            const int n = pcfg.num_inference_servers;
+            std::string s;
+            if (auto it = cfg_map.find("INFERENCE_SERVER_DEVICES"); it != cfg_map.end()) {
+                s = it->second;
+            }
+            // trim
+            const auto a = s.find_first_not_of(" \t\r");
+            if (a == std::string::npos) s.clear();
+            else { const auto b = s.find_last_not_of(" \t\r"); s = s.substr(a, b - a + 1); }
+
+            if (!use_cuda) {
+                server_devices.assign(n, torch::Device(torch::kCPU));
+            } else if (s.empty()) {
+                server_devices.assign(n, torch::Device(torch::kCUDA, 0));
+            } else {
+                std::stringstream ss(s);
+                std::string tok;
+                while (std::getline(ss, tok, ',')) {
+                    const auto ta = tok.find_first_not_of(" \t\r");
+                    if (ta == std::string::npos) continue;
+                    const auto tb = tok.find_last_not_of(" \t\r");
+                    tok = tok.substr(ta, tb - ta + 1);
+                    if (tok.empty()) continue;
+                    server_devices.emplace_back(torch::kCUDA, std::stoi(tok));
+                }
+                if (static_cast<int>(server_devices.size()) != n) {
+                    throw std::runtime_error(
+                        "INFERENCE_SERVER_DEVICES has " + std::to_string(server_devices.size())
+                        + " entries but NUM_INFERENCE_SERVERS=" + std::to_string(n));
+                }
+            }
+            pcfg.inference_server_devices.clear();
+            pcfg.inference_server_devices.reserve(server_devices.size());
+            for (const auto& d : server_devices) {
+                pcfg.inference_server_devices.push_back(d.is_cuda() ? d.index() : -1);
+            }
+        }
 
         // --- MCTSBackendConfig ---
         MCTSBackendConfig bcfg;
@@ -275,8 +325,13 @@ int main(int argc, char** argv) {
                   << " max_games=" << cli.max_games
                   << " workers=" << pcfg.num_workers
                   << " servers=" << pcfg.num_inference_servers
-                  << " device=" << (use_cuda ? "cuda" : "cpu")
-                  << "\n";
+                  << " devices=[";
+        for (size_t i = 0; i < server_devices.size(); ++i) {
+            if (i > 0) std::cout << ",";
+            if (server_devices[i].is_cuda()) std::cout << "cuda:" << static_cast<int>(server_devices[i].index());
+            else std::cout << "cpu";
+        }
+        std::cout << "]\n";
         std::cout << "[selfplay] TotalGames=" << cum_games
                   << " TotalSamples=" << cum_rows
                   << " WindowSize=" << window_size << "\n";
@@ -284,7 +339,7 @@ int main(int argc, char** argv) {
         std::cout << "[selfplay] mcts_backend="
                   << (bcfg.kind == MCTSBackendConfig::SharedTree ? "shared_tree" : "batched_leaf")
                   << " search_threads_per_tree=" << bcfg.search_threads_per_tree << "\n";
-        SelfplayEngine<Gomoku> engine(game, cfg, pcfg, bcfg, cli.model, cfg.device);
+        SelfplayEngine<Gomoku> engine(game, cfg, pcfg, bcfg, cli.model, server_devices);
         engine.start();
 
         // --- Main collection loop ---

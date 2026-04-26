@@ -108,6 +108,10 @@ struct SelfplayParallelConfig {
     int inference_batch_wait_us = 100;
     int leaf_batch_size = 8;
     int max_result_queue_size = 0;  // 0 = auto (2 * num_workers); <0 = unbounded
+    // GPU index per inference server. Length must equal num_inference_servers
+    // when set; empty = single-GPU legacy behavior (selfplay_main fills in
+    // cuda:0 for every server). -1 means CPU.
+    std::vector<int> inference_server_devices;
 };
 
 // ---------------------------------------------------------------------------
