@@ -165,3 +165,51 @@ class KataValueHeadGPool(nn.Module):
             layer_mean * (sqrt_off / 10.0),
             layer_mean * ((sqrt_off * sqrt_off) / 100.0 - 0.1),
         ), dim=1)
+
+
+# ============================================================
+# RepVGG init helpers
+# ============================================================
+
+def compute_gain(activation: str) -> float:
+    """Per KataGo `compute_gain`. Mish gain matches lightvector master."""
+    if activation in ("relu", "hardswish"):
+        return math.sqrt(2.0)
+    if activation == "elu":
+        return math.sqrt(1.55052)
+    if activation == "mish":
+        return math.sqrt(2.210277)
+    if activation == "silu":
+        return math.sqrt(2.0)
+    if activation == "gelu":
+        return math.sqrt(2.351718)
+    if activation == "identity":
+        return 1.0
+    raise ValueError(f"Unknown activation: {activation}")
+
+
+_TRUNC_CORRECTION = 0.87962566103423978   # std correction for trunc_normal a=-2,b=2
+
+
+def init_weights(tensor: torch.Tensor, activation: str, scale: float,
+                 fan_tensor: Optional[torch.Tensor] = None) -> None:
+    """KataGo's truncated-normal init: std = scale * gain / sqrt(fan_in).
+
+    For 1D tensors, reshape to (n, 1) to get fan_in=1 via PyTorch's fan calculation.
+    """
+    gain = compute_gain(activation)
+    src = fan_tensor if fan_tensor is not None else tensor
+
+    # Handle 1D tensors (e.g., bias) which don't work with _calculate_fan_in_and_fan_out
+    # Reshape to (n, 1) so that _calculate_fan_in_and_fan_out gives fan_in=1
+    if src.dim() < 2:
+        src = src.view(-1, 1)
+
+    fan_in, _ = nn.init._calculate_fan_in_and_fan_out(src)
+    target_std = scale * gain / math.sqrt(fan_in)
+    std = target_std / _TRUNC_CORRECTION
+    with torch.no_grad():
+        if std < 1e-10:
+            tensor.fill_(0.0)
+        else:
+            nn.init.trunc_normal_(tensor, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
