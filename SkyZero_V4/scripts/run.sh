@@ -15,6 +15,10 @@ cd "$ROOT"
 set -a
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/run.cfg"
+# Server-local overrides (not in git — survives pull)
+if [[ -f "$SCRIPT_DIR/run.cfg.local" ]]; then
+    source "$SCRIPT_DIR/run.cfg.local"
+fi
 set +a
 
 DATA_DIR="${DATA_DIR:-$ROOT/data}"
