@@ -164,8 +164,11 @@ class KataGPool(nn.Module):
         if mask_sum_hw is None:
             mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
         sqrt_off = torch.sqrt(mask_sum_hw) - 14.0
-        layer_mean = torch.sum(x * mask, dim=(2, 3), keepdim=True, dtype=torch.float32) / mask_sum_hw
-        layer_max = (x + (mask - 1.0)).to(torch.float32).amax(dim=(2, 3), keepdim=True)
+        # Preserve input dtype for fp16 inference compatibility (downstream linear_g
+        # weight is in input dtype). KataGoModel used fp32 here for precision under
+        # an fp32-only model; SkyZero's selfplay casts the whole module to half.
+        layer_mean = torch.sum(x * mask, dim=(2, 3), keepdim=True) / mask_sum_hw
+        layer_max = (x + (mask - 1.0)).amax(dim=(2, 3), keepdim=True)
         return torch.cat((
             layer_mean,
             layer_mean * (sqrt_off / 10.0),
@@ -181,7 +184,8 @@ class KataValueHeadGPool(nn.Module):
         if mask_sum_hw is None:
             mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
         sqrt_off = torch.sqrt(mask_sum_hw) - 14.0
-        layer_mean = torch.sum(x * mask, dim=(2, 3), keepdim=True, dtype=torch.float32) / mask_sum_hw
+        # Preserve input dtype (see KataGPool note above re: fp16 compat).
+        layer_mean = torch.sum(x * mask, dim=(2, 3), keepdim=True) / mask_sum_hw
         return torch.cat((
             layer_mean,
             layer_mean * (sqrt_off / 10.0),

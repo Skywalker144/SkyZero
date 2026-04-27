@@ -136,8 +136,14 @@ int main(int argc, char** argv) {
         cfg.num_simulations = cfg_get<int>(cfg_map, "PROBE_NUM_SIMULATIONS", cfg.num_simulations);
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
 
-        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 4);
-        Gomoku game(cfg.board_size, /*renju=*/true, /*forbidden_plane=*/num_planes >= 4);
+        // V5: 5-plane padded encoding + 12-dim global features
+        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
+        const std::string rule_str = ([&]() -> std::string {
+            auto it = cfg_map.find("RULE");
+            return (it != cfg_map.end()) ? it->second : "renju";
+        })();
+        const RuleType rule = rule_from_string(rule_str);
+        Gomoku game(cfg.board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
         if (cfg.half_life <= 0) cfg.half_life = game.board_size;
 
         const bool use_cuda = torch::cuda::is_available();
@@ -150,16 +156,28 @@ int main(int argc, char** argv) {
         if (use_cuda) model.to(torch::kHalf);
         std::mutex model_mu;
 
-        const int c = game.num_planes;
-        const int board = game.board_size;
+        // V5: hardcoded c=5, board=15, regardless of game.board_size (padded)
+        const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
+        const int board = Gomoku::MAX_BOARD_SIZE;
         const int area = board * board;
+        constexpr int g_dim = 12;
 
-        // Single-sample synchronous forward. Mirrors the tensor construction
-        // in selfplay_manager.h::inference_server_loop.
+        // V5: derive globals from encoded for forward
+        auto derive_globals = [&](const std::vector<int8_t>& encoded) -> std::array<float, 12> {
+            int ply = 0;
+            for (size_t i = area; i < 3 * static_cast<size_t>(area); ++i) ply += encoded[i];
+            const int to_play = (ply % 2 == 0) ? 1 : -1;
+            auto gf = game.compute_global_features(ply, to_play);
+            std::array<float, 12> out{};
+            for (int i = 0; i < 12; ++i) out[i] = gf.data[i];
+            return out;
+        };
+
         auto run_forward = [&](const std::vector<std::vector<int8_t>>& batch)
                                -> std::vector<std::pair<std::vector<float>, std::array<float, 3>>> {
             const int bsz = static_cast<int>(batch.size());
             std::vector<float> input_buf(static_cast<size_t>(bsz) * c * area, 0.0f);
+            std::vector<float> global_buf(static_cast<size_t>(bsz) * g_dim, 0.0f);
             for (int i = 0; i < bsz; ++i) {
                 const auto& enc = batch[i];
                 if (enc.size() != static_cast<size_t>(c * area)) {
@@ -169,19 +187,28 @@ int main(int argc, char** argv) {
                 for (int j = 0; j < c * area; ++j) {
                     input_buf[base + j] = static_cast<float>(enc[j]);
                 }
+                auto g = derive_globals(enc);
+                std::memcpy(global_buf.data() + i * g_dim, g.data(), g_dim * sizeof(float));
             }
             auto input = torch::from_blob(input_buf.data(), {bsz, c, board, board}, torch::kFloat32)
                              .clone().to(device);
-            if (device.is_cuda()) input = input.to(torch::kHalf);
+            auto global_t = torch::from_blob(global_buf.data(), {bsz, g_dim}, torch::kFloat32)
+                                .clone().to(device);
+            if (device.is_cuda()) {
+                input = input.to(torch::kHalf);
+                global_t = global_t.to(torch::kHalf);
+            }
 
             torch::jit::IValue out_iv;
             {
                 std::lock_guard<std::mutex> lk(model_mu);
-                out_iv = model.forward({input});
+                out_iv = model.forward({input, global_t});   // V5 double input
             }
-            auto tuple = out_iv.toTuple();
-            auto policy_logits = tuple->elements()[0].toTensor();
-            auto value_logits = tuple->elements()[2].toTensor();
+            // V5: dict output
+            auto out_dict = out_iv.toGenericDict();
+            auto policy_all = out_dict.at("policy").toTensor();
+            auto policy_logits = policy_all.select(1, 0).contiguous();   // main head
+            auto value_logits = out_dict.at("value_wdl").toTensor();
             auto policy = policy_logits.reshape({bsz, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
             auto value = torch::softmax(value_logits.to(torch::kFloat32), 1).to(torch::kCPU).contiguous();
             const float* pp = policy.data_ptr<float>();

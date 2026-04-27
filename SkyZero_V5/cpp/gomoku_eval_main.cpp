@@ -147,11 +147,13 @@ public:
     using Output = std::pair<std::vector<float>, std::array<float, 3>>;
 
     BatchedInferenceServer(ModelHandle* h, torch::Device device, int channels,
-                           int board_size, int batch_size, int wait_us)
+                           int board_size, int batch_size, int wait_us,
+                           const Gomoku* game = nullptr)
         : h_(h), device_(device), c_(channels), board_(board_size),
           area_(board_size * board_size),
           batch_size_(std::max(1, batch_size)),
-          wait_us_(std::max(0, wait_us)) {
+          wait_us_(std::max(0, wait_us)),
+          game_(game) {
         thread_ = std::thread([this] { loop(); });
     }
 
@@ -245,7 +247,9 @@ private:
 
     void run_forward(std::vector<std::unique_ptr<Request>>& batch) {
         const int bsz = static_cast<int>(batch.size());
+        constexpr int g_dim = 12;
         std::vector<float> input_buf(static_cast<size_t>(bsz) * c_ * area_, 0.0f);
+        std::vector<float> global_buf(static_cast<size_t>(bsz) * g_dim, 0.0f);
         for (int i = 0; i < bsz; ++i) {
             const auto& enc = batch[i]->encoded;
             if (enc.size() != static_cast<size_t>(c_ * area_)) {
@@ -255,22 +259,38 @@ private:
             for (int j = 0; j < c_ * area_; ++j) {
                 input_buf[base + j] = static_cast<float>(enc[j]);
             }
+            // V5: derive globals from encoded (ply via own+opp planes, to_play parity).
+            if (game_) {
+                int ply = 0;
+                for (size_t j = area_; j < 3 * static_cast<size_t>(area_); ++j) ply += enc[j];
+                const int to_play = (ply % 2 == 0) ? 1 : -1;
+                auto gf = game_->compute_global_features(ply, to_play);
+                std::memcpy(global_buf.data() + i * g_dim, gf.data, g_dim * sizeof(float));
+            }
         }
         auto input = torch::from_blob(input_buf.data(), {bsz, c_, board_, board_},
                                       torch::kFloat32)
                          .clone()
                          .to(device_);
-        if (device_.is_cuda()) input = input.to(torch::kHalf);
+        auto global_t = torch::from_blob(global_buf.data(), {bsz, g_dim}, torch::kFloat32)
+                            .clone()
+                            .to(device_);
+        if (device_.is_cuda()) {
+            input = input.to(torch::kHalf);
+            global_t = global_t.to(torch::kHalf);
+        }
 
         torch::jit::IValue out_iv;
         {
             std::lock_guard<std::mutex> lk(h_->mu);
             torch::NoGradGuard no_grad2;
-            out_iv = h_->module.forward({input});
+            out_iv = h_->module.forward({input, global_t});   // V5
         }
-        auto tuple = out_iv.toTuple();
-        auto policy_logits = tuple->elements()[0].toTensor();
-        auto value_logits = tuple->elements()[2].toTensor();
+        // V5: dict output
+        auto out_dict = out_iv.toGenericDict();
+        auto policy_all = out_dict.at("policy").toTensor();
+        auto policy_logits = policy_all.select(1, 0).contiguous();   // main head
+        auto value_logits = out_dict.at("value_wdl").toTensor();
         auto policy = policy_logits.reshape({bsz, area_})
                           .to(torch::kFloat32)
                           .to(torch::kCPU)
@@ -302,6 +322,7 @@ private:
     std::deque<std::unique_ptr<Request>> queue_;
     bool stop_ = false;
     std::thread thread_;
+    const Gomoku* game_ = nullptr;
 };
 
 
@@ -345,8 +366,14 @@ int main(int argc, char** argv) {
 
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
 
-        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 4);
-        Gomoku game(cfg.board_size, /*renju=*/true, /*forbidden_plane=*/num_planes >= 4);
+        // V5: 5-plane padded encoding + 12-dim global features
+        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
+        const std::string rule_str = ([&]() -> std::string {
+            auto it = cfg_map.find("RULE");
+            return (it != cfg_map.end()) ? it->second : "renju";
+        })();
+        const RuleType rule = rule_from_string(rule_str);
+        Gomoku game(cfg.board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
         if (cfg.half_life <= 0) cfg.half_life = game.board_size;
 
         const bool use_cuda = torch::cuda::is_available();
@@ -357,8 +384,9 @@ int main(int argc, char** argv) {
         auto ha = load_model(cli.model_a, device);
         auto hb = load_model(cli.model_b, device);
 
-        const int c = game.num_planes;
-        const int board = game.board_size;
+        // V5: hardcoded c=5, board=15, regardless of game.board_size (padded)
+        const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
+        const int board = Gomoku::MAX_BOARD_SIZE;
 
         const int infer_batch = cfg_get<int>(cfg_map, "INFERENCE_BATCH_SIZE", 64);
         const int infer_wait_us = cfg_get<int>(cfg_map, "INFERENCE_WAIT_US", 200);
@@ -370,8 +398,8 @@ int main(int argc, char** argv) {
             1, cfg_get<int>(cfg_map, "EVAL_SEARCH_THREADS_PER_TREE",
                              default_search_threads));
 
-        BatchedInferenceServer server_a(ha.get(), device, c, board, infer_batch, infer_wait_us);
-        BatchedInferenceServer server_b(hb.get(), device, c, board, infer_batch, infer_wait_us);
+        BatchedInferenceServer server_a(ha.get(), device, c, board, infer_batch, infer_wait_us, &game);
+        BatchedInferenceServer server_b(hb.get(), device, c, board, infer_batch, infer_wait_us, &game);
 
         auto infer_a = [&](const std::vector<int8_t>& e) { return server_a.infer(e); };
         auto infer_b = [&](const std::vector<int8_t>& e) { return server_b.infer(e); };
