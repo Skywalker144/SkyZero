@@ -347,10 +347,11 @@ int main(int argc, char** argv) {
                 torch::NoGradGuard no_grad;
                 out_iv = model.forward({input, global_t});   // V5
             }
-            // V5: opp policy = policy[:, 5, :] (idx 5 in v15 6-output spec).
+            // V5: opp policy = policy[:, 1, :] (slim 4-output head in nets.py:70-83;
+            // idx layout is main / opp / soft_main / soft_opp).
             auto out_dict = out_iv.toGenericDict();
-            auto policy_all = out_dict.at("policy").toTensor();   // (1, 6, area)
-            auto opp_logits = policy_all.select(1, 5).contiguous();
+            auto policy_all = out_dict.at("policy").toTensor();   // (1, 4, area)
+            auto opp_logits = policy_all.select(1, 1).contiguous();
             auto opp = opp_logits.reshape({1, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
             const float* op = opp.data_ptr<float>();
 
