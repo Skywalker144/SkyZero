@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 from data_processing import load_npz, random_d4_inplace
 from model_config import net_config_from_env
-from nets_v2 import build_model
+from nets import build_model
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +40,8 @@ def _collate_to_device(batch, s: int, e: int, device: torch.device, non_blocking
         "opponent_policy_target": torch.from_numpy(batch.opponent_policy_target[s:e]).to(device, non_blocking=non_blocking),
         "opponent_policy_mask": torch.from_numpy(batch.opponent_policy_mask[s:e]).to(device, non_blocking=non_blocking),
         "value_target": torch.from_numpy(batch.value_target[s:e]).to(device, non_blocking=non_blocking),
+        "td_value_target": torch.from_numpy(batch.td_value_target[s:e]).to(device, non_blocking=non_blocking),
+        "futurepos_target": torch.from_numpy(batch.futurepos_target[s:e]).to(device, non_blocking=non_blocking),
         "sample_weight": torch.from_numpy(batch.sample_weight[s:e]).to(device, non_blocking=non_blocking),
     }
 
@@ -94,6 +96,58 @@ def weighted_soft_ce(logits: torch.Tensor, target: torch.Tensor, weight: torch.T
     return (per_sample * weight).sum() / denom
 
 
+def soft_policy_target(p: torch.Tensor) -> torch.Tensor:
+    """KataGo soft-policy target: (p + 1e-7)^0.25, renormalized.
+
+    Mirrors KataGomo metrics_pytorch.py:462-464. Flattens the visit-count
+    distribution so the soft head learns "everything reasonable" rather than
+    just the top move — empirically helps generalization.
+    """
+    soft = (p + 1e-7).clamp_min(0.0).pow(0.25)
+    return soft / soft.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+
+
+def weighted_td_value_ce(
+    pred_logits: torch.Tensor,
+    target_probs: torch.Tensor,
+    weight: torch.Tensor,
+) -> torch.Tensor:
+    """Multi-horizon TD value loss (KataGomo metrics_pytorch.py:73-79).
+
+    pred_logits / target_probs: (B, 3, 3) — 3 horizons (long/mid/short) × WLD.
+    Per horizon: CE - H(target). Returns sample-weighted mean over batch.
+    """
+    log_p = F.log_softmax(pred_logits, dim=-1)               # (B, 3, 3)
+    ce = -(target_probs * log_p).sum(dim=-1)                 # (B, 3)
+    H_t = -(target_probs * (target_probs + 1e-30).log()).sum(dim=-1)
+    per_h = ce - H_t                                         # (B, 3)
+    per_sample = per_h.sum(dim=-1)                           # (B,)
+    denom = weight.sum().clamp_min(1e-8)
+    return (per_sample * weight).sum() / denom
+
+
+def weighted_futurepos_mse(
+    pred_pretanh: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    weight: torch.Tensor,
+) -> torch.Tensor:
+    """Futurepos loss (KataGomo metrics_pytorch.py:114-130).
+
+    pred_pretanh / target: (B, 2, H, W). mask: (B, 1, H, W) on-board indicator.
+    Channel 0 (+8 step) weight 1.0, channel 1 (+32 step) weight 0.25.
+    Per-sample sum normalized by sqrt(mask_sum_hw); sample-weighted mean.
+    """
+    pred = torch.tanh(pred_pretanh)
+    err = (pred - target).pow(2) * mask                      # (B, 2, H, W)
+    ch_w = err.new_tensor([1.0, 0.25]).view(1, 2, 1, 1)
+    err = err * ch_w
+    mask_sum_hw = mask.sum(dim=(1, 2, 3)).clamp_min(1.0)     # (B,)
+    per_sample = err.sum(dim=(1, 2, 3)) / mask_sum_hw.sqrt()
+    denom = weight.sum().clamp_min(1e-8)
+    return (per_sample * weight).sum() / denom
+
+
 # ---------------------------------------------------------------------------
 @dataclass
 class TrainArgs:
@@ -106,7 +160,11 @@ class TrainArgs:
     grad_clip: float
     policy_loss_weight: float
     opponent_policy_loss_weight: float
+    soft_policy_loss_weight: float
     value_loss_weight: float
+    td_value_loss_weight: float
+    futurepos_loss_weight: float
+    intermediate_loss_scale: float
     device: torch.device
     num_workers: int
     amp: bool
@@ -135,7 +193,11 @@ def parse_args() -> TrainArgs:
         grad_clip=float(os.environ.get("GRAD_CLIP", "1.0")),
         policy_loss_weight=float(os.environ.get("POLICY_LOSS_WEIGHT", "1.0")),
         opponent_policy_loss_weight=float(os.environ.get("OPP_POLICY_LOSS_WEIGHT", "0.15")),
+        soft_policy_loss_weight=float(os.environ.get("SOFT_POLICY_LOSS_WEIGHT", "8.0")),
         value_loss_weight=float(os.environ.get("VALUE_LOSS_WEIGHT", "1.0")),
+        td_value_loss_weight=float(os.environ.get("TD_VALUE_LOSS_WEIGHT", "0.72")),
+        futurepos_loss_weight=float(os.environ.get("FUTUREPOS_LOSS_WEIGHT", "0.25")),
+        intermediate_loss_scale=float(os.environ.get("INTERMEDIATE_LOSS_SCALE", "0.3")),
         device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         num_workers=a.num_workers,
         amp=int(os.environ.get("ENABLE_AMP", "1")) != 0,
@@ -248,10 +310,12 @@ def main() -> int:
     else:
         swa_accum_steps = 0
 
-    accum = {"policy": 0.0, "opp_policy": 0.0, "value": 0.0, "total": 0.0}
+    LOSS_KEYS = ("policy", "opp_policy", "soft_policy", "soft_opp_policy",
+                 "value", "td_value", "futurepos", "int_total", "total")
+    accum = {k: 0.0 for k in LOSS_KEYS}
     window = max(1, min(10, args.train_steps // 4))
-    first_sum = {"policy": 0.0, "opp_policy": 0.0, "value": 0.0, "total": 0.0}
-    last_sum = {"policy": 0.0, "opp_policy": 0.0, "value": 0.0, "total": 0.0}
+    first_sum = {k: 0.0 for k in LOSS_KEYS}
+    last_sum = {k: 0.0 for k in LOSS_KEYS}
     last_buf: list[dict] = []
 
     # Progress print cadence: ~20 updates across the epoch, rounded to a nice
@@ -276,31 +340,92 @@ def main() -> int:
         opp_policy_target = batch["opponent_policy_target"]
         opp_mask = batch["opponent_policy_mask"]
         value_target = batch["value_target"]
+        td_value_target = batch["td_value_target"].view(-1, 3, 3)
+        # int8 → float32 (KataGomo target is in {-1,0,+1}, matches tanh range)
+        futurepos_target = batch["futurepos_target"].float()
         sample_weight = batch["sample_weight"]
 
-        # D4 augmentation transforms all spatial channels (incl. mask plane ch 0,
-        # which is invariant under D4). global_features and value_target are
-        # symmetry-invariant, no transform needed.
-        state, policy_target, opp_policy_target = random_d4_inplace(
-            state, policy_target, opp_policy_target, cfg.board_size
+        # D4 augmentation transforms all spatial channels (incl. mask plane ch 0
+        # and the futurepos targets, which are D4-equivariant occupancy maps).
+        # global_features / value_target / td_value_target / sample_weight are
+        # D4-invariant.
+        state, policy_target, opp_policy_target, futurepos_target = random_d4_inplace(
+            state, policy_target, opp_policy_target, futurepos_target, cfg.board_size
         )
 
         B = state.shape[0]
+        # On-board mask (B, 1, H, W) for futurepos masking. Same source as the
+        # network's internal mask (input plane 0 in nets_v2.py:653).
+        fp_mask = state[:, 0:1, :, :]
+        # Soft targets are derived in fp32 once per batch (not transformed by
+        # D4 — already done above on the underlying main/opp targets).
+        soft_main_target = soft_policy_target(policy_target)
+        soft_opp_target = soft_policy_target(opp_policy_target)
+        opp_weight = sample_weight * opp_mask
         with torch.amp.autocast("cuda", enabled=use_amp):
             out = model(state, global_features)
-            # nets_v2 PolicyHead v15: idx 0=main, idx 5=opp (per spec §3.4.1).
-            # idx 1=aux, 2=soft, 3=soft_aux, 4=opt — not supervised in this phase
-            # (no NPZ targets yet; Phase C will add).
-            policy_logits     = out["policy"][:, 0, :].view(B, -1)
-            opp_policy_logits = out["policy"][:, 5, :].view(B, -1)
-            value_logits      = out["value_wdl"]
-            # Compute losses in fp32 regardless — softmax+log on half is noisy.
-            policy_loss = weighted_soft_ce(policy_logits.float(), policy_target, sample_weight)
-            opp_policy_loss = weighted_soft_ce(opp_policy_logits.float(), opp_policy_target, sample_weight * opp_mask)
-            value_loss = weighted_soft_ce(value_logits.float(), value_target, sample_weight)
-            total_loss = (args.policy_loss_weight * policy_loss
+            # nets.PolicyHead (slim, 4 outputs):
+            #   idx 0 = main_policy
+            #   idx 1 = opp_policy        (KataGomo C1, our renamed "aux")
+            #   idx 2 = soft_main_policy
+            #   idx 3 = soft_opp_policy
+            # Heads dropped (vs full_nets): aux/opt — see KataGomo
+            # metrics_pytorch.py:553/590, gated by target_weight_ownership=0.
+            policy_all = out["policy"]
+            int_policy_all = out.get("intermediate_policy")
+            int_value_logits = out.get("intermediate_value_wdl")
+            int_value_td = out.get("intermediate_value_td")
+            int_value_fp = out.get("intermediate_value_futurepos")
+
+            def head_losses(p_all: torch.Tensor, v_logits: torch.Tensor,
+                            v_td: torch.Tensor, v_fp: torch.Tensor):
+                p_main = p_all[:, 0, :].view(B, -1).float()
+                p_opp = p_all[:, 1, :].view(B, -1).float()
+                p_soft_main = p_all[:, 2, :].view(B, -1).float()
+                p_soft_opp = p_all[:, 3, :].view(B, -1).float()
+                return (
+                    weighted_soft_ce(p_main, policy_target, sample_weight),
+                    weighted_soft_ce(p_opp, opp_policy_target, opp_weight),
+                    weighted_soft_ce(p_soft_main, soft_main_target, sample_weight),
+                    weighted_soft_ce(p_soft_opp, soft_opp_target, opp_weight),
+                    weighted_soft_ce(v_logits.float(), value_target, sample_weight),
+                    weighted_td_value_ce(v_td.view(B, 3, 3).float(), td_value_target, sample_weight),
+                    weighted_futurepos_mse(v_fp.float(), futurepos_target, fp_mask, sample_weight),
+                )
+
+            (policy_loss, opp_policy_loss, soft_policy_loss,
+             soft_opp_policy_loss, value_loss, td_value_loss, futurepos_loss) = head_losses(
+                policy_all, out["value_wdl"], out["value_td"], out["value_futurepos"])
+
+            # KataGomo per-head weight (metrics_pytorch.py):
+            #   soft_main: 1.0 × soft_scale       → policy_w × soft_w
+            #   soft_opp:  0.15 × soft_scale      → opp_w  × soft_w
+            soft_main_w = args.policy_loss_weight * args.soft_policy_loss_weight
+            soft_opp_w = args.opponent_policy_loss_weight * args.soft_policy_loss_weight
+            main_total = (args.policy_loss_weight * policy_loss
                           + args.opponent_policy_loss_weight * opp_policy_loss
-                          + args.value_loss_weight * value_loss)
+                          + soft_main_w * soft_policy_loss
+                          + soft_opp_w * soft_opp_policy_loss
+                          + args.value_loss_weight * value_loss
+                          + args.td_value_loss_weight * td_value_loss
+                          + args.futurepos_loss_weight * futurepos_loss)
+
+            if (int_policy_all is not None and int_value_logits is not None
+                    and int_value_td is not None and int_value_fp is not None
+                    and args.intermediate_loss_scale > 0):
+                (i_policy, i_opp, i_soft, i_soft_opp, i_value, i_td, i_fp) = head_losses(
+                    int_policy_all, int_value_logits, int_value_td, int_value_fp)
+                int_total = (args.policy_loss_weight * i_policy
+                             + args.opponent_policy_loss_weight * i_opp
+                             + soft_main_w * i_soft
+                             + soft_opp_w * i_soft_opp
+                             + args.value_loss_weight * i_value
+                             + args.td_value_loss_weight * i_td
+                             + args.futurepos_loss_weight * i_fp)
+            else:
+                int_total = torch.zeros((), device=state.device, dtype=main_total.dtype)
+
+            total_loss = main_total + args.intermediate_loss_scale * int_total
 
         opt.zero_grad(set_to_none=True)
         scaler.scale(total_loss).backward()
@@ -318,7 +443,12 @@ def main() -> int:
         losses = {
             "policy": float(policy_loss.detach()),
             "opp_policy": float(opp_policy_loss.detach()),
+            "soft_policy": float(soft_policy_loss.detach()),
+            "soft_opp_policy": float(soft_opp_policy_loss.detach()),
             "value": float(value_loss.detach()),
+            "td_value": float(td_value_loss.detach()),
+            "futurepos": float(futurepos_loss.detach()),
+            "int_total": float(int_total.detach()),
             "total": float(total_loss.detach()),
         }
         for k, v in losses.items():
@@ -337,7 +467,9 @@ def main() -> int:
             sps = step * B / elapsed if elapsed > 0 else 0.0
             print(f"[train]   step {step}/{args.train_steps} "
                   f"loss={losses['total']:.3f} (p={losses['policy']:.3f} "
-                  f"v={losses['value']:.3f}) sps={sps:.0f} "
+                  f"sp={losses['soft_policy']:.3f} int={losses['int_total']:.3f} "
+                  f"v={losses['value']:.3f} tv={losses['td_value']:.3f} "
+                  f"fp={losses['futurepos']:.3f}) sps={sps:.0f} "
                   f"t={elapsed:.1f}s", flush=True)
 
     dt = time.time() - start
@@ -353,7 +485,8 @@ def main() -> int:
     print(f"[train] iter={args.iter} steps={step} samples_seen={step * args.batch_size} "
           f"t={dt:.1f}s (first/last avg over {window} steps)")
     name_w = max(len(k) for k in accum)
-    for k in ("total", "policy", "opp_policy", "value"):
+    for k in ("total", "policy", "opp_policy", "soft_policy",
+              "soft_opp_policy", "value", "td_value", "futurepos", "int_total"):
         print(f"[train]   {k:<{name_w}} : {first_avg[k]:8.4f} -> {last_avg[k]:8.4f}")
 
     # Save checkpoint
@@ -396,7 +529,12 @@ def main() -> int:
         "global_step_samples": global_step,
         "policy_loss": avg["policy"],
         "opp_policy_loss": avg["opp_policy"],
+        "soft_policy_loss": avg["soft_policy"],
+        "soft_opp_policy_loss": avg["soft_opp_policy"],
         "value_loss": avg["value"],
+        "td_value_loss": avg["td_value"],
+        "futurepos_loss": avg["futurepos"],
+        "intermediate_loss": avg["int_total"],
         "total_loss": avg["total"],
         "seconds": dt,
     })
