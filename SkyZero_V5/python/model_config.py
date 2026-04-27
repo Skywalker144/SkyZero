@@ -4,13 +4,10 @@ Kept intentionally minimal: the hyperparameters the C++ selfplay side also
 needs to know live in scripts/run.cfg; this file only defines the Python
 network topology defaults.
 
-Defaults match a b12c128 KataGo v15 model. The Phase A KataGo v15 fields
+Defaults match a b12c128 KataGo v15 model. The KataGo v15 derived fields
 (c_mid, c_gpool, c_p1, c_g1, c_v1, c_v2, intermediate_head_blocks) auto-
 derive from num_channels / num_blocks unless explicitly overridden, so
 users can scale the model just by setting num_blocks / num_channels.
-
-Legacy nets.py reads board_size, num_planes, num_blocks, num_channels
-plus the four properties below — auto-derived fields are ignored by it.
 """
 from __future__ import annotations
 
@@ -25,7 +22,7 @@ class NetConfig:
     num_blocks: int = 12
     num_channels: int = 128
 
-    # ----- Phase A (KataGo v15) extensions -----
+    # ----- KataGo v15 fields -----
     num_global_features: int = 12
     internal_length: int = 2
     has_intermediate_head: bool = True
@@ -56,23 +53,6 @@ class NetConfig:
             self.c_v2 = max(32, self.num_channels // 4 + 16)
         if self.intermediate_head_blocks is None:
             self.intermediate_head_blocks = max(1, self.num_blocks * 2 // 3)
-
-    # ----- Legacy properties (used by nets.py only) -----
-    @property
-    def mid_channels(self) -> int:
-        return max(16, self.num_channels // 2)
-
-    @property
-    def policy_head_channels(self) -> int:
-        return self.num_channels // 2
-
-    @property
-    def value_head_channels(self) -> int:
-        return self.num_channels // 4
-
-    @property
-    def value_fc_channels(self) -> int:
-        return self.num_channels // 2
 
 
 def net_config_from_env() -> NetConfig:
