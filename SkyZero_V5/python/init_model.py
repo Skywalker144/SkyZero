@@ -13,7 +13,7 @@ import sys
 import torch
 
 from model_config import net_config_from_env
-from nets_v2 import build_model
+from nets import build_model
 
 
 def main() -> int:
@@ -38,7 +38,7 @@ def main() -> int:
     model.initialize()   # RepVGG init + set_norm_scales (NOTES.md §3 traps)
     model.eval()
     with torch.no_grad():
-        # nets_v2 forward signature: (input_spatial, input_global)
+        # nets.KataGoNet forward signature: (input_spatial, input_global)
         example_state  = torch.zeros(1, cfg.num_planes, cfg.board_size, cfg.board_size, dtype=torch.float32)
         example_state[:, 0] = 1.0   # mask plane: full board
         example_global = torch.zeros(1, cfg.num_global_features, dtype=torch.float32)
