@@ -68,7 +68,7 @@ public:
 
 private:
     int sample_policy_move(const std::vector<int8_t>& state, int to_play, double temperature) {
-        const auto encoded = game_.encode_state(state, to_play);
+        const auto encoded = game_.encode_state_v5(state, to_play);   // V5
         auto res = infer_fn_(encoded);
         std::vector<float> logits = std::move(res.first);
 

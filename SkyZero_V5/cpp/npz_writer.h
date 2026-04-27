@@ -4,13 +4,14 @@
 // Minimal NPZ writer: each .npz is a zip archive of .npy v1.0 files.
 // Supports int8 / float32 arrays. Enough for the selfplay schema.
 //
-// Schema written per flush:
-//   state                   (N, num_planes, H, W)  int8
-//   policy_target           (N, H*W)               float32
-//   opponent_policy_target  (N, H*W)               float32
-//   opponent_policy_mask    (N,)                   float32
-//   value_target            (N, 3)                 float32
-//   sample_weight           (N,)                   float32
+// Schema written per flush (V5):
+//   state                   (N, num_planes, H, W)        int8     (V5: 5*15*15)
+//   global_features         (N, num_global_features)     float32  (V5: 12-dim)
+//   policy_target           (N, H*W)                     float32
+//   opponent_policy_target  (N, H*W)                     float32
+//   opponent_policy_mask    (N,)                         float32
+//   value_target            (N, 3)                       float32
+//   sample_weight           (N,)                         float32
 //
 // Threading: append() is called by the main selfplay collection thread.
 // When a chunk fills up, its six buffers are moved into a FlushJob and
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -96,14 +98,17 @@ public:
         int board_size,
         int num_planes,
         int max_rows_per_file,
-        int max_pending_jobs = 4
+        int max_pending_jobs = 4,
+        int num_global_features = 12,
+        int state_row_override = -1   // V5: overrides num_planes*board_size² when state is padded to MAX
     )
         : output_dir_(std::move(output_dir)),
           file_prefix_(std::move(file_prefix)),
           board_size_(board_size),
           num_planes_(num_planes),
+          num_global_features_(num_global_features),
           area_(board_size * board_size),
-          state_row_(num_planes * board_size * board_size),
+          state_row_(state_row_override > 0 ? state_row_override : num_planes * board_size * board_size),
           max_rows_(max_rows_per_file),
           max_pending_jobs_(std::max(1, max_pending_jobs)) {
         std::filesystem::create_directories(output_dir_);
@@ -138,6 +143,7 @@ public:
         }
 
         state_buf_.insert(state_buf_.end(), s.state.begin(), s.state.end());
+        global_buf_.insert(global_buf_.end(), s.global_features.begin(), s.global_features.end());
         policy_buf_.insert(policy_buf_.end(), s.policy_target.begin(), s.policy_target.end());
         opp_policy_buf_.insert(opp_policy_buf_.end(), s.opponent_policy_target.begin(), s.opponent_policy_target.end());
         opp_mask_buf_.push_back(s.has_opponent_policy ? 1.0f : 0.0f);
@@ -186,6 +192,7 @@ private:
         std::filesystem::path path;
         int64_t rows = 0;
         std::vector<int8_t> state_buf;
+        std::vector<float> global_buf;
         std::vector<float> policy_buf;
         std::vector<float> opp_policy_buf;
         std::vector<float> opp_mask_buf;
@@ -203,6 +210,7 @@ private:
                                    format4(part_counter_++) + ".npz");
         job->rows = rows_;
         job->state_buf = std::move(state_buf_);
+        job->global_buf = std::move(global_buf_);
         job->policy_buf = std::move(policy_buf_);
         job->opp_policy_buf = std::move(opp_policy_buf_);
         job->opp_mask_buf = std::move(opp_mask_buf_);
@@ -210,6 +218,7 @@ private:
         job->weight_buf = std::move(weight_buf_);
 
         state_buf_.clear();
+        global_buf_.clear();
         policy_buf_.clear();
         opp_policy_buf_.clear();
         opp_mask_buf_.clear();
@@ -274,9 +283,15 @@ private:
             throw std::runtime_error("zip_open failed for " + tmp);
         }
 
+        // V5: state padded to MAX_BOARD_SIZE regardless of game's board_size.
+        // state_dim derived from state_row_/num_planes_ (=225 → 15 for V5).
+        const int64_t state_dim = static_cast<int64_t>(std::sqrt(static_cast<double>(state_row_ / num_planes_)));
         add_int8_entry(archive, "state.npy",
-                       {job.rows, num_planes_, board_size_, board_size_},
+                       {job.rows, num_planes_, state_dim, state_dim},
                        job.state_buf);
+        add_float_entry(archive, "global_features.npy",
+                        {job.rows, num_global_features_},
+                        job.global_buf);
         add_float_entry(archive, "policy_target.npy",
                         {job.rows, area_},
                         job.policy_buf);
@@ -347,6 +362,7 @@ private:
     std::string file_prefix_;
     int board_size_;
     int num_planes_;
+    int num_global_features_;
     int area_;
     int state_row_;
     int max_rows_;
@@ -354,6 +370,7 @@ private:
 
     mutable std::mutex m_;
     std::vector<int8_t> state_buf_;
+    std::vector<float> global_buf_;
     std::vector<float> policy_buf_;
     std::vector<float> opp_policy_buf_;
     std::vector<float> opp_mask_buf_;

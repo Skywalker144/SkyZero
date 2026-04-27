@@ -326,9 +326,16 @@ int main(int argc, char** argv) {
         }
         bcfg.search_threads_per_tree = cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 4);
 
-        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 4);
-        const bool forbidden_plane = (num_planes >= 4);
-        Gomoku game(cfg.board_size, /*renju=*/true, forbidden_plane);
+        // V5: num_planes=5 (mask + own + opp + fb_b + fb_w), padded to MAX_BOARD_SIZE.
+        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
+        const int num_global_features = cfg_get<int>(cfg_map, "NUM_GLOBAL_FEATURES", 12);
+        const std::string rule_str = ([&]() -> std::string {
+            auto it = cfg_map.find("RULE");
+            return (it != cfg_map.end()) ? it->second : "renju";
+        })();
+        const RuleType rule = rule_from_string(rule_str);
+        const bool forbidden_plane = (rule != RuleType::FREESTYLE);
+        Gomoku game(cfg.board_size, rule, forbidden_plane);
         if (cfg.half_life <= 0) cfg.half_life = game.board_size;
 
         const int max_rows_per_npz = cfg_get<int>(cfg_map, "MAX_ROWS_PER_NPZ", 25000);
@@ -402,7 +409,12 @@ int main(int argc, char** argv) {
             }
         }
 
-        NpzWriter writer(cli.output_dir, npz_prefix, game.board_size, game.num_planes, max_rows_per_npz);
+        // V5: state is padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE = 15×15
+        // regardless of game.board_size, so state_row_override = 5*225 = 1125.
+        const int state_row = Gomoku::NUM_SPATIAL_PLANES_V5 * Gomoku::MAX_AREA;
+        NpzWriter writer(cli.output_dir, npz_prefix, Gomoku::MAX_BOARD_SIZE, game.num_planes,
+                         max_rows_per_npz, /*max_pending_jobs=*/4,
+                         num_global_features, state_row);
 
         std::cout << "[selfplay] model=" << cli.model
                   << (cli.daemon ? " mode=daemon" : "")
@@ -542,7 +554,12 @@ int main(int argc, char** argv) {
                     r.samples, cfg.policy_surprise_data_weight, cfg.value_surprise_data_weight);
                 auto weighted = apply_surprise_weighting_to_game(r.samples, weights, rng);
                 for (auto& ts : weighted) {
-                    ts.state = game.encode_state(ts.state, ts.to_play);
+                    // V5: derive ply from raw board (count non-zero) BEFORE encode replaces it.
+                    int ply = 0;
+                    for (auto v : ts.state) if (v != 0) ++ply;
+                    auto gf = game.compute_global_features(ply, ts.to_play);
+                    for (int i = 0; i < 12; ++i) ts.global_features[i] = gf.data[i];
+                    ts.state = game.encode_state_v5(ts.state, ts.to_play);
                     writer.append(ts);
                     v_rows += 1;
                     total_rows += 1;
@@ -596,9 +613,13 @@ int main(int argc, char** argv) {
             auto weighted = apply_surprise_weighting_to_game(r.samples, weights, rng);
 
             for (auto& ts : weighted) {
-                // Expand raw board state (H*W int8, {-1,0,1}) to the 4-plane
-                // encoded state that Python training consumes directly.
-                ts.state = game.encode_state(ts.state, ts.to_play);
+                // V5: encode to 5-plane padded layout (mask + own + opp + fb_b + fb_w)
+                // and capture per-step global features (rule one-hot, ply, etc.).
+                int ply = 0;
+                for (auto v : ts.state) if (v != 0) ++ply;
+                auto gf = game.compute_global_features(ply, ts.to_play);
+                for (int i = 0; i < 12; ++i) ts.global_features[i] = gf.data[i];
+                ts.state = game.encode_state_v5(ts.state, ts.to_play);
                 writer.append(ts);
                 total_rows += 1;
             }

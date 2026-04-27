@@ -191,17 +191,34 @@ public:
     }
 
 private:
-    // ---- Inference request plumbing ----
+    // ---- Inference request plumbing (V5) ----
     struct InferenceRequest {
-        std::vector<int8_t> encoded;
+        std::vector<int8_t> encoded;                   // V5: 5*MAX_AREA = 1125 int8
+        std::array<float, 12> globals{};               // V5: 12-dim global features
         std::promise<std::pair<std::vector<float>, std::array<float, 3>>> promise;
     };
+
+    // V5: derive globals from encoded state. Uses game_.rule (per-engine), and
+    // counts non-zero own/opp planes to recover ply, with to_play parity from ply.
+    // (Black starts in SkyZero, so to_play = 1 if ply even, -1 if odd.)
+    std::array<float, 12> derive_globals_from_encoded(const std::vector<int8_t>& encoded) const {
+        constexpr int A = Game::MAX_AREA;   // 225
+        // V5 plane layout: 0=mask, 1=own, 2=opp, 3=fb_b, 4=fb_w
+        int ply = 0;
+        for (size_t i = A; i < 3 * static_cast<size_t>(A); ++i) ply += encoded[i];
+        const int to_play = (ply % 2 == 0) ? 1 : -1;
+        auto gf = game_.compute_global_features(ply, to_play);
+        std::array<float, 12> out{};
+        for (int i = 0; i < 12; ++i) out[i] = gf.data[i];
+        return out;
+    }
 
     std::pair<std::vector<float>, std::array<float, 3>> request_inference(
         const std::vector<int8_t>& encoded
     ) {
         auto req = std::unique_ptr<InferenceRequest>(new InferenceRequest{});
         req->encoded = encoded;
+        req->globals = derive_globals_from_encoded(encoded);
         auto fut = req->promise.get_future();
         {
             std::lock_guard<std::mutex> lk(inference_mutex_);
@@ -220,6 +237,7 @@ private:
             for (const auto& encoded : encoded_batch) {
                 auto req = std::unique_ptr<InferenceRequest>(new InferenceRequest{});
                 req->encoded = encoded;
+                req->globals = derive_globals_from_encoded(encoded);
                 futures.push_back(req->promise.get_future());
                 inference_queue_.push_back(std::move(req));
             }
@@ -233,21 +251,22 @@ private:
     }
 
     void inference_server_loop(int server_idx) {
-        const int c = game_.num_planes;
-        const int board = game_.board_size;
-        const int area = board * board;
+        // V5: state is 5-plane padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE (15×15).
+        // Network output is (B, 6, 225) for policy (we take main head idx 0)
+        // and (B, 3) for value_wdl from a flat dict.
+        const int c = Game::NUM_SPATIAL_PLANES_V5;     // 5
+        const int board = Game::MAX_BOARD_SIZE;        // 15
+        const int area = board * board;                // 225
+        constexpr int g_dim = 12;                      // num_global_features
         const int max_batch = std::max(1, pcfg_.inference_batch_size);
         const torch::Device device = devices_[server_idx];
         const bool on_cuda = device.is_cuda();
 
         // Per-server pinned host buffers (allocated once, reused every batch).
-        // - input is int8 because requests carry int8 encoded states; the
-        //   int8->half cast happens on GPU as part of .to(device, kHalf).
-        // - policy/value outputs are float32 and copied D2H asynchronously
-        //   into pinned memory, then read by CPU after a single sync.
         auto pinned_i8 = torch::TensorOptions().dtype(torch::kInt8).pinned_memory(on_cuda);
         auto pinned_f32 = torch::TensorOptions().dtype(torch::kFloat32).pinned_memory(on_cuda);
         torch::Tensor pinned_input = torch::empty({max_batch, c, board, board}, pinned_i8);
+        torch::Tensor pinned_global = torch::empty({max_batch, g_dim}, pinned_f32);   // V5: globals
         torch::Tensor pinned_policy = torch::empty({max_batch, area}, pinned_f32);
         torch::Tensor pinned_value = torch::empty({max_batch, 3}, pinned_f32);
 
@@ -287,9 +306,11 @@ private:
             try {
                 const int bsz = static_cast<int>(batch.size());
 
-                // Pack int8 encodings directly into the pinned host buffer.
+                // V5: Pack int8 spatial encodings AND float32 globals into pinned buffers.
                 auto pinned_input_view = pinned_input.narrow(0, 0, bsz);
+                auto pinned_global_view = pinned_global.narrow(0, 0, bsz);
                 int8_t* in_ptr = pinned_input_view.data_ptr<int8_t>();
+                float* g_ptr = pinned_global_view.data_ptr<float>();
                 const size_t per_sample = static_cast<size_t>(c) * area;
                 for (int i = 0; i < bsz; ++i) {
                     const auto& enc = batch[i]->encoded;
@@ -298,27 +319,34 @@ private:
                     }
                     std::memcpy(in_ptr + static_cast<size_t>(i) * per_sample,
                                 enc.data(), per_sample);
+                    std::memcpy(g_ptr + static_cast<size_t>(i) * g_dim,
+                                batch[i]->globals.data(), g_dim * sizeof(float));
                 }
 
-                // Async H2D + dtype cast on GPU. .to(device, dtype, non_blocking)
-                // from a pinned source enqueues the copy on the current stream.
-                torch::Tensor input_gpu;
+                // Async H2D + dtype cast on GPU.
+                torch::Tensor input_gpu, global_gpu;
                 if (on_cuda) {
                     input_gpu = pinned_input_view.to(device, torch::kHalf, /*non_blocking=*/true);
+                    global_gpu = pinned_global_view.to(device, torch::kHalf, /*non_blocking=*/true);
                 } else {
                     input_gpu = pinned_input_view.to(torch::kFloat32);
+                    global_gpu = pinned_global_view;   // already float32
                 }
 
                 torch::NoGradGuard no_grad;
                 torch::jit::IValue out_iv;
                 {
                     std::lock_guard<std::mutex> mlk(*inference_model_mutexes_[server_idx]);
-                    out_iv = inference_models_[server_idx].forward({input_gpu});
+                    // V5: model.forward(state, global) → flat Dict[str, Tensor]
+                    out_iv = inference_models_[server_idx].forward({input_gpu, global_gpu});
                 }
 
-                auto tuple = out_iv.toTuple();
-                auto policy_logits = tuple->elements()[0].toTensor();
-                auto value_logits = tuple->elements()[2].toTensor();
+                // V5: dict output. Keys: policy (B, 6, area), value_wdl (B, 3).
+                // Take main head (idx 0 of 6 policy outputs per v15 spec).
+                auto out_dict = out_iv.toGenericDict();
+                auto policy_all = out_dict.at("policy").toTensor();      // (B, 6, area)
+                auto policy_logits = policy_all.select(1, 0).contiguous();   // (B, area)
+                auto value_logits = out_dict.at("value_wdl").toTensor();     // (B, 3)
 
                 // Stay on GPU for reshape / cast / softmax; one async D2H per output.
                 auto policy_gpu = policy_logits.reshape({bsz, area});

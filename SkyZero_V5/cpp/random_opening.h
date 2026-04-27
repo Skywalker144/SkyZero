@@ -51,7 +51,7 @@ private:
     // WDL-utility from `next_player`'s perspective: positive → next_player
     // is winning, |value| near 0 → balanced.
     double board_value(const std::vector<int8_t>& state, int next_player) const {
-        const auto encoded = game_.encode_state(state, next_player);
+        const auto encoded = game_.encode_state_v5(state, next_player);   // V5
         auto res = infer_fn_(encoded);
         const auto& v = res.second;
         return static_cast<double>(v[0]) - static_cast<double>(v[2]);

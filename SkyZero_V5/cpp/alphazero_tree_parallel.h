@@ -257,7 +257,7 @@ private:
         std::mt19937* local_rng,
         bool is_root
     ) {
-        auto encoded = game_.encode_state(state, to_play);
+        auto encoded = game_.encode_state_v5(state, to_play);   // V5: 5-plane padded
         int k = 0;
         bool do_flip = false;
         if (use_stochastic_transform && local_rng != nullptr) {

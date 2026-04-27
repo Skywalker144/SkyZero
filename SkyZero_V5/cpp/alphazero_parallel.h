@@ -154,7 +154,7 @@ private:
         bool use_stochastic_transform,
         bool use_symmetry_transform
     ) {
-        auto encoded = game_.encode_state(state, to_play);
+        auto encoded = game_.encode_state_v5(state, to_play);   // V5: 5-plane padded layout
         const int area = game_.board_size * game_.board_size;
 
         if (!use_stochastic_transform && use_symmetry_transform) {
@@ -337,7 +337,7 @@ private:
             PendingLeaf pl;
             pl.leaf = node;
             pl.path = std::move(path);
-            pl.encoded = game_.encode_state(node->state, node->to_play);
+            pl.encoded = game_.encode_state_v5(node->state, node->to_play);   // V5
 
             if (cfg_.enable_stochastic_transform_inference_for_child) {
                 std::uniform_int_distribution<int> dist(0, 7);

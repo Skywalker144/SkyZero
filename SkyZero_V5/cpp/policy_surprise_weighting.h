@@ -18,9 +18,11 @@ namespace skyzero {
 
 // ---------------------------------------------------------------------------
 // TrainSample — written to NPZ files and consumed by Python training.
+// V5: state is 5-plane padded V5 encoding; global_features is 12-dim.
 // ---------------------------------------------------------------------------
 struct TrainSample {
-    std::vector<int8_t> state;
+    std::vector<int8_t> state;                              // V5: 5*MAX_AREA = 1125 int8
+    std::array<float, 12> global_features{};                // V5: rule one-hot etc.
     int8_t to_play = 1;
     std::vector<float> policy_target;
     std::vector<float> opponent_policy_target;
@@ -34,6 +36,7 @@ struct TrainSample {
 // ---------------------------------------------------------------------------
 struct PolicySurpriseSample {
     std::vector<int8_t> state;
+    std::array<float, 12> global_features{};                // V5
     int8_t to_play = 1;
 
     std::vector<float> policy_target;
