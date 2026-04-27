@@ -90,28 +90,11 @@ public:
 
     std::vector<uint8_t> get_is_legal_actions(const std::vector<int8_t>& state, int /*to_play*/) const {
         std::vector<uint8_t> legal(state.size(), 0);
-        const bool empty = std::all_of(state.begin(), state.end(), [](int8_t v) { return v == 0; });
-        if (empty) {
-            // Empty board: every square is a legal first move. The proximity
-            // rule below (distance ≤ 3 from an existing stone) would otherwise
-            // mask out every point, so we early-return here.
-            std::fill(legal.begin(), legal.end(), 1);
-            return legal;
+        for (size_t i = 0; i < state.size(); ++i) {
+            legal[i] = (state[i] == 0) ? 1 : 0;
         }
-
-        for (int r = 0; r < board_size; ++r) {
-            for (int c = 0; c < board_size; ++c) {
-                const int loc = r * board_size + c;
-                if (state[loc] != 0) {
-                    continue;
-                }
-                legal[loc] = is_near_occupied(state, r, c, 3) ? 1 : 0;
-            }
-        }
-
         // Forbidden points are legal moves for Black, but playing on one
         // results in an immediate loss (checked in get_winner).
-
         return legal;
     }
 
@@ -501,22 +484,6 @@ private:
 
     bool on_board(int r, int c) const {
         return r >= 0 && r < board_size && c >= 0 && c < board_size;
-    }
-
-    bool is_near_occupied(const std::vector<int8_t>& state, int r, int c, int dist) const {
-        for (int dr = -dist; dr <= dist; ++dr) {
-            for (int dc = -dist; dc <= dist; ++dc) {
-                const int nr = r + dr;
-                const int nc = c + dc;
-                if (!on_board(nr, nc)) {
-                    continue;
-                }
-                if (state[nr * board_size + nc] != 0) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     struct ForbiddenPointFinder {
