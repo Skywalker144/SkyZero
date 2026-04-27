@@ -598,6 +598,71 @@ private:
             }
         }
 
+        // KataGomo-style TD(λ) value targets and futurepos targets.
+        // TD: 3 horizons (long/mid/short) × WLD via O(N) backward sweep with
+        //     nowFactor = 1/(1 + boardArea * c) for c ∈ {0.176, 0.056, 0.016}.
+        //     Recurrence: TD[N-1] = outcome; TD[i] = nowFactor*v_mix[i] +
+        //                 (1-nowFactor)*flip_wdl(TD[i+1]).
+        //     Layout: long[0:3], mid[3:6], short[6:9]; each = (W,D,L) from
+        //     samples[i].to_play perspective.
+        // Futurepos: cells at +8 / +32 steps clamped to game end, encoded from
+        //     samples[i].to_play perspective (+1 own, -1 opp, 0 empty),
+        //     padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE (off-board = 0).
+        if (!result.samples.empty()) {
+            const int N = static_cast<int>(result.samples.size());
+            const double board_area = static_cast<double>(game_.board_size) * game_.board_size;
+            const double now_factors[3] = {
+                1.0 / (1.0 + board_area * 0.176),  // long
+                1.0 / (1.0 + board_area * 0.056),  // mid
+                1.0 / (1.0 + board_area * 0.016),  // short
+            };
+
+            for (int h = 0; h < 3; ++h) {
+                const double nf = now_factors[h];
+                const double rd = 1.0 - nf;
+                const auto& last = result.samples[N - 1].outcome;
+                double cur_w = last[0], cur_d = last[1], cur_l = last[2];
+                result.samples[N - 1].td_value_target[3 * h + 0] = static_cast<float>(cur_w);
+                result.samples[N - 1].td_value_target[3 * h + 1] = static_cast<float>(cur_d);
+                result.samples[N - 1].td_value_target[3 * h + 2] = static_cast<float>(cur_l);
+                for (int i = N - 2; i >= 0; --i) {
+                    // Perspective flips across one move: TD[i+1]'s W is TD[i]'s L.
+                    const double prev_w = cur_l;
+                    const double prev_l = cur_w;
+                    const double prev_d = cur_d;
+                    const auto& v = result.samples[i].v_mix;
+                    cur_w = nf * v[0] + rd * prev_w;
+                    cur_d = nf * v[1] + rd * prev_d;
+                    cur_l = nf * v[2] + rd * prev_l;
+                    result.samples[i].td_value_target[3 * h + 0] = static_cast<float>(cur_w);
+                    result.samples[i].td_value_target[3 * h + 1] = static_cast<float>(cur_d);
+                    result.samples[i].td_value_target[3 * h + 2] = static_cast<float>(cur_l);
+                }
+            }
+
+            const int M = Game::MAX_BOARD_SIZE;
+            const int A = Game::MAX_AREA;
+            const int B = game_.board_size;
+            const int OFFSETS[2] = {8, 32};
+            for (int idx = 0; idx < N; ++idx) {
+                auto& fp = result.samples[idx].futurepos_target;
+                fp.assign(2 * A, 0);
+                const int8_t pla = result.samples[idx].to_play;
+                for (int chan = 0; chan < 2; ++chan) {
+                    const int j = std::min(N - 1, idx + OFFSETS[chan]);
+                    const auto& s = result.samples[j].state;
+                    int8_t* out = fp.data() + chan * A;
+                    for (int r = 0; r < B; ++r) {
+                        for (int c = 0; c < B; ++c) {
+                            const int8_t v = s[r * B + c];
+                            if (v == pla) out[r * M + c] = 1;
+                            else if (v == -pla) out[r * M + c] = -1;
+                        }
+                    }
+                }
+            }
+        }
+
         return result;
     }
 
