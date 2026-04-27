@@ -1,0 +1,327 @@
+"""ResNet policy/value network.
+
+Topology ported from CSkyZero_V3/nets.h. The forward pass returns a tuple
+``(policy_logits, opponent_policy_logits, value_logits)`` so the TorchScript
+export can be consumed from C++ via ``torch::jit::script::Module::forward``.
+
+Shapes:
+    input:                    (B, num_planes, H, W)
+    policy_logits:            (B, 1, H, W)
+    opponent_policy_logits:   (B, 1, H, W)
+    value_logits:             (B, 3)  — WDL
+"""
+from __future__ import annotations
+
+import math
+from typing import Tuple
+
+import torch
+import torch.nn as nn
+
+from model_config import NetConfig
+
+
+class FixScaleNorm(nn.Module):
+    """Channel-wise affine with a fixed (non-learnable) scale and learnable beta.
+
+    Mirrors KataGo's `NormMask` under `norm_kind="fixscale"` / the non-tip
+    branch of `"fixscaleonenorm"` (see KataGomo model_pytorch.py:207-213,
+    319-320). The scalar `fixed_scale` is baked at block-init time based on
+    the block's depth index (1/sqrt(i+1)); no running statistics, no BN.
+    """
+
+    def __init__(self, num_channels: int, use_gamma: bool = False) -> None:
+        super().__init__()
+        self.register_buffer("fixed_scale", torch.ones(1, num_channels, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.gamma = nn.Parameter(torch.ones(1, num_channels, 1, 1)) if use_gamma else None
+
+    def set_scale(self, s: float) -> None:
+        with torch.no_grad():
+            self.fixed_scale.fill_(s)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.gamma is not None:
+            return x * (self.gamma * self.fixed_scale) + self.beta
+        return x * self.fixed_scale + self.beta
+
+
+class BiasMask(nn.Module):
+    """Bias-only affine (no scale). Mirrors KataGomo's BiasMask
+    (model_pytorch.py:90). Used in the heads where KataGo applies a plain
+    per-channel bias instead of a fixscale norm."""
+
+    def __init__(self, num_channels: int) -> None:
+        super().__init__()
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.beta
+
+
+def _make_norm(c: int, norm_kind: str) -> nn.Module:
+    if norm_kind == "bn":
+        return nn.BatchNorm2d(c)
+    if norm_kind == "fixscale":
+        return FixScaleNorm(c)
+    raise ValueError(f"unknown norm_kind: {norm_kind!r}")
+
+
+class NormActConv(nn.Module):
+    def __init__(self, c_in: int, c_out: int, kernel_size: int, norm_kind: str = "bn") -> None:
+        super().__init__()
+        padding = kernel_size // 2
+        self.norm = _make_norm(c_in, norm_kind)
+        self.act = nn.Mish()
+        self.conv = nn.Conv2d(c_in, c_out, kernel_size, padding=padding, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(self.act(self.norm(x)))
+
+
+class KataGPool(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        layer_mean = x.mean(dim=(2, 3))
+        layer_max = torch.amax(x, dim=(2, 3))
+        return torch.cat([layer_mean, layer_max], dim=1)
+
+
+class ResBlock(nn.Module):
+    def __init__(self, channels: int, norm_kind: str = "bn") -> None:
+        super().__init__()
+        self.normactconv1 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
+        self.normactconv2 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.normactconv1(x)
+        out = self.normactconv2(out)
+        return x + out
+
+
+class GlobalPoolingResidualBlock(nn.Module):
+    def __init__(self, channels: int, gpool_channels: int = -1, norm_kind: str = "bn") -> None:
+        super().__init__()
+        if gpool_channels <= 0:
+            gpool_channels = channels
+        self.pre_norm = _make_norm(channels, norm_kind)
+        self.pre_act = nn.Mish()
+        self.regular_conv = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.gpool_conv = nn.Conv2d(channels, gpool_channels, 3, padding=1, bias=False)
+        self.gpool_norm = _make_norm(gpool_channels, norm_kind)
+        self.gpool_act = nn.Mish()
+        self.gpool = KataGPool()
+        self.gpool_to_bias = nn.Linear(gpool_channels * 2, channels, bias=False)
+        self.normactconv2 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.pre_act(self.pre_norm(x))
+        regular = self.regular_conv(out)
+        g = self.gpool_act(self.gpool_norm(self.gpool_conv(out)))
+        bias = self.gpool_to_bias(self.gpool(g)).unsqueeze(-1).unsqueeze(-1)
+        regular = regular + bias
+        regular = self.normactconv2(regular)
+        return x + regular
+
+
+class NestedBottleneckResBlock(nn.Module):
+    def __init__(
+        self,
+        channels: int,
+        mid_channels: int,
+        internal_length: int = 2,
+        use_gpool: bool = False,
+        norm_kind: str = "bn",
+    ) -> None:
+        super().__init__()
+        self.normactconvp = NormActConv(channels, mid_channels, 1, norm_kind=norm_kind)
+        blocks: list[nn.Module] = []
+        for i in range(internal_length):
+            if use_gpool and i == 0:
+                blocks.append(GlobalPoolingResidualBlock(mid_channels, norm_kind=norm_kind))
+            else:
+                blocks.append(ResBlock(mid_channels, norm_kind=norm_kind))
+        self.blockstack = nn.ModuleList(blocks)
+        self.normactconvq = NormActConv(mid_channels, channels, 1, norm_kind=norm_kind)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.normactconvp(x)
+        for block in self.blockstack:
+            out = block(out)
+        out = self.normactconvq(out)
+        return x + out
+
+
+class PolicyHead(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, board_size: int, head_channels: int = 64) -> None:
+        super().__init__()
+        self.board_size = board_size
+        self.conv_p = nn.Conv2d(in_channels, head_channels, 1, bias=False)
+        self.conv_g = nn.Conv2d(in_channels, head_channels, 1, bias=False)
+        self.g_norm = BiasMask(head_channels)
+        self.g_act = nn.Mish()
+        self.gpool = KataGPool()
+        self.linear_g = nn.Linear(head_channels * 2, head_channels, bias=False)
+        self.p_norm = BiasMask(head_channels)
+        self.p_act = nn.Mish()
+        self.conv_final = nn.Conv2d(head_channels, out_channels, 1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        p = self.conv_p(x)
+        g = self.g_act(self.g_norm(self.conv_g(x)))
+        g = self.linear_g(self.gpool(g)).unsqueeze(-1).unsqueeze(-1)
+        p = p + g
+        p = self.p_act(self.p_norm(p))
+        return self.conv_final(p)
+
+
+class ValueHead(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int = 3, head_channels: int = 32, value_channels: int = 64) -> None:
+        super().__init__()
+        self.conv_v = nn.Conv2d(in_channels, head_channels, 1, bias=False)
+        self.v_norm = BiasMask(head_channels)
+        self.v_act = nn.Mish()
+        self.gpool = KataGPool()
+        self.fc1 = nn.Linear(head_channels * 2, value_channels)
+        self.act2 = nn.Mish()
+        self.fc_value = nn.Linear(value_channels, out_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        v = self.v_act(self.v_norm(self.conv_v(x)))
+        v_pooled = self.gpool(v)
+        out = self.act2(self.fc1(v_pooled))
+        return self.fc_value(out)
+
+
+class ResNet(nn.Module):
+    def __init__(self, cfg: NetConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.board_size = cfg.board_size
+        self.num_planes = cfg.num_planes
+        self.num_blocks = cfg.num_blocks
+        self.num_channels = cfg.num_channels
+
+        # KataGomo-style stem: a single bare Conv2d (no norm, no activation).
+        # The first trunk block's NormActConv provides the first norm+act.
+        self.start_layer = nn.Conv2d(
+            cfg.num_planes, cfg.num_channels, 3, stride=1, padding=1, bias=False
+        )
+
+        trunk: list[nn.Module] = []
+        for i in range(cfg.num_blocks):
+            use_gpool = ((i + 2) % 3 == 0)
+            trunk.append(
+                NestedBottleneckResBlock(
+                    cfg.num_channels,
+                    cfg.mid_channels,
+                    internal_length=2,
+                    use_gpool=use_gpool,
+                    norm_kind="fixscale",
+                )
+            )
+        self.trunk_blocks = nn.ModuleList(trunk)
+        # Trunk tip: per-sample GroupNorm(num_groups=1) over (C, H, W). This is
+        # mathematically LayerNorm-over-all-features but kept as GroupNorm to
+        # avoid TorchScript quirks. No running stats → SWA-safe, and it resets
+        # the residual-accumulated variance before the heads (which assume
+        # roughly unit-variance input under the fixscale scheme).
+        self.trunk_tip_norm = nn.GroupNorm(num_groups=1, num_channels=cfg.num_channels)
+        self.trunk_tip_act = nn.Mish()
+
+        self.total_policy_head = PolicyHead(
+            cfg.num_channels, out_channels=2,
+            board_size=cfg.board_size, head_channels=cfg.policy_head_channels,
+        )
+        self.value_head = ValueHead(
+            cfg.num_channels, out_channels=3,
+            head_channels=cfg.value_head_channels,
+            value_channels=cfg.value_fc_channels,
+        )
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        # Mish gain per KataGomo compute_gain (model_pytorch.py:39).
+        act_gain = math.sqrt(2.210277)
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                fan_in = m.weight.size(1) * m.weight.size(2) * m.weight.size(3)
+                stdv = act_gain / math.sqrt(fan_in)
+                nn.init.normal_(m.weight, 0.0, stdv)
+            elif isinstance(m, nn.Linear):
+                fan_in = m.weight.size(1)
+                stdv = act_gain / math.sqrt(fan_in)
+                nn.init.normal_(m.weight, 0.0, stdv)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
+
+        # Fixup/FixScale depth-aware scaling, matching KataGo's fixscaleonenorm
+        # (model_pytorch.py:1539-1542): each block sets every FixScaleNorm
+        # inside it to scale = 1/sqrt(i+1), where i is the block index.
+        for i, block in enumerate(self.trunk_blocks):
+            scale = 1.0 / math.sqrt(i + 1.0)
+            for m in block.modules():
+                if isinstance(m, FixScaleNorm):
+                    m.set_scale(scale)
+
+        # Head output layers (identity init with small scale): without BN the
+        # logits would otherwise sit far from zero at init. Matches KataGomo
+        # PolicyHead.initialize / ValueHead.initialize (scale_output=0.3).
+        scale_output = 0.3
+        for layer in (self.total_policy_head.conv_final, self.value_head.fc_value):
+            fan_in = (
+                layer.weight.size(1) * layer.weight.size(2) * layer.weight.size(3)
+                if isinstance(layer, nn.Conv2d)
+                else layer.weight.size(1)
+            )
+            nn.init.normal_(layer.weight, 0.0, scale_output / math.sqrt(fan_in))
+            if getattr(layer, "bias", None) is not None:
+                nn.init.constant_(layer.bias, 0.0)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        out = self.start_layer(x)
+        for block in self.trunk_blocks:
+            out = block(out)
+        out = self.trunk_tip_act(self.trunk_tip_norm(out))
+
+        total_policy_logits = self.total_policy_head(out)        # (B, 2, H, W)
+        policy_logits = total_policy_logits[:, 0:1, :, :]        # (B, 1, H, W)
+        opponent_policy_logits = total_policy_logits[:, 1:2, :, :]
+        value_logits = self.value_head(out)                       # (B, 3)
+        return policy_logits, opponent_policy_logits, value_logits
+
+
+def build_model(cfg: NetConfig | None = None) -> ResNet:
+    if cfg is None:
+        cfg = NetConfig()
+    return ResNet(cfg)
+
+
+def _count_params(model: nn.Module) -> Tuple[int, int]:
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total, trainable
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Report ResNet parameter count.")
+    parser.add_argument("--num_blocks", type=int, required=True)
+    parser.add_argument("--num_channels", type=int, required=True)
+    args = parser.parse_args()
+
+    cfg = NetConfig()
+    cfg.num_blocks = args.num_blocks
+    cfg.num_channels = args.num_channels
+    model = ResNet(cfg)
+
+    total, trainable = _count_params(model)
+    print(
+        f"num_blocks={cfg.num_blocks} num_channels={cfg.num_channels} "
+        f"params={total:,} ({total / 1e6:.2f}M) trainable={trainable:,}"
+    )
+
+
+if __name__ == "__main__":
+    main()

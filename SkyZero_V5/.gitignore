@@ -1,0 +1,138 @@
+# ============================================
+# SkyZero_V4 Project .gitignore
+# ============================================
+
+# -------------------- C++ Build Files --------------------
+# CMake build directory and all generated files
+cpp/build/
+cpp/CMakeFiles/
+cpp/CMakeCache.txt
+cpp/cmake_install.cmake
+cpp/Makefile
+
+# Compiled object files and binaries
+*.o
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+selfplay
+
+# -------------------- Python Files --------------------
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+virtualenv/
+conda-env/
+.conda/
+
+# Python distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# -------------------- Training & Data Files --------------------
+# Training data directories (large files, can be regenerated)
+data/
+selfplay/
+shuffleddata/
+
+# Model files (large binary files)
+models/
+torchmodels_toexport/
+*.pt
+*.pth
+*.ckpt
+
+# Training data files
+*.npz
+
+# Log files
+train/
+*.log
+stdout.txt
+outtrain.txt
+outval.txt
+
+# -------------------- IDE & Editor Files --------------------
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (CLion, PyCharm, etc.)
+.idea/
+*.iml
+*.iws
+
+# Eclipse
+.project
+.cproject
+.settings/
+.pydevproject
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# Emacs
+\#*\#
+.\#*
+
+# -------------------- OS Generated Files --------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# -------------------- Temporary Files --------------------
+# Temporary directories and files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+*.swp
+*.cache
+
+# Core dumps
+core
+core.*
+
+scripts/DISTRIBUTED_SELFPLAY.md
+.claude
+*.pdf
+IMPROVEMENTS.md
