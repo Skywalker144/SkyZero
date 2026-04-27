@@ -697,31 +697,60 @@ class KataGoNet(nn.Module):
 
 
 
+
+
 # ============================================================
-# 工厂函数 — 与 spec §3.1 表对齐
+# 工厂函数
 # ============================================================
 
-def build_b8c96(activation: str = "mish") -> KataGoNet:
-    """初版测试规模: 8 块 × 96 trunk × 48 mid × 16 gpool, ~1.5-2M 参数."""
+def build_model(cfg) -> KataGoNet:
+    """Build a KataGoNet from a NetConfig.
+
+    Reads num_channels (→ c_main), num_blocks, and all Phase A fields
+    (c_mid / c_gpool / c_p1 / c_g1 / c_v1 / c_v2 / intermediate_head_blocks
+    auto-derived in NetConfig.__post_init__ if not set).
+
+    NOTE: caller must run `model.initialize()` before training, OR call
+    `model.set_norm_scales()` after `load_state_dict` (NormMask.scale is
+    not in state_dict — see NOTES.md trap 3).
+    """
     return KataGoNet(
-        num_blocks=8, c_main=96, c_mid=48, c_gpool=16,
-        internal_length=2,
-        num_in_channels=4, num_global_features=12,
-        activation=activation, version=15,
-        has_intermediate_head=True, intermediate_head_blocks=5,
-        c_p1=24, c_g1=24, c_v1=24, c_v2=32,
-        pos_len=15,
+        num_blocks=cfg.num_blocks,
+        c_main=cfg.num_channels,
+        c_mid=cfg.c_mid,
+        c_gpool=cfg.c_gpool,
+        internal_length=cfg.internal_length,
+        num_in_channels=cfg.num_planes,
+        num_global_features=cfg.num_global_features,
+        activation=cfg.activation,
+        version=cfg.version,
+        has_intermediate_head=cfg.has_intermediate_head,
+        intermediate_head_blocks=cfg.intermediate_head_blocks,
+        c_p1=cfg.c_p1,
+        c_g1=cfg.c_g1,
+        c_v1=cfg.c_v1,
+        c_v2=cfg.c_v2,
+        pos_len=cfg.board_size,
     )
+
+
+def build_b8c96(activation: str = "mish") -> KataGoNet:
+    """初版测试规模: 8 块 × 96 trunk × 48 mid × 16 gpool, ~760K 参数.
+
+    Auto-derived (via NetConfig.__post_init__):
+        c_mid=48, c_gpool=16, c_p1=24, c_g1=24, c_v1=24, c_v2=40,
+        intermediate_head_blocks=5
+    """
+    from model_config import NetConfig
+    return build_model(NetConfig(num_blocks=8, num_channels=96, activation=activation))
 
 
 def build_b12c128(activation: str = "mish") -> KataGoNet:
-    """生产规模: 12 块 × 128 trunk × 64 mid × 16 gpool, ~4-5M 参数."""
-    return KataGoNet(
-        num_blocks=12, c_main=128, c_mid=64, c_gpool=16,
-        internal_length=2,
-        num_in_channels=4, num_global_features=12,
-        activation=activation, version=15,
-        has_intermediate_head=True, intermediate_head_blocks=8,
-        c_p1=32, c_g1=32, c_v1=32, c_v2=48,
-        pos_len=15,
-    )
+    """生产规模: 12 块 × 128 trunk × 64 mid × 16 gpool, ~2M 参数.
+
+    Auto-derived (via NetConfig.__post_init__):
+        c_mid=64, c_gpool=16, c_p1=32, c_g1=32, c_v1=32, c_v2=48,
+        intermediate_head_blocks=8
+    """
+    from model_config import NetConfig
+    return build_model(NetConfig(num_blocks=12, num_channels=128, activation=activation))
