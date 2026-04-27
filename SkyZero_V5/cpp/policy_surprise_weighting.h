@@ -19,6 +19,15 @@ namespace skyzero {
 // ---------------------------------------------------------------------------
 // TrainSample — written to NPZ files and consumed by Python training.
 // V5: state is 5-plane padded V5 encoding; global_features is 12-dim.
+//
+// td_value_target: 3 horizons (long/mid/short) × 3 WLD probs, KataGomo TD(λ)
+// sweep with nowFactor = 1/(1 + boardArea * c) for c ∈ {0.176, 0.056, 0.016}.
+// Layout: long[0:3], mid[3:6], short[6:9]; each = (P(W), P(D), P(L)) from
+// to_play perspective.
+//
+// futurepos_target: padded to (2, MAX_BOARD_SIZE, MAX_BOARD_SIZE) = 2*225 int8.
+// channel 0 = +8 step occupancy, channel 1 = +32 step (clamped to game end).
+// values: +1 = own, -1 = opp, 0 = empty (or off-board pad).
 // ---------------------------------------------------------------------------
 struct TrainSample {
     std::vector<int8_t> state;                              // V5: 5*MAX_AREA = 1125 int8
@@ -27,6 +36,8 @@ struct TrainSample {
     std::vector<float> policy_target;
     std::vector<float> opponent_policy_target;
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
+    std::array<float, 9> td_value_target{};                 // 3 horizons × WLD
+    std::vector<int8_t> futurepos_target;                   // 2*MAX_AREA int8
     float sample_weight = 1.0f;
     bool has_opponent_policy = true;  // false for the last position in a game
 };
@@ -46,6 +57,8 @@ struct PolicySurpriseSample {
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};
     std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
+    std::array<float, 9> td_value_target{};
+    std::vector<int8_t> futurepos_target;
     float sample_weight = 1.0f;
     bool has_opponent_policy = true;
 };
@@ -206,6 +219,8 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.policy_target = game_data[i].policy_target;
             ts.opponent_policy_target = game_data[i].opponent_policy_target;
             ts.value_target = game_data[i].value_target;
+            ts.td_value_target = game_data[i].td_value_target;
+            ts.futurepos_target = game_data[i].futurepos_target;
             ts.sample_weight = game_data[i].sample_weight;
             ts.has_opponent_policy = game_data[i].has_opponent_policy;
             return ts;
