@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import pathlib
 import sys
@@ -97,16 +98,34 @@ def main() -> int:
         cols = {name: [float(r[i]) for r in rows] for i, name in enumerate(header)}
         x = cols.get("global_step_samples", cols.get("iter", list(range(len(rows)))))
         xlabel = "samples" if "global_step_samples" in cols else "iter"
-        keys = [k for k in ("policy_loss", "opp_policy_loss", "value_loss", "total_loss") if k in cols]
-        fig, axes = plt.subplots(len(keys), 1, figsize=(8, 2.5 * len(keys)), sharex=True)
-        if len(keys) == 1:
-            axes = [axes]
-        for ax, key in zip(axes, keys):
+        keys = [k for k in ("policy_loss", "opp_policy_loss", "soft_policy_loss",
+                              "soft_opp_policy_loss",
+                              "value_loss", "td_value_loss", "futurepos_loss",
+                              "intermediate_loss", "total_loss") if k in cols]
+        # Grid layout: square-ish (ncols ≈ √n) so many losses stay readable.
+        # ≤3 panes => single column (vertical), keeping shared x-axis natural.
+        n = len(keys)
+        if n <= 3:
+            ncols, nrows = 1, n
+            figsize = (8, 2.5 * n)
+        else:
+            ncols = math.ceil(math.sqrt(n))
+            nrows = math.ceil(n / ncols)
+            figsize = (5 * ncols, 2.8 * nrows)
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharex=True,
+                                 squeeze=False)
+        flat = axes.flatten()
+        for ax, key in zip(flat, keys):
             ax.plot(x, cols[key])
             ax.set_yscale("log")
-            ax.set_ylabel(key)
+            ax.set_title(key)
             ax.grid(True, which="both", alpha=0.3)
-        axes[-1].set_xlabel(xlabel)
+        # Hide unused panes (when n is not a perfect rectangle).
+        for ax in flat[n:]:
+            ax.set_visible(False)
+        # X-label only on the bottom row of visible panes.
+        for ax in flat[max(0, n - ncols):n]:
+            ax.set_xlabel(xlabel)
         fig.tight_layout()
         out = data_dir / "logs" / "loss.png"
         fig.savefig(out, dpi=200)
