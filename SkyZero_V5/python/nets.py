@@ -1,335 +1,358 @@
-"""ResNet policy/value network — DEPRECATED in V5.
+"""Slim KataGo v15 network — only the heads SkyZero V5 actually trains.
 
-V5 uses `nets_v2.py` (KataGo b28c512nbt v15 architecture). This file is kept
-as historical reference (matches V4 main branch) but is no longer imported by
-train.py / init_model.py / export_model.py — they all import from `nets_v2`.
+Drops vs `full_nets.KataGoNet` (matching KataGomo Gomoku training schedule;
+see KataGomo metrics_pytorch.py:483-487, 553/590/697/690 — those heads are
+multiplied by `target_weight_ownership=0` for Gomoku so they're never trained):
 
-Original V4 docstring follows.
-=================================================================
-ResNet policy/value network.
+    policy idx 1 (aux)              ← removed
+    policy idx 4 (opt)              ← removed
+    value_st_error                  ← removed
+    value_var_time                  ← removed
+    value_ownership                 ← removed
 
-Topology ported from CSkyZero_V3/nets.h. The forward pass returns a tuple
-``(policy_logits, opponent_policy_logits, value_logits)`` so the TorchScript
-export can be consumed from C++ via ``torch::jit::script::Module::forward``.
+Kept (= what we have selfplay targets + losses for):
 
-Shapes:
-    input:                    (B, num_planes, H, W)
-    policy_logits:            (B, 1, H, W)
-    opponent_policy_logits:   (B, 1, H, W)
-    value_logits:             (B, 3)  — WDL
+    policy: 4 outputs reordered → idx 0 main / 1 opp / 2 soft_main / 3 soft_opp
+    value:  WDL (3) + td_value (9 = 3 horizons × WLD) + futurepos (2×H×W)
+
+The trunk (stem + NestedBottleneckResBlocks + final BiasMask + intermediate
+LastBatchNorm) is identical to `full_nets`; we reuse the primitives from
+that module so there's a single source of truth for the shared parts.
+
+Use:
+    from nets import build_model, build_b4c64, build_b8c96, build_b12c128
+
+forward signature: model(input_spatial, input_global) → Dict[str, Tensor]
+returned keys (always present):
+    policy:                     (B, 4, H*W)
+    value_wdl:                  (B, 3)
+    value_td:                   (B, 9)
+    value_futurepos:            (B, 2, H, W)
+returned keys (when has_intermediate_head=True):
+    intermediate_policy:        (B, 4, H*W)
+    intermediate_value_wdl:     (B, 3)
+    intermediate_value_td:      (B, 9)
+    intermediate_value_futurepos: (B, 2, H, W)
+
+NormMask.scale traps still apply — see full_nets module docstring §3.
 """
 from __future__ import annotations
 
 import math
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
-from model_config import NetConfig
+from full_nets import (
+    FixscaleNorm,
+    BiasMask,
+    LastBatchNorm,
+    KataGPool,
+    KataValueHeadGPool,
+    ConvAndGPool,
+    NormActConv,
+    ResBlock,
+    NestedBottleneckResBlock,
+    init_weights,
+    compute_gain,
+    TD_LONG_SLICE,
+    TD_MID_SLICE,
+    TD_SHORT_SLICE,
+)
 
 
-class FixScaleNorm(nn.Module):
-    """Channel-wise affine with a fixed (non-learnable) scale and learnable beta.
-
-    Mirrors KataGo's `NormMask` under `norm_kind="fixscale"` / the non-tip
-    branch of `"fixscaleonenorm"` (see KataGomo model_pytorch.py:207-213,
-    319-320). The scalar `fixed_scale` is baked at block-init time based on
-    the block's depth index (1/sqrt(i+1)); no running statistics, no BN.
-    """
-
-    def __init__(self, num_channels: int, use_gamma: bool = False) -> None:
-        super().__init__()
-        self.register_buffer("fixed_scale", torch.ones(1, num_channels, 1, 1))
-        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
-        self.gamma = nn.Parameter(torch.ones(1, num_channels, 1, 1)) if use_gamma else None
-
-    def set_scale(self, s: float) -> None:
-        with torch.no_grad():
-            self.fixed_scale.fill_(s)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.gamma is not None:
-            return x * (self.gamma * self.fixed_scale) + self.beta
-        return x * self.fixed_scale + self.beta
-
-
-class BiasMask(nn.Module):
-    """Bias-only affine (no scale). Mirrors KataGomo's BiasMask
-    (model_pytorch.py:90). Used in the heads where KataGo applies a plain
-    per-channel bias instead of a fixscale norm."""
-
-    def __init__(self, num_channels: int) -> None:
-        super().__init__()
-        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.beta
-
-
-def _make_norm(c: int, norm_kind: str) -> nn.Module:
-    if norm_kind == "bn":
-        return nn.BatchNorm2d(c)
-    if norm_kind == "fixscale":
-        return FixScaleNorm(c)
-    raise ValueError(f"unknown norm_kind: {norm_kind!r}")
-
-
-class NormActConv(nn.Module):
-    def __init__(self, c_in: int, c_out: int, kernel_size: int, norm_kind: str = "bn") -> None:
-        super().__init__()
-        padding = kernel_size // 2
-        self.norm = _make_norm(c_in, norm_kind)
-        self.act = nn.Mish()
-        self.conv = nn.Conv2d(c_in, c_out, kernel_size, padding=padding, bias=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.conv(self.act(self.norm(x)))
-
-
-class KataGPool(nn.Module):
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        layer_mean = x.mean(dim=(2, 3))
-        layer_max = torch.amax(x, dim=(2, 3))
-        return torch.cat([layer_mean, layer_max], dim=1)
-
-
-class ResBlock(nn.Module):
-    def __init__(self, channels: int, norm_kind: str = "bn") -> None:
-        super().__init__()
-        self.normactconv1 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
-        self.normactconv2 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.normactconv1(x)
-        out = self.normactconv2(out)
-        return x + out
-
-
-class GlobalPoolingResidualBlock(nn.Module):
-    def __init__(self, channels: int, gpool_channels: int = -1, norm_kind: str = "bn") -> None:
-        super().__init__()
-        if gpool_channels <= 0:
-            gpool_channels = channels
-        self.pre_norm = _make_norm(channels, norm_kind)
-        self.pre_act = nn.Mish()
-        self.regular_conv = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
-        self.gpool_conv = nn.Conv2d(channels, gpool_channels, 3, padding=1, bias=False)
-        self.gpool_norm = _make_norm(gpool_channels, norm_kind)
-        self.gpool_act = nn.Mish()
-        self.gpool = KataGPool()
-        self.gpool_to_bias = nn.Linear(gpool_channels * 2, channels, bias=False)
-        self.normactconv2 = NormActConv(channels, channels, 3, norm_kind=norm_kind)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.pre_act(self.pre_norm(x))
-        regular = self.regular_conv(out)
-        g = self.gpool_act(self.gpool_norm(self.gpool_conv(out)))
-        bias = self.gpool_to_bias(self.gpool(g)).unsqueeze(-1).unsqueeze(-1)
-        regular = regular + bias
-        regular = self.normactconv2(regular)
-        return x + regular
-
-
-class NestedBottleneckResBlock(nn.Module):
-    def __init__(
-        self,
-        channels: int,
-        mid_channels: int,
-        internal_length: int = 2,
-        use_gpool: bool = False,
-        norm_kind: str = "bn",
-    ) -> None:
-        super().__init__()
-        self.normactconvp = NormActConv(channels, mid_channels, 1, norm_kind=norm_kind)
-        blocks: list[nn.Module] = []
-        for i in range(internal_length):
-            if use_gpool and i == 0:
-                blocks.append(GlobalPoolingResidualBlock(mid_channels, norm_kind=norm_kind))
-            else:
-                blocks.append(ResBlock(mid_channels, norm_kind=norm_kind))
-        self.blockstack = nn.ModuleList(blocks)
-        self.normactconvq = NormActConv(mid_channels, channels, 1, norm_kind=norm_kind)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.normactconvp(x)
-        for block in self.blockstack:
-            out = block(out)
-        out = self.normactconvq(out)
-        return x + out
-
+# ============================================================
+# Slim Policy Head (4 outputs: main / opp / soft_main / soft_opp)
+# ============================================================
 
 class PolicyHead(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, board_size: int, head_channels: int = 64) -> None:
+    """v15-style PolicyHead, slimmed to 4 outputs.
+
+    Channel layout (training-time idx, see train.py head_losses):
+        0: main_policy       (target = MCTS visits at t)
+        1: opp_policy        (target = opponent MCTS visits at t+1)
+        2: soft_main_policy  (target = (visits + 1e-7)^0.25 / Z)
+        3: soft_opp_policy   (target = same on opponent visits)
+
+    Layers identical to full_nets.PolicyHead except `conv2p` outputs 4
+    channels instead of 6 (saves c_p1*2 weights — negligible but cleaner).
+    """
+
+    NUM_POLICY_OUTPUTS = 4
+
+    def __init__(self, c_in: int, c_p1: int, c_g1: int,
+                 activation: str = "mish") -> None:
         super().__init__()
-        self.board_size = board_size
-        self.conv_p = nn.Conv2d(in_channels, head_channels, 1, bias=False)
-        self.conv_g = nn.Conv2d(in_channels, head_channels, 1, bias=False)
-        self.g_norm = BiasMask(head_channels)
-        self.g_act = nn.Mish()
+        self.activation = activation
+        self.conv1p = nn.Conv2d(c_in, c_p1, kernel_size=1, bias=False)
+        self.conv1g = nn.Conv2d(c_in, c_g1, kernel_size=1, bias=False)
+        self.biasg = BiasMask(c_g1)
+        self.actg = nn.Mish() if activation == "mish" else nn.ReLU()
         self.gpool = KataGPool()
-        self.linear_g = nn.Linear(head_channels * 2, head_channels, bias=False)
-        self.p_norm = BiasMask(head_channels)
-        self.p_act = nn.Mish()
-        self.conv_final = nn.Conv2d(head_channels, out_channels, 1, bias=False)
+        self.linear_g = nn.Linear(3 * c_g1, c_p1, bias=False)
+        self.bias2 = BiasMask(c_p1)
+        self.act2 = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.conv2p = nn.Conv2d(c_p1, self.NUM_POLICY_OUTPUTS, kernel_size=1, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        p = self.conv_p(x)
-        g = self.g_act(self.g_norm(self.conv_g(x)))
-        g = self.linear_g(self.gpool(g)).unsqueeze(-1).unsqueeze(-1)
-        p = p + g
-        p = self.p_act(self.p_norm(p))
-        return self.conv_final(p)
+    def initialize(self) -> None:
+        # KataGo master 2416-2432 (same scales as full_nets).
+        p_scale, g_scale, scale_output = 0.8, 0.6, 0.3
+        init_weights(self.conv1p.weight, self.activation, scale=p_scale)
+        init_weights(self.conv1g.weight, self.activation, scale=1.0)
+        init_weights(self.linear_g.weight, self.activation, scale=g_scale)
+        init_weights(self.conv2p.weight, "identity", scale=scale_output)
 
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        outp = self.conv1p(x)
+        outg = self.conv1g(x)
+        outg = self.biasg(outg, mask)
+        outg = self.actg(outg)
+        outg = self.gpool(outg, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
+        outg = self.linear_g(outg).unsqueeze(-1).unsqueeze(-1)
+        outp = outp + outg
+        outp = self.bias2(outp, mask)
+        outp = self.act2(outp)
+        outp = self.conv2p(outp)
+        outp = outp - (1.0 - mask) * 5000.0
+        return outp.view(outp.shape[0], outp.shape[1], -1)
+
+
+# ============================================================
+# Slim Value Head (WDL + td_value + futurepos only)
+# ============================================================
 
 class ValueHead(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int = 3, head_channels: int = 32, value_channels: int = 64) -> None:
+    """Slim ValueHead — drops linear_moremiscvaluehead and conv_ownership.
+
+    Outputs (3-tuple):
+        wdl:                 (B, 3)         W/L/draw logits
+        td_value:            (B, 9)         3 horizons × WLD (long/mid/short)
+        futurepos_pretanh:   (B, 2, H, W)   +8 / +32 step occupancy
+    """
+
+    def __init__(self, c_in: int, c_v1: int, c_v2: int, activation: str = "mish",
+                 pos_len: int = 15) -> None:
         super().__init__()
-        self.conv_v = nn.Conv2d(in_channels, head_channels, 1, bias=False)
-        self.v_norm = BiasMask(head_channels)
-        self.v_act = nn.Mish()
-        self.gpool = KataGPool()
-        self.fc1 = nn.Linear(head_channels * 2, value_channels)
-        self.act2 = nn.Mish()
-        self.fc_value = nn.Linear(value_channels, out_channels)
+        self.activation = activation
+        self.pos_len = pos_len
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        v = self.v_act(self.v_norm(self.conv_v(x)))
-        v_pooled = self.gpool(v)
-        out = self.act2(self.fc1(v_pooled))
-        return self.fc_value(out)
+        self.conv1 = nn.Conv2d(c_in, c_v1, kernel_size=1, bias=False)
+        self.bias1 = BiasMask(c_v1)
+        self.act1 = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.gpool = KataValueHeadGPool()
+
+        self.linear2 = nn.Linear(3 * c_v1, c_v2, bias=True)
+        self.act2 = nn.Mish() if activation == "mish" else nn.ReLU()
+
+        self.linear_valuehead = nn.Linear(c_v2, 3, bias=True)
+        self.linear_miscvaluehead = nn.Linear(c_v2, 9, bias=True)
+        self.conv_futurepos = nn.Conv2d(c_in, 2, kernel_size=1, bias=False)
+
+    def initialize(self) -> None:
+        bias_scale = 0.2
+        init_weights(self.conv1.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.bias, self.activation, scale=bias_scale,
+                     fan_tensor=self.linear2.weight)
+
+        for lin in (self.linear_valuehead, self.linear_miscvaluehead):
+            init_weights(lin.weight, "identity", scale=1.0)
+            init_weights(lin.bias, "identity", scale=bias_scale, fan_tensor=lin.weight)
+
+        init_weights(self.conv_futurepos.weight, "identity", scale=0.2)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None
+               ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        outv1 = self.conv1(x)
+        outv1 = self.bias1(outv1, mask)
+        outv1 = self.act1(outv1)
+
+        outpooled = self.gpool(outv1, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
+        outv2 = self.act2(self.linear2(outpooled))
+
+        wdl = self.linear_valuehead(outv2)                          # (B, 3)
+        td_value = self.linear_miscvaluehead(outv2)                 # (B, 9)
+        futurepos = self.conv_futurepos(x) * mask                   # (B, 2, H, W)
+        return wdl, td_value, futurepos
 
 
-class ResNet(nn.Module):
-    def __init__(self, cfg: NetConfig) -> None:
+# ============================================================
+# Slim full model
+# ============================================================
+
+class KataGoNet(nn.Module):
+    """Slim KataGoNet: same trunk/stem/intermediate as full_nets, slim heads."""
+
+    def __init__(
+        self,
+        num_blocks: int = 8,
+        c_main: int = 96,
+        c_mid: int = 48,
+        c_gpool: int = 16,
+        internal_length: int = 2,
+        num_in_channels: int = 5,
+        num_global_features: int = 12,
+        activation: str = "mish",
+        version: int = 15,
+        has_intermediate_head: bool = True,
+        intermediate_head_blocks: int = 5,
+        c_p1: int = 24,
+        c_g1: int = 24,
+        c_v1: int = 24,
+        c_v2: int = 32,
+        pos_len: int = 15,
+    ) -> None:
         super().__init__()
-        self.cfg = cfg
-        self.board_size = cfg.board_size
-        self.num_planes = cfg.num_planes
-        self.num_blocks = cfg.num_blocks
-        self.num_channels = cfg.num_channels
+        self.activation = activation
+        self.version = version
+        self.num_blocks = num_blocks
+        self.pos_len = pos_len
+        self.has_intermediate_head = has_intermediate_head
+        self.intermediate_head_blocks = intermediate_head_blocks
+        self.num_in_channels = num_in_channels
+        self.num_global_features = num_global_features
 
-        # KataGomo-style stem: a single bare Conv2d (no norm, no activation).
-        # The first trunk block's NormActConv provides the first norm+act.
-        self.start_layer = nn.Conv2d(
-            cfg.num_planes, cfg.num_channels, 3, stride=1, padding=1, bias=False
-        )
+        self.conv_spatial = nn.Conv2d(num_in_channels, c_main, kernel_size=3,
+                                      padding=1, bias=False)
+        self.linear_global = nn.Linear(num_global_features, c_main, bias=False)
 
-        trunk: list[nn.Module] = []
-        for i in range(cfg.num_blocks):
-            use_gpool = ((i + 2) % 3 == 0)
-            trunk.append(
-                NestedBottleneckResBlock(
-                    cfg.num_channels,
-                    cfg.mid_channels,
-                    internal_length=2,
-                    use_gpool=use_gpool,
-                    norm_kind="fixscale",
-                )
-            )
-        self.trunk_blocks = nn.ModuleList(trunk)
-        # Trunk tip: per-sample GroupNorm(num_groups=1) over (C, H, W). This is
-        # mathematically LayerNorm-over-all-features but kept as GroupNorm to
-        # avoid TorchScript quirks. No running stats → SWA-safe, and it resets
-        # the residual-accumulated variance before the heads (which assume
-        # roughly unit-variance input under the fixscale scheme).
-        self.trunk_tip_norm = nn.GroupNorm(num_groups=1, num_channels=cfg.num_channels)
-        self.trunk_tip_act = nn.Mish()
+        self.blocks = nn.ModuleList()
+        for i in range(num_blocks):
+            use_gpool = c_gpool if (i % 3 == 2) else None
+            self.blocks.append(NestedBottleneckResBlock(
+                internal_length=internal_length, c_main=c_main, c_mid=c_mid,
+                c_gpool=use_gpool, activation=activation,
+            ))
 
-        self.total_policy_head = PolicyHead(
-            cfg.num_channels, out_channels=2,
-            board_size=cfg.board_size, head_channels=cfg.policy_head_channels,
-        )
-        self.value_head = ValueHead(
-            cfg.num_channels, out_channels=3,
-            head_channels=cfg.value_head_channels,
-            value_channels=cfg.value_fc_channels,
-        )
+        self.norm_trunkfinal = BiasMask(c_main)
+        self.act_trunkfinal = nn.Mish() if activation == "mish" else nn.ReLU()
 
-        self._init_weights()
+        if has_intermediate_head:
+            self.norm_intermediate_trunkfinal = LastBatchNorm(c_main)
+            self.act_intermediate_trunkfinal = nn.Mish() if activation == "mish" else nn.ReLU()
+            self.intermediate_policy_head = PolicyHead(c_main, c_p1, c_g1, activation=activation)
+            self.intermediate_value_head = ValueHead(c_main, c_v1, c_v2,
+                                                     activation=activation, pos_len=pos_len)
 
-    def _init_weights(self) -> None:
-        # Mish gain per KataGomo compute_gain (model_pytorch.py:39).
-        act_gain = math.sqrt(2.210277)
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                fan_in = m.weight.size(1) * m.weight.size(2) * m.weight.size(3)
-                stdv = act_gain / math.sqrt(fan_in)
-                nn.init.normal_(m.weight, 0.0, stdv)
-            elif isinstance(m, nn.Linear):
-                fan_in = m.weight.size(1)
-                stdv = act_gain / math.sqrt(fan_in)
-                nn.init.normal_(m.weight, 0.0, stdv)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.0)
+        self.policy_head = PolicyHead(c_main, c_p1, c_g1, activation=activation)
+        self.value_head = ValueHead(c_main, c_v1, c_v2, activation=activation, pos_len=pos_len)
 
-        # Fixup/FixScale depth-aware scaling, matching KataGo's fixscaleonenorm
-        # (model_pytorch.py:1539-1542): each block sets every FixScaleNorm
-        # inside it to scale = 1/sqrt(i+1), where i is the block index.
-        for i, block in enumerate(self.trunk_blocks):
-            scale = 1.0 / math.sqrt(i + 1.0)
-            for m in block.modules():
-                if isinstance(m, FixScaleNorm):
-                    m.set_scale(scale)
+    def initialize(self) -> None:
+        with torch.no_grad():
+            init_weights(self.conv_spatial.weight, self.activation, scale=0.8)
+            init_weights(self.linear_global.weight, self.activation, scale=0.6)
 
-        # Head output layers (identity init with small scale): without BN the
-        # logits would otherwise sit far from zero at init. Matches KataGomo
-        # PolicyHead.initialize / ValueHead.initialize (scale_output=0.3).
-        scale_output = 0.3
-        for layer in (self.total_policy_head.conv_final, self.value_head.fc_value):
-            fan_in = (
-                layer.weight.size(1) * layer.weight.size(2) * layer.weight.size(3)
-                if isinstance(layer, nn.Conv2d)
-                else layer.weight.size(1)
-            )
-            nn.init.normal_(layer.weight, 0.0, scale_output / math.sqrt(fan_in))
-            if getattr(layer, "bias", None) is not None:
-                nn.init.constant_(layer.bias, 0.0)
+            for i, block in enumerate(self.blocks):
+                block.initialize(fixup_scale=1.0 / math.sqrt(i + 1.0))
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        out = self.start_layer(x)
-        for block in self.trunk_blocks:
-            out = block(out)
-        out = self.trunk_tip_act(self.trunk_tip_norm(out))
+            self.norm_trunkfinal.set_scale(1.0 / math.sqrt(self.num_blocks + 1.0))
 
-        total_policy_logits = self.total_policy_head(out)        # (B, 2, H, W)
-        policy_logits = total_policy_logits[:, 0:1, :, :]        # (B, 1, H, W)
-        opponent_policy_logits = total_policy_logits[:, 1:2, :, :]
-        value_logits = self.value_head(out)                       # (B, 3)
-        return policy_logits, opponent_policy_logits, value_logits
+            self.policy_head.initialize()
+            self.value_head.initialize()
+            if self.has_intermediate_head:
+                self.intermediate_policy_head.initialize()
+                self.intermediate_value_head.initialize()
 
+    def set_norm_scales(self) -> None:
+        for i, block in enumerate(self.blocks):
+            block.normactconvp.norm.set_scale(1.0 / math.sqrt(i + 1.0))
+            block.normactconvq.norm.set_scale(1.0 / math.sqrt(block.internal_length + 1.0))
+            for j, inner in enumerate(block.blockstack):
+                inner.normactconv1.norm.set_scale(1.0 / math.sqrt(j + 1.0))
+                inner.normactconv2.norm.set_scale(None)
+        self.norm_trunkfinal.set_scale(1.0 / math.sqrt(self.num_blocks + 1.0))
 
-def build_model(cfg: NetConfig | None = None) -> ResNet:
-    if cfg is None:
-        cfg = NetConfig()
-    return ResNet(cfg)
+    def forward(self, input_spatial: torch.Tensor,
+                input_global: torch.Tensor) -> Dict[str, torch.Tensor]:
+        mask = input_spatial[:, 0:1, :, :].contiguous()
+        mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
 
+        x_spatial = self.conv_spatial(input_spatial)
+        x_global = self.linear_global(input_global).unsqueeze(-1).unsqueeze(-1)
+        out = x_spatial + x_global
 
-def _count_params(model: nn.Module) -> Tuple[int, int]:
-    total = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return total, trainable
+        result: Dict[str, torch.Tensor] = {}
+
+        if self.has_intermediate_head:
+            for block in self.blocks[: self.intermediate_head_blocks]:
+                out = out + block(out, mask, mask_sum_hw)
+
+            iout = self.norm_intermediate_trunkfinal(out, mask)
+            iout = self.act_intermediate_trunkfinal(iout)
+            iout_policy = self.intermediate_policy_head(iout, mask, mask_sum_hw)
+            iout_value = self.intermediate_value_head(iout, mask, mask_sum_hw)
+            result["intermediate_policy"] = iout_policy
+            result["intermediate_value_wdl"] = iout_value[0]
+            result["intermediate_value_td"] = iout_value[1]
+            result["intermediate_value_futurepos"] = iout_value[2]
+
+            for block in self.blocks[self.intermediate_head_blocks:]:
+                out = out + block(out, mask, mask_sum_hw)
+        else:
+            for block in self.blocks:
+                out = out + block(out, mask, mask_sum_hw)
+
+        out = self.norm_trunkfinal(out, mask)
+        out = self.act_trunkfinal(out)
+
+        out_policy = self.policy_head(out, mask, mask_sum_hw)
+        out_value = self.value_head(out, mask, mask_sum_hw)
+
+        result["policy"] = out_policy
+        result["value_wdl"] = out_value[0]
+        result["value_td"] = out_value[1]
+        result["value_futurepos"] = out_value[2]
+
+        return result
 
 
-def main() -> None:
-    import argparse
+# ============================================================
+# Factories
+# ============================================================
 
-    parser = argparse.ArgumentParser(description="Report ResNet parameter count.")
-    parser.add_argument("--num_blocks", type=int, required=True)
-    parser.add_argument("--num_channels", type=int, required=True)
-    args = parser.parse_args()
+def build_model(cfg) -> KataGoNet:
+    """Build a slim KataGoNet from a NetConfig (model_config.NetConfig).
 
-    cfg = NetConfig()
-    cfg.num_blocks = args.num_blocks
-    cfg.num_channels = args.num_channels
-    model = ResNet(cfg)
-
-    total, trainable = _count_params(model)
-    print(
-        f"num_blocks={cfg.num_blocks} num_channels={cfg.num_channels} "
-        f"params={total:,} ({total / 1e6:.2f}M) trainable={trainable:,}"
+    NOTE: caller must run `model.initialize()` before training, OR call
+    `model.set_norm_scales()` after `load_state_dict` (NormMask.scale is
+    not in state_dict — see full_nets module docstring §3 trap 3).
+    """
+    return KataGoNet(
+        num_blocks=cfg.num_blocks,
+        c_main=cfg.num_channels,
+        c_mid=cfg.c_mid,
+        c_gpool=cfg.c_gpool,
+        internal_length=cfg.internal_length,
+        num_in_channels=cfg.num_planes,
+        num_global_features=cfg.num_global_features,
+        activation=cfg.activation,
+        version=cfg.version,
+        has_intermediate_head=cfg.has_intermediate_head,
+        intermediate_head_blocks=cfg.intermediate_head_blocks,
+        c_p1=cfg.c_p1,
+        c_g1=cfg.c_g1,
+        c_v1=cfg.c_v1,
+        c_v2=cfg.c_v2,
+        pos_len=cfg.board_size,
     )
 
 
-if __name__ == "__main__":
-    main()
+def build_b4c64(activation: str = "mish") -> KataGoNet:
+    """Smoke / pipeline-validation size: 4 blocks × 64 trunk, ~120K params."""
+    from model_config import NetConfig
+    return build_model(NetConfig(num_blocks=4, num_channels=64, activation=activation))
+
+
+def build_b8c96(activation: str = "mish") -> KataGoNet:
+    """Test-run size: 8 blocks × 96 trunk × 48 mid × 16 gpool, ~700K params."""
+    from model_config import NetConfig
+    return build_model(NetConfig(num_blocks=8, num_channels=96, activation=activation))
+
+
+def build_b12c128(activation: str = "mish") -> KataGoNet:
+    """Production size: 12 blocks × 128 trunk × 64 mid × 16 gpool, ~2M params."""
+    from model_config import NetConfig
+    return build_model(NetConfig(num_blocks=12, num_channels=128, activation=activation))
