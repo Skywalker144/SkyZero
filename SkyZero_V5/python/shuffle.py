@@ -164,6 +164,8 @@ def _slice_batch(b: NpzBatch, s: int, e: int) -> NpzBatch:
         opponent_policy_target=b.opponent_policy_target[s:e],
         opponent_policy_mask=b.opponent_policy_mask[s:e],
         value_target=b.value_target[s:e],
+        td_value_target=b.td_value_target[s:e],
+        futurepos_target=b.futurepos_target[s:e],
         sample_weight=b.sample_weight[s:e],
     )
 
