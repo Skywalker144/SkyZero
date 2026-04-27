@@ -1,4 +1,12 @@
-"""ResNet policy/value network.
+"""ResNet policy/value network — DEPRECATED in V5.
+
+V5 uses `nets_v2.py` (KataGo b28c512nbt v15 architecture). This file is kept
+as historical reference (matches V4 main branch) but is no longer imported by
+train.py / init_model.py / export_model.py — they all import from `nets_v2`.
+
+Original V4 docstring follows.
+=================================================================
+ResNet policy/value network.
 
 Topology ported from CSkyZero_V3/nets.h. The forward pass returns a tuple
 ``(policy_logits, opponent_policy_logits, value_logits)`` so the TorchScript

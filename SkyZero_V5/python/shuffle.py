@@ -159,6 +159,7 @@ def discover_and_count(
 def _slice_batch(b: NpzBatch, s: int, e: int) -> NpzBatch:
     return NpzBatch(
         state=b.state[s:e],
+        global_features=b.global_features[s:e],
         policy_target=b.policy_target[s:e],
         opponent_policy_target=b.opponent_policy_target[s:e],
         opponent_policy_mask=b.opponent_policy_mask[s:e],

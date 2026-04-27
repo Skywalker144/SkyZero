@@ -1,7 +1,8 @@
 """NPZ I/O and D4 augmentation helpers shared by shuffle.py and train.py.
 
-NPZ schema (written by C++ selfplay, read by Python):
-    state:                  int8,   (N, num_planes, H, W)
+NPZ schema (V5; written by C++ selfplay, read by Python):
+    state:                  int8,   (N, num_planes, H, W)   # ch 0 = on-board mask
+    global_features:        float32,(N, num_global_features) # rule one-hot, ply, etc.
     policy_target:          float32,(N, H*W)
     opponent_policy_target: float32,(N, H*W)
     opponent_policy_mask:   float32,(N,)
@@ -20,6 +21,7 @@ import torch
 
 NPZ_KEYS = (
     "state",
+    "global_features",
     "policy_target",
     "opponent_policy_target",
     "opponent_policy_mask",
@@ -31,6 +33,7 @@ NPZ_KEYS = (
 @dataclass
 class NpzBatch:
     state: np.ndarray
+    global_features: np.ndarray
     policy_target: np.ndarray
     opponent_policy_target: np.ndarray
     opponent_policy_mask: np.ndarray
@@ -43,6 +46,7 @@ class NpzBatch:
     def select(self, idx: np.ndarray) -> "NpzBatch":
         return NpzBatch(
             state=self.state[idx],
+            global_features=self.global_features[idx],
             policy_target=self.policy_target[idx],
             opponent_policy_target=self.opponent_policy_target[idx],
             opponent_policy_mask=self.opponent_policy_mask[idx],
@@ -55,6 +59,7 @@ def load_npz(path: str | pathlib.Path) -> NpzBatch:
     with np.load(path) as f:
         return NpzBatch(
             state=np.asarray(f["state"], dtype=np.int8),
+            global_features=np.asarray(f["global_features"], dtype=np.float32),
             policy_target=np.asarray(f["policy_target"], dtype=np.float32),
             opponent_policy_target=np.asarray(f["opponent_policy_target"], dtype=np.float32),
             opponent_policy_mask=np.asarray(f["opponent_policy_mask"], dtype=np.float32),
@@ -67,6 +72,7 @@ def save_npz(path: str | pathlib.Path, batch: NpzBatch) -> None:
     np.savez(
         path,
         state=batch.state.astype(np.int8, copy=False),
+        global_features=batch.global_features.astype(np.float32, copy=False),
         policy_target=batch.policy_target.astype(np.float32, copy=False),
         opponent_policy_target=batch.opponent_policy_target.astype(np.float32, copy=False),
         opponent_policy_mask=batch.opponent_policy_mask.astype(np.float32, copy=False),
@@ -81,6 +87,7 @@ def concat_batches(batches: Iterable[NpzBatch]) -> NpzBatch:
         raise ValueError("concat_batches: empty list")
     return NpzBatch(
         state=np.concatenate([b.state for b in batches], axis=0),
+        global_features=np.concatenate([b.global_features for b in batches], axis=0),
         policy_target=np.concatenate([b.policy_target for b in batches], axis=0),
         opponent_policy_target=np.concatenate([b.opponent_policy_target for b in batches], axis=0),
         opponent_policy_mask=np.concatenate([b.opponent_policy_mask for b in batches], axis=0),

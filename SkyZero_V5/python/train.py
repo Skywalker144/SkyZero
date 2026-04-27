@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 from data_processing import load_npz, random_d4_inplace
 from model_config import net_config_from_env
-from nets import build_model
+from nets_v2 import build_model
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +35,7 @@ def _collate_to_device(batch, s: int, e: int, device: torch.device, non_blocking
     """Slice rows [s, e) out of an NpzBatch and move to device as a dict of tensors."""
     return {
         "state": torch.from_numpy(batch.state[s:e]).to(device, non_blocking=non_blocking),
+        "global_features": torch.from_numpy(batch.global_features[s:e]).to(device, non_blocking=non_blocking),
         "policy_target": torch.from_numpy(batch.policy_target[s:e]).to(device, non_blocking=non_blocking),
         "opponent_policy_target": torch.from_numpy(batch.opponent_policy_target[s:e]).to(device, non_blocking=non_blocking),
         "opponent_policy_mask": torch.from_numpy(batch.opponent_policy_mask[s:e]).to(device, non_blocking=non_blocking),
@@ -169,6 +170,9 @@ def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | N
             swa_accum_steps = int(state.get("swa_accum_steps", 0))
         else:
             model.load_state_dict(state)
+        # TRAP 3 (NOTES.md §3.3): NormMask.scale is plain Python float, not in
+        # state_dict. Must restore it after load_state_dict.
+        model.set_norm_scales()
         tags = []
         if optim_state: tags.append("+optim")
         if scaler_state: tags.append("+scaler")
@@ -176,7 +180,11 @@ def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | N
         print(f"[train] loaded checkpoint {latest} (global_step={global_step}"
               f"{''.join(', '+t for t in tags)})")
     else:
-        print("[train] starting from fresh model (no checkpoint found)")
+        # Fresh model: must call initialize() to set RepVGG weights and all
+        # NormMask.scale values; otherwise weights are PyTorch defaults and
+        # FixscaleNorm.scale is None → broken forward.
+        model.initialize()
+        print("[train] starting from fresh model (no checkpoint found); model.initialize() called")
     return model, global_step, optim_state, scaler_state, swa_state, swa_accum_steps
 
 
@@ -263,21 +271,29 @@ def main() -> int:
         first_batch = None  # drop reference
 
         state = batch["state"].float()
+        global_features = batch["global_features"]
         policy_target = batch["policy_target"]
         opp_policy_target = batch["opponent_policy_target"]
         opp_mask = batch["opponent_policy_mask"]
         value_target = batch["value_target"]
         sample_weight = batch["sample_weight"]
 
+        # D4 augmentation transforms all spatial channels (incl. mask plane ch 0,
+        # which is invariant under D4). global_features and value_target are
+        # symmetry-invariant, no transform needed.
         state, policy_target, opp_policy_target = random_d4_inplace(
             state, policy_target, opp_policy_target, cfg.board_size
         )
 
         B = state.shape[0]
         with torch.amp.autocast("cuda", enabled=use_amp):
-            policy_logits, opp_policy_logits, value_logits = model(state)
-            policy_logits = policy_logits.view(B, -1)
-            opp_policy_logits = opp_policy_logits.view(B, -1)
+            out = model(state, global_features)
+            # nets_v2 PolicyHead v15: idx 0=main, idx 5=opp (per spec §3.4.1).
+            # idx 1=aux, 2=soft, 3=soft_aux, 4=opt — not supervised in this phase
+            # (no NPZ targets yet; Phase C will add).
+            policy_logits     = out["policy"][:, 0, :].view(B, -1)
+            opp_policy_logits = out["policy"][:, 5, :].view(B, -1)
+            value_logits      = out["value_wdl"]
             # Compute losses in fp32 regardless — softmax+log on half is noisy.
             policy_loss = weighted_soft_ce(policy_logits.float(), policy_target, sample_weight)
             opp_policy_loss = weighted_soft_ce(opp_policy_logits.float(), opp_policy_target, sample_weight * opp_mask)

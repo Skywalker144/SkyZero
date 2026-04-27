@@ -15,7 +15,7 @@ import sys
 import torch
 
 from model_config import net_config_from_env
-from nets import build_model
+from nets_v2 import build_model
 
 
 def main() -> int:
@@ -46,11 +46,17 @@ def main() -> int:
             state = state["model_state_dict"]
         model.load_state_dict(state)
         print(f"[export_model] loaded raw weights from {args.ckpt}")
+    # TRAP 3 (NOTES.md §3.3): NormMask.scale not in state_dict. Without this,
+    # WDL logits magnitude blows up ~10× (overconfident, "model looks broken").
+    model.set_norm_scales()
     model.eval()
 
     with torch.no_grad():
-        example = torch.zeros(1, cfg.num_planes, cfg.board_size, cfg.board_size, dtype=torch.float32)
-        scripted = torch.jit.trace(model, example, strict=False)
+        # nets_v2 forward signature: (input_spatial, input_global)
+        example_state  = torch.zeros(1, cfg.num_planes, cfg.board_size, cfg.board_size, dtype=torch.float32)
+        example_state[:, 0] = 1.0   # mask plane: full board
+        example_global = torch.zeros(1, cfg.num_global_features, dtype=torch.float32)
+        scripted = torch.jit.trace(model, (example_state, example_global), strict=False)
 
     iter_path = models_dir / f"model_iter_{args.iter:06d}.pt"
     scripted.save(str(iter_path))
