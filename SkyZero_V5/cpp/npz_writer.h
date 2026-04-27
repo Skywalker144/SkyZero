@@ -11,10 +11,12 @@
 //   opponent_policy_target  (N, H*W)                     float32
 //   opponent_policy_mask    (N,)                         float32
 //   value_target            (N, 3)                       float32
+//   td_value_target         (N, 9)                       float32  long/mid/short × WLD
+//   futurepos_target        (N, 2, H, W)                 int8     +8/+32 step occupancy
 //   sample_weight           (N,)                         float32
 //
 // Threading: append() is called by the main selfplay collection thread.
-// When a chunk fills up, its six buffers are moved into a FlushJob and
+// When a chunk fills up, its buffers are moved into a FlushJob and
 // handed off to a background writer thread (one), so the main thread
 // never blocks on zip/disk I/O. The writer-job queue has a soft cap; if
 // exceeded, append() blocks to provide backpressure.
@@ -109,6 +111,9 @@ public:
           num_global_features_(num_global_features),
           area_(board_size * board_size),
           state_row_(state_row_override > 0 ? state_row_override : num_planes * board_size * board_size),
+          // futurepos has the same per-plane size as state (padded to MAX_AREA),
+          // 2 channels (+8 / +32 step boards).
+          futurepos_row_(2 * (state_row_ / num_planes)),
           max_rows_(max_rows_per_file),
           max_pending_jobs_(std::max(1, max_pending_jobs)) {
         std::filesystem::create_directories(output_dir_);
@@ -141,6 +146,9 @@ public:
         if (static_cast<int>(s.opponent_policy_target.size()) != area_) {
             throw std::runtime_error("NpzWriter: opponent_policy_target size mismatch");
         }
+        if (static_cast<int>(s.futurepos_target.size()) != futurepos_row_) {
+            throw std::runtime_error("NpzWriter: futurepos_target size mismatch");
+        }
 
         state_buf_.insert(state_buf_.end(), s.state.begin(), s.state.end());
         global_buf_.insert(global_buf_.end(), s.global_features.begin(), s.global_features.end());
@@ -148,6 +156,8 @@ public:
         opp_policy_buf_.insert(opp_policy_buf_.end(), s.opponent_policy_target.begin(), s.opponent_policy_target.end());
         opp_mask_buf_.push_back(s.has_opponent_policy ? 1.0f : 0.0f);
         value_buf_.insert(value_buf_.end(), s.value_target.begin(), s.value_target.end());
+        td_value_buf_.insert(td_value_buf_.end(), s.td_value_target.begin(), s.td_value_target.end());
+        futurepos_buf_.insert(futurepos_buf_.end(), s.futurepos_target.begin(), s.futurepos_target.end());
         weight_buf_.push_back(s.sample_weight);
         ++rows_;
         total_rows_written_ += 1;
@@ -197,6 +207,8 @@ private:
         std::vector<float> opp_policy_buf;
         std::vector<float> opp_mask_buf;
         std::vector<float> value_buf;
+        std::vector<float> td_value_buf;
+        std::vector<int8_t> futurepos_buf;
         std::vector<float> weight_buf;
     };
 
@@ -215,6 +227,8 @@ private:
         job->opp_policy_buf = std::move(opp_policy_buf_);
         job->opp_mask_buf = std::move(opp_mask_buf_);
         job->value_buf = std::move(value_buf_);
+        job->td_value_buf = std::move(td_value_buf_);
+        job->futurepos_buf = std::move(futurepos_buf_);
         job->weight_buf = std::move(weight_buf_);
 
         state_buf_.clear();
@@ -223,6 +237,8 @@ private:
         opp_policy_buf_.clear();
         opp_mask_buf_.clear();
         value_buf_.clear();
+        td_value_buf_.clear();
+        futurepos_buf_.clear();
         weight_buf_.clear();
         rows_ = 0;
 
@@ -304,6 +320,12 @@ private:
         add_float_entry(archive, "value_target.npy",
                         {job.rows, 3},
                         job.value_buf);
+        add_float_entry(archive, "td_value_target.npy",
+                        {job.rows, 9},
+                        job.td_value_buf);
+        add_int8_entry(archive, "futurepos_target.npy",
+                       {job.rows, 2, state_dim, state_dim},
+                       job.futurepos_buf);
         add_float_entry(archive, "sample_weight.npy",
                         {job.rows},
                         job.weight_buf);
@@ -365,6 +387,7 @@ private:
     int num_global_features_;
     int area_;
     int state_row_;
+    int futurepos_row_;
     int max_rows_;
     int max_pending_jobs_;
 
@@ -375,6 +398,8 @@ private:
     std::vector<float> opp_policy_buf_;
     std::vector<float> opp_mask_buf_;
     std::vector<float> value_buf_;
+    std::vector<float> td_value_buf_;
+    std::vector<int8_t> futurepos_buf_;
     std::vector<float> weight_buf_;
     int64_t rows_ = 0;
     int64_t total_rows_written_ = 0;
