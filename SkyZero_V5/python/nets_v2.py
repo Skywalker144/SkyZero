@@ -556,7 +556,7 @@ class KataGoNet(nn.Module):
         c_mid: int = 48,
         c_gpool: int = 16,
         internal_length: int = 2,
-        num_in_channels: int = 4,
+        num_in_channels: int = 5,
         num_global_features: int = 12,
         activation: str = "mish",
         version: int = 15,
@@ -643,12 +643,11 @@ class KataGoNet(nn.Module):
 
     def forward(self, input_spatial: torch.Tensor,
                 input_global: torch.Tensor) -> Dict[str, torch.Tensor]:
-        # SkyZero 固定 15×15: mask 在网络内部硬编码为 ones, mask_sum_hw=225
-        B = input_spatial.shape[0]
-        mask = torch.ones(B, 1, self.pos_len, self.pos_len,
-                          dtype=input_spatial.dtype, device=input_spatial.device)
-        mask_sum_hw = torch.full((B, 1, 1, 1), float(self.pos_len * self.pos_len),
-                                 dtype=input_spatial.dtype, device=input_spatial.device)
+        # KataGo 风格: mask 来自 input_spatial channel 0 (on-board mask).
+        # 支持变 board size — 不同 batch 元素可有不同的 mask（小棋盘外圈 padding=0）.
+        # mask_sum_hw 按每个样本独立计算, KataGPool 的 board_factor 自动适配.
+        mask = input_spatial[:, 0:1, :, :].contiguous()
+        mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
 
         x_spatial = self.conv_spatial(input_spatial)
         x_global = self.linear_global(input_global).unsqueeze(-1).unsqueeze(-1)

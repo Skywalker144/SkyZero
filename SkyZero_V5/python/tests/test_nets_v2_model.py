@@ -7,12 +7,23 @@ def _make_b8c96_kwargs():
     return dict(
         num_blocks=8, c_main=96, c_mid=48, c_gpool=16,
         internal_length=2,
-        num_in_channels=4, num_global_features=12,
+        num_in_channels=5, num_global_features=12,
         activation="mish", version=15,
         has_intermediate_head=True, intermediate_head_blocks=5,
         c_p1=24, c_g1=24, c_v1=24, c_v2=32,
         pos_len=15,
     )
+
+
+def _make_full_board_state(B: int, num_in_channels: int = 5, pos_len: int = 15,
+                           dtype=torch.float32, fill_random: bool = False):
+    """Build a state tensor with mask plane (ch 0) set to ones (full 15x15 board)."""
+    if fill_random:
+        state = torch.randn(B, num_in_channels, pos_len, pos_len, dtype=dtype)
+    else:
+        state = torch.zeros(B, num_in_channels, pos_len, pos_len, dtype=dtype)
+    state[:, 0] = 1.0  # on-board mask: 1 inside full board
+    return state
 
 
 def test_katago_net_construction():
@@ -38,7 +49,7 @@ def test_katago_net_forward_returns_dict():
     model = KataGoNet(**_make_b8c96_kwargs())
     model.initialize()
     model.eval()
-    state = torch.zeros(1, 4, 15, 15)
+    state = _make_full_board_state(B=1)
     global_features = torch.zeros(1, 12)
     with torch.no_grad():
         out = model(state, global_features)
@@ -58,17 +69,29 @@ def test_katago_net_forward_returns_dict():
     assert out["intermediate_value_wdl"].shape == (1, 3)
 
 
-def test_katago_net_internal_mask_is_ones_for_15x15():
-    """SkyZero 固定 15×15 时, mask 在网络内部硬编码为 ones (无外部输入)."""
+def test_katago_net_uses_mask_from_input_channel_0():
+    """KataGo 风格: mask 来自 input_spatial[:, 0]. 验证变 board size 工作.
+
+    构造 13×13 mask（外圈 padding 全 0）, forward 后 padding 区 policy logits ≤ -4000.
+    """
     model = KataGoNet(**_make_b8c96_kwargs())
     model.initialize()
     model.eval()
-    # forward 签名: (state, global_features) — 无 mask 参数
-    state = torch.zeros(1, 4, 15, 15)
-    g = torch.zeros(1, 12)
+    # 构造一个 batch: entry 0 = 13×13 mask（外圈 padding=0）, entry 1 = 全 15×15
+    state = torch.zeros(2, 5, 15, 15)
+    state[0, 0, :13, :13] = 1.0   # 13×13 mask
+    state[1, 0, :, :] = 1.0       # full 15×15 mask
+    g = torch.zeros(2, 12)
     with torch.no_grad():
         out = model(state, g)
-    assert out["policy"].shape == (1, 6, 225)
+    # entry 0 的 policy 在 padding 区域 (例如 [13:, :] 或 [:, 13:]) 应被 mask 推到 ≤ -4000
+    policy0_main = out["policy"][0, 0].view(15, 15)
+    # padding 区域包括最后两行 (rows 13, 14) 和最后两列 (cols 13, 14)
+    padding_logits = policy0_main[13:, :].flatten().tolist() + policy0_main[:, 13:].flatten().tolist()
+    assert min(padding_logits) <= -4000.0, f"padding logits not pushed: min={min(padding_logits)}"
+    # entry 1 (全 15×15) 不应有 padding logits
+    policy1_main = out["policy"][1, 0]
+    assert policy1_main.min().item() > -4000.0
 
 
 def test_katago_net_initialize_does_not_blow_up():
@@ -77,7 +100,7 @@ def test_katago_net_initialize_does_not_blow_up():
     model = KataGoNet(**_make_b8c96_kwargs())
     model.initialize()
     model.eval()
-    state = torch.zeros(1, 4, 15, 15)
+    state = _make_full_board_state(B=1)
     g = torch.zeros(1, 12)
     with torch.no_grad():
         out = model(state, g)
@@ -93,7 +116,7 @@ def test_katago_net_no_nan():
     model = KataGoNet(**_make_b8c96_kwargs())
     model.initialize()
     model.eval()
-    state = torch.randn(2, 4, 15, 15)
+    state = _make_full_board_state(B=2, fill_random=True)
     g = torch.randn(2, 12)
     with torch.no_grad():
         out = model(state, g)
@@ -108,7 +131,7 @@ def test_katago_net_no_intermediate_head():
     model = KataGoNet(**kwargs)
     model.initialize()
     model.eval()
-    state = torch.zeros(1, 4, 15, 15)
+    state = _make_full_board_state(B=1)
     g = torch.zeros(1, 12)
     with torch.no_grad():
         out = model(state, g)
@@ -129,8 +152,8 @@ def test_b8c96_from_scratch_sanity():
     model.initialize()
     model.eval()
 
-    state = torch.zeros(1, 4, 15, 15)
-    state[:, 0:1] = 0.0   # 全 0 = 空棋盘
+    # 全 15×15 棋盘 (mask=1), 棋盘空 (own/opp/forbidden 平面全 0)
+    state = _make_full_board_state(B=1)
     g = torch.zeros(1, 12)
 
     with torch.no_grad():
@@ -159,7 +182,7 @@ def test_b12c128_from_scratch_sanity():
     model = build_b12c128()
     model.initialize()
     model.eval()
-    state = torch.zeros(1, 4, 15, 15)
+    state = _make_full_board_state(B=1)
     g = torch.zeros(1, 12)
     with torch.no_grad():
         out = model(state, g)

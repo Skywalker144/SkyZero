@@ -8,7 +8,8 @@ def test_torchscript_trace_b8c96():
     model = build_b8c96()
     model.initialize()
     model.eval()
-    example_state = torch.zeros(1, 4, 15, 15, dtype=torch.float32)
+    example_state = torch.zeros(1, 5, 15, 15, dtype=torch.float32)
+    example_state[:, 0] = 1.0   # mask plane
     example_global = torch.zeros(1, 12, dtype=torch.float32)
     with torch.no_grad():
         scripted = torch.jit.trace(model, (example_state, example_global), strict=False)
@@ -24,7 +25,8 @@ def test_torchscript_trace_save_and_load(tmp_path):
     model = build_b8c96()
     model.initialize()
     model.eval()
-    example_state = torch.zeros(1, 4, 15, 15)
+    example_state = torch.zeros(1, 5, 15, 15)
+    example_state[:, 0] = 1.0   # mask plane
     example_global = torch.zeros(1, 12)
     with torch.no_grad():
         scripted = torch.jit.trace(model, (example_state, example_global), strict=False)

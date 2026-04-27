@@ -21,7 +21,7 @@ from typing import Optional
 @dataclass
 class NetConfig:
     board_size: int = 15
-    num_planes: int = 4  # own, opp, forbidden_black, forbidden_white
+    num_planes: int = 5  # mask, own, opp, forbidden_black, forbidden_white
     num_blocks: int = 12
     num_channels: int = 128
 

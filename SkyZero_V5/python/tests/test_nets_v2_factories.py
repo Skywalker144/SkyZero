@@ -20,7 +20,8 @@ def test_factories_produce_runnable_models():
         model = build_fn()
         model.initialize()
         model.eval()
-        state = torch.zeros(1, 4, 15, 15)
+        state = torch.zeros(1, 5, 15, 15)
+        state[:, 0] = 1.0   # mask plane: full 15×15 board
         g = torch.zeros(1, 12)
         with torch.no_grad():
             out = model(state, g)
