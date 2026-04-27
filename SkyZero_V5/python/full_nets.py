@@ -1,11 +1,17 @@
-"""KataGo b28c512nbt v15 网络模块 — SkyZero_V4 适配版.
+"""KataGo b28c512nbt v15 完整网络 — 参考 / 全 head 版本.
+
+⚠️ 实际训练用的是 `nets.py`（slim 版，只保留实际接 loss 的 head）。
+本模块保留所有 head 与原版对齐，便于：
+  - 将来载入 KataGo 公开 ckpt 做迁移学习（head 维度需匹配）
+  - 验证 slim 与 full 在共享部分行为一致（tests 打这个文件）
+  - 哪天打开 ownership / st_error / var_time / opt_policy 时不用重写
 
 参考: KataGoModel/model.py (lightvector/KataGo master 对齐)
 基础设计: norm_kind=fixscaleonenorm, trunk_normless=True, bnorm_use_gamma=True,
          gamma_weight_decay_center_1=True, use_repvgg_init=True, version=15.
 
 使用:
-    from nets_v2 import build_b8c96, build_b12c128
+    from full_nets import build_b8c96, build_b12c128
 
     # (A) 从零训
     model = build_b8c96()
