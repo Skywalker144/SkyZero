@@ -171,6 +171,11 @@ class TrainArgs:
     enable_swa: bool
     swa_scale: float
     swa_period_steps: int
+    # Lookahead optimizer (KataGo-style in-loop, not torch_optimizer wrapper).
+    # k = 0 disables. With k>0, opt's LR is divided by alpha to compensate for
+    # the slow-weight averaging — user's LR env var stays the "effective" LR.
+    lookahead_k: int
+    lookahead_alpha: float
 
 
 def parse_args() -> TrainArgs:
@@ -204,6 +209,8 @@ def parse_args() -> TrainArgs:
         enable_swa=int(os.environ.get("ENABLE_SWA", "0")) != 0,
         swa_scale=float(os.environ.get("SWA_SCALE", "8")),
         swa_period_steps=int(os.environ.get("SWA_PERIOD_STEPS", "200")),
+        lookahead_k=int(os.environ.get("LOOKAHEAD_K", "0")),
+        lookahead_alpha=float(os.environ.get("LOOKAHEAD_ALPHA", "0.5")),
     )
 
 
@@ -274,12 +281,35 @@ def main() -> int:
     model = model.to(args.device)
     model.train()
     print(f"[train] model on {args.device} in {time.time() - t:.1f}s", flush=True)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Lookahead (KataGo train.py:933-939): when enabled, divide opt's LR by
+    # alpha so the slow-weight effective LR matches the user-configured LR.
+    lookahead_enabled = args.lookahead_k > 0 and args.lookahead_alpha > 0.0
+    opt_lr = args.lr / args.lookahead_alpha if lookahead_enabled else args.lr
+    opt = torch.optim.AdamW(model.parameters(), lr=opt_lr, weight_decay=args.weight_decay)
     if optim_state is not None:
         try:
             opt.load_state_dict(optim_state)
         except Exception as e:
             print(f"[train] warning: failed to restore optimizer state ({e}); starting fresh")
+        # load_state_dict overwrites LR with whatever was saved; re-apply so
+        # toggling Lookahead between runs (or changing args.lr) takes effect.
+        for group in opt.param_groups:
+            group["lr"] = opt_lr
+
+    # Lookahead slow-weight cache (KataGo train.py:852-858). Initialized from
+    # current fast weights; not persisted across checkpoints — on resume we
+    # re-init from the loaded fast weights, which is equivalent to a fresh
+    # Lookahead phase. This loses at most `k-1` slow-weight averaging steps.
+    lookahead_cache: dict | None = None
+    lookahead_counter = 0
+    in_between_lookaheads = False
+    if lookahead_enabled:
+        lookahead_cache = {}
+        for group in opt.param_groups:
+            for p in group["params"]:
+                lookahead_cache[p] = p.data.clone().detach()
+        print(f"[train] Lookahead enabled: k={args.lookahead_k} alpha={args.lookahead_alpha} "
+              f"(opt LR scaled to {opt_lr:.3e} from effective {args.lr:.3e})")
 
     use_amp = args.amp and args.device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -434,7 +464,24 @@ def main() -> int:
         scaler.step(opt)
         scaler.update()
 
-        if swa_model is not None:
+        # Lookahead sync (KataGo train.py:1521-1543). Every k fast-opt steps,
+        # update slow weights toward fast: slow ← slow + α(fast - slow), then
+        # copy slow back to fast. Between syncs, in_between_lookaheads=True
+        # gates SWA so it only snapshots synced weights.
+        if lookahead_enabled:
+            lookahead_counter += 1
+            in_between_lookaheads = True
+            if lookahead_counter >= args.lookahead_k:
+                with torch.no_grad():
+                    for group in opt.param_groups:
+                        for p in group["params"]:
+                            slow = lookahead_cache[p]
+                            slow.add_(p.data - slow, alpha=args.lookahead_alpha)
+                            p.data.copy_(slow)
+                lookahead_counter = 0
+                in_between_lookaheads = False
+
+        if swa_model is not None and not in_between_lookaheads:
             swa_accum_steps += 1
             if swa_accum_steps >= args.swa_period_steps:
                 swa_accum_steps = 0
