@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
         // than crash inside torch::jit::load.
         if (cli.daemon) {
             while (!stop_requested.load() && !fs::exists(cli.model)) {
-                std::cout << "[daemon] waiting for " << cli.model << " ...\n";
+                std::cout << "[Daemon] waiting for " << cli.model << " ...\n";
                 std::this_thread::sleep_for(std::chrono::seconds(2));
             }
             if (stop_requested.load()) return 0;
@@ -407,7 +407,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (removed > 0) {
-                std::cout << "[selfplay] removed " << removed
+                std::cout << "[SelfPlay] removed " << removed
                           << " leftover part file(s) from prior run of iter "
                           << cli.iter << "\n";
             }
@@ -420,7 +420,7 @@ int main(int argc, char** argv) {
                          max_rows_per_npz, /*max_pending_jobs=*/4,
                          num_global_features, state_row);
 
-        std::cout << "[selfplay] model=" << cli.model
+        std::cout << "[SelfPlay] model=" << cli.model
                   << (cli.daemon ? " mode=daemon" : "")
                   << " iter=" << cli.iter
                   << " max_games=" << cli.max_games
@@ -434,12 +434,12 @@ int main(int argc, char** argv) {
         }
         std::cout << "]\n";
         if (!cli.daemon) {
-            std::cout << "[selfplay] TotalGames=" << cum_games
+            std::cout << "[SelfPlay] TotalGames=" << cum_games
                       << " TotalSamples=" << cum_rows
                       << " WindowSize=" << window_size << "\n";
         }
 
-        std::cout << "[selfplay] mcts_backend="
+        std::cout << "[SelfPlay] mcts_backend="
                   << (bcfg.kind == MCTSBackendConfig::SharedTree ? "shared_tree" : "batched_leaf")
                   << " search_threads_per_tree=" << bcfg.search_threads_per_tree << "\n";
         SelfplayEngine<Gomoku> engine(game, cfg, pcfg, bcfg, cli.model, server_devices);
@@ -507,7 +507,7 @@ int main(int argc, char** argv) {
                 v_sum_len = 0.0;
             };
 
-            std::cout << "[daemon] starting at v=" << cur_version
+            std::cout << "[Daemon] starting at v=" << cur_version
                       << " prefix=" << make_prefix(cur_version)
                       << " poll_ms=" << cli.model_watch_poll_ms << "\n";
 
@@ -540,10 +540,10 @@ int main(int argc, char** argv) {
                                 writer.rotate(make_prefix(cur_version));
                                 reset_version_counters();
                                 last_mtime_ns = m3;
-                                std::cout << "[daemon] reload_model: v=" << cur_version
+                                std::cout << "[Daemon] reload_model: v=" << cur_version
                                           << " prefix=" << make_prefix(cur_version) << "\n";
                             } catch (const std::exception& e) {
-                                std::cerr << "[daemon] reload failed: " << e.what() << "\n";
+                                std::cerr << "[Daemon] reload failed: " << e.what() << "\n";
                                 last_mtime_ns = m3;  // don't retry the same broken file
                             }
                         }
@@ -580,7 +580,7 @@ int main(int argc, char** argv) {
                     const double dt = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - t_global).count();
                     const double sps = dt > 0.0 ? total_rows / dt : 0.0;
-                    std::cout << "[daemon] v=" << cur_version
+                    std::cout << "[Daemon] v=" << cur_version
                               << " total_games=" << total_games
                               << " total_rows=" << total_rows
                               << " sps=" << std::fixed << std::setprecision(1) << sps
@@ -591,7 +591,7 @@ int main(int argc, char** argv) {
             engine.stop();
             writer.flush();
             append_stats_row(cur_version);
-            std::cout << "[daemon] shutdown clean. total_games=" << total_games
+            std::cout << "[Daemon] shutdown clean. total_games=" << total_games
                       << " total_rows=" << total_rows << "\n";
             return 0;
         }
@@ -649,16 +649,21 @@ int main(int argc, char** argv) {
                 const double b = static_cast<double>(black_wins) / games_done;
                 const double w = static_cast<double>(white_wins) / games_done;
                 const double d = static_cast<double>(draws) / games_done;
-                std::cout << "[selfplay] games=" << games_done << "/" << cli.max_games
-                          << " sps=" << std::fixed << std::setprecision(1) << sps
-                          << " AvgGameLen=" << std::fixed << std::setprecision(1) << avg_len
-                          << " MinLen=" << min_len
-                          << " MaxLen=" << max_len
-                          << " StdLen=" << std::fixed << std::setprecision(1) << std_len
-                          << " BWD=" << std::fixed << std::setprecision(2) << b
-                          << "/" << std::fixed << std::setprecision(2) << w
-                          << "/" << std::fixed << std::setprecision(2) << d
-                          << "\n";
+                const int gw = static_cast<int>(std::to_string(cli.max_games).size());
+                const int bp = static_cast<int>(std::round(b * 100.0));
+                const int wp = static_cast<int>(std::round(w * 100.0));
+                const int dp = static_cast<int>(std::round(d * 100.0));
+                std::cout << "[SelfPlay] Games=" << std::setw(gw) << std::setfill('0') << games_done
+                          << std::setfill(' ') << "/" << cli.max_games
+                          << " Sps=" << std::fixed << std::setprecision(1) << sps
+                          << " GameLen:Avg=" << std::fixed << std::setprecision(1) << avg_len
+                          << " Min=" << min_len
+                          << " Max=" << max_len
+                          << " Std=" << static_cast<int>(std::round(std_len))
+                          << " BWD=" << std::setw(2) << std::setfill('0') << bp
+                          << "/" << std::setw(2) << std::setfill('0') << wp
+                          << "/" << std::setw(2) << std::setfill('0') << dp
+                          << std::setfill(' ') << "\n";
             }
         }
 
@@ -690,13 +695,13 @@ int main(int argc, char** argv) {
         }
         lf << "\n";
 
-        std::cout << "[selfplay] done. games=" << games_done
+        std::cout << "[SelfPlay] done. games=" << games_done
                   << " rows=" << total_rows
                   << " t=" << std::fixed << std::setprecision(1) << dt << "s\n";
 
         auto print_board = [&](const char* tag, const SelfplayEngine<Gomoku>::SelfplayResult& r) {
             const char* opening = r.balanced_opening ? "balanced" : "empty";
-            std::cout << "[selfplay] " << tag
+            std::cout << "[SelfPlay] " << tag
                       << " opening=" << opening
                       << " game_len=" << r.game_len
                       << " winner=" << r.winner << "\n";
@@ -725,7 +730,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[selfplay] fatal: " << e.what() << "\n";
+        std::cerr << "[SelfPlay] fatal: " << e.what() << "\n";
         return 2;
     }
 }
