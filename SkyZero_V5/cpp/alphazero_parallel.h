@@ -96,6 +96,20 @@ public:
                 }
             }
         }
+        // LCB pick (eval/play). Selfplay should keep gumbel_action; this is
+        // an extra output, never overrides existing behavior.
+        {
+            float best_lcb = -std::numeric_limits<float>::infinity();
+            for (const auto& c : root->children) {
+                if (!c) continue;
+                const float l = compute_lcb(*c, cfg_.lcb_k);
+                if (l > best_lcb) {
+                    best_lcb = l;
+                    out.lcb_action = c->action_taken;
+                }
+            }
+            if (out.lcb_action < 0) out.lcb_action = out.gumbel_action;
+        }
         return out;
     }
 
