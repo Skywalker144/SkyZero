@@ -797,7 +797,7 @@ HTML_PAGE = r"""<!doctype html>
           <label class="toggle">
             <span>Root symmetry prune</span>
             <span style="display:inline-flex;">
-              <input type="checkbox" id="prune_toggle" checked>
+              <input type="checkbox" id="prune_toggle">
               <span class="track"></span>
             </span>
           </label>
