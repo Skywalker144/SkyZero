@@ -51,6 +51,16 @@ struct AlphaZeroConfig {
     float root_fpu_reduction_max = 0.0f;
     float fpu_loss_prop = 0.0f;
 
+    // Variance-scaled cpuct (KataGo searchexplorehelpers.cpp:280-297, v1.9+).
+    // Multiplies cpuct by `1 + scale * (stdev/prior - 1)` where stdev is
+    // Bayesian-shrunk per-visit utility stdev at the parent. High-variance
+    // subtrees get more exploration. Applied at non-root only (Gumbel root
+    // uses sequential halving, not PUCT). scale=0 disables.
+    // KataGo basic default: 0.25 / 1.0 / 0.0; test config: 0.40 / 2.0 / 0.85.
+    float cpuct_utility_stdev_prior = 0.25f;
+    float cpuct_utility_stdev_prior_weight = 1.0f;
+    float cpuct_utility_stdev_scale = 0.0f;
+
     // Stochastic transform / symmetry at inference time
     bool enable_stochastic_transform_inference_for_root = true;
     bool enable_stochastic_transform_inference_for_child = true;
@@ -93,6 +103,20 @@ struct AlphaZeroConfig {
     float soft_resign_sample_weight = 0.1f;
     int min_simulations_in_soft_resign = 8;
 
+    // Sprint 2 #3: keep the subtree under the played action as the new
+    // root instead of rebuilding from scratch each ply. Gumbel state is
+    // search-local (recomputed in gumbel_sequential_halving), so no
+    // per-action noise reset is needed. BatchedLeaf only; SharedTree's
+    // vloss + mutex coordination is deferred (selfplay_manager forces
+    // this off when MCTS_BACKEND=shared_tree).
+    bool enable_tree_reuse = true;
+
+    // LCB final-move selection (KataGo-style, eval/play only).
+    // selfplay keeps gumbel_action for the unbiased policy improvement
+    // guarantee; eval/play binaries pick lcb_action from
+    // MCTSSearchOutput. k=4.0 follows KataGo's reported value.
+    float lcb_k = 4.0f;
+
     torch::Device device = torch::kCPU;
 };
 
@@ -131,6 +155,7 @@ struct MCTSNode {
 
     std::array<float, 3> v{0.0f, 0.0f, 0.0f};
     int n = 0;
+    float q_sum_sq = 0.0f;   // Σ u_i² where u_i = value[2]-value[0] per backup; for LCB variance.
     int vloss = 0;
 
     bool is_expanded() const { return !children.empty(); }
@@ -139,6 +164,8 @@ struct MCTSNode {
         v[0] += value[0];
         v[1] += value[1];
         v[2] += value[2];
+        const float u = value[2] - value[0];
+        q_sum_sq += u * u;
         n += 1;
     }
 };
@@ -151,7 +178,8 @@ struct MCTSSearchOutput {
     std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};          // WDL v_mix (search root value)
     std::vector<float> nn_policy;                           // raw NN policy
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};  // raw NN value
-    int gumbel_action = -1;                                 // selected action by Gumbel
+    int gumbel_action = -1;                                 // selected action by Gumbel (selfplay)
+    int lcb_action = -1;                                    // selected action by LCB (eval/play); fallback to gumbel_action when no child has n>=2
     std::vector<float> visit_counts;                        // raw root-child visit counts N(s,a)
     std::vector<std::vector<int>> gumbel_phases;            // surviving actions at each halving phase (16,8,4,2,1)
 };
@@ -165,6 +193,21 @@ inline std::array<float, 3> flip_wdl(const std::array<float, 3>& in) {
 
 inline float wdl_utility(const std::array<float, 3>& v) {
     return v[0] - v[2];
+}
+
+// LCB of `child`'s utility from the parent's perspective:
+//   mean = (child.v[2] - child.v[0]) / n      (parent's W-L over child)
+//   var  = q_sum_sq/n - mean²
+//   LCB  = mean - k * sqrt(var / n)
+// child.n < 2 → -inf (variance undefined; never beats a 2-visit child).
+inline float compute_lcb(const MCTSNode& child, float k) {
+    if (child.n < 2) return -std::numeric_limits<float>::infinity();
+    const float n_f = static_cast<float>(child.n);
+    const float mean = (child.v[2] - child.v[0]) / n_f;
+    const float ex2 = child.q_sum_sq / n_f;
+    const float var = std::max(0.0f, ex2 - mean * mean);
+    const float sd_of_mean = std::sqrt(var / n_f);
+    return mean - k * sd_of_mean;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,13 +232,41 @@ inline SelectParams compute_select_params(
     const float c_puct = cfg.c_puct + cfg.c_puct_log
         * std::log((total_child_weight + cfg.c_puct_base) / cfg.c_puct_base);
 
-    const float explore_scaling = c_puct * std::sqrt(total_child_weight + 0.01f);
-
     std::array<float, 3> parent_q{0.0f, 0.0f, 0.0f};
     if (node.n > 0) {
         parent_q = {node.v[0] / node.n, node.v[1] / node.n, node.v[2] / node.n};
     }
     const float parent_utility = wdl_utility(parent_q);
+
+    // Variance-scaled cpuct (KataGo searchexplorehelpers.cpp:280-297). Sign
+    // of u (W-L vs L-W) doesn't matter — variance is invariant under sign
+    // flip. node.q_sum_sq accumulates (value[2]-value[0])² per backup, so
+    // utility_sq_avg = q_sum_sq / n is the empirical second moment.
+    float parent_utility_stdev_factor = 1.0f;
+    if (cfg.cpuct_utility_stdev_scale != 0.0f) {
+        const float weight_sum = static_cast<float>(node.n);
+        float parent_utility_stdev;
+        if (node.n <= 0 || weight_sum <= 1.0f) {
+            parent_utility_stdev = cfg.cpuct_utility_stdev_prior;
+        } else {
+            float utility_sq_avg = node.q_sum_sq / weight_sum;
+            const float utility_sq = parent_utility * parent_utility;
+            // numerical guard (KataGo line 286-287): observed second moment
+            // must be ≥ mean² for variance to be non-negative.
+            if (utility_sq_avg < utility_sq) utility_sq_avg = utility_sq;
+            const float variance_prior = cfg.cpuct_utility_stdev_prior * cfg.cpuct_utility_stdev_prior;
+            const float prior_weight = cfg.cpuct_utility_stdev_prior_weight;
+            const float numerator = (utility_sq + variance_prior) * prior_weight + utility_sq_avg * weight_sum;
+            const float denominator = prior_weight + weight_sum - 1.0f;
+            const float shrunk_variance = std::max(0.0f, numerator / denominator - utility_sq);
+            parent_utility_stdev = std::sqrt(shrunk_variance);
+        }
+        parent_utility_stdev_factor = 1.0f + cfg.cpuct_utility_stdev_scale
+            * (parent_utility_stdev / cfg.cpuct_utility_stdev_prior - 1.0f);
+    }
+
+    const float explore_scaling = c_puct * std::sqrt(total_child_weight + 0.01f) * parent_utility_stdev_factor;
+
     const float nn_utility = wdl_utility(node.nn_value_probs);
     const float avg_weight = std::min(1.0f, static_cast<float>(std::pow(visited_policy_mass, cfg.fpu_pow)));
     const float parent_utility_for_fpu = avg_weight * parent_utility + (1.0f - avg_weight) * nn_utility;
