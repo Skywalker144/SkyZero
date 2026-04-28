@@ -422,7 +422,21 @@ private:
         std::unique_ptr<ParallelMCTS<Game>> mcts_batched;
         std::unique_ptr<TreeParallelMCTS<Game>> mcts_tree;
         std::function<MCTSSearchOutput(const std::vector<int8_t>&, int, int, std::unique_ptr<MCTSNode>&)> search_fn;
+        // Tree reuse is BatchedLeaf-only (SharedTree needs vloss zeroing on
+        // retained subtree + mutex-safe atomic root swap, deferred). Warn
+        // exactly once per process if the user combined the two.
+        const bool reuse_enabled = cfg_.enable_tree_reuse
+            && bcfg_.kind != MCTSBackendConfig::SharedTree;
         if (bcfg_.kind == MCTSBackendConfig::SharedTree) {
+            if (cfg_.enable_tree_reuse) {
+                static std::atomic<bool> warned{false};
+                if (!warned.exchange(true)) {
+                    std::cerr << "[selfplay] note: ENABLE_TREE_REUSE=1 with "
+                                 "MCTS_BACKEND=shared_tree; tree reuse is "
+                                 "BatchedLeaf-only — falling back to fresh-tree "
+                                 "per ply for this run.\n";
+                }
+            }
             mcts_tree.reset(new TreeParallelMCTS<Game>(
                 game_, cfg_, bcfg_.search_threads_per_tree, infer_fn, batch_infer_fn, worker_rng()));
             search_fn = [&](const std::vector<int8_t>& s, int tp, int nsim,
@@ -546,7 +560,35 @@ private:
             state = game_.get_next_state(state, action, to_play);
             to_play = -to_play;
 
-            root.reset(new MCTSNode{state, to_play});
+            // Tree reuse: navigate to the child for `action` instead of
+            // rebuilding the tree. Gumbel state (g[a], surviving_actions,
+            // sigma_q, v_mix, improved_policy) is search-local in
+            // gumbel_sequential_halving, so nothing on the node needs reset.
+            // vloss is already 0 on retained nodes (synchronous backprop on
+            // every path before search() returns).
+            std::unique_ptr<MCTSNode> next_root;
+            if (reuse_enabled) {
+                for (auto& c : root->children) {
+                    if (c && c->action_taken == action) {
+                        next_root = std::move(c);
+                        break;
+                    }
+                }
+            }
+            if (next_root) {
+                next_root->parent = nullptr;
+                // Children are constructed in expand_with() via
+                // game_.get_next_state(parent.state, action, parent.to_play),
+                // so the child's stored state must equal the just-applied state.
+                assert(next_root->state == state && next_root->to_play == to_play);
+                root = std::move(next_root);
+                // Old root + sibling subtrees freed by the unique_ptr move.
+            } else {
+                // Reuse disabled, or chosen action wasn't expanded (can happen
+                // when the improved-policy fallback at the action selection
+                // above picks an unvisited action).
+                root.reset(new MCTSNode{state, to_play});
+            }
         }
 
         const int winner = game_.get_winner(state, last_action, last_player);
