@@ -929,6 +929,7 @@ const rightCol = document.getElementById('right_col');
 const boardCol = document.querySelector('.board-col');
 const boardCard = document.querySelector('.board-card');
 const boardActions = document.querySelector('.board-actions');
+const mainEl = document.querySelector('.main');
 function syncBoardSize() {
   if (window.matchMedia('(max-width: 1399px)').matches) {
     rightCol.style.height = '';
@@ -944,8 +945,8 @@ function syncBoardSize() {
   }
   // Make .board-col total height match #left_col by reverse-computing the
   // canvas size from measured surroundings (no hard-coded constants).
-  const target = leftCol.offsetHeight;
   const cardCS = getComputedStyle(boardCard);
+  const cardPadX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
   const cardPadY = parseFloat(cardCS.paddingTop) + parseFloat(cardCS.paddingBottom);
   const legendCS = getComputedStyle(gumbelLegend);
   const legendH = gumbelLegend.classList.contains('hidden')
@@ -953,15 +954,22 @@ function syncBoardSize() {
       : gumbelLegend.offsetHeight + parseFloat(legendCS.marginTop || 0);
   // Match .board-card height (canvas + legend + padding) to leftCol height.
   // Actions row sits below and is intentionally excluded.
-  let size = target - cardPadY - legendH;
-  size = Math.max(360, size);
+  const sizeByHeight = leftCol.offsetHeight - cardPadY - legendH;
+  // Cap by available width so the board doesn't overflow into adjacent
+  // columns. right_col is sized to boardCard.offsetWidth, so the two auto
+  // tracks together need 2 * (BOARD_LOGICAL + cardPadX) of room.
+  const mainCS = getComputedStyle(mainEl);
+  const gap = parseFloat(mainCS.columnGap || mainCS.gap) || 20;
+  const remaining = mainEl.clientWidth - leftCol.offsetWidth - 2 * gap;
+  const sizeByWidth = Math.floor(remaining / 2 - cardPadX);
+  let size = Math.max(360, Math.min(sizeByHeight, sizeByWidth));
   CELL = Math.max(20, Math.floor((size - 2*MARGIN) / (N-1)));
   BOARD_LOGICAL = MARGIN*2 + CELL*(N-1);
+  const canvasNeedsResize = cv.width !== Math.round(BOARD_LOGICAL * DPR);
+  if (canvasNeedsResize) setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
   rightCol.style.height = boardCard.offsetHeight + 'px';
   rightCol.style.width = boardCard.offsetWidth + 'px';
-  if (cv.width === Math.round(BOARD_LOGICAL * DPR)) return;
-  setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
-  draw();
+  if (canvasNeedsResize) draw();
 }
 new ResizeObserver(syncBoardSize).observe(leftCol);
 window.addEventListener('resize', syncBoardSize);
