@@ -176,6 +176,12 @@ class TrainArgs:
     # the slow-weight averaging — user's LR env var stays the "effective" LR.
     lookahead_k: int
     lookahead_alpha: float
+    # KataGomo-style 5-stage LR warmup (train.py:594-603, fixscale norm path).
+    # Scales LR by {0.20, 0.33, 0.50, 0.71, 1.0} across the warmup window so
+    # AdamW's second-moment estimates stabilize before full-LR steps. Window
+    # length parametrized by lr_warmup_samples; 0 or enabled=False disables.
+    lr_warmup_enabled: bool
+    lr_warmup_samples: int
 
 
 def parse_args() -> TrainArgs:
@@ -211,7 +217,36 @@ def parse_args() -> TrainArgs:
         swa_period_steps=int(os.environ.get("SWA_PERIOD_STEPS", "200")),
         lookahead_k=int(os.environ.get("LOOKAHEAD_K", "0")),
         lookahead_alpha=float(os.environ.get("LOOKAHEAD_ALPHA", "0.5")),
+        lr_warmup_enabled=int(os.environ.get("ENABLE_LR_WARMUP", "0")) != 0,
+        lr_warmup_samples=int(os.environ.get("LR_WARMUP_SAMPLES", "6000000")),
     )
+
+
+def lr_warmup_factor(samples_seen: int, warmup_samples: int) -> float:
+    """KataGomo-style 5-stage LR warmup factor.
+
+    Mirrors KataGomo train.py:594-603 (fixscale norm path), parametrized so
+    the breakpoints scale with the configured warmup window:
+        progress < 1/6  -> 0.20
+        progress < 1/3  -> 0.33
+        progress < 2/3  -> 0.50
+        progress < 1    -> 0.71
+        progress >= 1   -> 1.00
+
+    Returns 1.0 immediately if warmup_samples <= 0.
+    """
+    if warmup_samples <= 0:
+        return 1.0
+    progress = samples_seen / warmup_samples
+    if progress < 1.0 / 6.0:
+        return 0.20
+    if progress < 1.0 / 3.0:
+        return 0.33
+    if progress < 2.0 / 3.0:
+        return 0.50
+    if progress < 1.0:
+        return 0.71
+    return 1.0
 
 
 def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | None, dict | None, dict | None, int]:
@@ -311,6 +346,14 @@ def main() -> int:
         print(f"[train] Lookahead enabled: k={args.lookahead_k} alpha={args.lookahead_alpha} "
               f"(opt LR scaled to {opt_lr:.3e} from effective {args.lr:.3e})")
 
+    # Snapshot the post-Lookahead-compensation base LR so the warmup factor
+    # can multiply it without re-deriving the alpha division each step.
+    base_opt_lr = opt_lr
+    warmup_active = args.lr_warmup_enabled and args.lr_warmup_samples > 0
+    if warmup_active:
+        print(f"[train] LR warmup enabled: window={args.lr_warmup_samples} samples "
+              f"(stages 0.20/0.33/0.50/0.71/1.00 at 1/6, 1/3, 2/3, 1 of window)")
+
     use_amp = args.amp and args.device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     if scaler_state is not None and use_amp:
@@ -361,6 +404,16 @@ def main() -> int:
     start = time.time()
     step = 0
     while step < args.train_steps:
+        # KataGomo-style warmup: rewrite param_group["lr"] based on cumulative
+        # samples seen (global_step is updated AFTER each step, so it equals
+        # samples-seen-before-this-step here). Resume-safe because global_step
+        # is loaded from checkpoint.
+        if warmup_active:
+            wf = lr_warmup_factor(global_step, args.lr_warmup_samples)
+            current_lr = base_opt_lr * wf
+            for group in opt.param_groups:
+                group["lr"] = current_lr
+
         batch = first_batch if step == 0 else next(it)
         first_batch = None  # drop reference
 
@@ -512,11 +565,12 @@ def main() -> int:
         if step % report_every == 0 or step == args.train_steps:
             elapsed = time.time() - start
             sps = step * B / elapsed if elapsed > 0 else 0.0
+            cur_lr = opt.param_groups[0]["lr"]
             print(f"[train]   step {step}/{args.train_steps} "
                   f"loss={losses['total']:.3f} (p={losses['policy']:.3f} "
                   f"sp={losses['soft_policy']:.3f} int={losses['int_total']:.3f} "
                   f"v={losses['value']:.3f} tv={losses['td_value']:.3f} "
-                  f"fp={losses['futurepos']:.3f}) sps={sps:.0f} "
+                  f"fp={losses['futurepos']:.3f}) lr={cur_lr:.2e} sps={sps:.0f} "
                   f"t={elapsed:.1f}s", flush=True)
 
     dt = time.time() - start
