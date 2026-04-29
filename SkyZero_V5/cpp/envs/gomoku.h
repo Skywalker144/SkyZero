@@ -229,6 +229,84 @@ public:
         return get_winner(state, last_action, last_player) != 2;
     }
 
+    // ============================================================
+    // Canvas-stride API (KataGomo NNPos::locToPos style).
+    // ============================================================
+    // MCTS / NN code works in canvas-stride pos = r*MAX_BOARD_SIZE + c
+    // (so policy logits / visit counts / legal masks have fixed size MAX_AREA),
+    // while game-internal state stays board-stride loc = r*board_size + c.
+    // The overloads below translate at the boundary, mirroring KataGomo's
+    // NNPos::locToPos / posToLoc. off-board canvas positions:
+    //   - in legal mask: false (never sampled by MCTS)
+    //   - in canvas_pos_to_loc: returns -1 (caller must pre-mask to skip)
+    static constexpr int loc_to_canvas_pos(int loc, int board_size_) {
+        const int r = loc / board_size_;
+        const int c = loc % board_size_;
+        return r * MAX_BOARD_SIZE + c;
+    }
+    // Returns -1 if (r,c) is outside [0, board_size_). Caller is expected to
+    // only feed canvas positions that legal mask marks true.
+    static constexpr int canvas_pos_to_loc(int canvas_pos, int board_size_) {
+        const int r = canvas_pos / MAX_BOARD_SIZE;
+        const int c = canvas_pos % MAX_BOARD_SIZE;
+        return (r < board_size_ && c < board_size_) ? r * board_size_ + c : -1;
+    }
+
+    // Canvas-stride legal mask, size = MAX_AREA. off-board cells = 0.
+    std::vector<uint8_t> get_is_legal_actions_canvas(
+        const std::vector<int8_t>& state, int to_play
+    ) const {
+        const auto legal_local = get_is_legal_actions(state, to_play);  // size N²
+        std::vector<uint8_t> out(MAX_AREA, 0);
+        for (int r = 0; r < board_size; ++r) {
+            for (int c = 0; c < board_size; ++c) {
+                out[r * MAX_BOARD_SIZE + c] = legal_local[r * board_size + c];
+            }
+        }
+        return out;
+    }
+
+    // Canvas-stride canonical legal mask (used by tree-parallel MCTS to dedupe
+    // D4-symmetric root moves). Re-projects board-stride canonical mask onto
+    // canvas. off-board cells = 0.
+    std::vector<uint8_t> get_canonical_legal_actions_canvas(
+        const std::vector<int8_t>& state, int to_play
+    ) const {
+        const auto legal_local = get_canonical_legal_actions(state, to_play);  // size N²
+        std::vector<uint8_t> out(MAX_AREA, 0);
+        for (int r = 0; r < board_size; ++r) {
+            for (int c = 0; c < board_size; ++c) {
+                out[r * MAX_BOARD_SIZE + c] = legal_local[r * board_size + c];
+            }
+        }
+        return out;
+    }
+
+    std::vector<int8_t> get_next_state_canvas(
+        const std::vector<int8_t>& state, int canvas_pos, int to_play
+    ) const {
+        const int loc = canvas_pos_to_loc(canvas_pos, board_size);
+        // off-board canvas positions should have been masked out by legal mask.
+        // -1 here is a programming bug; return state unchanged so the caller's
+        // game loop can detect via subsequent is_terminal_canvas check.
+        if (loc < 0) return state;
+        return get_next_state(state, loc, to_play);
+    }
+
+    int get_winner_canvas(
+        const std::vector<int8_t>& state, int last_canvas_pos = -1, int last_player = 0
+    ) const {
+        const int last_loc = (last_canvas_pos >= 0)
+            ? canvas_pos_to_loc(last_canvas_pos, board_size) : -1;
+        return get_winner(state, last_loc, last_player);
+    }
+
+    bool is_terminal_canvas(
+        const std::vector<int8_t>& state, int last_canvas_pos = -1, int last_player = 0
+    ) const {
+        return get_winner_canvas(state, last_canvas_pos, last_player) != 2;
+    }
+
     std::vector<int8_t> encode_state(const std::vector<int8_t>& state, int to_play) const {
         const int area = board_size * board_size;
         std::vector<int8_t> encoded(num_planes * area, 0);
