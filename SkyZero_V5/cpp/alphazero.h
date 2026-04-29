@@ -51,7 +51,6 @@ struct AlphaZeroConfig {
     float c_puct_base = 500.0f;
     float fpu_pow = 1.0f;
     float fpu_reduction_max = 0.08f;
-    float root_fpu_reduction_max = 0.0f;
     float fpu_loss_prop = 0.0f;
 
     // Variance-scaled cpuct (KataGo searchexplorehelpers.cpp:280-297, v1.9+).
@@ -274,8 +273,7 @@ inline SelectParams compute_select_params(
     const float avg_weight = std::min(1.0f, static_cast<float>(std::pow(visited_policy_mass, cfg.fpu_pow)));
     const float parent_utility_for_fpu = avg_weight * parent_utility + (1.0f - avg_weight) * nn_utility;
 
-    const float fpu_reduction_max = (node.parent == nullptr) ? cfg.root_fpu_reduction_max : cfg.fpu_reduction_max;
-    const float reduction = fpu_reduction_max * std::sqrt(visited_policy_mass);
+    const float reduction = cfg.fpu_reduction_max * std::sqrt(visited_policy_mass);
     float fpu_value = parent_utility_for_fpu - reduction;
     fpu_value = fpu_value + ((-1.0f) - fpu_value) * cfg.fpu_loss_prop;
 

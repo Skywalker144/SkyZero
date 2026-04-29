@@ -111,7 +111,6 @@ static AlphaZeroConfig build_mcts_cfg(
     c.c_puct_base = cfg_get<float>(m, "C_PUCT_BASE", 500.0f);
     c.fpu_pow = cfg_get<float>(m, "FPU_POW", 1.0f);
     c.fpu_reduction_max = cfg_get<float>(m, "FPU_REDUCTION_MAX", 0.16f);
-    c.root_fpu_reduction_max = cfg_get<float>(m, "ROOT_FPU_REDUCTION_MAX", 0.16f);
     c.fpu_loss_prop = cfg_get<float>(m, "FPU_LOSS_PROP", 0.0f);
     c.lcb_k = cfg_get<float>(m, "LCB_K", 4.0f);
     c.cpuct_utility_stdev_prior = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR", 0.25f);
