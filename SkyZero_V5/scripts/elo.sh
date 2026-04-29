@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
 # Pit checkpoint(s) against anchors and append per-game results to
-# data/eval/games.jsonl. Batch mode sweeps all checkpoints at a stride and
+# data/elo/games.jsonl. Batch mode sweeps all checkpoints at a stride and
 # re-plots the Elo curve at the end.
 #
 # All parameters (anchor dir/list, stride, num games, MCTS settings) live in
-# scripts/eval.cfg. Env vars of the same name override the cfg value for
+# scripts/elo.cfg. Env vars of the same name override the cfg value for
 # quick one-off tweaks.
 #
 # Usage:
-#   scripts/eval.sh                          # BATCH: all model_iter_*.pt at STRIDE
-#   scripts/eval.sh latest                   # single: data/models/latest.pt
-#   scripts/eval.sh model_iter_000300.pt     # single: data/models/<arg>
-#   scripts/eval.sh /abs/path/to/model.pt    # single: absolute path
+#   scripts/elo.sh                          # BATCH: all model_iter_*.pt at STRIDE
+#   scripts/elo.sh latest                   # single: data/models/latest.pt
+#   scripts/elo.sh model_iter_000300.pt     # single: data/models/<arg>
+#   scripts/elo.sh /abs/path/to/model.pt    # single: absolute path
 #
 # Env overrides (all optional): NUM_GAMES, STRIDE, NUM_SIMULATIONS,
-# ANCHOR_DIR, ANCHORS, EVAL_BIN, EVAL_CFG, DATA_DIR, OUT_FILE, PLOT_FILE.
+# ANCHOR_DIR, ANCHORS, ELO_BIN, ELO_CFG, DATA_DIR, OUT_FILE, PLOT_FILE.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 DATA_DIR="${DATA_DIR:-$ROOT/data}"
-OUT_FILE="${OUT_FILE:-$DATA_DIR/eval/games.jsonl}"
-PLOT_FILE="${PLOT_FILE:-$DATA_DIR/eval/elo.png}"
-EVAL_BIN="${EVAL_BIN:-$ROOT/cpp/build/gomoku_eval}"
-EVAL_CFG="${EVAL_CFG:-$SCRIPT_DIR/eval.cfg}"
+OUT_FILE="${OUT_FILE:-$DATA_DIR/elo/games.jsonl}"
+PLOT_FILE="${PLOT_FILE:-$DATA_DIR/elo/elo.png}"
+ELO_BIN="${ELO_BIN:-$ROOT/cpp/build/gomoku_elo}"
+ELO_CFG="${ELO_CFG:-$SCRIPT_DIR/elo.cfg}"
 
-[[ -x "$EVAL_BIN" ]] || { echo "build first: cmake --build $ROOT/cpp/build --target gomoku_eval"; exit 1; }
-[[ -f "$EVAL_CFG" ]] || { echo "no config at $EVAL_CFG"; exit 1; }
+[[ -x "$ELO_BIN" ]] || { echo "build first: cmake --build $ROOT/cpp/build --target gomoku_elo"; exit 1; }
+[[ -f "$ELO_CFG" ]] || { echo "no config at $ELO_CFG"; exit 1; }
 
-# --- Read a key from eval.cfg (last occurrence wins, strips comments/quotes).
+# --- Read a key from elo.cfg (last occurrence wins, strips comments/quotes).
 cfg_get() {
     local key="$1" default="${2:-}"
     local val
@@ -46,7 +46,7 @@ cfg_get() {
             last = val
         }
         END { print last }
-    ' "$EVAL_CFG")"
+    ' "$ELO_CFG")"
     echo "${val:-$default}"
 }
 
@@ -70,12 +70,12 @@ if [[ -n "$ANCHORS_CFG" ]]; then
         else
             p="$ANCHOR_DIR/$name"
         fi
-        [[ -f "$p" ]] || { echo "[eval.sh] anchor not found: $p"; exit 1; }
+        [[ -f "$p" ]] || { echo "[elo.sh] anchor not found: $p"; exit 1; }
         anchor_list+=("$p")
     done
 else
     if ! compgen -G "$ANCHOR_DIR/*.pt" > /dev/null; then
-        echo "[eval.sh] no .pt files in $ANCHOR_DIR and ANCHORS unset"
+        echo "[elo.sh] no .pt files in $ANCHOR_DIR and ANCHORS unset"
         exit 1
     fi
     anchor_list=("$ANCHOR_DIR"/*.pt)
@@ -86,7 +86,7 @@ TARGETS=()
 if [[ $# -eq 0 ]]; then
     mapfile -t ALL < <(ls "$DATA_DIR"/models/model_iter_*.pt 2>/dev/null | sort)
     if [[ ${#ALL[@]} -eq 0 ]]; then
-        echo "[eval.sh] no checkpoints in $DATA_DIR/models/"
+        echo "[elo.sh] no checkpoints in $DATA_DIR/models/"
         exit 1
     fi
     i=0
@@ -100,7 +100,7 @@ if [[ $# -eq 0 ]]; then
     if [[ "${TARGETS[-1]}" != "$last" ]]; then
         TARGETS+=("$last")
     fi
-    echo "[eval.sh] batch mode: ${#TARGETS[@]} checkpoints (stride=$STRIDE of ${#ALL[@]})"
+    echo "[elo.sh] batch mode: ${#TARGETS[@]} checkpoints (stride=$STRIDE of ${#ALL[@]})"
 else
     target_arg="$1"
     if [[ "$target_arg" = /* ]]; then
@@ -129,8 +129,8 @@ count_existing() {
 }
 
 # --- Run matches --------------------------------------------------------
-echo "[eval.sh] anchors: $(printf '%s\n' "${anchor_list[@]}" | xargs -n1 basename | paste -sd, -)"
-echo "[eval.sh] output=$OUT_FILE  games/pair=$NUM_GAMES"
+echo "[elo.sh] anchors: $(printf '%s\n' "${anchor_list[@]}" | xargs -n1 basename | paste -sd, -)"
+echo "[elo.sh] output=$OUT_FILE  games/pair=$NUM_GAMES"
 
 for target in "${TARGETS[@]}"; do
     target_abs="$(readlink -f "$target")"
@@ -141,15 +141,15 @@ for target in "${TARGETS[@]}"; do
         fi
         existing="$(count_existing "$target" "$anchor")"
         if (( existing >= NUM_GAMES )); then
-            echo "[eval.sh] skip $(basename "$target") vs $(basename "$anchor"): already $existing games"
+            echo "[elo.sh] skip $(basename "$target") vs $(basename "$anchor"): already $existing games"
             continue
         fi
         remaining=$(( NUM_GAMES - existing ))
-        echo "[eval.sh] === $(basename "$target")  vs  $(basename "$anchor")  ($remaining games) ==="
-        "$EVAL_BIN" \
+        echo "[elo.sh] === $(basename "$target")  vs  $(basename "$anchor")  ($remaining games) ==="
+        "$ELO_BIN" \
             --model-a "$target" \
             --model-b "$anchor" \
-            --config "$EVAL_CFG" \
+            --config "$ELO_CFG" \
             --output "$OUT_FILE" \
             --num-games "$remaining" \
             "${sim_flag[@]}"
@@ -157,5 +157,5 @@ for target in "${TARGETS[@]}"; do
 done
 
 # --- Regenerate Elo table + curve ---------------------------------------
-echo "[eval.sh] updating Elo: $PLOT_FILE"
+echo "[elo.sh] updating Elo: $PLOT_FILE"
 python "$ROOT/python/elo.py" --games "$OUT_FILE" --plot "$PLOT_FILE"
