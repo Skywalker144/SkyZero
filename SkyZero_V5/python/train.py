@@ -164,6 +164,7 @@ class TrainArgs:
     value_loss_weight: float
     td_value_loss_weight: float
     futurepos_loss_weight: float
+    main_loss_scale: float
     intermediate_loss_scale: float
     device: torch.device
     num_workers: int
@@ -208,7 +209,8 @@ def parse_args() -> TrainArgs:
         value_loss_weight=float(os.environ.get("VALUE_LOSS_WEIGHT", "1.0")),
         td_value_loss_weight=float(os.environ.get("TD_VALUE_LOSS_WEIGHT", "0.72")),
         futurepos_loss_weight=float(os.environ.get("FUTUREPOS_LOSS_WEIGHT", "0.25")),
-        intermediate_loss_scale=float(os.environ.get("INTERMEDIATE_LOSS_SCALE", "0.3")),
+        main_loss_scale=float(os.environ.get("MAIN_LOSS_SCALE", "0.5")),
+        intermediate_loss_scale=float(os.environ.get("INTERMEDIATE_LOSS_SCALE", "0.5")),
         device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         num_workers=a.num_workers,
         amp=int(os.environ.get("ENABLE_AMP", "1")) != 0,
@@ -508,7 +510,8 @@ def main() -> int:
             else:
                 int_total = torch.zeros((), device=state.device, dtype=main_total.dtype)
 
-            total_loss = main_total + args.intermediate_loss_scale * int_total
+            total_loss = (args.main_loss_scale * main_total
+                          + args.intermediate_loss_scale * int_total)
 
         opt.zero_grad(set_to_none=True)
         scaler.scale(total_loss).backward()
