@@ -104,7 +104,7 @@ public:
         out.gumbel_action = gumbel.gumbel_action;
         out.gumbel_phases = std::move(gumbel.phase_survivors);
         {
-            const int action_size = game_.board_size * game_.board_size;
+            const int action_size = Game::MAX_AREA;
             out.visit_counts.assign(static_cast<size_t>(action_size), 0.0f);
             for (const auto& c : root->children) {
                 if (!c) continue;
@@ -287,18 +287,18 @@ private:
             const int t = dist(*local_rng);
             k = t % 4;
             do_flip = t >= 4;
-            encoded = transform_encoded_state(encoded, game_.num_planes, game_.board_size, k, do_flip);
+            encoded = transform_encoded_state(encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip);
         }
 
         auto pair = infer_fn_(encoded);
         std::vector<float> logits = std::move(pair.first);
         if (use_stochastic_transform) {
-            logits = undo_transform_flat(logits, game_.board_size, k, do_flip);
+            logits = undo_transform_flat(logits, Game::MAX_BOARD_SIZE, k, do_flip);
         }
 
         const auto legal = (is_root && cfg_.root_symmetry_pruning)
-            ? game_.get_canonical_legal_actions(state, to_play)
-            : game_.get_is_legal_actions(state, to_play);
+            ? game_.get_canonical_legal_actions_canvas(state, to_play)
+            : game_.get_is_legal_actions_canvas(state, to_play);
         for (size_t i = 0; i < logits.size(); ++i) {
             if (i >= legal.size() || !legal[i]) {
                 logits[i] = -std::numeric_limits<float>::infinity();
@@ -344,7 +344,7 @@ private:
             const float p = ir.policy[a];
             if (p <= 0.0f) continue;
             auto child = std::unique_ptr<MCTSNode>(new MCTSNode{
-                game_.get_next_state(node.state, a, node.to_play),
+                game_.get_next_state_canvas(node.state, a, node.to_play),
                 -node.to_play,
                 p,
                 &node,
@@ -504,9 +504,9 @@ private:
         }
 
         // `node` is now an unexpanded leaf (or terminal).
-        if (game_.is_terminal(node->state, node->action_taken, -node->to_play)) {
+        if (game_.is_terminal_canvas(node->state, node->action_taken, -node->to_play)) {
             std::array<float, 3> value{0.0f, 1.0f, 0.0f};
-            const int result = game_.get_winner(node->state, node->action_taken, -node->to_play) * node->to_play;
+            const int result = game_.get_winner_canvas(node->state, node->action_taken, -node->to_play) * node->to_play;
             if (result == 1) value = {1.0f, 0.0f, 0.0f};
             else if (result == -1) value = {0.0f, 0.0f, 1.0f};
             backprop_path_with_vloss(path, value);
@@ -568,7 +568,7 @@ private:
     };
 
     GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations) {
-        const int action_size = game_.board_size * game_.board_size;
+        const int action_size = Game::MAX_AREA;
         std::vector<float> logits = root.nn_logits;
         if (logits.size() != static_cast<size_t>(action_size)) {
             logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
