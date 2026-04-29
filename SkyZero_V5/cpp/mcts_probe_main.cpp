@@ -261,10 +261,10 @@ int main(int argc, char** argv) {
             const int c0 = board_size / 2;
             auto cheb_dist = [&](int action) -> int {
                 if (action < 0) return -1;
-                const int r = action / board_size;
-                const int c = action % board_size;
-                const int dr = std::abs(r - c0);
-                const int dc = std::abs(c - c0);
+                const int row = action / board_size;
+                const int col = action % board_size;
+                const int dr = std::abs(row - c0);
+                const int dc = std::abs(col - c0);
                 return dr > dc ? dr : dc;
             };
             const int gumbel_dist = cheb_dist(sr.gumbel_action);
