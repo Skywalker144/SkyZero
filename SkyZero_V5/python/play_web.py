@@ -294,13 +294,20 @@ HTML_PAGE = r"""<!doctype html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script>
-  // Set theme before first paint to avoid flash.
+  // Set theme before first paint to avoid flash. Tri-state: auto / light / dark.
   (function(){
     try {
       var saved = localStorage.getItem('skz_theme');
-      var prefer = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      document.documentElement.dataset.theme = saved || prefer;
-    } catch(e) { document.documentElement.dataset.theme = 'light'; }
+      var mode = (saved === 'light' || saved === 'dark') ? saved : 'auto';
+      var resolved = (mode === 'auto')
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : mode;
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.dataset.themeMode = mode;
+    } catch(e) {
+      document.documentElement.dataset.theme = 'light';
+      document.documentElement.dataset.themeMode = 'auto';
+    }
   })();
 </script>
 <style>
@@ -434,9 +441,12 @@ HTML_PAGE = r"""<!doctype html>
   }
   .icon-btn:hover { background: var(--surface-2); color: var(--fg); border-color: var(--border-strong); }
   .icon-btn svg { width: 16px; height: 16px; display: block; }
-  html[data-theme="dark"] .sun-icon { display: none; }
-  html[data-theme="light"] .moon-icon,
-  html:not([data-theme="dark"]) .moon-icon { display: none; }
+  .icon-btn .sun-icon,
+  .icon-btn .moon-icon,
+  .icon-btn .auto-icon { display: none; }
+  html[data-theme-mode="light"] .icon-btn .sun-icon,
+  html[data-theme-mode="dark"]  .icon-btn .moon-icon,
+  html[data-theme-mode="auto"]  .icon-btn .auto-icon { display: inline-block; }
 
   /* ---------- Layout ---------- */
   .main {
@@ -741,6 +751,10 @@ HTML_PAGE = r"""<!doctype html>
       </svg>
       <svg class="moon-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
+      </svg>
+      <svg class="auto-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <circle cx="8" cy="8" r="6"></circle>
+        <path d="M8 2 a6 6 0 0 1 0 12 z" fill="currentColor" stroke="none"></path>
       </svg>
     </button>
   </header>
@@ -1051,12 +1065,22 @@ pruneToggle.addEventListener('change', () => {
   sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
 });
 
-/* ---------- Theme toggle ---------- */
+/* ---------- Theme toggle (tri-state: auto / light / dark) ---------- */
 const themeBtn = document.getElementById('theme_toggle');
-themeBtn.addEventListener('click', () => {
-  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next;
-  try { localStorage.setItem('skz_theme', next); } catch(e) {}
+const THEME_NEXT = { auto: 'light', light: 'dark', dark: 'auto' };
+function resolveTheme(mode) {
+  if (mode === 'light' || mode === 'dark') return mode;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+function setThemeTooltip(mode) {
+  const label = mode.charAt(0).toUpperCase() + mode.slice(1);
+  const nxt = THEME_NEXT[mode];
+  themeBtn.title = 'Theme: ' + label + ' (click for ' + nxt.charAt(0).toUpperCase() + nxt.slice(1) + ')';
+}
+function applyTheme(mode) {
+  document.documentElement.dataset.theme = resolveTheme(mode);
+  document.documentElement.dataset.themeMode = mode;
+  setThemeTooltip(mode);
   draw();
   drawValueChart();
   if (state) {
@@ -1070,7 +1094,27 @@ themeBtn.addEventListener('click', () => {
     drawHeat('h_nn_policy',   null);
     drawHeat('h_nn_opp_policy', null);
   }
+}
+setThemeTooltip(document.documentElement.dataset.themeMode || 'auto');
+themeBtn.addEventListener('click', () => {
+  const cur = document.documentElement.dataset.themeMode || 'auto';
+  const next = THEME_NEXT[cur] || 'auto';
+  try {
+    if (next === 'auto') localStorage.removeItem('skz_theme');
+    else localStorage.setItem('skz_theme', next);
+  } catch(e) {}
+  applyTheme(next);
 });
+// Follow OS dark/light changes live, but only while in auto mode.
+try {
+  const mql = window.matchMedia('(prefers-color-scheme: dark)');
+  const onSystemThemeChange = () => {
+    if ((document.documentElement.dataset.themeMode || 'auto') !== 'auto') return;
+    applyTheme('auto');
+  };
+  if (mql.addEventListener) mql.addEventListener('change', onSystemThemeChange);
+  else if (mql.addListener) mql.addListener(onSystemThemeChange); // Safari < 14
+} catch(e) {}
 
 /* ---------- Heat map ---------- */
 function drawHeat(canvasId, grid) {
