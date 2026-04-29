@@ -281,14 +281,14 @@ def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | N
         if optim_state: tags.append("+optim")
         if scaler_state: tags.append("+scaler")
         if swa_state: tags.append("+swa")
-        print(f"[train] loaded checkpoint {latest} (global_step={global_step}"
+        print(f"[Train] loaded checkpoint {latest} (global_step={global_step}"
               f"{''.join(', '+t for t in tags)})")
     else:
         # Fresh model: must call initialize() to set RepVGG weights and all
         # NormMask.scale values; otherwise weights are PyTorch defaults and
         # FixscaleNorm.scale is None → broken forward.
         model.initialize()
-        print("[train] starting from fresh model (no checkpoint found); model.initialize() called")
+        print("[Train] starting from fresh model (no checkpoint found); model.initialize() called")
     return model, global_step, optim_state, scaler_state, swa_state, swa_accum_steps
 
 
@@ -311,11 +311,11 @@ def main() -> int:
     it = iterate_batches(shard_dir, args.batch_size, args.device, infinite=True)
 
     model, global_step, optim_state, scaler_state, swa_state, swa_accum_steps = _load_or_init_model(args)
-    print(f"[train] moving model to {args.device}...", flush=True)
+    print(f"[Train] moving model to {args.device}...", flush=True)
     t = time.time()
     model = model.to(args.device)
     model.train()
-    print(f"[train] model on {args.device} in {time.time() - t:.1f}s", flush=True)
+    print(f"[Train] model on {args.device} in {time.time() - t:.1f}s", flush=True)
     # Lookahead (KataGo train.py:933-939): when enabled, divide opt's LR by
     # alpha so the slow-weight effective LR matches the user-configured LR.
     lookahead_enabled = args.lookahead_k > 0 and args.lookahead_alpha > 0.0
@@ -325,7 +325,7 @@ def main() -> int:
         try:
             opt.load_state_dict(optim_state)
         except Exception as e:
-            print(f"[train] warning: failed to restore optimizer state ({e}); starting fresh")
+            print(f"[Train] warning: failed to restore optimizer state ({e}); starting fresh")
         # load_state_dict overwrites LR with whatever was saved; re-apply so
         # toggling Lookahead between runs (or changing args.lr) takes effect.
         for group in opt.param_groups:
@@ -343,7 +343,7 @@ def main() -> int:
         for group in opt.param_groups:
             for p in group["params"]:
                 lookahead_cache[p] = p.data.clone().detach()
-        print(f"[train] Lookahead enabled: k={args.lookahead_k} alpha={args.lookahead_alpha} "
+        print(f"[Train] Lookahead enabled: k={args.lookahead_k} alpha={args.lookahead_alpha} "
               f"(opt LR scaled to {opt_lr:.3e} from effective {args.lr:.3e})")
 
     # Snapshot the post-Lookahead-compensation base LR so the warmup factor
@@ -351,7 +351,7 @@ def main() -> int:
     base_opt_lr = opt_lr
     warmup_active = args.lr_warmup_enabled and args.lr_warmup_samples > 0
     if warmup_active:
-        print(f"[train] LR warmup enabled: window={args.lr_warmup_samples} samples "
+        print(f"[Train] LR warmup enabled: window={args.lr_warmup_samples} samples "
               f"(stages 0.20/0.33/0.50/0.71/1.00 at 1/6, 1/3, 2/3, 1 of window)")
 
     use_amp = args.amp and args.device.type == "cuda"
@@ -360,7 +360,7 @@ def main() -> int:
         try:
             scaler.load_state_dict(scaler_state)
         except Exception as e:
-            print(f"[train] warning: failed to restore GradScaler state ({e})")
+            print(f"[Train] warning: failed to restore GradScaler state ({e})")
 
     # SWA (EMA variant, mirrors KataGomo train.py:426-430, 1164-1171). We pass
     # `use_buffers=True` so BN running_mean / running_var are EMA-averaged too —
@@ -377,9 +377,9 @@ def main() -> int:
             try:
                 swa_model.load_state_dict(swa_state)
             except Exception as e:
-                print(f"[train] warning: failed to restore SWA state ({e}); starting fresh")
+                print(f"[Train] warning: failed to restore SWA state ({e}); starting fresh")
                 swa_accum_steps = 0
-        print(f"[train] SWA enabled: scale={args.swa_scale} period_steps={args.swa_period_steps}")
+        print(f"[Train] SWA enabled: scale={args.swa_scale} period_steps={args.swa_period_steps}")
     else:
         swa_accum_steps = 0
 
@@ -395,10 +395,10 @@ def main() -> int:
     # multiple. Gives visible feedback without spamming.
     report_every = max(1, args.train_steps // 20)
 
-    print(f"[train] warming up first batch (loading first shard)...", flush=True)
+    print(f"[Train] warming up first batch (loading first shard)...", flush=True)
     t_warmup = time.time()
     first_batch = next(it)
-    print(f"[train] first batch ready in {time.time() - t_warmup:.1f}s; "
+    print(f"[Train] first batch ready in {time.time() - t_warmup:.1f}s; "
           f"running {args.train_steps} steps", flush=True)
 
     start = time.time()
@@ -565,13 +565,17 @@ def main() -> int:
         if step % report_every == 0 or step == args.train_steps:
             elapsed = time.time() - start
             sps = step * B / elapsed if elapsed > 0 else 0.0
-            cur_lr = opt.param_groups[0]["lr"]
-            print(f"[train]   step {step}/{args.train_steps} "
-                  f"loss={losses['total']:.3f} (p={losses['policy']:.3f} "
-                  f"sp={losses['soft_policy']:.3f} int={losses['int_total']:.3f} "
-                  f"v={losses['value']:.3f} tv={losses['td_value']:.3f} "
-                  f"fp={losses['futurepos']:.3f}) lr={cur_lr:.2e} sps={sps:.0f} "
-                  f"t={elapsed:.1f}s", flush=True)
+            print(f"[Train] Step={step}/{args.train_steps} "
+                  f"Loss={losses['total']:.2f} "
+                  f"(p={losses['policy']:.1f} "
+                  f"sp={losses['soft_policy']:.1f} "
+                  f"op={losses['opp_policy']:.1f} "
+                  f"sop={losses['soft_opp_policy']:.1f} "
+                  f"i={losses['int_total']:.1f} "
+                  f"v={losses['value']:.1f} "
+                  f"tv={losses['td_value']:.1f} "
+                  f"fp={losses['futurepos']:.1f}) "
+                  f"Sps={sps:.0f}", flush=True)
 
     dt = time.time() - start
     avg = {k: v / max(1, step) for k, v in accum.items()}
@@ -583,12 +587,12 @@ def main() -> int:
             last_sum[k] += v
     last_avg = {k: last_sum[k] / max(1, last_n) for k in accum}
 
-    print(f"[train] iter={args.iter} steps={step} samples_seen={step * args.batch_size} "
+    print(f"[Train] iter={args.iter} steps={step} samples_seen={step * args.batch_size} "
           f"t={dt:.1f}s (first/last avg over {window} steps)")
     name_w = max(len(k) for k in accum)
     for k in ("total", "policy", "opp_policy", "soft_policy",
               "soft_opp_policy", "value", "td_value", "futurepos", "int_total"):
-        print(f"[train]   {k:<{name_w}} : {first_avg[k]:8.4f} -> {last_avg[k]:8.4f}")
+        print(f"[Train]   {k:<{name_w}} : {first_avg[k]:8.4f} -> {last_avg[k]:8.4f}")
 
     # Save checkpoint
     ckpt_dir = args.data_dir / "checkpoints"
