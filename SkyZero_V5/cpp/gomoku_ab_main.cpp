@@ -110,8 +110,8 @@ static AlphaZeroConfig build_mcts_cfg(
     c.c_puct_log = cfg_get<float>(m, "C_PUCT_LOG", 0.45f);
     c.c_puct_base = cfg_get<float>(m, "C_PUCT_BASE", 500.0f);
     c.fpu_pow = cfg_get<float>(m, "FPU_POW", 1.0f);
-    c.fpu_reduction_max = cfg_get<float>(m, "FPU_REDUCTION_MAX", 0.25f);
-    c.root_fpu_reduction_max = cfg_get<float>(m, "ROOT_FPU_REDUCTION_MAX", 0.0f);
+    c.fpu_reduction_max = cfg_get<float>(m, "FPU_REDUCTION_MAX", 0.16f);
+    c.root_fpu_reduction_max = cfg_get<float>(m, "ROOT_FPU_REDUCTION_MAX", 0.16f);
     c.fpu_loss_prop = cfg_get<float>(m, "FPU_LOSS_PROP", 0.0f);
     c.lcb_k = cfg_get<float>(m, "LCB_K", 4.0f);
     c.cpuct_utility_stdev_prior = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR", 0.25f);
@@ -412,7 +412,7 @@ int main(int argc, char** argv) {
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
         const int board = Gomoku::MAX_BOARD_SIZE;
         const int infer_batch = cfg_get<int>(cfg_ab_map, "INFERENCE_BATCH_SIZE", 64);
-        const int infer_wait_us = cfg_get<int>(cfg_ab_map, "INFERENCE_WAIT_US", 500);
+        const int infer_wait_us = cfg_get<int>(cfg_ab_map, "INFERENCE_WAIT_US", 200);
         const int num_concurrent = std::max(
             1, cfg_get<int>(cfg_ab_map, "NUM_CONCURRENT_GAMES", 4));
         const int threads_a = std::max(
