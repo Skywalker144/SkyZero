@@ -1,4 +1,4 @@
-// gomoku_eval — headless model-A-vs-model-B match runner.
+// gomoku_elo — headless model-A-vs-model-B match runner.
 //
 // Loads two TorchScript models, plays N games alternating colors (A-black on
 // even game indices, B-black on odd), and appends one JSON line per game to
@@ -116,7 +116,7 @@ static CliArgs parse_cli(int argc, char** argv) {
     }
     if (a.model_a.empty() || a.model_b.empty() || a.config.empty() || a.output.empty()) {
         throw std::runtime_error(
-            "usage: gomoku_eval --model-a PATH --model-b PATH --config PATH --output PATH "
+            "usage: gomoku_elo --model-a PATH --model-b PATH --config PATH --output PATH "
             "[--num-games N] [--num-simulations N] [--seed S]");
     }
     return a;
@@ -399,7 +399,7 @@ int main(int argc, char** argv) {
         const int default_search_threads =
             cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 8);
         const int search_threads = std::max(
-            1, cfg_get<int>(cfg_map, "EVAL_SEARCH_THREADS_PER_TREE",
+            1, cfg_get<int>(cfg_map, "ELO_SEARCH_THREADS_PER_TREE",
                              default_search_threads));
 
         BatchedInferenceServer server_a(ha.get(), device, c, board, infer_batch, infer_wait_us, &game);
@@ -415,7 +415,7 @@ int main(int argc, char** argv) {
         std::ofstream out(cli.output, std::ios::app);
         if (!out) throw std::runtime_error("cannot open output: " + cli.output);
 
-        std::cerr << "[gomoku_eval] A=" << cli.model_a << "\n"
+        std::cerr << "[gomoku_elo] A=" << cli.model_a << "\n"
                   << "              B=" << cli.model_b << "\n"
                   << "              device=" << (use_cuda ? "cuda" : "cpu")
                   << " sims=" << cfg.num_simulations
@@ -464,7 +464,7 @@ int main(int argc, char** argv) {
 
                         root.reset(new MCTSNode{state, to_play});
                         const auto res = mcts.search(state, to_play, cfg.num_simulations, root);
-                        // Eval: prefer LCB-selected move; fall back to Gumbel
+                        // Elo: prefer LCB-selected move; fall back to Gumbel
                         // when no child has enough visits for a variance estimate.
                         int action = res.lcb_action >= 0 ? res.lcb_action : res.gumbel_action;
                         if (action < 0) {
@@ -506,7 +506,7 @@ int main(int argc, char** argv) {
                     }
                     {
                         std::lock_guard<std::mutex> lk(log_mu);
-                        std::cerr << "[gomoku_eval] game " << (g + 1) << "/" << cli.num_games
+                        std::cerr << "[gomoku_elo] game " << (g + 1) << "/" << cli.num_games
                                   << " a_black=" << (a_is_black ? 1 : 0)
                                   << " winner_a=" << winner_a
                                   << " plies=" << plies
@@ -532,11 +532,11 @@ int main(int argc, char** argv) {
         const int played = aw + bw + dr;
         const float n = static_cast<float>(std::max(1, played));
         const float score = (aw + 0.5f * dr) / n;
-        std::cerr << "[gomoku_eval] done. A score=" << std::fixed << std::setprecision(3) << score
+        std::cerr << "[gomoku_elo] done. A score=" << std::fixed << std::setprecision(3) << score
                   << " (" << aw << "W " << dr << "D " << bw << "L)\n";
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[gomoku_eval] fatal: " << e.what() << "\n";
+        std::cerr << "[gomoku_elo] fatal: " << e.what() << "\n";
         return 2;
     }
 }
