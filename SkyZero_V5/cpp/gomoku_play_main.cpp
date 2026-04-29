@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
         })();
         const RuleType rule = rule_from_string(rule_str);
         Gomoku game(cfg.board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
-        if (cfg.half_life <= 0) cfg.half_life = game.board_size;
+        if (cfg.half_life < 0) cfg.half_life = game.board_size;
 
         const bool use_cuda = torch::cuda::is_available();
         const torch::Device device = use_cuda ? torch::Device(torch::kCUDA, 0)
