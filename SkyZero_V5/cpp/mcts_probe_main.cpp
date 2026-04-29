@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
-        cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", -1);
+        cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", 0);
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
         cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
         })();
         const RuleType rule = rule_from_string(rule_str);
         Gomoku game(cfg.board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
-        if (cfg.half_life <= 0) cfg.half_life = game.board_size;
+        if (cfg.half_life < 0) cfg.half_life = game.board_size;
 
         const bool use_cuda = torch::cuda::is_available();
         const torch::Device device = use_cuda ? torch::Device(torch::kCUDA, 0)
