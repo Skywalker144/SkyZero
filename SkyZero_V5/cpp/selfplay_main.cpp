@@ -33,6 +33,7 @@
 #include "alphazero.h"
 #include "alphazero_parallel.h"
 #include "envs/gomoku.h"
+#include "game_initializer.h"
 #include "npz_writer.h"
 #include "policy_surprise_weighting.h"
 #include "selfplay_manager.h"
@@ -94,6 +95,65 @@ static bool cfg_get_bool(const std::unordered_map<std::string, std::string>& c,
     if (v == "0" || v == "false" || v == "False" || v == "no") return false;
     if (v == "1" || v == "true" || v == "True" || v == "yes") return true;
     return fallback;
+}
+
+// ---------------------------------------------------------------------------
+// List parsers (comma-separated). Used for BOARD_SIZES / BOARD_SIZE_RELPROBS /
+// RULES / RULE_RELPROBS, modeled after KataGomo's bSizes / bSizeRelProbs cfg.
+// Empty / missing → fallback list. Whitespace tolerated.
+// ---------------------------------------------------------------------------
+static std::vector<std::string> cfg_split_csv(const std::string& s) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : s) {
+        if (c == ',') { out.push_back(cur); cur.clear(); }
+        else cur.push_back(c);
+    }
+    out.push_back(cur);
+    for (auto& v : out) {
+        const auto a = v.find_first_not_of(" \t\r");
+        const auto b = v.find_last_not_of(" \t\r");
+        v = (a == std::string::npos) ? "" : v.substr(a, b - a + 1);
+    }
+    return out;
+}
+
+template <typename T>
+static std::vector<T> cfg_get_num_list(const std::unordered_map<std::string, std::string>& c,
+                                       const std::string& key,
+                                       const std::vector<T>& fallback) {
+    auto it = c.find(key);
+    if (it == c.end() || it->second.empty()) return fallback;
+    const auto parts = cfg_split_csv(it->second);
+    std::vector<T> out;
+    out.reserve(parts.size());
+    for (const auto& p : parts) {
+        if (p.empty()) continue;
+        std::istringstream ss(p);
+        T v;
+        ss >> v;
+        if (ss.fail()) {
+            throw std::runtime_error("bad numeric in " + key + ": '" + p + "'");
+        }
+        out.push_back(v);
+    }
+    if (out.empty()) return fallback;
+    return out;
+}
+
+static std::vector<std::string> cfg_get_string_list(
+    const std::unordered_map<std::string, std::string>& c,
+    const std::string& key,
+    const std::vector<std::string>& fallback
+) {
+    auto it = c.find(key);
+    if (it == c.end() || it->second.empty()) return fallback;
+    auto parts = cfg_split_csv(it->second);
+    parts.erase(std::remove_if(parts.begin(), parts.end(),
+                               [](const std::string& s) { return s.empty(); }),
+                parts.end());
+    if (parts.empty()) return fallback;
+    return parts;
 }
 
 struct CliArgs {
@@ -212,12 +272,25 @@ int main(int argc, char** argv) {
 
         // --- AlphaZeroConfig ---
         AlphaZeroConfig cfg;
-        cfg.board_size = cfg_get<int>(cfg_map, "BOARD_SIZE", 15);
+        // MAX_BOARD_SIZE is a *compile-time* canvas constant (cpp/envs/gomoku.h:65).
+        // We expose it in cfg purely to assert that the user's run.cfg matches
+        // the binary they built; mismatch means they edited cfg without rebuilding.
+        const int cfg_max_board_size = cfg_get<int>(cfg_map, "MAX_BOARD_SIZE", Gomoku::MAX_BOARD_SIZE);
+        if (cfg_max_board_size != Gomoku::MAX_BOARD_SIZE) {
+            throw std::runtime_error(
+                "MAX_BOARD_SIZE in cfg (" + std::to_string(cfg_max_board_size)
+                + ") != Gomoku::MAX_BOARD_SIZE (" + std::to_string(Gomoku::MAX_BOARD_SIZE)
+                + "). To change canvas size, edit cpp/envs/gomoku.h:65, "
+                  "re-trace the model via init_model.py, and rebuild C++.");
+        }
+        // canvas size; legacy single BOARD_SIZE preserved for probe / fallback.
+        cfg.board_size = Gomoku::MAX_BOARD_SIZE;
+        const int legacy_board_size = cfg_get<int>(cfg_map, "BOARD_SIZE", Gomoku::MAX_BOARD_SIZE);
         cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 64);
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
-        cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", -1);
+        cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", 0);
         cfg.move_temperature = cfg_get<float>(cfg_map, "MOVE_TEMPERATURE", 1.0f);
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
@@ -333,14 +406,38 @@ int main(int argc, char** argv) {
         // V5: num_planes=5 (mask + own + opp + fb_b + fb_w), padded to MAX_BOARD_SIZE.
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
         const int num_global_features = cfg_get<int>(cfg_map, "NUM_GLOBAL_FEATURES", 12);
-        const std::string rule_str = ([&]() -> std::string {
+
+        // ---- Per-game (size, rule) sampling, KataGomo bSizes / bSizeRelProbs ----
+        // BOARD_SIZES / BOARD_SIZE_RELPROBS / RULES / RULE_RELPROBS are lists.
+        // Missing → fall back to legacy single BOARD_SIZE / RULE values.
+        const std::string legacy_rule_str = ([&]() -> std::string {
             auto it = cfg_map.find("RULE");
             return (it != cfg_map.end()) ? it->second : "renju";
         })();
-        const RuleType rule = rule_from_string(rule_str);
-        const bool forbidden_plane = (rule != RuleType::FREESTYLE);
-        Gomoku game(cfg.board_size, rule, forbidden_plane);
-        if (cfg.half_life <= 0) cfg.half_life = game.board_size;
+        const auto sizes      = cfg_get_num_list<int>(cfg_map, "BOARD_SIZES",
+                                                      std::vector<int>{legacy_board_size});
+        const auto size_probs = cfg_get_num_list<float>(cfg_map, "BOARD_SIZE_RELPROBS",
+                                                         std::vector<float>(sizes.size(), 1.0f));
+        const auto rule_strs  = cfg_get_string_list(cfg_map, "RULES",
+                                                     std::vector<std::string>{legacy_rule_str});
+        const auto rule_probs = cfg_get_num_list<float>(cfg_map, "RULE_RELPROBS",
+                                                         std::vector<float>(rule_strs.size(), 1.0f));
+        std::vector<RuleType> rules;
+        rules.reserve(rule_strs.size());
+        for (const auto& s : rule_strs) rules.push_back(rule_from_string(s));
+
+        // Seed: derive from --iter + a stable salt so daemon and main runs
+        // diverge sharply even if started in the same wall-clock second.
+        const uint64_t init_seed = static_cast<uint64_t>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count()
+        ) ^ (static_cast<uint64_t>(cli.iter) * 0x9E3779B97F4A7C15ULL);
+        GameInitializer game_init(sizes, size_probs, rules, rule_probs, init_seed);
+        game_init.log_distribution(std::cout);
+
+        // HALF_LIFE handling (resolved per-game inside selfplay_manager.h):
+        // - >0  → global override, all games use this value
+        // - -1  → per-game game_.board_size (auto-adapts to multi-size training)
+        // -  0  → disabled, greedy gumbel_action from move 0 (no opening sampling)
 
         const int max_rows_per_npz = cfg_get<int>(cfg_map, "MAX_ROWS_PER_NPZ", 25000);
         const int64_t linear_threshold = cfg_get<int64_t>(cfg_map, "LINEAR_THRESHOLD", 2000000);
@@ -416,7 +513,7 @@ int main(int argc, char** argv) {
         // V5: state is padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE = 15×15
         // regardless of game.board_size, so state_row_override = 5*225 = 1125.
         const int state_row = Gomoku::NUM_SPATIAL_PLANES_V5 * Gomoku::MAX_AREA;
-        NpzWriter writer(cli.output_dir, npz_prefix, Gomoku::MAX_BOARD_SIZE, game.num_planes,
+        NpzWriter writer(cli.output_dir, npz_prefix, Gomoku::MAX_BOARD_SIZE, num_planes,
                          max_rows_per_npz, /*max_pending_jobs=*/4,
                          num_global_features, state_row);
 
@@ -442,7 +539,7 @@ int main(int argc, char** argv) {
         std::cout << "[SelfPlay] mcts_backend="
                   << (bcfg.kind == MCTSBackendConfig::SharedTree ? "shared_tree" : "batched_leaf")
                   << " search_threads_per_tree=" << bcfg.search_threads_per_tree << "\n";
-        SelfplayEngine<Gomoku> engine(game, cfg, pcfg, bcfg, cli.model, server_devices);
+        SelfplayEngine<Gomoku> engine(game_init, cfg, pcfg, bcfg, cli.model, server_devices);
         engine.start();
 
         std::mt19937 rng(std::random_device{}());
@@ -558,12 +655,9 @@ int main(int argc, char** argv) {
                     r.samples, cfg.policy_surprise_data_weight, cfg.value_surprise_data_weight);
                 auto weighted = apply_surprise_weighting_to_game(r.samples, weights, rng);
                 for (auto& ts : weighted) {
-                    // V5: derive ply from raw board (count non-zero) BEFORE encode replaces it.
-                    int ply = 0;
-                    for (auto v : ts.state) if (v != 0) ++ply;
-                    auto gf = game.compute_global_features(ply, ts.to_play);
-                    for (int i = 0; i < 12; ++i) ts.global_features[i] = gf.data[i];
-                    ts.state = game.encode_state_v5(ts.state, ts.to_play);
+                    // state and global_features are already populated by
+                    // selfplay_once (per-game game_ encodes V5 + computes
+                    // rule one-hot + ply). Just write the row.
                     writer.append(ts);
                     v_rows += 1;
                     total_rows += 1;
@@ -617,13 +711,8 @@ int main(int argc, char** argv) {
             auto weighted = apply_surprise_weighting_to_game(r.samples, weights, rng);
 
             for (auto& ts : weighted) {
-                // V5: encode to 5-plane padded layout (mask + own + opp + fb_b + fb_w)
-                // and capture per-step global features (rule one-hot, ply, etc.).
-                int ply = 0;
-                for (auto v : ts.state) if (v != 0) ++ply;
-                auto gf = game.compute_global_features(ply, ts.to_play);
-                for (int i = 0; i < 12; ++i) ts.global_features[i] = gf.data[i];
-                ts.state = game.encode_state_v5(ts.state, ts.to_play);
+                // state + global_features are already populated by selfplay_once
+                // (per-game game_ encodes V5 canvas-padded + rule one-hot + ply).
                 writer.append(ts);
                 total_rows += 1;
             }
@@ -704,8 +793,10 @@ int main(int argc, char** argv) {
             std::cout << "[SelfPlay] " << tag
                       << " opening=" << opening
                       << " game_len=" << r.game_len
-                      << " winner=" << r.winner << "\n";
-            const int N = game.board_size;
+                      << " winner=" << r.winner
+                      << " size=" << r.board_size
+                      << " rule=" << rule_to_string(r.rule) << "\n";
+            const int N = r.board_size;
             auto dump = [&](const std::vector<int8_t>& board) {
                 for (int i = 0; i < N; ++i) {
                     std::cout << "  ";
