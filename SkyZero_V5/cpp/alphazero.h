@@ -75,7 +75,7 @@ struct AlphaZeroConfig {
     // representative (smallest loc) is searched. Leave OFF for training even
     // when the dataloader does D4 augmentation: pruning still prevents the
     // NN from receiving visit-count signal at 7/8 of equivalent positions.
-    // Recommended ON for eval / human play.
+    // Recommended ON for elo / human play.
     bool root_symmetry_pruning = false;
 
     // Surprise weighting / value target mixing
@@ -114,9 +114,9 @@ struct AlphaZeroConfig {
     // this off when MCTS_BACKEND=shared_tree).
     bool enable_tree_reuse = true;
 
-    // LCB final-move selection (KataGo-style, eval/play only).
+    // LCB final-move selection (KataGo-style, elo/play only).
     // selfplay keeps gumbel_action for the unbiased policy improvement
-    // guarantee; eval/play binaries pick lcb_action from
+    // guarantee; elo/play binaries pick lcb_action from
     // MCTSSearchOutput. k=4.0 follows KataGo's reported value.
     float lcb_k = 4.0f;
 
@@ -182,7 +182,7 @@ struct MCTSSearchOutput {
     std::vector<float> nn_policy;                           // raw NN policy
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};  // raw NN value
     int gumbel_action = -1;                                 // selected action by Gumbel (selfplay)
-    int lcb_action = -1;                                    // selected action by LCB (eval/play); fallback to gumbel_action when no child has n>=2
+    int lcb_action = -1;                                    // selected action by LCB (elo/play); fallback to gumbel_action when no child has n>=2
     std::vector<float> visit_counts;                        // raw root-child visit counts N(s,a)
     std::vector<std::vector<int>> gumbel_phases;            // surviving actions at each halving phase (16,8,4,2,1)
 };
