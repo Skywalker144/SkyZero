@@ -30,6 +30,7 @@
 #include "alphazero.h"
 #include "alphazero_parallel.h"
 #include "alphazero_tree_parallel.h"
+#include "game_initializer.h"
 #include "policy_init.h"
 #include "policy_surprise_weighting.h"
 #include "random_opening.h"
@@ -60,17 +61,19 @@ public:
         std::vector<int8_t> initial_state;          // board after opening setup, before first MCTS
         bool balanced_opening = false;              // true=random balanced opening, false=empty
         int initial_to_play = 1;                    // side to move after opening setup
+        int board_size = 0;                         // per-game board size (canvas-aware consumers)
+        RuleType rule = RuleType::RENJU;            // per-game rule
     };
 
     SelfplayEngine(
-        Game& game,
+        GameInitializer& game_init,
         const AlphaZeroConfig& cfg,
         const SelfplayParallelConfig& pcfg,
         const MCTSBackendConfig& bcfg,
         const std::string& model_path,
         std::vector<torch::Device> devices
     )
-        : game_(game), cfg_(cfg), pcfg_(pcfg), bcfg_(bcfg), devices_(std::move(devices)) {
+        : game_init_(game_init), cfg_(cfg), pcfg_(pcfg), bcfg_(bcfg), devices_(std::move(devices)) {
         const int num_servers = std::max(1, pcfg_.num_inference_servers);
         if (static_cast<int>(devices_.size()) != num_servers) {
             throw std::runtime_error(
@@ -198,27 +201,33 @@ private:
         std::promise<std::pair<std::vector<float>, std::array<float, 3>>> promise;
     };
 
-    // V5: derive globals from encoded state. Uses game_.rule (per-engine), and
-    // counts non-zero own/opp planes to recover ply, with to_play parity from ply.
-    // (Black starts in SkyZero, so to_play = 1 if ply even, -1 if odd.)
-    std::array<float, 12> derive_globals_from_encoded(const std::vector<int8_t>& encoded) const {
+    // V5: derive globals from encoded state given the *per-game* Game ref.
+    // Static so the worker thread can pass its own per-game `game_` (each
+    // self-play game has its own rule / board_size / forbidden_plane).
+    // V5 plane layout: 0=mask, 1=own, 2=opp, 3=fb_b, 4=fb_w. ply is recovered
+    // from total stones on planes 1+2 (own + opp), which is mask-correct
+    // because off-board cells are 0 there.
+    static std::array<float, 12> derive_globals_from_encoded(
+        const Game& g, const std::vector<int8_t>& encoded
+    ) {
         constexpr int A = Game::MAX_AREA;   // 225
-        // V5 plane layout: 0=mask, 1=own, 2=opp, 3=fb_b, 4=fb_w
         int ply = 0;
         for (size_t i = A; i < 3 * static_cast<size_t>(A); ++i) ply += encoded[i];
         const int to_play = (ply % 2 == 0) ? 1 : -1;
-        auto gf = game_.compute_global_features(ply, to_play);
+        auto gf = g.compute_global_features(ply, to_play);
         std::array<float, 12> out{};
         for (int i = 0; i < 12; ++i) out[i] = gf.data[i];
         return out;
     }
 
+    // Caller (worker thread) has computed globals using its per-game Game.
     std::pair<std::vector<float>, std::array<float, 3>> request_inference(
-        const std::vector<int8_t>& encoded
+        const std::vector<int8_t>& encoded,
+        const std::array<float, 12>& globals
     ) {
         auto req = std::unique_ptr<InferenceRequest>(new InferenceRequest{});
         req->encoded = encoded;
-        req->globals = derive_globals_from_encoded(encoded);
+        req->globals = globals;
         auto fut = req->promise.get_future();
         {
             std::lock_guard<std::mutex> lk(inference_mutex_);
@@ -229,15 +238,18 @@ private:
     }
 
     std::vector<std::pair<std::vector<float>, std::array<float, 3>>>
-    request_batch_inference(const std::vector<std::vector<int8_t>>& encoded_batch) {
+    request_batch_inference(
+        const std::vector<std::vector<int8_t>>& encoded_batch,
+        const std::vector<std::array<float, 12>>& globals_batch
+    ) {
         std::vector<std::future<std::pair<std::vector<float>, std::array<float, 3>>>> futures;
         futures.reserve(encoded_batch.size());
         {
             std::lock_guard<std::mutex> lk(inference_mutex_);
-            for (const auto& encoded : encoded_batch) {
+            for (size_t i = 0; i < encoded_batch.size(); ++i) {
                 auto req = std::unique_ptr<InferenceRequest>(new InferenceRequest{});
-                req->encoded = encoded;
-                req->globals = derive_globals_from_encoded(encoded);
+                req->encoded = encoded_batch[i];
+                req->globals = globals_batch[i];
                 futures.push_back(req->promise.get_future());
                 inference_queue_.push_back(std::move(req));
             }
@@ -410,12 +422,29 @@ private:
             float sample_weight = 1.0f;
         };
 
+        // Per-game (size, rule) sample. KataGomo-style: shared mutex-guarded
+        // GameInitializer hands back a fresh Gomoku each game; this game
+        // object lives on the stack for the duration of selfplay_once and
+        // must outlive the MCTS engines below (declared after this), since
+        // they hold a reference into it.
+        Game game = game_init_.create_game();
+        Game& game_ = game;
+
         std::mt19937 worker_rng(seed);
-        auto infer_fn = [this](const std::vector<int8_t>& encoded) {
-            return request_inference(encoded);
+        // The lambdas capture the per-game Game by reference so each request's
+        // global-feature one-hot (rule + ply) reflects this game's rule, not a
+        // shared one. Inference server itself is rule-agnostic.
+        auto infer_fn = [this, &game_](const std::vector<int8_t>& encoded) {
+            const auto globals = derive_globals_from_encoded(game_, encoded);
+            return request_inference(encoded, globals);
         };
-        auto batch_infer_fn = [this](const std::vector<std::vector<int8_t>>& batch) {
-            return request_batch_inference(batch);
+        auto batch_infer_fn = [this, &game_](const std::vector<std::vector<int8_t>>& batch) {
+            std::vector<std::array<float, 12>> globals_batch;
+            globals_batch.reserve(batch.size());
+            for (const auto& enc : batch) {
+                globals_batch.push_back(derive_globals_from_encoded(game_, enc));
+            }
+            return request_batch_inference(batch, globals_batch);
         };
         // Dispatch to the configured MCTS backend. Both classes expose the
         // same public search() signature; we use a small lambda to forward.
@@ -489,9 +518,13 @@ private:
         int last_player = 0;
         std::unique_ptr<MCTSNode> root(new MCTSNode{state, to_play});
 
-        const int half_life = std::max(1, cfg_.half_life > 0 ? cfg_.half_life : game_.board_size);
+        // >0 = global override, -1 = per-game board_size, 0 = disabled (greedy from move 0).
+        const int half_life =
+            cfg_.half_life > 0 ? cfg_.half_life :
+            cfg_.half_life < 0 ? game_.board_size :
+            0;
 
-        while (!game_.is_terminal(state, last_action, last_player)) {
+        while (!game_.is_terminal_canvas(state, last_action, last_player)) {
             if (stop_workers_.load()) {
                 SelfplayResult empty;
                 return empty;
@@ -557,7 +590,7 @@ private:
 
             last_action = action;
             last_player = to_play;
-            state = game_.get_next_state(state, action, to_play);
+            state = game_.get_next_state_canvas(state, action, to_play);
             to_play = -to_play;
 
             // Tree reuse: navigate to the child for `action` instead of
@@ -591,13 +624,15 @@ private:
             }
         }
 
-        const int winner = game_.get_winner(state, last_action, last_player);
+        const int winner = game_.get_winner_canvas(state, last_action, last_player);
         SelfplayResult result;
         result.winner = winner;
         result.final_state = state;
         result.initial_state = std::move(initial_state_snapshot);
         result.initial_to_play = initial_to_play_snapshot;
         result.balanced_opening = used_balanced_opening;
+        result.board_size = game_.board_size;
+        result.rule = game_.rule;
         int total_moves = 0;
         for (int8_t v : state) if (v != 0) ++total_moves;
         result.game_len = total_moves;
@@ -609,8 +644,17 @@ private:
             if (winner_from_side == 1) outcome = {1.0f, 0.0f, 0.0f};
             else if (winner_from_side == -1) outcome = {0.0f, 0.0f, 1.0f};
 
+            // V5: canvas-pad encoded state and per-step global features here,
+            // using the *per-game* `game_` (with this game's rule + size).
+            // selfplay_main.cpp must NOT re-encode — by the time samples leave
+            // selfplay_once, state is already 5*MAX_AREA = 1125 int8.
+            int ply_for_step = 0;
+            for (int8_t v : s.state) if (v != 0) ++ply_for_step;
+            auto gf = game_.compute_global_features(ply_for_step, s.to_play);
+
             PolicySurpriseSample ps;
-            ps.state = s.state;
+            ps.state = game_.encode_state_v5(s.state, s.to_play);
+            for (int j = 0; j < 12; ++j) ps.global_features[j] = gf.data[j];
             ps.to_play = static_cast<int8_t>(s.to_play);
             ps.policy_target = s.mcts_policy;
             ps.opponent_policy_target = s.next_mcts_policy.empty()
@@ -708,7 +752,7 @@ private:
         return result;
     }
 
-    Game& game_;
+    GameInitializer& game_init_;
     const AlphaZeroConfig& cfg_;
     SelfplayParallelConfig pcfg_;
     MCTSBackendConfig bcfg_;
