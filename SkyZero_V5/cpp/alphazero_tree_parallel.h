@@ -114,7 +114,7 @@ public:
                 }
             }
         }
-        // LCB pick (eval/play). Read each child's stats under its stripe
+        // LCB pick (elo/play). Read each child's stats under its stripe
         // mutex for a coherent (n, v, q_sum_sq) snapshot. selfplay path
         // never uses lcb_action; ignore extra cost on the SharedTree side.
         {
