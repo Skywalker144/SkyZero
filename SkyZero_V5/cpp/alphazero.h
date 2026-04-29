@@ -37,7 +37,10 @@ struct AlphaZeroConfig {
     bool gumbel_noise_enabled = true;
 
     // Opening exploration window: sample first `half_life` moves ∝ visit counts.
-    int half_life = -1;                  // -1 ⇒ use board_size; 0 ⇒ disable
+    //   >0 ⇒ global override across all games (window length in plies)
+    //   -1 ⇒ per-game game_.board_size auto-adapt (resolved in selfplay_manager.h)
+    //    0 ⇒ disabled — always greedy gumbel_action from move 0
+    int half_life = 0;
     // Opening sampling temperature: p(a) ∝ N(a)^(1/move_temperature).
     // 1.0 = raw visit counts; <1 sharpens toward SH finalists; →0 = argmax(N).
     float move_temperature = 1.0f;
