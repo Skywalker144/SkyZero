@@ -86,7 +86,7 @@ public:
         out.nn_value_probs = nn_value_probs;
         out.gumbel_action = gumbel.gumbel_action;
         {
-            const int action_size = game_.board_size * game_.board_size;
+            const int action_size = Game::MAX_AREA;
             out.visit_counts.assign(static_cast<size_t>(action_size), 0.0f);
             for (const auto& c : root->children) {
                 if (!c) continue;
@@ -169,7 +169,7 @@ private:
         bool use_symmetry_transform
     ) {
         auto encoded = game_.encode_state_v5(state, to_play);   // V5: 5-plane padded layout
-        const int area = game_.board_size * game_.board_size;
+        const int area = Game::MAX_AREA;
 
         if (!use_stochastic_transform && use_symmetry_transform) {
             std::vector<std::vector<int8_t>> encoded_batch;
@@ -177,7 +177,7 @@ private:
             for (int fi = 0; fi < 2; ++fi) {
                 const bool do_flip = (fi == 1);
                 for (int k = 0; k < 4; ++k) {
-                    encoded_batch.push_back(transform_encoded_state(encoded, game_.num_planes, game_.board_size, k, do_flip));
+                    encoded_batch.push_back(transform_encoded_state(encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip));
                 }
             }
 
@@ -199,7 +199,7 @@ private:
             for (int i = 0; i < 8; ++i) {
                 const int k = i % 4;
                 const bool do_flip = i >= 4;
-                auto restored = undo_transform_flat(infer_results[static_cast<size_t>(i)].first, game_.board_size, k, do_flip);
+                auto restored = undo_transform_flat(infer_results[static_cast<size_t>(i)].first, Game::MAX_BOARD_SIZE, k, do_flip);
                 for (int j = 0; j < area; ++j) {
                     logits[static_cast<size_t>(j)] += restored[static_cast<size_t>(j)] / 8.0f;
                 }
@@ -208,7 +208,7 @@ private:
                 value[2] += infer_results[static_cast<size_t>(i)].second[2] / 8.0f;
             }
 
-            const auto legal = game_.get_is_legal_actions(state, to_play);
+            const auto legal = game_.get_is_legal_actions_canvas(state, to_play);
             for (size_t i = 0; i < logits.size(); ++i) {
                 if (i >= legal.size() || !legal[i]) {
                     logits[i] = -std::numeric_limits<float>::infinity();
@@ -224,16 +224,16 @@ private:
             const int transform_type = dist(rng_);
             k = transform_type % 4;
             do_flip = transform_type >= 4;
-            encoded = transform_encoded_state(encoded, game_.num_planes, game_.board_size, k, do_flip);
+            encoded = transform_encoded_state(encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip);
         }
 
         auto pair = infer_fn_(encoded);
         std::vector<float> logits = std::move(pair.first);
         if (use_stochastic_transform) {
-            logits = undo_transform_flat(logits, game_.board_size, k, do_flip);
+            logits = undo_transform_flat(logits, Game::MAX_BOARD_SIZE, k, do_flip);
         }
 
-        const auto legal = game_.get_is_legal_actions(state, to_play);
+        const auto legal = game_.get_is_legal_actions_canvas(state, to_play);
         for (size_t i = 0; i < logits.size(); ++i) {
             if (i >= legal.size() || !legal[i]) {
                 logits[i] = -std::numeric_limits<float>::infinity();
@@ -252,7 +252,7 @@ private:
             const float p = ir.policy[a];
             if (p <= 0.0f) continue;
             auto child = std::unique_ptr<MCTSNode>(new MCTSNode{
-                game_.get_next_state(node.state, a, node.to_play),
+                game_.get_next_state_canvas(node.state, a, node.to_play),
                 -node.to_play,
                 p,
                 &node,
@@ -338,9 +338,9 @@ private:
             }
             if (node == nullptr) continue;
 
-            if (game_.is_terminal(node->state, node->action_taken, -node->to_play)) {
+            if (game_.is_terminal_canvas(node->state, node->action_taken, -node->to_play)) {
                 std::array<float, 3> value{0.0f, 1.0f, 0.0f};
-                const int result = game_.get_winner(node->state, node->action_taken, -node->to_play) * node->to_play;
+                const int result = game_.get_winner_canvas(node->state, node->action_taken, -node->to_play) * node->to_play;
                 if (result == 1) value = {1.0f, 0.0f, 0.0f};
                 else if (result == -1) value = {0.0f, 0.0f, 1.0f};
                 backpropagate_path_with_vloss(path, value);
@@ -358,7 +358,7 @@ private:
                 const int transform_type = dist(rng_);
                 pl.transform_k = transform_type % 4;
                 pl.transform_flip = transform_type >= 4;
-                pl.encoded = transform_encoded_state(pl.encoded, game_.num_planes, game_.board_size, pl.transform_k, pl.transform_flip);
+                pl.encoded = transform_encoded_state(pl.encoded, game_.num_planes, Game::MAX_BOARD_SIZE, pl.transform_k, pl.transform_flip);
             } else if (cfg_.enable_symmetry_inference_for_child) {
                 pl.infer_count = 8;
             }
@@ -377,7 +377,7 @@ private:
                     const bool do_flip = (fi == 1);
                     for (int k = 0; k < 4; ++k) {
                         encoded_batch.push_back(
-                            transform_encoded_state(p.encoded, game_.num_planes, game_.board_size, k, do_flip)
+                            transform_encoded_state(p.encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip)
                         );
                     }
                 }
@@ -415,13 +415,13 @@ private:
             std::array<float, 3> value{0.0f, 0.0f, 0.0f};
 
             if (pending[i].infer_count == 8) {
-                const int area = game_.board_size * game_.board_size;
+                const int area = Game::MAX_AREA;
                 logits.assign(static_cast<size_t>(area), 0.0f);
                 for (int s = 0; s < 8; ++s) {
                     const size_t idx = static_cast<size_t>(pending[i].infer_offset + s);
                     const int k = s % 4;
                     const bool do_flip = s >= 4;
-                    auto restored = undo_transform_flat(infer_results[idx].first, game_.board_size, k, do_flip);
+                    auto restored = undo_transform_flat(infer_results[idx].first, Game::MAX_BOARD_SIZE, k, do_flip);
                     for (int j = 0; j < area; ++j) {
                         logits[static_cast<size_t>(j)] += restored[static_cast<size_t>(j)] / 8.0f;
                     }
@@ -434,11 +434,11 @@ private:
                 logits = std::move(infer_results[idx].first);
                 value = infer_results[idx].second;
                 if (pending[i].transform_k != 0 || pending[i].transform_flip) {
-                    logits = undo_transform_flat(logits, game_.board_size, pending[i].transform_k, pending[i].transform_flip);
+                    logits = undo_transform_flat(logits, Game::MAX_BOARD_SIZE, pending[i].transform_k, pending[i].transform_flip);
                 }
             }
 
-            const auto legal = game_.get_is_legal_actions(pending[i].leaf->state, pending[i].leaf->to_play);
+            const auto legal = game_.get_is_legal_actions_canvas(pending[i].leaf->state, pending[i].leaf->to_play);
             for (size_t j = 0; j < logits.size(); ++j) {
                 if (j >= legal.size() || !legal[j]) {
                     logits[j] = -std::numeric_limits<float>::infinity();
@@ -456,13 +456,13 @@ private:
     }
 
     GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations) {
-        const int action_size = game_.board_size * game_.board_size;
+        const int action_size = Game::MAX_AREA;
         std::vector<float> logits = root.nn_logits;
         if (logits.size() != static_cast<size_t>(action_size)) {
             logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
         }
 
-        const auto is_legal = game_.get_is_legal_actions(root.state, root.to_play);
+        const auto is_legal = game_.get_is_legal_actions_canvas(root.state, root.to_play);
 
         // Gumbel noise
         std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
