@@ -89,6 +89,8 @@ while true; do
     "$ROOT/cpp/build/mcts_probe" \
         --model "$DATA_DIR/models/latest.pt" \
         --config "$SCRIPT_DIR/run.cfg" \
+        --iter "$iter" \
+        --log "$DATA_DIR/logs/probe.tsv" \
         || echo "[run.sh] mcts_probe failed (non-fatal)"
 
     # (6) plot loss curve
