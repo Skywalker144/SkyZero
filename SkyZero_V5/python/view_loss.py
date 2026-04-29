@@ -65,6 +65,60 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
     print(f"saved plot to {out}")
 
 
+def _plot_probe(data_dir: pathlib.Path, plt) -> None:
+    log = data_dir / "logs" / "probe.tsv"
+    if not log.exists():
+        print(f"no probe log at {log}", file=sys.stderr)
+        return
+    header, rows = _read_tsv(log)
+    if not rows:
+        print("empty probe log", file=sys.stderr)
+        return
+    idx = {name: i for i, name in enumerate(header)}
+    needed = ("iter", "gumbel_dist", "lcb_dist",
+              "vmix_W", "vmix_L", "nn_W", "nn_L")
+    if not all(k in idx for k in needed):
+        print("probe.tsv missing expected columns; skipping probe plot",
+              file=sys.stderr)
+        return
+
+    def col(name):
+        out = []
+        for r in rows:
+            v = r[idx[name]] if idx[name] < len(r) else ""
+            out.append(float(v) if v else float("nan"))
+        return out
+
+    x = col("iter")
+    gumbel_dist = col("gumbel_dist")
+    lcb_dist = col("lcb_dist")
+    vmix_wl = [w - l for w, l in zip(col("vmix_W"), col("vmix_L"))]
+    nn_wl = [w - l for w, l in zip(col("nn_W"), col("nn_L"))]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+
+    ax1.plot(x, gumbel_dist, color="C0", label="gumbel")
+    ax1.plot(x, lcb_dist, color="C1", label="lcb")
+    ax1.set_ylabel("dist from center")
+    ax1.set_yticks(range(0, 8))
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc="best")
+
+    ax2.plot(x, vmix_wl, color="C2", label="v_mix W-L")
+    ax2.plot(x, nn_wl, color="C3", label="nn_value W-L")
+    ax2.axhline(0.0, ls="--", color="gray", alpha=0.4)
+    ax2.set_ylim(-1.0, 1.0)
+    ax2.set_ylabel("root value (W-L)")
+    ax2.set_xlabel("iter")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc="best")
+
+    fig.tight_layout()
+    out = data_dir / "logs" / "probe.png"
+    fig.savefig(out, dpi=200)
+    print(f"saved plot to {out}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
@@ -132,6 +186,7 @@ def main() -> int:
         print(f"saved plot to {out}")
 
         _plot_selfplay(data_dir, plt)
+        _plot_probe(data_dir, plt)
     return 0
 
 
