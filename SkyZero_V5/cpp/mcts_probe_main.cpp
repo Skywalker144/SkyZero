@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -255,6 +256,43 @@ int main(int argc, char** argv) {
         std::cout << "[mcts_probe] nn_value W=" << sr.nn_value_probs[0]
                   << " D=" << sr.nn_value_probs[1]
                   << " L=" << sr.nn_value_probs[2] << "\n";
+        if (!cli.log_path.empty()) {
+            const int board_size = cfg.board_size;
+            const int c0 = board_size / 2;
+            auto cheb_dist = [&](int action) -> int {
+                if (action < 0) return -1;
+                const int r = action / board_size;
+                const int c = action % board_size;
+                const int dr = std::abs(r - c0);
+                const int dc = std::abs(c - c0);
+                return dr > dc ? dr : dc;
+            };
+            const int gumbel_dist = cheb_dist(sr.gumbel_action);
+            const int lcb_dist = cheb_dist(sr.lcb_action);
+
+            const bool need_header = !std::filesystem::exists(cli.log_path);
+            std::ofstream out(cli.log_path, std::ios::app);
+            if (!out) {
+                throw std::runtime_error("cannot open log: " + cli.log_path);
+            }
+            if (need_header) {
+                out << "iter\tgumbel_action\tlcb_action\tgumbel_dist\tlcb_dist"
+                    << "\tvmix_W\tvmix_D\tvmix_L\tnn_W\tnn_D\tnn_L\n";
+            }
+            out << std::fixed << std::setprecision(4);
+            out << cli.iter
+                << "\t" << sr.gumbel_action
+                << "\t" << sr.lcb_action
+                << "\t" << gumbel_dist
+                << "\t" << lcb_dist
+                << "\t" << sr.v_mix[0]
+                << "\t" << sr.v_mix[1]
+                << "\t" << sr.v_mix[2]
+                << "\t" << sr.nn_value_probs[0]
+                << "\t" << sr.nn_value_probs[1]
+                << "\t" << sr.nn_value_probs[2]
+                << "\n";
+        }
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[mcts_probe] fatal: " << e.what() << "\n";
