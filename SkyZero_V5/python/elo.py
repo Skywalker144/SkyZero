@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Elo ratings from gomoku_eval JSONL match logs.
+"""Elo ratings from gomoku_elo JSONL match logs.
 
-Reads game records produced by cpp/gomoku_eval (one JSON object per line with
+Reads game records produced by cpp/gomoku_elo (one JSON object per line with
 keys: a, b, a_black, winner_a, plies), fits Bradley-Terry ratings via MLE,
 converts to Elo, and prints a table + optional PNG curve.
 
@@ -129,7 +129,7 @@ def pick_reference(models: list[str]) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--games", required=True, type=Path, help="JSONL from gomoku_eval")
+    ap.add_argument("--games", required=True, type=Path, help="JSONL from gomoku_elo")
     ap.add_argument("--plot", type=Path, default=None, help="Output PNG path for Elo curve")
     ap.add_argument("--min-games", type=int, default=1,
                     help="Drop models with fewer than this many total games")
