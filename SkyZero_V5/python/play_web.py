@@ -798,7 +798,7 @@ HTML_PAGE = r"""<!doctype html>
           </div>
           <div class="field-row">
             <label for="gm_input">gumbel_m</label>
-            <input class="num" type="number" id="gm_input" min="1" step="1" value="8">
+            <input class="num" type="number" id="gm_input" min="1" step="1" value="16">
           </div>
           <div class="divider"></div>
           <label class="toggle">
