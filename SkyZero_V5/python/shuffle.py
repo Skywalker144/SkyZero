@@ -278,7 +278,7 @@ def main() -> int:
     alpha = _env_float("REPLAY_ALPHA", 0.8)
 
     if not selfplay_dir.exists():
-        print(f"[shuffle] selfplay dir missing: {selfplay_dir}", file=sys.stderr)
+        print(f"[Shuffle] selfplay dir missing: {selfplay_dir}", file=sys.stderr)
         return 1
 
     num_workers = max(1, args.num_workers or 1)
@@ -298,7 +298,7 @@ def main() -> int:
         pass
 
     if not files_rows:
-        print("[shuffle] no selfplay files found", file=sys.stderr)
+        print("[Shuffle] no selfplay files found", file=sys.stderr)
         if pool is not None:
             pool.close()
             pool.join()
@@ -309,7 +309,7 @@ def main() -> int:
     total = sum(r for _, r in files_rows)
     window = compute_window_size(total, linear_threshold, alpha)
 
-    print(f"[shuffle] total_rows={total} window={window} "
+    print(f"[Shuffle] total_rows={total} window={window} "
           f"(linear_threshold={linear_threshold}, alpha={alpha}) "
           f"discover={t_discover:.2f}s")
 
@@ -330,7 +330,7 @@ def main() -> int:
 
     groups = group_files_by_rows(chosen, args.worker_group_size)
     num_groups = len(groups)
-    print(f"[shuffle] pass1: {covered} rows from {len(chosen)} files -> "
+    print(f"[Shuffle] pass1: {covered} rows from {len(chosen)} files -> "
           f"{num_groups} groups x {K} buckets (workers={num_workers})")
 
     # Fresh scatter dir.
@@ -357,7 +357,7 @@ def main() -> int:
     else:
         pass1_total = sum(_shardify_job(a) for a in shardify_args)
     t_pass1 = time.perf_counter() - t1
-    print(f"[shuffle] pass1 done: {pass1_total} rows scattered in {t_pass1:.2f}s")
+    print(f"[Shuffle] pass1 done: {pass1_total} rows scattered in {t_pass1:.2f}s")
 
     # Pass 2: per-bucket merge.
     if shuffled_dir.exists():
@@ -394,9 +394,9 @@ def main() -> int:
     shutil.rmtree(scatter_dir, ignore_errors=True)
 
     total_t = time.perf_counter() - t0
-    print(f"[shuffle] pass2 done: {num_shards_written} shards, "
+    print(f"[Shuffle] pass2 done: {num_shards_written} shards, "
           f"{total_written} rows in {t_pass2:.2f}s")
-    print(f"[shuffle] wrote {num_shards_written} shards, "
+    print(f"[Shuffle] wrote {num_shards_written} shards, "
           f"{total_written} rows total to {shuffled_dir} "
           f"(total={total_t:.2f}s)")
     return 0
