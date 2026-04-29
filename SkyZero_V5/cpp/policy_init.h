@@ -59,21 +59,24 @@ public:
         for (int i = 0; i < num_moves; ++i) {
             const int action = sample_policy_move(state, to_play, temperature);
             if (action < 0) return true;  // no legal candidate with positive policy
-            state = game_.get_next_state(state, action, to_play);
-            if (game_.is_terminal(state, action, to_play)) return false;
+            state = game_.get_next_state_canvas(state, action, to_play);
+            if (game_.is_terminal_canvas(state, action, to_play)) return false;
             to_play = -to_play;
         }
         return true;
     }
 
 private:
+    // Returns canvas-stride action (0..MAX_AREA), or -1 if no legal move with
+    // positive policy. NN is canvas-native, so logits / probs / legal mask are
+    // all size MAX_AREA — no remapping needed at the boundary.
     int sample_policy_move(const std::vector<int8_t>& state, int to_play, double temperature) {
-        const auto encoded = game_.encode_state_v5(state, to_play);   // V5
+        const auto encoded = game_.encode_state_v5(state, to_play);   // V5: canvas-padded
         auto res = infer_fn_(encoded);
         std::vector<float> logits = std::move(res.first);
 
-        const int area = game_.board_size * game_.board_size;
-        const auto legal = game_.get_is_legal_actions(state, to_play);
+        const int area = Game::MAX_AREA;
+        const auto legal = game_.get_is_legal_actions_canvas(state, to_play);
         if (static_cast<int>(logits.size()) != area) return -1;
         for (int a = 0; a < area; ++a) {
             if (a >= static_cast<int>(legal.size()) || !legal[a]) {
