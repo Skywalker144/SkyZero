@@ -79,6 +79,8 @@ struct CliArgs {
     std::string model;
     std::string config;
     int num_simulations_override = -1;
+    int iter = -1;            // optional; logged into probe.tsv when --log is given
+    std::string log_path;     // optional; if non-empty, append a TSV row here
 };
 
 static CliArgs parse_cli(int argc, char** argv) {
@@ -92,10 +94,12 @@ static CliArgs parse_cli(int argc, char** argv) {
         if (k == "--model") a.model = need("--model");
         else if (k == "--config") a.config = need("--config");
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
+        else if (k == "--iter") a.iter = std::stoi(need("--iter"));
+        else if (k == "--log") a.log_path = need("--log");
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.config.empty()) {
-        throw std::runtime_error("usage: mcts_probe --model PATH --config PATH [--num-simulations N]");
+        throw std::runtime_error("usage: mcts_probe --model PATH --config PATH [--num-simulations N] [--iter N] [--log PATH]");
     }
     return a;
 }
