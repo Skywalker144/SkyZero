@@ -24,6 +24,13 @@ def test_score_to_elo_clamps_at_extremes():
     assert score_to_elo(1.0) == 800.0
 
 
+def test_score_to_elo_clamps_near_extremes():
+    # wilson_ci(N, N) returns one ULP below 1.0, not exactly 1.0 — the
+    # output must still clamp instead of evaluating to ~+6260 Elo.
+    assert score_to_elo(0.9999999999999999) <= 800.0
+    assert score_to_elo(1e-16) >= -800.0
+
+
 def test_wilson_ci_brackets_score():
     lo, hi = wilson_ci(50, 100)
     assert lo < 0.5 < hi

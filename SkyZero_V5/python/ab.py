@@ -29,14 +29,16 @@ def parse_iter(path: str) -> int | None:
 def score_to_elo(score: float) -> float:
     """Bradley-Terry score (in [0,1]) -> Elo difference (400-scale).
 
-    Clamped to +/- ELO_CLAMP at the boundaries to keep the plot finite when
-    one side hasn't lost a single game.
+    Clamped to +/- ELO_CLAMP. The output clamp matters too — Wilson CI
+    on N/N returns one ULP below 1.0 (not exactly 1.0), which evaluates
+    to ~+6260 Elo without the output clamp.
     """
     if score <= 0.0:
         return -ELO_CLAMP
     if score >= 1.0:
         return ELO_CLAMP
-    return -400.0 * math.log10(1.0 / score - 1.0)
+    elo = -400.0 * math.log10(1.0 / score - 1.0)
+    return max(-ELO_CLAMP, min(ELO_CLAMP, elo))
 
 
 def wilson_ci(wins: float, n: int, z: float = 1.96) -> tuple[float, float]:
