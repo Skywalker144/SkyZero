@@ -1,10 +1,14 @@
-// gomoku_elo — headless model-A-vs-model-B match runner.
+// gomoku_ab — headless A-vs-B MCTS-config match runner for a single model.
 //
-// Loads two TorchScript models, plays N games alternating colors (A-black on
-// even game indices, B-black on odd), and appends one JSON line per game to
-// the output file. Designed to feed python/elo.py.
+// Loads ONE TorchScript model and plays N games against itself alternating
+// colors (A-black on even game indices, B-black on odd). A and B differ only
+// in their MCTS / inference search configs (scripts/ab/{a,b}.cfg). Both
+// sides share a single BatchedInferenceServer to halve GPU memory and
+// improve batch fill-rate. Appends one JSON line per game (model, cfg_a,
+// cfg_b, a_black, winner_a, plies) to the output file. Designed to feed
+// python/ab.py.
 //
-// Shares config/inference scaffolding with gomoku_play_main.cpp.
+// Shares config/inference scaffolding with gomoku_elo_main.cpp.
 
 #include <algorithm>
 #include <array>
@@ -86,13 +90,54 @@ static bool cfg_get_bool(const std::unordered_map<std::string, std::string>& c,
     return fallback;
 }
 
+// Populate an AlphaZeroConfig from a parsed cfg map. Used twice in main()
+// (once for A side, once for B side). gumbel_noise_enabled is forced false
+// because evaluation must be deterministic-ish — we want Elo to reflect
+// strength, not sampling luck.
+static AlphaZeroConfig build_mcts_cfg(
+        const std::unordered_map<std::string, std::string>& m,
+        int board_size,
+        const torch::Device& device) {
+    AlphaZeroConfig c;
+    c.board_size = board_size;
+    c.num_simulations = cfg_get<int>(m, "NUM_SIMULATIONS", 800);
+    c.gumbel_m = cfg_get<int>(m, "GUMBEL_M", 16);
+    c.gumbel_c_visit = cfg_get<float>(m, "GUMBEL_C_VISIT", 50.0f);
+    c.gumbel_c_scale = cfg_get<float>(m, "GUMBEL_C_SCALE", 1.0f);
+    c.gumbel_noise_enabled = false;
+    c.half_life = cfg_get<int>(m, "HALF_LIFE", 0);
+    c.c_puct = cfg_get<float>(m, "C_PUCT", 1.1f);
+    c.c_puct_log = cfg_get<float>(m, "C_PUCT_LOG", 0.45f);
+    c.c_puct_base = cfg_get<float>(m, "C_PUCT_BASE", 500.0f);
+    c.fpu_pow = cfg_get<float>(m, "FPU_POW", 1.0f);
+    c.fpu_reduction_max = cfg_get<float>(m, "FPU_REDUCTION_MAX", 0.25f);
+    c.root_fpu_reduction_max = cfg_get<float>(m, "ROOT_FPU_REDUCTION_MAX", 0.0f);
+    c.fpu_loss_prop = cfg_get<float>(m, "FPU_LOSS_PROP", 0.0f);
+    c.lcb_k = cfg_get<float>(m, "LCB_K", 4.0f);
+    c.cpuct_utility_stdev_prior = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR", 0.25f);
+    c.cpuct_utility_stdev_prior_weight = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 1.0f);
+    c.cpuct_utility_stdev_scale = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_SCALE", 0.0f);
+    c.enable_stochastic_transform_inference_for_root =
+        cfg_get_bool(m, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
+    c.enable_stochastic_transform_inference_for_child =
+        cfg_get_bool(m, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
+    c.enable_symmetry_inference_for_root =
+        cfg_get_bool(m, "ENABLE_SYMMETRY_ROOT", true);
+    c.enable_symmetry_inference_for_child =
+        cfg_get_bool(m, "ENABLE_SYMMETRY_CHILD", true);
+    c.root_symmetry_pruning =
+        cfg_get_bool(m, "ROOT_SYMMETRY_PRUNING", true);
+    c.device = device;
+    return c;
+}
+
 struct CliArgs {
-    std::string model_a;
-    std::string model_b;
-    std::string config;
+    std::string model;
+    std::string config_ab;
+    std::string config_a;
+    std::string config_b;
     std::string output;
-    int num_games = 40;
-    int num_simulations_override = -1;
+    int num_games = 200;
     uint64_t seed = 0;
     bool seed_set = false;
 };
@@ -105,19 +150,20 @@ static CliArgs parse_cli(int argc, char** argv) {
             if (i + 1 >= argc) throw std::runtime_error(std::string("missing value for ") + name);
             return std::string(argv[++i]);
         };
-        if (k == "--model-a") a.model_a = need("--model-a");
-        else if (k == "--model-b") a.model_b = need("--model-b");
-        else if (k == "--config") a.config = need("--config");
+        if (k == "--model") a.model = need("--model");
+        else if (k == "--config-ab") a.config_ab = need("--config-ab");
+        else if (k == "--config-a") a.config_a = need("--config-a");
+        else if (k == "--config-b") a.config_b = need("--config-b");
         else if (k == "--output") a.output = need("--output");
         else if (k == "--num-games") a.num_games = std::stoi(need("--num-games"));
-        else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
         else if (k == "--seed") { a.seed = std::stoull(need("--seed")); a.seed_set = true; }
         else throw std::runtime_error("unknown arg: " + k);
     }
-    if (a.model_a.empty() || a.model_b.empty() || a.config.empty() || a.output.empty()) {
+    if (a.model.empty() || a.config_ab.empty() || a.config_a.empty()
+        || a.config_b.empty() || a.output.empty()) {
         throw std::runtime_error(
-            "usage: gomoku_elo --model-a PATH --model-b PATH --config PATH --output PATH "
-            "[--num-games N] [--num-simulations N] [--seed S]");
+            "usage: gomoku_ab --model PATH --config-ab PATH --config-a PATH --config-b PATH "
+            "--output PATH [--num-games N] [--seed S]");
     }
     return a;
 }
@@ -334,92 +380,66 @@ int main(int argc, char** argv) {
         c10::InferenceMode im;
 
         const auto cli = parse_cli(argc, argv);
-        const auto cfg_map = parse_cfg(cli.config);
+        const auto cfg_ab_map = parse_cfg(cli.config_ab);
+        const auto cfg_a_map  = parse_cfg(cli.config_a);
+        const auto cfg_b_map  = parse_cfg(cli.config_b);
 
-        AlphaZeroConfig cfg;
-        cfg.board_size = cfg_get<int>(cfg_map, "BOARD_SIZE", 15);
-        cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 800);
-        cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
-        cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
-        cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
-        // Force Gumbel noise OFF for evaluation regardless of cfg — we want
-        // deterministic-ish play so Elo reflects strength, not sampling luck.
-        cfg.gumbel_noise_enabled = false;
-        cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", 0);
-        cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
-        cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
-        cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
-        cfg.fpu_pow = cfg_get<float>(cfg_map, "FPU_POW", 1.0f);
-        cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.25f);
-        cfg.root_fpu_reduction_max = cfg_get<float>(cfg_map, "ROOT_FPU_REDUCTION_MAX", 0.0f);
-        cfg.fpu_loss_prop = cfg_get<float>(cfg_map, "FPU_LOSS_PROP", 0.0f);
-        cfg.lcb_k = cfg_get<float>(cfg_map, "LCB_K", 4.0f);
-        cfg.cpuct_utility_stdev_prior = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR", 0.25f);
-        cfg.cpuct_utility_stdev_prior_weight = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 1.0f);
-        cfg.cpuct_utility_stdev_scale = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_SCALE", 0.0f);
-        cfg.enable_stochastic_transform_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
-        cfg.enable_stochastic_transform_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
-        cfg.enable_symmetry_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", true);
-        cfg.enable_symmetry_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", true);
-        cfg.root_symmetry_pruning =
-            cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
-
-        if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
-
-        // V5: 5-plane padded encoding + 12-dim global features
-        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
+        const int board_size = cfg_get<int>(cfg_ab_map, "BOARD_SIZE", 15);
+        // NUM_PLANES is documented in ab.cfg but the binary uses the hardcoded
+        // V5 value (Gomoku::NUM_SPATIAL_PLANES_V5) — the cfg key only exists
+        // so users can sanity-check it matches the trained model.
         const std::string rule_str = ([&]() -> std::string {
-            auto it = cfg_map.find("RULE");
-            return (it != cfg_map.end()) ? it->second : "renju";
+            auto it = cfg_ab_map.find("RULE");
+            return (it != cfg_ab_map.end()) ? it->second : "renju";
         })();
         const RuleType rule = rule_from_string(rule_str);
-        Gomoku game(cfg.board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
-        if (cfg.half_life < 0) cfg.half_life = game.board_size;
+        Gomoku game(board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
 
         const bool use_cuda = torch::cuda::is_available();
         const torch::Device device = use_cuda ? torch::Device(torch::kCUDA, 0)
                                               : torch::Device(torch::kCPU);
-        cfg.device = device;
 
-        auto ha = load_model(cli.model_a, device);
-        auto hb = load_model(cli.model_b, device);
+        AlphaZeroConfig cfg_a = build_mcts_cfg(cfg_a_map, board_size, device);
+        AlphaZeroConfig cfg_b = build_mcts_cfg(cfg_b_map, board_size, device);
+        if (cfg_a.half_life < 0) cfg_a.half_life = game.board_size;
+        if (cfg_b.half_life < 0) cfg_b.half_life = game.board_size;
 
-        // V5: hardcoded c=5, board=15, regardless of game.board_size (padded)
+        // Single shared model + inference server. Both sides use the same
+        // weights, so loading twice would just waste GPU memory and split
+        // the inference batch.
+        auto h = load_model(cli.model, device);
+
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
         const int board = Gomoku::MAX_BOARD_SIZE;
-
-        const int infer_batch = cfg_get<int>(cfg_map, "INFERENCE_BATCH_SIZE", 64);
-        const int infer_wait_us = cfg_get<int>(cfg_map, "INFERENCE_WAIT_US", 200);
+        const int infer_batch = cfg_get<int>(cfg_ab_map, "INFERENCE_BATCH_SIZE", 64);
+        const int infer_wait_us = cfg_get<int>(cfg_ab_map, "INFERENCE_WAIT_US", 500);
         const int num_concurrent = std::max(
-            1, cfg_get<int>(cfg_map, "NUM_CONCURRENT_GAMES", 4));
-        const int default_search_threads =
-            cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 8);
-        const int search_threads = std::max(
-            1, cfg_get<int>(cfg_map, "ELO_SEARCH_THREADS_PER_TREE",
-                             default_search_threads));
+            1, cfg_get<int>(cfg_ab_map, "NUM_CONCURRENT_GAMES", 4));
+        const int threads_a = std::max(
+            1, cfg_get<int>(cfg_a_map, "SEARCH_THREADS_PER_TREE", 8));
+        const int threads_b = std::max(
+            1, cfg_get<int>(cfg_b_map, "SEARCH_THREADS_PER_TREE", 8));
 
-        BatchedInferenceServer server_a(ha.get(), device, c, board, infer_batch, infer_wait_us, &game);
-        BatchedInferenceServer server_b(hb.get(), device, c, board, infer_batch, infer_wait_us, &game);
+        BatchedInferenceServer server(h.get(), device, c, board, infer_batch,
+                                      infer_wait_us, &game);
 
-        auto infer_a = [&](const std::vector<int8_t>& e) { return server_a.infer(e); };
-        auto infer_b = [&](const std::vector<int8_t>& e) { return server_b.infer(e); };
-        auto fwd_a = [&](const std::vector<std::vector<int8_t>>& b) { return server_a.infer_batch(b); };
-        auto fwd_b = [&](const std::vector<std::vector<int8_t>>& b) { return server_b.infer_batch(b); };
+        auto infer = [&](const std::vector<int8_t>& e) { return server.infer(e); };
+        auto fwd   = [&](const std::vector<std::vector<int8_t>>& b) { return server.infer_batch(b); };
 
         const uint64_t seed = cli.seed_set ? cli.seed : std::random_device{}();
 
         std::ofstream out(cli.output, std::ios::app);
         if (!out) throw std::runtime_error("cannot open output: " + cli.output);
 
-        std::cerr << "[gomoku_elo] A=" << cli.model_a << "\n"
-                  << "              B=" << cli.model_b << "\n"
-                  << "              device=" << (use_cuda ? "cuda" : "cpu")
-                  << " sims=" << cfg.num_simulations
-                  << " threads=" << search_threads
+        std::cerr << "[gomoku_ab] model=" << cli.model << "\n"
+                  << "             cfg-ab=" << cli.config_ab
+                  << " cfg-a="  << cli.config_a
+                  << " cfg-b="  << cli.config_b << "\n"
+                  << "             device=" << (use_cuda ? "cuda" : "cpu")
+                  << " sims_a=" << cfg_a.num_simulations
+                  << " sims_b=" << cfg_b.num_simulations
+                  << " threads_a=" << threads_a
+                  << " threads_b=" << threads_b
                   << " concurrent=" << num_concurrent
                   << " infer_batch=" << infer_batch
                   << " games=" << cli.num_games
@@ -436,8 +456,8 @@ int main(int argc, char** argv) {
             try {
                 std::mt19937 rng(seed
                     + 0x9E3779B97F4A7C15ULL * static_cast<uint64_t>(tid + 1));
-                TreeParallelMCTS<Gomoku> mcts_a(game, cfg, search_threads, infer_a, fwd_a, rng());
-                TreeParallelMCTS<Gomoku> mcts_b(game, cfg, search_threads, infer_b, fwd_b, rng());
+                TreeParallelMCTS<Gomoku> mcts_a(game, cfg_a, threads_a, infer, fwd, rng());
+                TreeParallelMCTS<Gomoku> mcts_b(game, cfg_b, threads_b, infer, fwd, rng());
                 std::unique_ptr<MCTSNode> root_a, root_b;
 
                 while (!abort_flag.load()) {
@@ -463,7 +483,8 @@ int main(int argc, char** argv) {
                         auto& root = a_to_move ? root_a : root_b;
 
                         root.reset(new MCTSNode{state, to_play});
-                        const auto res = mcts.search(state, to_play, cfg.num_simulations, root);
+                        const int sims = a_to_move ? cfg_a.num_simulations : cfg_b.num_simulations;
+                        const auto res = mcts.search(state, to_play, sims, root);
                         // Elo: prefer LCB-selected move; fall back to Gumbel
                         // when no child has enough visits for a variance estimate.
                         int action = res.lcb_action >= 0 ? res.lcb_action : res.gumbel_action;
@@ -497,8 +518,9 @@ int main(int argc, char** argv) {
 
                     {
                         std::lock_guard<std::mutex> lk(out_mu);
-                        out << "{\"a\":\"" << cli.model_a << "\","
-                            << "\"b\":\"" << cli.model_b << "\","
+                        out << "{\"model\":\"" << cli.model << "\","
+                            << "\"cfg_a\":\"" << cli.config_a << "\","
+                            << "\"cfg_b\":\"" << cli.config_b << "\","
                             << "\"a_black\":" << (a_is_black ? "true" : "false") << ","
                             << "\"winner_a\":" << winner_a << ","
                             << "\"plies\":" << plies << "}\n";
@@ -506,7 +528,7 @@ int main(int argc, char** argv) {
                     }
                     {
                         std::lock_guard<std::mutex> lk(log_mu);
-                        std::cerr << "[gomoku_elo] game " << (g + 1) << "/" << cli.num_games
+                        std::cerr << "[gomoku_ab] game " << (g + 1) << "/" << cli.num_games
                                   << " a_black=" << (a_is_black ? 1 : 0)
                                   << " winner_a=" << winner_a
                                   << " plies=" << plies
@@ -532,11 +554,11 @@ int main(int argc, char** argv) {
         const int played = aw + bw + dr;
         const float n = static_cast<float>(std::max(1, played));
         const float score = (aw + 0.5f * dr) / n;
-        std::cerr << "[gomoku_elo] done. A score=" << std::fixed << std::setprecision(3) << score
+        std::cerr << "[gomoku_ab] done. A score=" << std::fixed << std::setprecision(3) << score
                   << " (" << aw << "W " << dr << "D " << bw << "L)\n";
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[gomoku_elo] fatal: " << e.what() << "\n";
+        std::cerr << "[gomoku_ab] fatal: " << e.what() << "\n";
         return 2;
     }
 }
