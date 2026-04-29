@@ -215,6 +215,7 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
         auto make_train = [&]() {
             TrainSample ts;
             ts.state = game_data[i].state;
+            ts.global_features = game_data[i].global_features;   // V5: rule one-hot + ply
             ts.to_play = game_data[i].to_play;
             ts.policy_target = game_data[i].policy_target;
             ts.opponent_policy_target = game_data[i].opponent_policy_target;
