@@ -81,3 +81,16 @@ target_link_libraries(gomoku_elo PRIVATE
 )
 target_compile_options(gomoku_elo PRIVATE -Wall -Wextra -Wno-unused-parameter)
 set_property(TARGET gomoku_elo PROPERTY CXX_EXTENSIONS OFF)
+
+# --- gomoku_ab binary ----------------------------------------------------
+# Headless A-vs-B MCTS-config match runner. Plays the same model against
+# itself with two different search configs (scripts/ab/a.cfg vs b.cfg) and
+# appends per-game JSONL results for python/ab.py to consume.
+add_executable(gomoku_ab gomoku_ab_main.cpp)
+target_include_directories(gomoku_ab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(gomoku_ab PRIVATE
+    ${TORCH_LIBRARIES}
+    Threads::Threads
+)
+target_compile_options(gomoku_ab PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET gomoku_ab PROPERTY CXX_EXTENSIONS OFF)
