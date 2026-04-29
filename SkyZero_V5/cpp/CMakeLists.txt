@@ -70,14 +70,14 @@ target_link_libraries(gomoku_play PRIVATE
 target_compile_options(gomoku_play PRIVATE -Wall -Wextra -Wno-unused-parameter)
 set_property(TARGET gomoku_play PROPERTY CXX_EXTENSIONS OFF)
 
-# --- gomoku_eval binary --------------------------------------------------
+# --- gomoku_elo binary ---------------------------------------------------
 # Headless model-A-vs-model-B match runner. Appends per-game JSONL results
 # for python/elo.py to consume.
-add_executable(gomoku_eval gomoku_eval_main.cpp)
-target_include_directories(gomoku_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(gomoku_eval PRIVATE
+add_executable(gomoku_elo gomoku_elo_main.cpp)
+target_include_directories(gomoku_elo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(gomoku_elo PRIVATE
     ${TORCH_LIBRARIES}
     Threads::Threads
 )
-target_compile_options(gomoku_eval PRIVATE -Wall -Wextra -Wno-unused-parameter)
-set_property(TARGET gomoku_eval PROPERTY CXX_EXTENSIONS OFF)
+target_compile_options(gomoku_elo PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET gomoku_elo PROPERTY CXX_EXTENSIONS OFF)
