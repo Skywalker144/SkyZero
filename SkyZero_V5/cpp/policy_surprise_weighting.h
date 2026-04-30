@@ -141,7 +141,16 @@ inline std::vector<float> compute_policy_surprise_weights(
     for (int i = 0; i < n; ++i) {
         const auto& s = game_data[i];
         policy_surprises[i] = compute_kl_divergence(s.policy_target, s.nn_policy);
-        value_surprises[i] = std::min(compute_kl_divergence(s.value_target, s.nn_value_probs), 1.0f);
+        // KataGomo-aligned: value surprise compares the SHORT-horizon TD bootstrap
+        // against the raw NN value (play.cpp:1528-1556 uses nf=1/(1+area*0.016),
+        // the same constant as td_value's short slot). td_value_target[6:9] holds
+        // exactly that — see selfplay_manager.h TD recurrence with c=0.016.
+        // Earlier impl compared against s.value_target (≈ pure outcome), which
+        // is a much weaker / different signal than KataGomo's short-TD.
+        const std::array<float, 3> short_td = {
+            s.td_value_target[6], s.td_value_target[7], s.td_value_target[8]
+        };
+        value_surprises[i] = std::min(compute_kl_divergence(short_td, s.nn_value_probs), 1.0f);
         target_weights[i] = s.sample_weight;
     }
 
