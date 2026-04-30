@@ -298,9 +298,9 @@ int main(int argc, char** argv) {
         cfg.fpu_pow = cfg_get<float>(cfg_map, "FPU_POW", 1.0f);
         cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.08f);
         cfg.fpu_loss_prop = cfg_get<float>(cfg_map, "FPU_LOSS_PROP", 0.0f);
-        cfg.cpuct_utility_stdev_prior = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR", 0.25f);
-        cfg.cpuct_utility_stdev_prior_weight = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 1.0f);
-        cfg.cpuct_utility_stdev_scale = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_SCALE", 0.0f);
+        cfg.cpuct_utility_stdev_prior = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR", 0.40f);
+        cfg.cpuct_utility_stdev_prior_weight = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 2.0f);
+        cfg.cpuct_utility_stdev_scale = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_SCALE", 0.85f);
         cfg.enable_stochastic_transform_inference_for_root =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", true);
         cfg.enable_stochastic_transform_inference_for_child =
@@ -388,19 +388,6 @@ int main(int argc, char** argv) {
                 pcfg.inference_server_devices.push_back(d.is_cuda() ? d.index() : -1);
             }
         }
-
-        // --- MCTSBackendConfig ---
-        MCTSBackendConfig bcfg;
-        {
-            auto it = cfg_map.find("MCTS_BACKEND");
-            const std::string s = (it != cfg_map.end()) ? it->second : "batched_leaf";
-            if (s == "shared_tree" || s == "tree" || s == "1") {
-                bcfg.kind = MCTSBackendConfig::SharedTree;
-            } else {
-                bcfg.kind = MCTSBackendConfig::BatchedLeaf;
-            }
-        }
-        bcfg.search_threads_per_tree = cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 4);
 
         // V5: num_planes=5 (mask + own + opp + fb_b + fb_w), padded to MAX_BOARD_SIZE.
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
@@ -535,10 +522,7 @@ int main(int argc, char** argv) {
                       << " WindowSize=" << window_size << "\n";
         }
 
-        std::cout << "[SelfPlay] mcts_backend="
-                  << (bcfg.kind == MCTSBackendConfig::SharedTree ? "shared_tree" : "batched_leaf")
-                  << " search_threads_per_tree=" << bcfg.search_threads_per_tree << "\n";
-        SelfplayEngine<Gomoku> engine(game_init, cfg, pcfg, bcfg, cli.model, server_devices);
+        SelfplayEngine<Gomoku> engine(game_init, cfg, pcfg, cli.model, server_devices);
         engine.start();
 
         std::mt19937 rng(std::random_device{}());
