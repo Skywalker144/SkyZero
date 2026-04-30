@@ -113,9 +113,10 @@ static AlphaZeroConfig build_mcts_cfg(
     c.fpu_reduction_max = cfg_get<float>(m, "FPU_REDUCTION_MAX", 0.16f);
     c.fpu_loss_prop = cfg_get<float>(m, "FPU_LOSS_PROP", 0.0f);
     c.lcb_k = cfg_get<float>(m, "LCB_K", 4.0f);
-    c.cpuct_utility_stdev_prior = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR", 0.25f);
-    c.cpuct_utility_stdev_prior_weight = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 1.0f);
-    c.cpuct_utility_stdev_scale = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_SCALE", 0.0f);
+    c.use_lcb = cfg_get_bool(m, "USE_LCB", true);
+    c.cpuct_utility_stdev_prior = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR", 0.40f);
+    c.cpuct_utility_stdev_prior_weight = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 2.0f);
+    c.cpuct_utility_stdev_scale = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_SCALE", 0.85f);
     c.enable_stochastic_transform_inference_for_root =
         cfg_get_bool(m, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
     c.enable_stochastic_transform_inference_for_child =
@@ -484,9 +485,14 @@ int main(int argc, char** argv) {
                         root.reset(new MCTSNode{state, to_play});
                         const int sims = a_to_move ? cfg_a.num_simulations : cfg_b.num_simulations;
                         const auto res = mcts.search(state, to_play, sims, root);
-                        // Elo: prefer LCB-selected move; fall back to Gumbel
-                        // when no child has enough visits for a variance estimate.
-                        int action = res.lcb_action >= 0 ? res.lcb_action : res.gumbel_action;
+                        // AB: each side picks per its own cfg.use_lcb. With
+                        // use_lcb, prefer LCB-selected move and fall back to
+                        // Gumbel when no child has enough visits for a
+                        // variance estimate; otherwise use Gumbel directly.
+                        const bool side_use_lcb = a_to_move ? cfg_a.use_lcb : cfg_b.use_lcb;
+                        int action = side_use_lcb
+                            ? (res.lcb_action >= 0 ? res.lcb_action : res.gumbel_action)
+                            : res.gumbel_action;
                         if (action < 0) {
                             const auto legal = game.get_is_legal_actions(state, to_play);
                             for (int i = 0; i < static_cast<int>(legal.size()); ++i) {
