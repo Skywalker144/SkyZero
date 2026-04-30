@@ -75,7 +75,7 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
         print("empty probe log", file=sys.stderr)
         return
     idx = {name: i for i, name in enumerate(header)}
-    needed = ("iter", "gumbel_dist", "lcb_dist",
+    needed = ("iter", "gumbel_dist",
               "vmix_W", "vmix_L", "nn_W", "nn_L")
     if not all(k in idx for k in needed):
         print("probe.tsv missing expected columns; skipping probe plot",
@@ -91,14 +91,12 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
 
     x = col("iter")
     gumbel_dist = col("gumbel_dist")
-    lcb_dist = col("lcb_dist")
     vmix_wl = [w - l for w, l in zip(col("vmix_W"), col("vmix_L"))]
     nn_wl = [w - l for w, l in zip(col("nn_W"), col("nn_L"))]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
 
     ax1.plot(x, gumbel_dist, color="C0", label="gumbel")
-    ax1.plot(x, lcb_dist, color="C1", label="lcb")
     ax1.set_ylabel("euclid dist from center")
     ax1.set_yticks(range(0, 11))
     ax1.grid(True, alpha=0.3)
