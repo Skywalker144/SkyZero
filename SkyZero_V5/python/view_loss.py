@@ -98,14 +98,18 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
 
     ax1.plot(x, gumbel_dist, color="C0", label="gumbel")
     ax1.set_ylabel("euclid dist from center")
-    ax1.set_yticks(range(0, 11))
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc="best")
 
     ax2.plot(x, vmix_wl, color="C2", label="v_mix W-L")
     ax2.plot(x, nn_wl, color="C3", label="nn_value W-L")
     ax2.axhline(0.0, ls="--", color="gray", alpha=0.4)
-    ax2.set_ylim(-1.0, 1.0)
+    finite = [v for v in vmix_wl + nn_wl if not math.isnan(v)]
+    if finite:
+        lo = min(finite)
+        hi = max(finite)
+        pad = (hi - lo) * 0.1 if hi > lo else 0.05
+        ax2.set_ylim(lo - pad, hi + pad)
     ax2.set_ylabel("root value (W-L)")
     ax2.set_xlabel("iter")
     ax2.grid(True, alpha=0.3)
