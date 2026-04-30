@@ -114,28 +114,6 @@ public:
                 }
             }
         }
-        // LCB pick (elo/play). Read each child's stats under its stripe
-        // mutex for a coherent (n, v, q_sum_sq) snapshot. selfplay path
-        // never uses lcb_action; ignore extra cost on the SharedTree side.
-        {
-            float best_lcb = -std::numeric_limits<float>::infinity();
-            for (const auto& c : root->children) {
-                if (!c) continue;
-                MCTSNode snap;
-                {
-                    std::lock_guard<std::mutex> lk(node_mutex(c.get()));
-                    snap.n = c->n;
-                    snap.v = c->v;
-                    snap.q_sum_sq = c->q_sum_sq;
-                }
-                const float l = compute_lcb(snap, cfg_.lcb_k);
-                if (l > best_lcb) {
-                    best_lcb = l;
-                    out.lcb_action = c->action_taken;
-                }
-            }
-            if (out.lcb_action < 0) out.lcb_action = out.gumbel_action;
-        }
         return out;
     }
 
