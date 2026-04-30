@@ -29,7 +29,6 @@
 
 #include "alphazero.h"
 #include "alphazero_parallel.h"
-#include "alphazero_tree_parallel.h"
 #include "game_initializer.h"
 #include "policy_init.h"
 #include "policy_surprise_weighting.h"
@@ -37,18 +36,6 @@
 #include "utils.h"
 
 namespace skyzero {
-
-// MCTS backend selector (run.cfg MCTS_BACKEND key).
-//   BatchedLeaf: existing ParallelMCTS — batched leaf parallelism within
-//                one search, single-threaded selection, VL for path diversity.
-//   SharedTree : new TreeParallelMCTS — KataGo-style, multiple search
-//                threads descend the same tree concurrently, VL for
-//                concurrent path diversity.
-struct MCTSBackendConfig {
-    enum Kind { BatchedLeaf = 0, SharedTree = 1 };
-    Kind kind = BatchedLeaf;
-    int search_threads_per_tree = 4;
-};
 
 template <typename Game>
 class SelfplayEngine {
@@ -69,11 +56,10 @@ public:
         GameInitializer& game_init,
         const AlphaZeroConfig& cfg,
         const SelfplayParallelConfig& pcfg,
-        const MCTSBackendConfig& bcfg,
         const std::string& model_path,
         std::vector<torch::Device> devices
     )
-        : game_init_(game_init), cfg_(cfg), pcfg_(pcfg), bcfg_(bcfg), devices_(std::move(devices)) {
+        : game_init_(game_init), cfg_(cfg), pcfg_(pcfg), devices_(std::move(devices)) {
         const int num_servers = std::max(1, pcfg_.num_inference_servers);
         if (static_cast<int>(devices_.size()) != num_servers) {
             throw std::runtime_error(
@@ -446,40 +432,9 @@ private:
             }
             return request_batch_inference(batch, globals_batch);
         };
-        // Dispatch to the configured MCTS backend. Both classes expose the
-        // same public search() signature; we use a small lambda to forward.
-        std::unique_ptr<ParallelMCTS<Game>> mcts_batched;
-        std::unique_ptr<TreeParallelMCTS<Game>> mcts_tree;
-        std::function<MCTSSearchOutput(const std::vector<int8_t>&, int, int, std::unique_ptr<MCTSNode>&)> search_fn;
-        // Tree reuse is BatchedLeaf-only (SharedTree needs vloss zeroing on
-        // retained subtree + mutex-safe atomic root swap, deferred). Warn
-        // exactly once per process if the user combined the two.
-        const bool reuse_enabled = cfg_.enable_tree_reuse
-            && bcfg_.kind != MCTSBackendConfig::SharedTree;
-        if (bcfg_.kind == MCTSBackendConfig::SharedTree) {
-            if (cfg_.enable_tree_reuse) {
-                static std::atomic<bool> warned{false};
-                if (!warned.exchange(true)) {
-                    std::cerr << "[selfplay] note: ENABLE_TREE_REUSE=1 with "
-                                 "MCTS_BACKEND=shared_tree; tree reuse is "
-                                 "BatchedLeaf-only — falling back to fresh-tree "
-                                 "per ply for this run.\n";
-                }
-            }
-            mcts_tree.reset(new TreeParallelMCTS<Game>(
-                game_, cfg_, bcfg_.search_threads_per_tree, infer_fn, batch_infer_fn, worker_rng()));
-            search_fn = [&](const std::vector<int8_t>& s, int tp, int nsim,
-                            std::unique_ptr<MCTSNode>& rp) {
-                return mcts_tree->search(s, tp, nsim, rp);
-            };
-        } else {
-            mcts_batched.reset(new ParallelMCTS<Game>(
-                game_, cfg_, pcfg_.leaf_batch_size, infer_fn, batch_infer_fn, worker_rng()));
-            search_fn = [&](const std::vector<int8_t>& s, int tp, int nsim,
-                            std::unique_ptr<MCTSNode>& rp) {
-                return mcts_batched->search(s, tp, nsim, rp);
-            };
-        }
+        ParallelMCTS<Game> mcts(
+            game_, cfg_, pcfg_.leaf_batch_size, infer_fn, batch_infer_fn, worker_rng());
+        const bool reuse_enabled = cfg_.enable_tree_reuse;
 
         std::vector<MemoryStep> memory;
         auto init = game_.get_initial_state(worker_rng);
@@ -535,7 +490,7 @@ private:
                 num_simulations = std::max(cfg_.num_simulations / 4, cfg_.min_simulations_in_soft_resign);
             }
 
-            const auto sr = search_fn(state, to_play, num_simulations, root);
+            const auto sr = mcts.search(state, to_play, num_simulations, root);
             const float v_mix_scalar = sr.v_mix[0] - sr.v_mix[2];
             historical_v_mix.push_back(v_mix_scalar);
 
@@ -669,28 +624,31 @@ private:
             result.samples.push_back(std::move(ps));
         }
 
-        // KataGo-style value bootstrap (tail → head with mixing factor)
+        // KataGomo-aligned main value target: pure game outcome propagated
+        // backward with per-step perspective flip. Equivalent to KataGomo's
+        // fillValueTDTargets(..., nowFactor=0.0, rowGlobal[0:3]) — the geometric
+        // mixture collapses to all-weight-on-outcome.
         if (!result.samples.empty()) {
-            const float now_factor = 1.0f / (1.0f + static_cast<float>(game_.board_size)
-                * game_.board_size * cfg_.value_target_mix_now_factor_constant);
-            result.samples.back().value_target = result.samples.back().outcome;
-            for (int i = static_cast<int>(result.samples.size()) - 2; i >= 0; --i) {
-                const auto next_target = flip_wdl(result.samples[i + 1].value_target);
-                result.samples[i].value_target = {
-                    (1.0f - now_factor) * next_target[0] + now_factor * result.samples[i].v_mix[0],
-                    (1.0f - now_factor) * next_target[1] + now_factor * result.samples[i].v_mix[1],
-                    (1.0f - now_factor) * next_target[2] + now_factor * result.samples[i].v_mix[2],
-                };
+            const int N = static_cast<int>(result.samples.size());
+            auto cur = result.samples[N - 1].outcome;
+            result.samples[N - 1].value_target = cur;
+            for (int i = N - 2; i >= 0; --i) {
+                cur = flip_wdl(cur);
+                result.samples[i].value_target = cur;
             }
         }
 
-        // KataGomo-style TD(λ) value targets and futurepos targets.
-        // TD: 3 horizons (long/mid/short) × WLD via O(N) backward sweep with
+        // KataGomo-aligned TD(λ) value targets and futurepos targets.
+        // TD: 3 horizons (long/mid/short) × WLD. Reverse-recursion equivalent
+        //     to KataGomo's fillValueTDTargets:
+        //       T(anchor) = outcome  (virtual extra slot beyond N-1)
+        //       T(i)      = nf*v_mix[i] + (1-nf)*flip(T(i+1))   for i ∈ [0, N-1]
         //     nowFactor = 1/(1 + boardArea * c) for c ∈ {0.176, 0.056, 0.016}.
-        //     Recurrence: TD[N-1] = outcome; TD[i] = nowFactor*v_mix[i] +
-        //                 (1-nowFactor)*flip_wdl(TD[i+1]).
         //     Layout: long[0:3], mid[3:6], short[6:9]; each = (W,D,L) from
         //     samples[i].to_play perspective.
+        //     NOTE: the LAST sample (i=N-1) also mixes its v_mix with outcome,
+        //     matching KataGomo. Earlier impl hard-anchored T(N-1)=outcome
+        //     (skipping v_mix[N-1]) which shifted targets by 1 step vs KataGomo.
         // Futurepos: cells at +8 / +32 steps clamped to game end, encoded from
         //     samples[i].to_play perspective (+1 own, -1 opp, 0 empty),
         //     padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE (off-board = 0).
@@ -706,23 +664,23 @@ private:
             for (int h = 0; h < 3; ++h) {
                 const double nf = now_factors[h];
                 const double rd = 1.0 - nf;
-                const auto& last = result.samples[N - 1].outcome;
-                double cur_w = last[0], cur_d = last[1], cur_l = last[2];
-                result.samples[N - 1].td_value_target[3 * h + 0] = static_cast<float>(cur_w);
-                result.samples[N - 1].td_value_target[3 * h + 1] = static_cast<float>(cur_d);
-                result.samples[N - 1].td_value_target[3 * h + 2] = static_cast<float>(cur_l);
-                for (int i = N - 2; i >= 0; --i) {
-                    // Perspective flips across one move: TD[i+1]'s W is TD[i]'s L.
-                    const double prev_w = cur_l;
-                    const double prev_l = cur_w;
-                    const double prev_d = cur_d;
+                // anchor: T(virtual N) = outcome, in samples[N-1].to_play view.
+                const auto& last_outcome = result.samples[N - 1].outcome;
+                double nx_w = last_outcome[0];
+                double nx_d = last_outcome[1];
+                double nx_l = last_outcome[2];
+                for (int i = N - 1; i >= 0; --i) {
                     const auto& v = result.samples[i].v_mix;
-                    cur_w = nf * v[0] + rd * prev_w;
-                    cur_d = nf * v[1] + rd * prev_d;
-                    cur_l = nf * v[2] + rd * prev_l;
+                    const double cur_w = nf * v[0] + rd * nx_w;
+                    const double cur_d = nf * v[1] + rd * nx_d;
+                    const double cur_l = nf * v[2] + rd * nx_l;
                     result.samples[i].td_value_target[3 * h + 0] = static_cast<float>(cur_w);
                     result.samples[i].td_value_target[3 * h + 1] = static_cast<float>(cur_d);
                     result.samples[i].td_value_target[3 * h + 2] = static_cast<float>(cur_l);
+                    // Prepare for i-1: perspective flips by one move, so swap W/L.
+                    nx_w = cur_l;
+                    nx_d = cur_d;
+                    nx_l = cur_w;
                 }
             }
 
@@ -735,8 +693,19 @@ private:
                 fp.assign(2 * A, 0);
                 const int8_t pla = result.samples[idx].to_play;
                 for (int chan = 0; chan < 2; ++chan) {
-                    const int j = std::min(N - 1, idx + OFFSETS[chan]);
-                    const auto& s = result.samples[j].state;
+                    // KataGomo trainingwrite.cpp:937-955 builds posHistForFutureBoards
+                    // of size N+1: index k = board after k moves played, index N =
+                    // terminal board (after the final move). Mirror that layout with
+                    // memory[0..N-1] for k<N and the post-loop `state` variable for
+                    // k=N — the while loop above leaves `state` at the terminal
+                    // position (cf. result.final_state = state). Without the k=N
+                    // slot, samples within OFFSET of the end miss the final stone.
+                    // Use raw board (stride B, values {-1,0,+1}). result.samples[j].state
+                    // is encode_state_v5 output (5*M*M, values {0,1}) — wrong stride and
+                    // wrong value domain; would produce a constant target independent
+                    // of the actual future board.
+                    const int j = std::min(N, idx + OFFSETS[chan]);
+                    const auto& s = (j < N) ? memory[j].state : state;
                     int8_t* out = fp.data() + chan * A;
                     for (int r = 0; r < B; ++r) {
                         for (int c = 0; c < B; ++c) {
@@ -755,7 +724,6 @@ private:
     GameInitializer& game_init_;
     const AlphaZeroConfig& cfg_;
     SelfplayParallelConfig pcfg_;
-    MCTSBackendConfig bcfg_;
     std::vector<torch::Device> devices_;
 
     std::vector<torch::jit::script::Module> inference_models_;
