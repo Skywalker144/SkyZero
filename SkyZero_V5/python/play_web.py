@@ -48,6 +48,8 @@ class EngineSession:
         self.mcts_visits = None
         self.nn_policy = None
         self.nn_opp_policy = None
+        self.nn_futurepos_8 = None   # 15x15, signed in [-1,+1]; +own / -opp future stone
+        self.nn_futurepos_32 = None  # 15x15, signed in [-1,+1]; +32 step horizon
         self.gumbel_phases = None  # list of list of [r,c], index 0 = initial 16, last = final 1
 
         self._pending_rows = None
@@ -116,6 +118,14 @@ class EngineSession:
             return
         if "NN Opp Strategy" in line:
             self._pending_grid_key = "nn_opp_policy"
+            self._pending_grid_rows = []
+            return
+        if "NN Futurepos +8" in line:
+            self._pending_grid_key = "nn_futurepos_8"
+            self._pending_grid_rows = []
+            return
+        if "NN Futurepos +32" in line:
+            self._pending_grid_key = "nn_futurepos_32"
             self._pending_grid_rows = []
             return
         if "NN Strategy" in line:
@@ -250,6 +260,8 @@ class EngineSession:
                 "mcts_visits": self.mcts_visits,
                 "nn_policy": self.nn_policy,
                 "nn_opp_policy": self.nn_opp_policy,
+                "nn_futurepos_8": self.nn_futurepos_8,
+                "nn_futurepos_32": self.nn_futurepos_32,
                 "gumbel_phases": self.gumbel_phases,
             }
 
@@ -705,7 +717,7 @@ HTML_PAGE = r"""<!doctype html>
   #right_col { min-width: 0; }
   .grids {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(3, minmax(0, 1fr));
     gap: 12px;
     height: 100%;
   }
@@ -889,6 +901,14 @@ HTML_PAGE = r"""<!doctype html>
           <div class="grid-title">NN Opp Policy</div>
           <canvas class="heat" id="h_nn_opp_policy"></canvas>
         </div>
+        <div class="card grid-card">
+          <div class="grid-title">NN Futurepos +8</div>
+          <canvas class="heat" id="h_nn_futurepos_8"></canvas>
+        </div>
+        <div class="card grid-card">
+          <div class="grid-title">NN Futurepos +32</div>
+          <canvas class="heat" id="h_nn_futurepos_32"></canvas>
+        </div>
       </div>
     </aside>
   </div>
@@ -994,13 +1014,22 @@ const heatCtxs = {
   h_mcts_visits: setupCanvas(document.getElementById('h_mcts_visits'), HEAT_LOGICAL, HEAT_LOGICAL, false),
   h_nn_policy:   setupCanvas(document.getElementById('h_nn_policy'),   HEAT_LOGICAL, HEAT_LOGICAL, false),
   h_nn_opp_policy: setupCanvas(document.getElementById('h_nn_opp_policy'), HEAT_LOGICAL, HEAT_LOGICAL, false),
+  h_nn_futurepos_8:  setupCanvas(document.getElementById('h_nn_futurepos_8'),  HEAT_LOGICAL, HEAT_LOGICAL, false),
+  h_nn_futurepos_32: setupCanvas(document.getElementById('h_nn_futurepos_32'), HEAT_LOGICAL, HEAT_LOGICAL, false),
 };
 const HEAT_GRID_KEYS = {
   h_mcts_policy: 'mcts_policy',
   h_mcts_visits: 'mcts_visits',
   h_nn_policy: 'nn_policy',
   h_nn_opp_policy: 'nn_opp_policy',
+  h_nn_futurepos_8: 'nn_futurepos_8',
+  h_nn_futurepos_32: 'nn_futurepos_32',
 };
+const SIGNED_HEAT_IDS = new Set(['h_nn_futurepos_8', 'h_nn_futurepos_32']);
+function drawHeatById(id, grid) {
+  if (SIGNED_HEAT_IDS.has(id)) drawHeatSigned(id, grid);
+  else drawHeat(id, grid);
+}
 function fitHeatCanvas(canvasId) {
   const c = document.getElementById(canvasId);
   const card = c.parentElement;
@@ -1027,7 +1056,7 @@ for (const id of Object.keys(heatCtxs)) {
   new ResizeObserver(() => {
     if (!fitHeatCanvas(id)) return;
     const grid = state ? state[HEAT_GRID_KEYS[id]] : null;
-    drawHeat(id, grid);
+    drawHeatById(id, grid);
   }).observe(c.parentElement);
   fitHeatCanvas(id);
 }
@@ -1088,11 +1117,15 @@ function applyTheme(mode) {
     drawHeat('h_mcts_visits', state.mcts_visits);
     drawHeat('h_nn_policy',   state.nn_policy);
     drawHeat('h_nn_opp_policy', state.nn_opp_policy);
+    drawHeatSigned('h_nn_futurepos_8',  state.nn_futurepos_8);
+    drawHeatSigned('h_nn_futurepos_32', state.nn_futurepos_32);
   } else {
     drawHeat('h_mcts_policy', null);
     drawHeat('h_mcts_visits', null);
     drawHeat('h_nn_policy',   null);
     drawHeat('h_nn_opp_policy', null);
+    drawHeatSigned('h_nn_futurepos_8',  null);
+    drawHeatSigned('h_nn_futurepos_32', null);
   }
 }
 setThemeTooltip(document.documentElement.dataset.themeMode || 'auto');
@@ -1138,6 +1171,61 @@ function drawHeat(canvasId, grid) {
       g.font = `${Math.floor(cell*0.38)}px ${MONO_FONT}`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText((v*100).toFixed(0), x + cell/2, y + cell/2);
+    }
+  }
+  if (state && state.board) {
+    const r0 = cell * 0.32;
+    for (let r=0;r<N;r++) for (let k=0;k<N;k++) {
+      const sv = state.board[r][k]; if (!sv) continue;
+      const cx = k*cell + cell/2, cy = r*cell + cell/2;
+      g.beginPath(); g.arc(cx, cy, r0, 0, Math.PI*2);
+      if (sv === 1) {
+        g.fillStyle = 'rgba(0,0,0,0.7)';
+        g.fill();
+        g.lineWidth = 1;
+        g.strokeStyle = 'rgba(255,255,255,0.6)';
+        g.stroke();
+      } else {
+        g.fillStyle = 'rgba(255,255,255,0.85)';
+        g.fill();
+        g.lineWidth = 1;
+        g.strokeStyle = 'rgba(0,0,0,0.5)';
+        g.stroke();
+      }
+    }
+  }
+}
+
+/* ---------- Signed heat map (futurepos: +own / -opp ∈ [-1,+1]) ---------- */
+function drawHeatSigned(canvasId, grid) {
+  const g = heatCtxs[canvasId];
+  clearLogical(g);
+  const W = g._logicalW;
+  const cell = W / N;
+  const gridCol = cssVar('--heat-grid') || '#e5e7eb';
+  const heatText = cssVar('--heat-text') || '#111';
+  for (let r=0;r<N;r++) for (let k=0;k<N;k++) {
+    const x = k*cell, y = r*cell;
+    const v = grid ? grid[r][k] : 0;
+    const a = Math.min(1, Math.abs(v));
+    if (v > 0) {
+      // Own future stone — accent blue.
+      g.fillStyle = `rgba(9,105,218,${a.toFixed(3)})`;
+    } else if (v < 0) {
+      // Opponent future stone — danger red.
+      g.fillStyle = `rgba(207,34,46,${a.toFixed(3)})`;
+    } else {
+      g.fillStyle = 'rgba(0,0,0,0)';
+    }
+    g.fillRect(x, y, cell, cell);
+    g.strokeStyle = gridCol;
+    g.strokeRect(x + 0.5, y + 0.5, cell, cell);
+    if (Math.abs(v) >= 0.05) {
+      g.fillStyle = a > 0.5 ? '#fff' : heatText;
+      g.font = `${Math.floor(cell*0.32)}px ${MONO_FONT}`;
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      const label = (v >= 0 ? '+' : '') + (v*100).toFixed(0);
+      g.fillText(label, x + cell/2, y + cell/2);
     }
   }
   if (state && state.board) {
@@ -1437,6 +1525,8 @@ async function refresh() {
     drawHeat('h_mcts_visits', state.mcts_visits);
     drawHeat('h_nn_policy',   state.nn_policy);
     drawHeat('h_nn_opp_policy', state.nn_opp_policy);
+    drawHeatSigned('h_nn_futurepos_8',  state.nn_futurepos_8);
+    drawHeatSigned('h_nn_futurepos_32', state.nn_futurepos_32);
   } catch(e) { /* ignore */ }
 }
 
@@ -1582,6 +1672,8 @@ drawHeat('h_mcts_policy', null);
 drawHeat('h_mcts_visits', null);
 drawHeat('h_nn_policy', null);
 drawHeat('h_nn_opp_policy', null);
+drawHeatSigned('h_nn_futurepos_8', null);
+drawHeatSigned('h_nn_futurepos_32', null);
 syncBoardSize();
 setInterval(refresh, 250);
 loadModels();
@@ -1634,7 +1726,8 @@ class Handler(BaseHTTPRequestHandler):
                                       "root_value": None, "nn_value": None,
                                       "game_over": False, "human_side": 1,
                                       "mcts_policy": None, "mcts_visits": None, "nn_policy": None,
-                                      "nn_opp_policy": None, "gumbel_phases": None})
+                                      "nn_opp_policy": None, "nn_futurepos_8": None,
+                                      "nn_futurepos_32": None, "gumbel_phases": None})
                 return
             self._send_json(200, sess.snapshot())
             return
