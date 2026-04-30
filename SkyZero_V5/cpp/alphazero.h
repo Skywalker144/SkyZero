@@ -111,15 +111,6 @@ struct AlphaZeroConfig {
     // per-action noise reset is needed.
     bool enable_tree_reuse = true;
 
-    // LCB final-move selection (KataGo-style, elo/play only).
-    // selfplay keeps gumbel_action for the unbiased policy improvement
-    // guarantee; elo/play binaries pick lcb_action from
-    // MCTSSearchOutput. k=4.0 follows KataGo's reported value.
-    // use_lcb=false makes the eval binaries fall back to gumbel_action,
-    // useful for AB-testing LCB vs pure-Gumbel final selection.
-    float lcb_k = 4.0f;
-    bool use_lcb = true;
-
     torch::Device device = torch::kCPU;
 };
 
@@ -156,7 +147,7 @@ struct MCTSNode {
 
     std::array<float, 3> v{0.0f, 0.0f, 0.0f};
     int n = 0;
-    float q_sum_sq = 0.0f;   // Σ u_i² where u_i = value[2]-value[0] per backup; for LCB variance.
+    float q_sum_sq = 0.0f;   // Σ u_i² where u_i = value[2]-value[0] per backup; feeds variance-scaled cpuct in compute_select_params.
     int vloss = 0;
 
     bool is_expanded() const { return !children.empty(); }
@@ -179,8 +170,7 @@ struct MCTSSearchOutput {
     std::array<float, 3> v_mix{0.0f, 0.0f, 0.0f};          // WDL v_mix (search root value)
     std::vector<float> nn_policy;                           // raw NN policy
     std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};  // raw NN value
-    int gumbel_action = -1;                                 // selected action by Gumbel (selfplay)
-    int lcb_action = -1;                                    // selected action by LCB (elo/play); fallback to gumbel_action when no child has n>=2
+    int gumbel_action = -1;                                 // selected action by Gumbel (selfplay/eval/play)
     std::vector<float> visit_counts;                        // raw root-child visit counts N(s,a)
     std::vector<std::vector<int>> gumbel_phases;            // surviving actions at each halving phase (16,8,4,2,1)
 };
@@ -194,21 +184,6 @@ inline std::array<float, 3> flip_wdl(const std::array<float, 3>& in) {
 
 inline float wdl_utility(const std::array<float, 3>& v) {
     return v[0] - v[2];
-}
-
-// LCB of `child`'s utility from the parent's perspective:
-//   mean = (child.v[2] - child.v[0]) / n      (parent's W-L over child)
-//   var  = q_sum_sq/n - mean²
-//   LCB  = mean - k * sqrt(var / n)
-// child.n < 2 → -inf (variance undefined; never beats a 2-visit child).
-inline float compute_lcb(const MCTSNode& child, float k) {
-    if (child.n < 2) return -std::numeric_limits<float>::infinity();
-    const float n_f = static_cast<float>(child.n);
-    const float mean = (child.v[2] - child.v[0]) / n_f;
-    const float ex2 = child.q_sum_sq / n_f;
-    const float var = std::max(0.0f, ex2 - mean * mean);
-    const float sd_of_mean = std::sqrt(var / n_f);
-    return mean - k * sd_of_mean;
 }
 
 // ---------------------------------------------------------------------------
