@@ -58,10 +58,10 @@ struct AlphaZeroConfig {
     // Bayesian-shrunk per-visit utility stdev at the parent. High-variance
     // subtrees get more exploration. Applied at non-root only (Gumbel root
     // uses sequential halving, not PUCT). scale=0 disables.
-    // KataGo basic default: 0.25 / 1.0 / 0.0; test config: 0.40 / 2.0 / 0.85.
-    float cpuct_utility_stdev_prior = 0.25f;
-    float cpuct_utility_stdev_prior_weight = 1.0f;
-    float cpuct_utility_stdev_scale = 0.0f;
+    // KataGo SearchParams() ctor: 0.25 / 1.0 / 0.0; forBot()/forTestsV2(): 0.40 / 2.0 / 0.85 (used here).
+    float cpuct_utility_stdev_prior = 0.40f;
+    float cpuct_utility_stdev_prior_weight = 2.0f;
+    float cpuct_utility_stdev_scale = 0.85f;
 
     // Stochastic transform / symmetry at inference time
     bool enable_stochastic_transform_inference_for_root = true;
@@ -108,24 +108,23 @@ struct AlphaZeroConfig {
     // Sprint 2 #3: keep the subtree under the played action as the new
     // root instead of rebuilding from scratch each ply. Gumbel state is
     // search-local (recomputed in gumbel_sequential_halving), so no
-    // per-action noise reset is needed. BatchedLeaf only; SharedTree's
-    // vloss + mutex coordination is deferred (selfplay_manager forces
-    // this off when MCTS_BACKEND=shared_tree).
+    // per-action noise reset is needed.
     bool enable_tree_reuse = true;
 
     // LCB final-move selection (KataGo-style, elo/play only).
     // selfplay keeps gumbel_action for the unbiased policy improvement
     // guarantee; elo/play binaries pick lcb_action from
     // MCTSSearchOutput. k=4.0 follows KataGo's reported value.
+    // use_lcb=false makes the eval binaries fall back to gumbel_action,
+    // useful for AB-testing LCB vs pure-Gumbel final selection.
     float lcb_k = 4.0f;
+    bool use_lcb = true;
 
     torch::Device device = torch::kCPU;
 };
 
 // ---------------------------------------------------------------------------
-// Selfplay parallelism config — shared by ParallelMCTS (BatchedLeaf backend)
-// and TreeParallelMCTS (SharedTree backend). Lives here so TreeParallelMCTS
-// does not need to pull in alphazero_parallel.h just for this struct.
+// Selfplay parallelism config consumed by ParallelMCTS / SelfplayEngine.
 // ---------------------------------------------------------------------------
 struct SelfplayParallelConfig {
     int num_workers = 32;
