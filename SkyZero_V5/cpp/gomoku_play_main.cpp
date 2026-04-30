@@ -128,6 +128,27 @@ static void print_policy_grid(const std::vector<float>& p, int board_size, const
     }
 }
 
+// Signed variant for futurepos (values in [-1, +1] after tanh; sign encodes
+// own (+) vs opponent (-) future stone). Width matches print_policy_grid so
+// the Python-side whitespace-tokenized parser handles both.
+static void print_signed_grid(const std::vector<float>& p, int board_size, const std::string& title,
+                              float thresh = 0.05f) {
+    std::cout << title << "\n";
+    for (int r = 0; r < board_size; ++r) {
+        for (int c = 0; c < board_size; ++c) {
+            const int idx = r * board_size + c;
+            const float v = (idx >= 0 && idx < static_cast<int>(p.size())) ? p[idx] : 0.0f;
+            if (std::fabs(v) < thresh) {
+                std::cout << "     . ";  // 7 chars total, matches "%+6.2f "
+            } else {
+                std::cout << std::setw(6) << std::showpos << std::fixed << std::setprecision(2)
+                          << v << std::noshowpos << ' ';
+            }
+        }
+        std::cout << '\n';
+    }
+}
+
 static bool parse_row_col(const std::string& text, int& row, int& col) {
     std::istringstream iss(text);
     if (!(iss >> row >> col)) return false;
@@ -324,8 +345,13 @@ int main(int argc, char** argv) {
         // Single forward to extract the opponent-policy head (elements()[1]).
         // Run independently from MCTS so the search engine's infer_fn signature
         // stays unchanged. Applies legal-move masking + softmax, mirroring the
-        // policy-head pipeline in inference().
-        auto forward_opp_policy = [&](const std::vector<int8_t>& state, int to_play) {
+        // policy-head pipeline in inference(). Optionally also fills the two
+        // futurepos planes (+8 / +32 step occupancy, tanh-mapped to [-1, +1]
+        // from to_play perspective; nets.py:178, train.py:141) when out
+        // pointers are non-null — saves a second forward pass.
+        auto forward_opp_policy = [&](const std::vector<int8_t>& state, int to_play,
+                                       std::vector<float>* fp8_out = nullptr,
+                                       std::vector<float>* fp32_out = nullptr) {
             auto encoded = game.encode_state_v5(state, to_play);   // V5
             std::vector<float> input_buf(static_cast<size_t>(c) * area, 0.0f);
             for (int j = 0; j < c * area; ++j) {
@@ -375,6 +401,18 @@ int main(int argc, char** argv) {
                     sum += probs[i];
                 }
                 if (sum > 0.0f) for (auto& v : probs) v /= sum;
+            }
+
+            // Futurepos: pre-tanh logits at "value_futurepos", shape (1, 2, H, W).
+            // Loss applies tanh; mirror that here so the displayed values are
+            // in the same [-1, +1] domain as the int8 targets.
+            if (fp8_out != nullptr || fp32_out != nullptr) {
+                auto fp_t = out_dict.at("value_futurepos").toTensor()
+                              .to(torch::kFloat32).to(torch::kCPU).contiguous();
+                auto fp_tanh = torch::tanh(fp_t).contiguous();
+                const float* fpp = fp_tanh.data_ptr<float>();
+                if (fp8_out)  fp8_out->assign(fpp,             fpp + area);
+                if (fp32_out) fp32_out->assign(fpp + area,     fpp + 2 * area);
             }
             return probs;
         };
@@ -593,8 +631,11 @@ int main(int argc, char** argv) {
                 print_policy_grid(visit_dist, game.board_size, "MCTS Visits (N(s,a)/sum):");
                 print_policy_grid(out.nn_policy, game.board_size, "NN Strategy:");
                 {
-                    auto opp_policy = forward_opp_policy(state, to_play);
+                    std::vector<float> fp8, fp32;
+                    auto opp_policy = forward_opp_policy(state, to_play, &fp8, &fp32);
                     print_policy_grid(opp_policy, game.board_size, "NN Opp Strategy:");
+                    print_signed_grid(fp8,  game.board_size, "NN Futurepos +8:");
+                    print_signed_grid(fp32, game.board_size, "NN Futurepos +32:");
                 }
 
                 const float root_value = out.v_mix[0] - out.v_mix[2];
