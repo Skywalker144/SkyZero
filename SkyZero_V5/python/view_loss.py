@@ -99,8 +99,8 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
 
     ax1.plot(x, gumbel_dist, color="C0", label="gumbel")
     ax1.plot(x, lcb_dist, color="C1", label="lcb")
-    ax1.set_ylabel("dist from center")
-    ax1.set_yticks(range(0, 8))
+    ax1.set_ylabel("euclid dist from center")
+    ax1.set_yticks(range(0, 11))
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc="best")
 
