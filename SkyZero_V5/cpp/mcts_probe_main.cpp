@@ -268,7 +268,6 @@ int main(int argc, char** argv) {
                 return std::sqrt(static_cast<float>(dr * dr + dc * dc));
             };
             const float gumbel_dist = euclid_dist(sr.gumbel_action);
-            const float lcb_dist = euclid_dist(sr.lcb_action);
 
             const bool need_header = !std::filesystem::exists(cli.log_path);
             std::ofstream out(cli.log_path, std::ios::app);
@@ -276,15 +275,13 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("cannot open log: " + cli.log_path);
             }
             if (need_header) {
-                out << "iter\tgumbel_action\tlcb_action\tgumbel_dist\tlcb_dist"
+                out << "iter\tgumbel_action\tgumbel_dist"
                     << "\tvmix_W\tvmix_D\tvmix_L\tnn_W\tnn_D\tnn_L\n";
             }
             out << std::fixed << std::setprecision(4);
             out << cli.iter
                 << "\t" << sr.gumbel_action
-                << "\t" << sr.lcb_action
                 << "\t" << gumbel_dist
-                << "\t" << lcb_dist
                 << "\t" << sr.v_mix[0]
                 << "\t" << sr.v_mix[1]
                 << "\t" << sr.v_mix[2]
