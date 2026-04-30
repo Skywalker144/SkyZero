@@ -3,6 +3,7 @@
 // diagnostic in the training loop.
 
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -258,16 +259,16 @@ int main(int argc, char** argv) {
         if (!cli.log_path.empty()) {
             const int board_size = cfg.board_size;
             const int c0 = board_size / 2;
-            auto cheb_dist = [&](int action) -> int {
-                if (action < 0) return -1;
+            auto euclid_dist = [&](int action) -> float {
+                if (action < 0) return -1.0f;
                 const int row = action / board_size;
                 const int col = action % board_size;
-                const int dr = std::abs(row - c0);
-                const int dc = std::abs(col - c0);
-                return dr > dc ? dr : dc;
+                const int dr = row - c0;
+                const int dc = col - c0;
+                return std::sqrt(static_cast<float>(dr * dr + dc * dc));
             };
-            const int gumbel_dist = cheb_dist(sr.gumbel_action);
-            const int lcb_dist = cheb_dist(sr.lcb_action);
+            const float gumbel_dist = euclid_dist(sr.gumbel_action);
+            const float lcb_dist = euclid_dist(sr.lcb_action);
 
             const bool need_header = !std::filesystem::exists(cli.log_path);
             std::ofstream out(cli.log_path, std::ios::app);
