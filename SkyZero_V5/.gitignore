@@ -137,3 +137,4 @@ scripts/DISTRIBUTED_SELFPLAY.md
 *.pdf
 IMPROVEMENTS.md
 docs/
+/data*/
