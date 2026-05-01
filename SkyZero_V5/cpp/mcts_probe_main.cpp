@@ -114,8 +114,17 @@ int main(int argc, char** argv) {
         const auto cli = parse_cli(argc, argv);
         const auto cfg_map = parse_cfg(cli.config);
 
+        // MAIN_BOARD_SIZE / MAIN_RULE in run.cfg are required; the probe runs
+        // a single empty-board MCTS at that headline (size, rule).
+        auto require_str = [&](const std::string& k) -> std::string {
+            auto it = cfg_map.find(k);
+            if (it == cfg_map.end() || it->second.empty()) {
+                throw std::runtime_error("missing required key in run.cfg: " + k);
+            }
+            return it->second;
+        };
         AlphaZeroConfig cfg;
-        cfg.board_size = cfg_get<int>(cfg_map, "BOARD_SIZE", 15);
+        cfg.board_size = std::stoi(require_str("MAIN_BOARD_SIZE"));
         cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 64);
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
@@ -143,10 +152,7 @@ int main(int argc, char** argv) {
 
         // V5: 5-plane padded encoding + 12-dim global features
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
-        const std::string rule_str = ([&]() -> std::string {
-            auto it = cfg_map.find("RULE");
-            return (it != cfg_map.end()) ? it->second : "renju";
-        })();
+        const std::string rule_str = require_str("MAIN_RULE");
         const RuleType rule = rule_from_string(rule_str);
         Gomoku game(cfg.board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
         if (cfg.half_life < 0) cfg.half_life = game.board_size;
