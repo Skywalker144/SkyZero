@@ -214,13 +214,13 @@ def parse_args() -> TrainArgs:
         device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         num_workers=a.num_workers,
         amp=int(os.environ.get("ENABLE_AMP", "1")) != 0,
-        enable_swa=int(os.environ.get("ENABLE_SWA", "0")) != 0,
+        enable_swa=int(os.environ.get("ENABLE_SWA", "1")) != 0,
         swa_scale=float(os.environ.get("SWA_SCALE", "8")),
         swa_period_steps=int(os.environ.get("SWA_PERIOD_STEPS", "200")),
-        lookahead_k=int(os.environ.get("LOOKAHEAD_K", "0")),
+        lookahead_k=int(os.environ.get("LOOKAHEAD_K", "6")),
         lookahead_alpha=float(os.environ.get("LOOKAHEAD_ALPHA", "0.5")),
         lr_warmup_enabled=int(os.environ.get("ENABLE_LR_WARMUP", "0")) != 0,
-        lr_warmup_samples=int(os.environ.get("LR_WARMUP_SAMPLES", "6000000")),
+        lr_warmup_samples=int(float(os.environ.get("LR_WARMUP_SAMPLES", "6000000"))),
     )
 
 
