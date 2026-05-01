@@ -41,7 +41,8 @@ from data_processing import (
 
 
 def _env_int(name: str, default: int) -> int:
-    return int(os.environ.get(name, str(default)))
+    # int(float(...)) so cfg values like "2e6" / "6e6" parse as integers.
+    return int(float(os.environ.get(name, str(default))))
 
 
 def _env_float(name: str, default: float) -> float:
@@ -269,10 +270,10 @@ def main() -> int:
                         help="Max rows per output shard.")
     parser.add_argument("--seed", type=int, default=-1)
     parser.add_argument("--num-workers", type=int,
-                        default=_env_int("SHUFFLE_WORKERS", 0),
+                        default=_env_int("SHUFFLE_WORKERS", 18),
                         help="Pool size for parallel shardify+merge (0/1 = serial).")
     parser.add_argument("--worker-group-size", type=int,
-                        default=_env_int("SHUFFLE_WORKER_GROUP_SIZE", 200_000),
+                        default=_env_int("SHUFFLE_WORKER_GROUP_SIZE", 80_000),
                         help="Target rows per shardify task.")
     parser.add_argument("--no-summary-cache", action="store_true",
                         help="Disable per-file row-count cache.")
