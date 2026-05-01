@@ -9,6 +9,34 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# --- MAX_BOARD_SIZE from scripts/run.cfg ---------------------------------
+# Auto-pull MAX_BOARD_SIZE=<n> from run.cfg and pass as -DSKYZERO_MAX_BOARD_SIZE=<n>
+# to all targets (consumed by cpp/envs/gomoku.h). Pattern follows KataGomo's
+# COMPILE_MAX_BOARD_LEN, but the value comes from the project's single config
+# file instead of a separate CMake option, so editing run.cfg is enough — no
+# need to touch gomoku.h or pass -D manually.
+#
+# CMAKE_CONFIGURE_DEPENDS makes cmake re-run when run.cfg changes; if the value
+# changed, gomoku.h's effective MAX_BOARD_SIZE changes, and ninja/make rebuilds
+# every .cpp that includes it.
+set(_run_cfg "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/run.cfg")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_run_cfg}")
+if(EXISTS "${_run_cfg}")
+    file(STRINGS "${_run_cfg}" _max_lines REGEX "^[ \t]*MAX_BOARD_SIZE[ \t]*=")
+    if(_max_lines)
+        list(GET _max_lines 0 _max_line)
+        string(REGEX REPLACE "^[ \t]*MAX_BOARD_SIZE[ \t]*=[ \t]*([0-9]+).*" "\\1"
+               SKYZERO_MAX_BOARD_SIZE "${_max_line}")
+    endif()
+endif()
+if(NOT SKYZERO_MAX_BOARD_SIZE)
+    set(SKYZERO_MAX_BOARD_SIZE 15)
+    message(STATUS "SKYZERO_MAX_BOARD_SIZE = ${SKYZERO_MAX_BOARD_SIZE} (default; run.cfg has no MAX_BOARD_SIZE=)")
+else()
+    message(STATUS "SKYZERO_MAX_BOARD_SIZE = ${SKYZERO_MAX_BOARD_SIZE} (from scripts/run.cfg)")
+endif()
+add_compile_definitions(SKYZERO_MAX_BOARD_SIZE=${SKYZERO_MAX_BOARD_SIZE})
+
 # --- LibTorch -------------------------------------------------------------
 # Expect caller to set CMAKE_PREFIX_PATH to LibTorch install dir, e.g.:
 #   cmake -B build -DCMAKE_PREFIX_PATH=/path/to/libtorch
