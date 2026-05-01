@@ -60,9 +60,16 @@ struct GameInitialState {
     int to_play;
 };
 
+// Compile-time canvas size. Default 15; overridden by CMake via -D when
+// scripts/run.cfg sets MAX_BOARD_SIZE (see cpp/CMakeLists.txt). Pattern
+// borrowed from KataGomo's COMPILE_MAX_BOARD_LEN.
+#ifndef SKYZERO_MAX_BOARD_SIZE
+#define SKYZERO_MAX_BOARD_SIZE 15
+#endif
+
 class Gomoku {
 public:
-    static constexpr int MAX_BOARD_SIZE = 15;
+    static constexpr int MAX_BOARD_SIZE = SKYZERO_MAX_BOARD_SIZE;
     static constexpr int MAX_AREA = MAX_BOARD_SIZE * MAX_BOARD_SIZE;
     static constexpr int NUM_SPATIAL_PLANES_V5 = 5;   // mask + own + opp + fb_b + fb_w
 
