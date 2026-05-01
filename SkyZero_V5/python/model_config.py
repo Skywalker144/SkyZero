@@ -59,13 +59,20 @@ def net_config_from_env() -> NetConfig:
     """Read env vars set by scripts/run.cfg (sourced in bash then exported).
 
     Reads the basic dimensions (NUM_BLOCKS, NUM_CHANNELS, NUM_PLANES,
-    BOARD_SIZE, NUM_GLOBAL_FEATURES) plus optional explicit overrides for
-    derived fields (C_MID, C_GPOOL, INTERMEDIATE_HEAD_BLOCKS, ...).
+    NUM_GLOBAL_FEATURES) plus optional explicit overrides for derived
+    fields (C_MID, C_GPOOL, INTERMEDIATE_HEAD_BLOCKS, ...).
     Constructor's __post_init__ fills any field left as None.
+
+    NetConfig.board_size (model canvas) is read from env MAX_BOARD_SIZE,
+    which scripts/run.cfg owns. cpp/CMakeLists.txt parses the same line and
+    bakes it into the C++ binary as SKYZERO_MAX_BOARD_SIZE (consumed by
+    cpp/envs/gomoku.h's Gomoku::MAX_BOARD_SIZE). To change canvas size: edit
+    MAX_BOARD_SIZE in run.cfg, then `cmake --build cpp/build` (auto-detects
+    the change) and re-trace via init_model.py.
     """
     import os
     kwargs: dict = {}
-    if (v := os.environ.get("BOARD_SIZE")):
+    if (v := os.environ.get("MAX_BOARD_SIZE")):
         kwargs["board_size"] = int(v)
     if (v := os.environ.get("NUM_PLANES")):
         kwargs["num_planes"] = int(v)
