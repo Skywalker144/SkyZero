@@ -24,7 +24,7 @@ if [[ -f "$SCRIPT_DIR/run.cfg.local" ]]; then
 fi
 set +a
 
-DATA_DIR="${DATA_DIR:-$ROOT/data}"
+source "$SCRIPT_DIR/paths.cfg"
 export DATA_DIR
 mkdir -p "$DATA_DIR"/{models,selfplay,logs}
 

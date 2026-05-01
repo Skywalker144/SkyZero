@@ -5,7 +5,8 @@
 #   If max_iters is omitted the loop runs until Ctrl+C.
 set -euo pipefail
 
-trap 'trap - INT TERM; echo "[run.sh] interrupted; stopping."; kill 0 2>/dev/null; exit 130' INT TERM
+DAEMON_PID=""
+trap 'trap - INT TERM; echo "[run.sh] interrupted; stopping."; [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null; kill 0 2>/dev/null; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
@@ -21,7 +22,7 @@ if [[ -f "$SCRIPT_DIR/run.cfg.local" ]]; then
 fi
 set +a
 
-DATA_DIR="${DATA_DIR:-$ROOT/data}"
+source "$SCRIPT_DIR/paths.cfg"
 export DATA_DIR
 
 mkdir -p "$DATA_DIR"/{models,selfplay,shuffled/current,checkpoints,logs}
@@ -29,10 +30,30 @@ mkdir -p "$DATA_DIR"/{models,selfplay,shuffled/current,checkpoints,logs}
 PY=${PY:-python}
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
 
+# Auto-detect GPU count. Main loop runs on GPU 0; if >1 GPUs, spare GPUs
+# (1..N-1) are owned by run_selfplay_daemon.sh, started in the background below.
+if [[ -z "${GPU_NUM:-}" ]]; then
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        GPU_NUM=$(nvidia-smi -L 2>/dev/null | wc -l)
+    else
+        GPU_NUM=1
+    fi
+fi
+GPU_NUM="${GPU_NUM:-1}"
+export GPU_NUM
+echo "[run.sh] detected GPU_NUM=$GPU_NUM"
+
 # Keep C++ binaries in sync with run.cfg / sources. cmake parses MAX_BOARD_SIZE
 # from run.cfg via CONFIGURE_DEPENDS and bakes it in as -DSKYZERO_MAX_BOARD_SIZE.
 # This is a no-op (~<1s) when nothing has changed.
 cmake --build "$ROOT/cpp/build" -j
+
+# Multi-GPU: launch the selfplay daemon on GPUs 1..GPU_NUM-1 in the background.
+if [[ "$GPU_NUM" -gt 1 ]]; then
+    echo "[run.sh] starting selfplay daemon on GPUs 1..$((GPU_NUM-1))"
+    bash "$SCRIPT_DIR/run_selfplay_daemon.sh" &
+    DAEMON_PID=$!
+fi
 
 # Resume iter from data/checkpoints/state.json if present
 iter=0
@@ -116,3 +137,9 @@ while true; do
         break
     fi
 done
+
+if [[ -n "$DAEMON_PID" ]]; then
+    echo "[run.sh] stopping selfplay daemon (pid=$DAEMON_PID)"
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+fi

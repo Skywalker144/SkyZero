@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
-DATA_DIR="${DATA_DIR:-$ROOT/data}"
+source "$SCRIPT_DIR/paths.cfg"
 
 MODEL="${MODEL:-$DATA_DIR/models/latest.pt}"
 PLAY_BIN="${PLAY_BIN:-$ROOT/cpp/build/gomoku_play}"

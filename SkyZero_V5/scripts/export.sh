@@ -6,7 +6,7 @@ ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 
 iter="${1:?iter required}"
 PY=${PY:-python}
-DATA_DIR="${DATA_DIR:-$ROOT/data}"
+source "$SCRIPT_DIR/paths.cfg"
 
 cd "$ROOT/python"
 "$PY" export_model.py \

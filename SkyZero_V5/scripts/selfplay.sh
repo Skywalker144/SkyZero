@@ -8,7 +8,7 @@ iter="${1:?iter required}"
 games="${2:?games required}"
 
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
-DATA_DIR="${DATA_DIR:-$ROOT/data}"
+source "$SCRIPT_DIR/paths.cfg"
 PY="${PY:-python}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then

@@ -29,7 +29,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
-DATA_DIR="${DATA_DIR:-$ROOT/data}"
+source "$SCRIPT_DIR/paths.cfg"
 OUT_FILE="${OUT_FILE:-$DATA_DIR/elo/games.jsonl}"
 PLOT_FILE="${PLOT_FILE:-$DATA_DIR/elo/elo.png}"
 ELO_BIN="${ELO_BIN:-$ROOT/cpp/build/gomoku_elo}"

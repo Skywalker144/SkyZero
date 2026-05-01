@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
-DATA_DIR="${DATA_DIR:-$ROOT/data}"
+source "$SCRIPT_DIR/paths.cfg"
 AB_BIN="${AB_BIN:-$ROOT/cpp/build/gomoku_ab}"
 AB_CFG="${AB_CFG:-$SCRIPT_DIR/ab/ab.cfg}"
 AB_CFG_A="${AB_CFG_A:-$SCRIPT_DIR/ab/a.cfg}"
