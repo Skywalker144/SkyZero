@@ -737,8 +737,66 @@ HTML_PAGE = r"""<!doctype html>
     color: var(--fg-subtle);
     margin-bottom: 12px; text-align: left;
     flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
   }
   .heat {
+    background: var(--heat-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    display: block;
+    margin: auto;
+  }
+
+  .expand-btn {
+    background: transparent; border: none; cursor: pointer;
+    color: var(--fg-subtle); padding: 0;
+    width: 18px; height: 18px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s;
+    flex-shrink: 0;
+  }
+  .expand-btn:hover { background: var(--surface-2); color: var(--fg); }
+  .expand-btn svg { width: 12px; height: 12px; display: block; }
+
+  /* ---------- Heat modal ---------- */
+  .heat-modal {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .heat-modal-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+    padding: 16px 20px 20px;
+    max-width: 95vw; max-height: 95vh;
+    display: flex; flex-direction: column; gap: 12px;
+    min-width: 0; min-height: 0;
+  }
+  .heat-modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  .heat-modal-header .heat-modal-title {
+    font-size: 14px; font-weight: 600; color: var(--fg);
+    letter-spacing: 0.01em;
+  }
+  .heat-modal-close {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--fg-muted); cursor: pointer;
+    width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .heat-modal-close:hover { background: var(--surface-2); color: var(--fg); border-color: var(--border-strong); }
+  .heat-modal-close svg { width: 14px; height: 14px; }
+  #heat_modal_canvas {
     background: var(--heat-bg);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
@@ -886,31 +944,87 @@ HTML_PAGE = r"""<!doctype html>
     <aside class="side-col" id="right_col">
       <div class="grids">
         <div class="card grid-card">
-          <div class="grid-title">Improved Policy</div>
+          <div class="grid-title">
+            <span class="grid-title-text">Improved Policy</span>
+            <button class="expand-btn" data-target="h_mcts_policy" aria-label="Expand" title="Expand">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/>
+              </svg>
+            </button>
+          </div>
           <canvas class="heat" id="h_mcts_policy"></canvas>
         </div>
         <div class="card grid-card">
-          <div class="grid-title">Visits Dist</div>
+          <div class="grid-title">
+            <span class="grid-title-text">Visits Dist</span>
+            <button class="expand-btn" data-target="h_mcts_visits" aria-label="Expand" title="Expand">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/>
+              </svg>
+            </button>
+          </div>
           <canvas class="heat" id="h_mcts_visits"></canvas>
         </div>
         <div class="card grid-card">
-          <div class="grid-title">NN Policy</div>
+          <div class="grid-title">
+            <span class="grid-title-text">NN Policy</span>
+            <button class="expand-btn" data-target="h_nn_policy" aria-label="Expand" title="Expand">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/>
+              </svg>
+            </button>
+          </div>
           <canvas class="heat" id="h_nn_policy"></canvas>
         </div>
         <div class="card grid-card">
-          <div class="grid-title">NN Opp Policy</div>
+          <div class="grid-title">
+            <span class="grid-title-text">NN Opp Policy</span>
+            <button class="expand-btn" data-target="h_nn_opp_policy" aria-label="Expand" title="Expand">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/>
+              </svg>
+            </button>
+          </div>
           <canvas class="heat" id="h_nn_opp_policy"></canvas>
         </div>
         <div class="card grid-card">
-          <div class="grid-title">NN Futurepos +8</div>
+          <div class="grid-title">
+            <span class="grid-title-text">NN Futurepos +8</span>
+            <button class="expand-btn" data-target="h_nn_futurepos_8" aria-label="Expand" title="Expand">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/>
+              </svg>
+            </button>
+          </div>
           <canvas class="heat" id="h_nn_futurepos_8"></canvas>
         </div>
         <div class="card grid-card">
-          <div class="grid-title">NN Futurepos +32</div>
+          <div class="grid-title">
+            <span class="grid-title-text">NN Futurepos +32</span>
+            <button class="expand-btn" data-target="h_nn_futurepos_32" aria-label="Expand" title="Expand">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/>
+              </svg>
+            </button>
+          </div>
           <canvas class="heat" id="h_nn_futurepos_32"></canvas>
         </div>
       </div>
     </aside>
+  </div>
+
+  <div class="heat-modal hidden" id="heat_modal" role="dialog" aria-modal="true" aria-labelledby="heat_modal_title">
+    <div class="heat-modal-card">
+      <div class="heat-modal-header">
+        <span class="heat-modal-title" id="heat_modal_title">Heatmap</span>
+        <button class="heat-modal-close" id="heat_modal_close" aria-label="Close">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 3l10 10M13 3L3 13"/>
+          </svg>
+        </button>
+      </div>
+      <canvas id="heat_modal_canvas"></canvas>
+    </div>
   </div>
 </div>
 
@@ -1030,6 +1144,47 @@ function drawHeatById(id, grid) {
   if (SIGNED_HEAT_IDS.has(id)) drawHeatSigned(id, grid);
   else drawHeat(id, grid);
 }
+
+/* ---------- Heat modal (fullscreen view of one heatmap) ---------- */
+let expandedSourceId = null;
+function setupModalCanvas() {
+  const canvas = document.getElementById('heat_modal_canvas');
+  // Square canvas sized to fit viewport with room for the header + card padding.
+  const card = canvas.parentElement;
+  const cardCS = getComputedStyle(card);
+  const padX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
+  const padY = parseFloat(cardCS.paddingTop) + parseFloat(cardCS.paddingBottom);
+  const header = card.querySelector('.heat-modal-header');
+  const headerH = header ? header.offsetHeight + 12 /* gap */ : 0;
+  const availW = window.innerWidth * 0.95 - padX;
+  const availH = window.innerHeight * 0.95 - padY - headerH;
+  const sz = Math.max(240, Math.floor(Math.min(availW, availH)));
+  canvas.style.width = sz + 'px';
+  canvas.style.height = sz + 'px';
+  heatCtxs.h_modal = setupCanvas(canvas, sz, sz, false);
+}
+function paintHeatModal() {
+  if (!expandedSourceId) return;
+  const grid = state ? state[HEAT_GRID_KEYS[expandedSourceId]] : null;
+  if (SIGNED_HEAT_IDS.has(expandedSourceId)) drawHeatSigned('h_modal', grid);
+  else drawHeat('h_modal', grid);
+}
+function openHeatModal(sourceId) {
+  if (!HEAT_GRID_KEYS[sourceId]) return;
+  expandedSourceId = sourceId;
+  const card = document.getElementById(sourceId).parentElement;
+  const titleEl = card.querySelector('.grid-title-text');
+  document.getElementById('heat_modal_title').textContent =
+      titleEl ? titleEl.textContent : 'Heatmap';
+  document.getElementById('heat_modal').classList.remove('hidden');
+  setupModalCanvas();
+  paintHeatModal();
+}
+function closeHeatModal() {
+  if (expandedSourceId === null) return;
+  expandedSourceId = null;
+  document.getElementById('heat_modal').classList.add('hidden');
+}
 function fitHeatCanvas(canvasId) {
   const c = document.getElementById(canvasId);
   const card = c.parentElement;
@@ -1127,6 +1282,7 @@ function applyTheme(mode) {
     drawHeatSigned('h_nn_futurepos_8',  null);
     drawHeatSigned('h_nn_futurepos_32', null);
   }
+  paintHeatModal();
 }
 setThemeTooltip(document.documentElement.dataset.themeMode || 'auto');
 themeBtn.addEventListener('click', () => {
@@ -1527,6 +1683,7 @@ async function refresh() {
     drawHeat('h_nn_opp_policy', state.nn_opp_policy);
     drawHeatSigned('h_nn_futurepos_8',  state.nn_futurepos_8);
     drawHeatSigned('h_nn_futurepos_32', state.nn_futurepos_32);
+    paintHeatModal();
   } catch(e) { /* ignore */ }
 }
 
@@ -1674,6 +1831,25 @@ drawHeat('h_nn_policy', null);
 drawHeat('h_nn_opp_policy', null);
 drawHeatSigned('h_nn_futurepos_8', null);
 drawHeatSigned('h_nn_futurepos_32', null);
+
+/* ---------- Heat modal events ---------- */
+for (const btn of document.querySelectorAll('.expand-btn')) {
+  btn.addEventListener('click', () => openHeatModal(btn.dataset.target));
+}
+document.getElementById('heat_modal_close').addEventListener('click', closeHeatModal);
+document.getElementById('heat_modal').addEventListener('click', (ev) => {
+  if (ev.target === ev.currentTarget) closeHeatModal();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && expandedSourceId !== null) closeHeatModal();
+});
+window.addEventListener('resize', () => {
+  if (expandedSourceId !== null) {
+    setupModalCanvas();
+    paintHeatModal();
+  }
+});
+
 syncBoardSize();
 setInterval(refresh, 250);
 loadModels();
