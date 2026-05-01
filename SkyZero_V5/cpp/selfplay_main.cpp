@@ -322,9 +322,9 @@ int main(int argc, char** argv) {
             cfg_get<float>(cfg_map, "POLICY_INIT_TEMPERATURE", 1.0f);
         cfg.soft_resign_threshold = cfg_get<float>(cfg_map, "SOFT_RESIGN_THRESHOLD", 0.9f);
         cfg.soft_resign_step_threshold = cfg_get<int>(cfg_map, "SOFT_RESIGN_STEP_THRESHOLD", 3);
-        cfg.soft_resign_prob = cfg_get<float>(cfg_map, "SOFT_RESIGN_PROB", 0.7f);
         cfg.soft_resign_sample_weight = cfg_get<float>(cfg_map, "SOFT_RESIGN_SAMPLE_WEIGHT", 0.1f);
-        cfg.min_simulations_in_soft_resign = cfg_get<int>(cfg_map, "MIN_SIMS_IN_SOFT_RESIGN", 8);
+        cfg.reduced_visits_fraction = cfg_get<float>(cfg_map, "REDUCED_VISITS_FRACTION", 0.25f);
+        cfg.reduced_visits_min_floor = cfg_get<int>(cfg_map, "REDUCED_VISITS_MIN_FLOOR", 16);
         cfg.enable_tree_reuse = cfg_get_bool(cfg_map, "ENABLE_TREE_REUSE", true);
 
         const bool use_cuda = torch::cuda::is_available();

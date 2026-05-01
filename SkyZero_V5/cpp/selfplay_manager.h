@@ -467,7 +467,10 @@ private:
         std::vector<int8_t> initial_state_snapshot = state;
         const int initial_to_play_snapshot = to_play;
 
-        bool in_soft_resign = false;
+        // KataGomo-aligned reduceVisits state. historical_v_mix stores
+        // (v_mix[0]-v_mix[2]) * to_play in a FIXED reference frame, so that
+        // a signed extreme over the lookback window detects "the same player
+        // has been winning K consecutive moves" (regardless of whose turn).
         std::vector<float> historical_v_mix;
         int last_action = -1;
         int last_player = 0;
@@ -485,27 +488,53 @@ private:
                 return empty;
             }
 
+            // === Decide num_simulations & sample_weight from PRIOR history ===
+            // KataGomo reduceVisits-aligned (play.cpp:983-1025): smooth quadratic
+            // interpolation, non-sticky (re-evaluated each move), signed-extreme
+            // over fixed-frame v_mix. Decision uses history [0..N-1] (excluding
+            // current move), matching KataGomo's pre-search visit alteration.
+            // Proportional floor: eff_min = max(MIN_FLOOR, num_simulations * FRACTION).
+            // TODO: if RULE_RELPROBS adds standard/freestyle, also track
+            //       historical_v_mix_draw (= v_mix[1]) and fold min_draw into
+            //       signed_extreme — see KataGomo play.cpp:1002-1008.
+            const int eff_min = std::max(
+                cfg_.reduced_visits_min_floor,
+                static_cast<int>(std::round(
+                    static_cast<float>(cfg_.num_simulations) * cfg_.reduced_visits_fraction
+                ))
+            );
             int num_simulations = cfg_.num_simulations;
-            if (in_soft_resign) {
-                num_simulations = std::max(cfg_.num_simulations / 4, cfg_.min_simulations_in_soft_resign);
+            float step_sample_weight = 1.0f;
+            const int n_hist = static_cast<int>(historical_v_mix.size());
+            if (n_hist >= cfg_.soft_resign_step_threshold) {
+                float minV = std::numeric_limits<float>::infinity();
+                float maxV = -std::numeric_limits<float>::infinity();
+                for (int j = 0; j < cfg_.soft_resign_step_threshold; ++j) {
+                    const float v = historical_v_mix[n_hist - 1 - j];
+                    minV = std::min(minV, v);
+                    maxV = std::max(maxV, v);
+                }
+                const float signed_extreme = std::max(minV, -maxV);
+                const float amount_through = signed_extreme - cfg_.soft_resign_threshold;
+                if (amount_through > 0.0f) {
+                    const float prop = amount_through / (1.0f - cfg_.soft_resign_threshold);
+                    const float vrp = prop * prop;
+                    const float full = static_cast<float>(cfg_.num_simulations);
+                    num_simulations = static_cast<int>(std::round(full + vrp * (eff_min - full)));
+                    num_simulations = std::max(num_simulations, eff_min);
+                    step_sample_weight = 1.0f + vrp * (cfg_.soft_resign_sample_weight - 1.0f);
+                }
             }
 
             const auto sr = mcts.search(state, to_play, num_simulations, root);
-            const float v_mix_scalar = sr.v_mix[0] - sr.v_mix[2];
-            historical_v_mix.push_back(v_mix_scalar);
 
-            const int n = static_cast<int>(historical_v_mix.size());
-            float absmin_v_mix = std::numeric_limits<float>::infinity();
-            const int from = std::max(0, n - cfg_.soft_resign_step_threshold);
-            for (int i = from; i < n; ++i) {
-                absmin_v_mix = std::min(absmin_v_mix, std::fabs(historical_v_mix[i]));
-            }
-            if (!in_soft_resign) {
-                std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-                if (absmin_v_mix >= cfg_.soft_resign_threshold && uni(worker_rng) < cfg_.soft_resign_prob) {
-                    in_soft_resign = true;
-                }
-            }
+            // Push v_mix to history in FIXED frame for use in NEXT move's decision.
+            // v_mix is from current-player POV; multiplying by to_play (∈ {+1,-1})
+            // converts to a fixed reference frame so signed_extreme over lookback
+            // detects "same player consistently winning K turns in a row".
+            const float v_mix_pov = sr.v_mix[0] - sr.v_mix[2];
+            const float v_mix_fixed = v_mix_pov * static_cast<float>(to_play);
+            historical_v_mix.push_back(v_mix_fixed);
 
             if (!memory.empty()) {
                 memory.back().next_mcts_policy = sr.mcts_policy;
@@ -518,7 +547,7 @@ private:
             ms.nn_policy = sr.nn_policy;
             ms.nn_value_probs = sr.nn_value_probs;
             ms.v_mix = sr.v_mix;
-            ms.sample_weight = in_soft_resign ? cfg_.soft_resign_sample_weight : 1.0f;
+            ms.sample_weight = step_sample_weight;
             memory.push_back(ms);
 
             const int move_count = static_cast<int>(memory.size());

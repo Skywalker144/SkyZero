@@ -98,12 +98,15 @@ struct AlphaZeroConfig {
     float policy_init_avg_move_num = 0.0f;
     float policy_init_temperature = 1.0f;
 
-    // Soft resign
-    float soft_resign_threshold = 0.9f;
-    int soft_resign_step_threshold = 3;
-    float soft_resign_prob = 0.7f;
-    float soft_resign_sample_weight = 0.1f;
-    int min_simulations_in_soft_resign = 8;
+    // Soft resign (KataGomo reduceVisits-aligned: smooth quadratic interpolation,
+    // non-sticky, signed-extreme over fixed-frame v_mix; proportional floor
+    // adapted for Gumbel-MCTS warmup-stage NUM_SIMULATIONS).
+    // eff_min = max(reduced_visits_min_floor, round(num_simulations * reduced_visits_fraction))
+    float soft_resign_threshold = 0.9f;        // reduceVisitsThreshold
+    int soft_resign_step_threshold = 3;        // reduceVisitsThresholdLookback
+    float soft_resign_sample_weight = 0.1f;    // reducedVisitsWeight
+    float reduced_visits_fraction = 0.25f;     // 碾压时压到 num_simulations * fraction
+    int reduced_visits_min_floor = 16;         // 绝对下限 (= GUMBEL_M)
 
     // Sprint 2 #3: keep the subtree under the played action as the new
     // root instead of rebuilding from scratch each ply. Gumbel state is
