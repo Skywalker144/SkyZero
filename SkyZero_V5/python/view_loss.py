@@ -17,7 +17,13 @@ def _read_tsv(path: pathlib.Path):
     return header, rows
 
 
-def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
+def _plot_selfplay_impl(data_dir: pathlib.Path, plt,
+                        prefix: str, out_name: str, title_tag: str) -> None:
+    """Render a 2-panel selfplay plot (gamelen + win rates).
+
+    prefix=""        — full-set columns (min_len, avg_len, ...). Saved as selfplay.png.
+    prefix="main_"   — main-pair columns. Saved as selfplay_main.png.
+    """
     log = data_dir / "logs" / "last_run.tsv"
     if not log.exists():
         print(f"no selfplay log at {log}", file=sys.stderr)
@@ -27,10 +33,11 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
         print("empty selfplay log", file=sys.stderr)
         return
     idx = {name: i for i, name in enumerate(header)}
-    needed = ("iter", "min_len", "max_len", "avg_len",
-              "black_win_rate", "white_win_rate", "draw_rate")
+    needed = ("iter",
+              f"{prefix}min_len", f"{prefix}max_len", f"{prefix}avg_len",
+              f"{prefix}black_win_rate", f"{prefix}white_win_rate", f"{prefix}draw_rate")
     if not all(k in idx for k in needed):
-        print(f"last_run.tsv missing selfplay columns; skipping selfplay plot", file=sys.stderr)
+        print(f"last_run.tsv missing columns for {out_name}; skipping", file=sys.stderr)
         return
 
     def col(name):
@@ -42,27 +49,41 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
 
     x = col("iter")
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-    ax1.plot(x, col("min_len"), label="min")
-    ax1.plot(x, col("avg_len"), label="avg")
-    ax1.plot(x, col("max_len"), label="max")
+    ax1.plot(x, col(f"{prefix}min_len"), label="min")
+    ax1.plot(x, col(f"{prefix}avg_len"), label="avg")
+    ax1.plot(x, col(f"{prefix}max_len"), label="max")
     ax1.set_ylabel("game length")
     ax1.set_yscale("symlog", linthresh=1)
+    ax1.set_title(f"selfplay game length ({title_tag})")
     ax1.grid(True, alpha=0.3, which="both")
     ax1.legend(loc="best")
 
-    ax2.plot(x, col("black_win_rate"), label="black")
-    ax2.plot(x, col("white_win_rate"), label="white")
-    ax2.plot(x, col("draw_rate"), label="draw")
+    ax2.plot(x, col(f"{prefix}black_win_rate"), label="black")
+    ax2.plot(x, col(f"{prefix}white_win_rate"), label="white")
+    ax2.plot(x, col(f"{prefix}draw_rate"), label="draw")
     ax2.set_ylim(0.0, 1.0)
     ax2.set_ylabel("rate")
     ax2.set_xlabel("iter")
+    ax2.set_title(f"selfplay win rates ({title_tag})")
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc="best")
 
     fig.tight_layout()
-    out = data_dir / "logs" / "selfplay.png"
+    out = data_dir / "logs" / out_name
     fig.savefig(out, dpi=200)
     print(f"saved plot to {out}")
+
+
+def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
+    """Two plots: full set across all (size, rule), and MAIN_* pair only."""
+    _plot_selfplay_impl(data_dir, plt,
+                        prefix="", out_name="selfplay.png",
+                        title_tag="all sizes / rules")
+    main_size = os.environ.get("MAIN_BOARD_SIZE", "?")
+    main_rule = os.environ.get("MAIN_RULE", "?")
+    _plot_selfplay_impl(data_dir, plt,
+                        prefix="main_", out_name="selfplay_main.png",
+                        title_tag=f"main pair: {main_size}×{main_rule}")
 
 
 def _plot_probe(data_dir: pathlib.Path, plt) -> None:

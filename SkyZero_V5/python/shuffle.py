@@ -58,10 +58,20 @@ def list_selfplay_npz_newest_first(selfplay_dir: pathlib.Path) -> list[pathlib.P
     return files
 
 
-def compute_window_size(total: int, linear_threshold: int, alpha: float) -> int:
-    if total <= linear_threshold:
+def compute_window_size(
+    total: int, min_rows: int, exponent: float, expand_per_row: float
+) -> int:
+    """KataGomo three-parameter power law (KataGomo/python/shuffle.py:305).
+
+    W(N) = (N^E - M^E) / (E*M^(E-1)) * IWPR + M, anchored at (M, M) with
+    initial slope IWPR. Below M we return N — the caller is expected to gate
+    on `total < min_rows` and skip training entirely.
+    """
+    if total <= min_rows:
         return total
-    return int(linear_threshold * ((total / linear_threshold) ** alpha))
+    M, E, IWPR = float(min_rows), exponent, expand_per_row
+    scaled = (total ** E - M ** E) / (E * M ** (E - 1))
+    return int(scaled * IWPR + M)
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +284,9 @@ def main() -> int:
     scatter_dir = data_dir / "shuffled" / "_scatter"
     summary_path = None if args.no_summary_cache else data_dir / "shuffled" / "summary.json"
 
-    linear_threshold = _env_int("LINEAR_THRESHOLD", 2_000_000)
-    alpha = _env_float("REPLAY_ALPHA", 0.8)
+    min_rows = _env_int("MIN_ROWS", 250_000)
+    exponent = _env_float("TAPER_WINDOW_EXPONENT", 0.65)
+    expand_per_row = _env_float("EXPAND_WINDOW_PER_ROW", 0.4)
 
     if not selfplay_dir.exists():
         print(f"[Shuffle] selfplay dir missing: {selfplay_dir}", file=sys.stderr)
@@ -307,11 +318,25 @@ def main() -> int:
     t_discover = time.perf_counter() - t0
 
     total = sum(r for _, r in files_rows)
-    window = compute_window_size(total, linear_threshold, alpha)
+
+    # KataGomo-aligned gate: refuse to produce training shards below MIN_ROWS.
+    # run.sh treats exit-code 2 as "skipped, not an error" and continues the
+    # loop without calling train.py / export.py.
+    if total < min_rows:
+        print(f"[Shuffle] total_rows={total} < MIN_ROWS={min_rows} "
+              f"-- skipping training this iter", file=sys.stderr)
+        if shuffled_dir.exists():
+            shutil.rmtree(shuffled_dir)
+        if pool is not None:
+            pool.close()
+            pool.join()
+        return 2
+
+    window = compute_window_size(total, min_rows, exponent, expand_per_row)
 
     print(f"[Shuffle] total_rows={total} window={window} "
-          f"(linear_threshold={linear_threshold}, alpha={alpha}) "
-          f"discover={t_discover:.2f}s")
+          f"(min_rows={min_rows}, exponent={exponent}, "
+          f"expand_per_row={expand_per_row}) discover={t_discover:.2f}s")
 
     rng = np.random.default_rng(None if args.seed < 0 else args.seed)
 
