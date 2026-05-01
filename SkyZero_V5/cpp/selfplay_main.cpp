@@ -166,6 +166,9 @@ struct CliArgs {
     int max_games = 0;
     bool daemon = false;
     int model_watch_poll_ms = 2000;
+    // Per-iter warmup override for NUM_SIMULATIONS (computed by
+    // python/compute_num_simulations.py). <= 0 means "use cfg value".
+    int num_simulations_override = -1;
 };
 
 static CliArgs parse_cli(int argc, char** argv) {
@@ -187,6 +190,7 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--daemon") a.daemon = true;
         else if (k == "--model-watch-poll-ms") a.model_watch_poll_ms = std::stoi(need("--model-watch-poll-ms"));
         else if (k == "--stats-file") a.stats_file = need("--stats-file");
+        else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.output_dir.empty() || a.config.empty()) {
@@ -272,21 +276,12 @@ int main(int argc, char** argv) {
 
         // --- AlphaZeroConfig ---
         AlphaZeroConfig cfg;
-        // MAX_BOARD_SIZE is a *compile-time* canvas constant (cpp/envs/gomoku.h:65).
-        // We expose it in cfg purely to assert that the user's run.cfg matches
-        // the binary they built; mismatch means they edited cfg without rebuilding.
-        const int cfg_max_board_size = cfg_get<int>(cfg_map, "MAX_BOARD_SIZE", Gomoku::MAX_BOARD_SIZE);
-        if (cfg_max_board_size != Gomoku::MAX_BOARD_SIZE) {
-            throw std::runtime_error(
-                "MAX_BOARD_SIZE in cfg (" + std::to_string(cfg_max_board_size)
-                + ") != Gomoku::MAX_BOARD_SIZE (" + std::to_string(Gomoku::MAX_BOARD_SIZE)
-                + "). To change canvas size, edit cpp/envs/gomoku.h:65, "
-                  "re-trace the model via init_model.py, and rebuild C++.");
-        }
-        // canvas size; legacy single BOARD_SIZE preserved for probe / fallback.
+        // canvas size is the compile-time constant in cpp/envs/gomoku.h:65.
         cfg.board_size = Gomoku::MAX_BOARD_SIZE;
-        const int legacy_board_size = cfg_get<int>(cfg_map, "BOARD_SIZE", Gomoku::MAX_BOARD_SIZE);
         cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 64);
+        if (cli.num_simulations_override > 0) {
+            cfg.num_simulations = cli.num_simulations_override;
+        }
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
@@ -394,20 +389,61 @@ int main(int argc, char** argv) {
         const int num_global_features = cfg_get<int>(cfg_map, "NUM_GLOBAL_FEATURES", 12);
 
         // ---- Per-game (size, rule) sampling, KataGomo bSizes / bSizeRelProbs ----
-        // BOARD_SIZES / BOARD_SIZE_RELPROBS / RULES / RULE_RELPROBS are lists.
-        // Missing → fall back to legacy single BOARD_SIZE / RULE values.
-        const std::string legacy_rule_str = ([&]() -> std::string {
-            auto it = cfg_map.find("RULE");
-            return (it != cfg_map.end()) ? it->second : "renju";
-        })();
-        const auto sizes      = cfg_get_num_list<int>(cfg_map, "BOARD_SIZES",
-                                                      std::vector<int>{legacy_board_size});
-        const auto size_probs = cfg_get_num_list<float>(cfg_map, "BOARD_SIZE_RELPROBS",
-                                                         std::vector<float>(sizes.size(), 1.0f));
-        const auto rule_strs  = cfg_get_string_list(cfg_map, "RULES",
-                                                     std::vector<std::string>{legacy_rule_str});
-        const auto rule_probs = cfg_get_num_list<float>(cfg_map, "RULE_RELPROBS",
-                                                         std::vector<float>(rule_strs.size(), 1.0f));
+        // BOARD_SIZES / BOARD_SIZE_RELPROBS / RULES / RULE_RELPROBS are required
+        // lists. MAIN_BOARD_SIZE / MAIN_RULE are also required and must appear
+        // in the lists with relprob > 0; they pick out the (size, rule) pair
+        // used as the headline for selfplay-stat logging.
+        auto require_str = [&](const std::string& k) -> std::string {
+            auto it = cfg_map.find(k);
+            if (it == cfg_map.end() || it->second.empty()) {
+                throw std::runtime_error("missing required key in run.cfg: " + k);
+            }
+            return it->second;
+        };
+        const int main_board_size = std::stoi(require_str("MAIN_BOARD_SIZE"));
+        const std::string main_rule_str = require_str("MAIN_RULE");
+        const RuleType main_rule = rule_from_string(main_rule_str);
+
+        auto require_list_present = [&](const std::string& k) {
+            auto it = cfg_map.find(k);
+            if (it == cfg_map.end() || it->second.empty()) {
+                throw std::runtime_error("missing required key in run.cfg: " + k);
+            }
+        };
+        require_list_present("BOARD_SIZES");
+        require_list_present("BOARD_SIZE_RELPROBS");
+        require_list_present("RULES");
+        require_list_present("RULE_RELPROBS");
+        const auto sizes      = cfg_get_num_list<int>(cfg_map, "BOARD_SIZES", {});
+        const auto size_probs = cfg_get_num_list<float>(cfg_map, "BOARD_SIZE_RELPROBS", {});
+        const auto rule_strs  = cfg_get_string_list(cfg_map, "RULES", {});
+        const auto rule_probs = cfg_get_num_list<float>(cfg_map, "RULE_RELPROBS", {});
+
+        // Validate MAIN_* is in lists with relprob > 0.
+        int msi = -1;
+        for (size_t i = 0; i < sizes.size(); ++i) {
+            if (sizes[i] == main_board_size) { msi = static_cast<int>(i); break; }
+        }
+        if (msi < 0) {
+            throw std::runtime_error("MAIN_BOARD_SIZE=" + std::to_string(main_board_size)
+                                     + " not present in BOARD_SIZES");
+        }
+        if (msi >= static_cast<int>(size_probs.size()) || size_probs[msi] <= 0.0f) {
+            throw std::runtime_error("MAIN_BOARD_SIZE=" + std::to_string(main_board_size)
+                                     + " has zero relprob in BOARD_SIZE_RELPROBS");
+        }
+        int mri = -1;
+        for (size_t i = 0; i < rule_strs.size(); ++i) {
+            if (rule_strs[i] == main_rule_str) { mri = static_cast<int>(i); break; }
+        }
+        if (mri < 0) {
+            throw std::runtime_error("MAIN_RULE='" + main_rule_str + "' not present in RULES");
+        }
+        if (mri >= static_cast<int>(rule_probs.size()) || rule_probs[mri] <= 0.0f) {
+            throw std::runtime_error("MAIN_RULE='" + main_rule_str
+                                     + "' has zero relprob in RULE_RELPROBS");
+        }
+
         std::vector<RuleType> rules;
         rules.reserve(rule_strs.size());
         for (const auto& s : rule_strs) rules.push_back(rule_from_string(s));
@@ -426,8 +462,13 @@ int main(int argc, char** argv) {
         // -  0  → disabled, greedy gumbel_action from move 0 (no opening sampling)
 
         const int max_rows_per_npz = cfg_get<int>(cfg_map, "MAX_ROWS_PER_NPZ", 25000);
-        const int64_t linear_threshold = cfg_get<int64_t>(cfg_map, "LINEAR_THRESHOLD", 2000000);
-        const double replay_alpha = cfg_get<double>(cfg_map, "REPLAY_ALPHA", 0.8);
+        // KataGomo-aligned three-parameter power-law window. Mirrors
+        // python/shuffle.py:compute_window_size; this value is logged below
+        // (not consumed by selfplay logic — actual window selection happens
+        // in shuffle.py).
+        const int64_t min_rows       = cfg_get<int64_t>(cfg_map, "MIN_ROWS", 250000);
+        const double  exponent       = cfg_get<double>(cfg_map, "TAPER_WINDOW_EXPONENT", 0.65);
+        const double  expand_per_row = cfg_get<double>(cfg_map, "EXPAND_WINDOW_PER_ROW", 0.4);
 
         // --- Writers & engine ---
         fs::create_directories(cli.output_dir);
@@ -450,10 +491,15 @@ int main(int argc, char** argv) {
                 int it; int64_t g, r;
                 if (ls >> it >> g >> r) { cum_games += g; cum_rows += r; }
             }
-            window_size = (cum_rows <= linear_threshold)
-                ? cum_rows
-                : static_cast<int64_t>(linear_threshold *
-                    std::pow(static_cast<double>(cum_rows) / linear_threshold, replay_alpha));
+            if (cum_rows <= min_rows) {
+                window_size = cum_rows;
+            } else {
+                const double M = static_cast<double>(min_rows);
+                const double N = static_cast<double>(cum_rows);
+                const double scaled = (std::pow(N, exponent) - std::pow(M, exponent))
+                                    / (exponent * std::pow(M, exponent - 1));
+                window_size = static_cast<int64_t>(scaled * expand_per_row + min_rows);
+            }
         }
 
         // Initial NPZ filename prefix. Daemon picks a placeholder here and
@@ -548,12 +594,17 @@ int main(int argc, char** argv) {
             int64_t total_rows = 0;
             int last_log_games = 0;
 
-            // Per-version stats (reset after each reload).
+            // Per-version stats (reset after each reload). Two parallel sets:
+            //   v_*       — full set (all sizes/rules)
+            //   v_main_*  — main pair only (MAIN_BOARD_SIZE × MAIN_RULE)
             auto version_t0 = std::chrono::steady_clock::now();
             int v_games = 0;
             int64_t v_rows = 0;
             int v_black = 0, v_white = 0, v_draw = 0;
             double v_sum_len = 0.0;
+            int v_main_games = 0;
+            int v_main_black = 0, v_main_white = 0, v_main_draw = 0;
+            double v_main_sum_len = 0.0;
 
             auto append_stats_row = [&](int version) {
                 if (cli.stats_file.empty()) return;
@@ -562,7 +613,9 @@ int main(int argc, char** argv) {
                 if (!sf) return;
                 if (!had_header) {
                     sf << "model_version\tgames\trows\tseconds"
-                          "\tavg_len\tbwr\twwr\tdwr\tstart_unix\tend_unix\n";
+                          "\tavg_len\tbwr\twwr\tdwr"
+                          "\tmain_games\tmain_avg_len\tmain_bwr\tmain_wwr\tmain_dwr"
+                          "\tstart_unix\tend_unix\n";
                 }
                 const auto t1 = std::chrono::steady_clock::now();
                 const double dt = std::chrono::duration<double>(t1 - version_t0).count();
@@ -570,6 +623,10 @@ int main(int argc, char** argv) {
                 const double bwr = v_games > 0 ? static_cast<double>(v_black) / v_games : 0.0;
                 const double wwr = v_games > 0 ? static_cast<double>(v_white) / v_games : 0.0;
                 const double dwr = v_games > 0 ? static_cast<double>(v_draw) / v_games : 0.0;
+                const double m_avg_len = v_main_games > 0 ? v_main_sum_len / v_main_games : 0.0;
+                const double m_bwr = v_main_games > 0 ? static_cast<double>(v_main_black) / v_main_games : 0.0;
+                const double m_wwr = v_main_games > 0 ? static_cast<double>(v_main_white) / v_main_games : 0.0;
+                const double m_dwr = v_main_games > 0 ? static_cast<double>(v_main_draw) / v_main_games : 0.0;
                 const auto end_unix = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count();
                 const auto start_unix = end_unix - static_cast<long long>(dt);
@@ -579,12 +636,19 @@ int main(int argc, char** argv) {
                    << "\t" << std::fixed << std::setprecision(4) << bwr
                    << "\t" << std::fixed << std::setprecision(4) << wwr
                    << "\t" << std::fixed << std::setprecision(4) << dwr
+                   << "\t" << v_main_games
+                   << "\t" << std::fixed << std::setprecision(2) << m_avg_len
+                   << "\t" << std::fixed << std::setprecision(4) << m_bwr
+                   << "\t" << std::fixed << std::setprecision(4) << m_wwr
+                   << "\t" << std::fixed << std::setprecision(4) << m_dwr
                    << "\t" << start_unix << "\t" << end_unix << "\n";
             };
             auto reset_version_counters = [&]() {
                 version_t0 = std::chrono::steady_clock::now();
                 v_games = 0; v_rows = 0; v_black = 0; v_white = 0; v_draw = 0;
                 v_sum_len = 0.0;
+                v_main_games = 0; v_main_black = 0; v_main_white = 0; v_main_draw = 0;
+                v_main_sum_len = 0.0;
             };
 
             std::cout << "[Daemon] starting at v=" << cur_version
@@ -651,6 +715,13 @@ int main(int argc, char** argv) {
                 if (r.winner == 1) ++v_black;
                 else if (r.winner == -1) ++v_white;
                 else ++v_draw;
+                if (r.board_size == main_board_size && r.rule == main_rule) {
+                    v_main_sum_len += r.game_len;
+                    v_main_games += 1;
+                    if (r.winner == 1) ++v_main_black;
+                    else if (r.winner == -1) ++v_main_white;
+                    else ++v_main_draw;
+                }
 
                 if (total_games - last_log_games >= 100) {
                     last_log_games = total_games;
@@ -674,6 +745,9 @@ int main(int argc, char** argv) {
         }
 
         // --- Legacy main collection loop (one-shot, --max-games) ---
+        // Two parallel stat sets:
+        //   full set (all games)        — Games/Sps + selfplay.png + last_run.tsv full cols
+        //   main pair (MAIN_* filtered) — main(...) GameLen/BWD print + selfplay_main.png + main_* cols
         int games_done = 0;
         int64_t total_rows = 0;
         int black_wins = 0, white_wins = 0, draws = 0;
@@ -681,6 +755,14 @@ int main(int argc, char** argv) {
         int max_len = 0;
         double sum_len = 0.0, sum_sq_len = 0.0;
         SelfplayEngine<Gomoku>::SelfplayResult min_game, max_game;
+
+        int main_games = 0;
+        int main_black = 0, main_white = 0, main_draw = 0;
+        int main_min_len = std::numeric_limits<int>::max();
+        int main_max_len = 0;
+        double main_sum_len = 0.0, main_sum_sq_len = 0.0;
+        SelfplayEngine<Gomoku>::SelfplayResult main_min_game, main_max_game;
+
         const auto t0 = std::chrono::steady_clock::now();
         int last_report = 0;
 
@@ -710,45 +792,71 @@ int main(int argc, char** argv) {
             else if (r.winner == -1) ++white_wins;
             else ++draws;
 
+            const bool is_main = (r.board_size == main_board_size && r.rule == main_rule);
+            if (is_main) {
+                main_sum_len += L;
+                main_sum_sq_len += static_cast<double>(L) * L;
+                if (L < main_min_len) { main_min_len = L; main_min_game = r; }
+                if (L > main_max_len) { main_max_len = L; main_max_game = r; }
+                main_games += 1;
+                if (r.winner == 1) ++main_black;
+                else if (r.winner == -1) ++main_white;
+                else ++main_draw;
+            }
+
             if (games_done - last_report >= 100 || games_done == cli.max_games) {
                 last_report = games_done;
                 const auto dt = std::chrono::duration_cast<std::chrono::duration<double>>(
                     std::chrono::steady_clock::now() - t0).count();
                 const double sps = (dt > 0.0) ? (static_cast<double>(total_rows) / dt) : 0.0;
-                const double avg_len = sum_len / games_done;
-                const double var_len = std::max(0.0, sum_sq_len / games_done - avg_len * avg_len);
-                const double std_len = std::sqrt(var_len);
-                const double b = static_cast<double>(black_wins) / games_done;
-                const double w = static_cast<double>(white_wins) / games_done;
-                const double d = static_cast<double>(draws) / games_done;
                 const int gw = static_cast<int>(std::to_string(cli.max_games).size());
-                const int bp = static_cast<int>(std::round(b * 100.0));
-                const int wp = static_cast<int>(std::round(w * 100.0));
-                const int dp = static_cast<int>(std::round(d * 100.0));
+
                 std::cout << "[SelfPlay] Games=" << std::setw(gw) << std::setfill('0') << games_done
                           << std::setfill(' ') << "/" << cli.max_games
                           << " Sps=" << std::fixed << std::setprecision(1) << sps
-                          << " GameLen:Avg=" << std::fixed << std::setprecision(1) << avg_len
-                          << " Min=" << min_len
-                          << " Max=" << max_len
-                          << " Std=" << static_cast<int>(std::round(std_len))
-                          << " BWD=" << std::setw(2) << std::setfill('0') << bp
-                          << "/" << std::setw(2) << std::setfill('0') << wp
-                          << "/" << std::setw(2) << std::setfill('0') << dp
-                          << std::setfill(' ') << "\n";
+                          << " main(" << main_board_size << "×" << rule_to_string(main_rule)
+                          << ", n=" << main_games << ")";
+
+                if (main_games > 0) {
+                    const double m_avg = main_sum_len / main_games;
+                    const double m_var = std::max(0.0, main_sum_sq_len / main_games - m_avg * m_avg);
+                    const double m_std = std::sqrt(m_var);
+                    const double mb = static_cast<double>(main_black) / main_games;
+                    const double mw = static_cast<double>(main_white) / main_games;
+                    const double md = static_cast<double>(main_draw) / main_games;
+                    const int mbp = static_cast<int>(std::round(mb * 100.0));
+                    const int mwp = static_cast<int>(std::round(mw * 100.0));
+                    const int mdp = static_cast<int>(std::round(md * 100.0));
+                    std::cout << " GameLen:Avg=" << std::fixed << std::setprecision(1) << m_avg
+                              << " Min=" << main_min_len
+                              << " Max=" << main_max_len
+                              << " Std=" << static_cast<int>(std::round(m_std))
+                              << " BWD=" << std::setw(2) << std::setfill('0') << mbp
+                              << "/" << std::setw(2) << std::setfill('0') << mwp
+                              << "/" << std::setw(2) << std::setfill('0') << mdp
+                              << std::setfill(' ');
+                } else {
+                    std::cout << " GameLen=N/A BWD=N/A";
+                }
+                std::cout << "\n";
             }
         }
 
         engine.stop();
         writer.flush();
 
-        // Append last_run.tsv
+        // Append last_run.tsv. First 10 cols (full set) preserve the legacy
+        // schema; new 7 cols hold the main-pair filtered version, used by
+        // selfplay_main.png. view_loss.py looks up by name, so old rows
+        // with only 10 cols still parse cleanly.
         const fs::path last_run = fs::path(cli.log_dir) / "last_run.tsv";
         const bool had_header = fs::exists(last_run);
         std::ofstream lf(last_run, std::ios::app);
         if (!had_header) lf << "iter\tgames\trows\tseconds"
                                "\tmin_len\tmax_len\tavg_len"
-                               "\tblack_win_rate\twhite_win_rate\tdraw_rate\n";
+                               "\tblack_win_rate\twhite_win_rate\tdraw_rate"
+                               "\tmain_games\tmain_min_len\tmain_max_len\tmain_avg_len"
+                               "\tmain_black_win_rate\tmain_white_win_rate\tmain_draw_rate\n";
         const auto dt = std::chrono::duration_cast<std::chrono::duration<double>>(
             std::chrono::steady_clock::now() - t0).count();
         lf << cli.iter << "\t" << games_done << "\t" << total_rows << "\t" << dt;
@@ -762,6 +870,20 @@ int main(int argc, char** argv) {
                << "\t" << std::fixed << std::setprecision(4) << bwr
                << "\t" << std::fixed << std::setprecision(4) << wwr
                << "\t" << std::fixed << std::setprecision(4) << dwr;
+        } else {
+            lf << "\t\t\t\t\t\t";
+        }
+        lf << "\t" << main_games;
+        if (main_games > 0) {
+            const double m_avg = main_sum_len / main_games;
+            const double m_bwr = static_cast<double>(main_black) / main_games;
+            const double m_wwr = static_cast<double>(main_white) / main_games;
+            const double m_dwr = static_cast<double>(main_draw) / main_games;
+            lf << "\t" << main_min_len << "\t" << main_max_len
+               << "\t" << std::fixed << std::setprecision(3) << m_avg
+               << "\t" << std::fixed << std::setprecision(4) << m_bwr
+               << "\t" << std::fixed << std::setprecision(4) << m_wwr
+               << "\t" << std::fixed << std::setprecision(4) << m_dwr;
         } else {
             lf << "\t\t\t\t\t\t";
         }
