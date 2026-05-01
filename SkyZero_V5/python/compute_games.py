@@ -1,15 +1,18 @@
-"""Compute this iteration's selfplay game count from target_replay_ratio.
+"""Compute this iteration's selfplay game count from the (warmed) replay ratio.
 
 Formula:
-    Steady state (last_run.tsv has history):
-        needed_samples = ceil(batch_size * train_steps_per_epoch / target_replay_ratio)
-        avg_game_len   = last_run.tsv's rows/games
-        raw_games      = ceil(needed_samples / avg_game_len)
+    needed_samples = ceil(batch_size * train_steps_per_epoch / ratio_eff)
+    raw_games      = ceil(needed_samples / avg_game_len)
+    N_games        = clip(raw_games, MIN_GAMES, MAX_GAMES)
 
-    Cold start (no history):
-        raw_games      = ceil(MIN_BUFFER_SIZE / AVG_GAME_LEN_BOOTSTRAP)
+ratio_eff is picked from REPLAY_RATIO_STAGES (per-stage list across
+REPLAY_RATIO_WARMUP_SAMPLES of cumulative selfplay rows). When the list has
+< 2 entries, falls back to TARGET_REPLAY_RATIO (no warmup).
 
-    N_games = clip(raw_games, MIN_GAMES, MAX_GAMES)
+Cold start (no last_run.tsv history): cum_rows=0 picks the first stage
+value, which is typically smallest -> largest needed_samples. A MIN_ROWS
+floor still applies on the first iter so the very first training run isn't
+skipped (see shuffle.py's MIN_ROWS gate).
 
 Prints N_games to stdout (one integer) so run.sh can `GAMES=$(python ...)`.
 """
@@ -21,6 +24,8 @@ import os
 import pathlib
 import sys
 
+from warmup import parse_stage_list, staged_value
+
 
 def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
@@ -30,28 +35,37 @@ def _env_float(name: str, default: float) -> float:
     return float(os.environ.get(name, str(default)))
 
 
-def read_avg_game_len(last_run_tsv: pathlib.Path) -> float | None:
-    """Parse last line of last_run.tsv; columns: iter games rows ...
+def read_history(last_run_tsv: pathlib.Path) -> tuple[float | None, int]:
+    """Parse last_run.tsv (columns: iter games rows ...).
 
-    Returns rows/games for the most recent iteration, or None if unavailable.
+    Returns (avg_game_len of last iter, cumulative rows across all iters).
+    avg_game_len is None when no usable history exists.
     """
     try:
         if not last_run_tsv.exists():
-            return None
+            return None, 0
         lines = [ln.strip() for ln in last_run_tsv.read_text().splitlines() if ln.strip()]
         if len(lines) < 2:
-            return None
+            return None, 0
         data = lines[1:] if lines[0].startswith("iter") else lines
         if not data:
-            return None
-        fields = data[-1].split("\t")
-        games = float(fields[1])
-        rows = float(fields[2])
-        if games <= 0:
-            return None
-        return rows / games
+            return None, 0
+        cum_rows = 0
+        for ln in data:
+            try:
+                cum_rows += int(float(ln.split("\t")[2]))
+            except (IndexError, ValueError):
+                continue
+        last = data[-1].split("\t")
+        try:
+            games = float(last[1])
+            rows = float(last[2])
+        except (IndexError, ValueError):
+            return None, cum_rows
+        avg = rows / games if games > 0 else None
+        return avg, cum_rows
     except Exception:
-        return None
+        return None, 0
 
 
 def main() -> int:
@@ -64,20 +78,21 @@ def main() -> int:
 
     batch_size = _env_int("BATCH_SIZE", 256)
     train_steps = _env_int("TRAIN_STEPS_PER_EPOCH", 100)
-    ratio = _env_float("TARGET_REPLAY_RATIO", 6.0)
+    ratio_steady = _env_float("TARGET_REPLAY_RATIO", 6.0)
     min_games = _env_int("MIN_GAMES", 200)
     max_games = _env_int("MAX_GAMES", 8000)
     bootstrap = _env_float("AVG_GAME_LEN_BOOTSTRAP", 50.0)
-    min_buffer = _env_int("MIN_BUFFER_SIZE", 100000)
-    cold_start_multiplier = _env_float("COLD_START_MULTIPLIER", 2.0)
+    min_rows = _env_int("MIN_ROWS", 250000)
 
-    avg_game_len = read_avg_game_len(last_run_tsv)
+    stages = parse_stage_list(os.environ.get("REPLAY_RATIO_STAGES"), cast=float)
+    warmup_samples = _env_int("REPLAY_RATIO_WARMUP_SAMPLES", 0)
+
+    avg_game_len, cum_rows = read_history(last_run_tsv)
+    warmed = staged_value(cum_rows, warmup_samples, stages)
+    ratio = warmed if warmed is not None else ratio_steady
+
     if avg_game_len is None:
-        # Cold start: no history. Size the first iter so the seed buffer is at
-        # least `multiplier` times the per-epoch steady-state draw, so each
-        # sample isn't over-replayed before steady state kicks in.
-        steady_needed = math.ceil(batch_size * train_steps / max(ratio, 1e-6))
-        needed_samples = max(min_buffer, math.ceil(steady_needed * cold_start_multiplier))
+        needed_samples = max(min_rows, math.ceil(batch_size * train_steps / max(ratio, 1e-6)))
         avg_game_len_used = bootstrap
         mode = "cold-start"
     else:
@@ -87,10 +102,10 @@ def main() -> int:
     raw_games = math.ceil(needed_samples / max(avg_game_len_used, 1.0))
     n_games = max(min_games, min(max_games, raw_games))
 
-    # stderr for humans, stdout for scripts
-    extra = f" multiplier={cold_start_multiplier}" if mode == "cold-start" else ""
+    ratio_tag = "warmup" if warmed is not None else "steady-cfg"
     print(
-        f"[compute_games] mode={mode}{extra} needed_samples={needed_samples} "
+        f"[compute_games] mode={mode} ratio={ratio:.2f}({ratio_tag}) "
+        f"cum_rows={cum_rows} needed_samples={needed_samples} "
         f"avg_game_len={avg_game_len_used:.1f} raw_games={raw_games} -> N_games={n_games}",
         file=sys.stderr,
     )
