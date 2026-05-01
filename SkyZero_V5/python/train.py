@@ -206,7 +206,7 @@ def parse_args() -> TrainArgs:
         policy_loss_weight=float(os.environ.get("POLICY_LOSS_WEIGHT", "1.0")),
         opponent_policy_loss_weight=float(os.environ.get("OPP_POLICY_LOSS_WEIGHT", "0.15")),
         soft_policy_loss_weight=float(os.environ.get("SOFT_POLICY_LOSS_WEIGHT", "8.0")),
-        value_loss_weight=float(os.environ.get("VALUE_LOSS_WEIGHT", "1.0")),
+        value_loss_weight=float(os.environ.get("VALUE_LOSS_WEIGHT", "0.72")),
         td_value_loss_weight=float(os.environ.get("TD_VALUE_LOSS_WEIGHT", "0.72")),
         futurepos_loss_weight=float(os.environ.get("FUTUREPOS_LOSS_WEIGHT", "0.25")),
         main_loss_scale=float(os.environ.get("MAIN_LOSS_SCALE", "0.5")),
