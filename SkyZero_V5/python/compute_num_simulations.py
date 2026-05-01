@@ -32,7 +32,7 @@ def main() -> int:
 
     fallback = int(os.environ.get("NUM_SIMULATIONS", "400"))
     stages = parse_stage_list(os.environ.get("NUM_SIMULATIONS_STAGES"), cast=int)
-    warmup_samples = int(os.environ.get("NUM_SIM_WARMUP_SAMPLES", "0"))
+    warmup_samples = int(float(os.environ.get("NUM_SIM_WARMUP_SAMPLES", "0")))
 
     _, cum_rows = read_history(last_run_tsv)
     val = staged_value(cum_rows, warmup_samples, stages)

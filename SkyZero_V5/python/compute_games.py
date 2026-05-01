@@ -28,7 +28,8 @@ from warmup import parse_stage_list, staged_value
 
 
 def _env_int(name: str, default: int) -> int:
-    return int(os.environ.get(name, str(default)))
+    # int(float(...)) so cfg values like "2e6" / "6e6" parse as integers.
+    return int(float(os.environ.get(name, str(default))))
 
 
 def _env_float(name: str, default: float) -> float:
