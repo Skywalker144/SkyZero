@@ -9,6 +9,7 @@ games="${2:?games required}"
 
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
 DATA_DIR="${DATA_DIR:-$ROOT/data}"
+PY="${PY:-python}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
     echo "[selfplay.sh] binary not found or not executable: $SELFPLAY_BIN" >&2
@@ -32,11 +33,16 @@ if [[ -z "${INFERENCE_SERVER_DEVICES:-}" ]]; then
     export INFERENCE_SERVER_DEVICES="$devices"
 fi
 
-echo "[selfplay.sh] iter=$iter games=$games main_gpu=$MAIN_GPU devices=${INFERENCE_SERVER_DEVICES}"
+# Per-iter warmup for NUM_SIMULATIONS. Falls back to cfg's NUM_SIMULATIONS
+# when NUM_SIMULATIONS_STAGES has < 2 entries (warmup disabled).
+NSIM=$( cd "$ROOT/python" && "$PY" compute_num_simulations.py --data-dir "$DATA_DIR" )
+
+echo "[selfplay.sh] iter=$iter games=$games num_simulations=$NSIM main_gpu=$MAIN_GPU devices=${INFERENCE_SERVER_DEVICES}"
 "$SELFPLAY_BIN" \
     --model "$DATA_DIR/models/latest.pt" \
     --output-dir "$DATA_DIR/selfplay" \
     --iter "$iter" \
     --max-games "$games" \
+    --num-simulations "$NSIM" \
     --config "$SCRIPT_DIR/run.cfg" \
     --log-dir "$DATA_DIR/logs"
