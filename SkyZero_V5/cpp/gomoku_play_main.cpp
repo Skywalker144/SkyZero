@@ -174,6 +174,7 @@ struct CliArgs {
     std::string config;
     int num_simulations_override = -1;
     int human_side_override = 0;  // 0 = ask interactively
+    int board_size_override = -1;
 };
 
 static CliArgs parse_cli(int argc, char** argv) {
@@ -188,11 +189,13 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--config") a.config = need("--config");
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
         else if (k == "--human-side") a.human_side_override = std::stoi(need("--human-side"));
+        else if (k == "--board-size") a.board_size_override = std::stoi(need("--board-size"));
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.config.empty()) {
         throw std::runtime_error("usage: gomoku_play --model PATH --config PATH "
-                                 "[--num-simulations N] [--human-side {1,-1}]");
+                                 "[--num-simulations N] [--human-side {1,-1}] "
+                                 "[--board-size N]");
     }
     return a;
 }
@@ -245,6 +248,12 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
+        if (cli.board_size_override > 0) {
+            if (cli.board_size_override > Gomoku::MAX_BOARD_SIZE) {
+                throw std::runtime_error("--board-size exceeds compile-time MAX_BOARD_SIZE");
+            }
+            cfg.board_size = cli.board_size_override;
+        }
 
         // V5: 5-plane padded encoding + 12-dim global features
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
