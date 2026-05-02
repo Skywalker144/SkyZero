@@ -85,6 +85,8 @@ while true; do
         || echo "[run.sh] cumulative so far: games=0 samples=0"
 
     # (1) compute games for this iter
+    TRAIN_STEPS_PER_EPOCH=$( cd "$ROOT/python" && "$PY" compute_train_steps.py --data-dir "$DATA_DIR" )
+    export TRAIN_STEPS_PER_EPOCH
     GAMES=$( cd "$ROOT/python" && "$PY" compute_games.py --data-dir "$DATA_DIR" )
 
     # SHUFFLE_RC=0 success, =2 skipped (N < MIN_ROWS), other = failure.
