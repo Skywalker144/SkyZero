@@ -9,10 +9,12 @@ ratio_eff is picked from REPLAY_RATIO_STAGES (per-stage list across
 REPLAY_RATIO_WARMUP_SAMPLES of cumulative selfplay rows). When the list has
 < 2 entries, falls back to TARGET_REPLAY_RATIO (no warmup).
 
-Cold start (no last_run.tsv history): cum_rows=0 picks the first stage
-value, which is typically smallest -> largest needed_samples. A MIN_ROWS
-floor still applies on the first iter so the very first training run isn't
-skipped (see shuffle.py's MIN_ROWS gate).
+TRAIN_STEPS_PER_EPOCH is itself staged (see warmup.py train-steps, run by
+run.sh just before this script and exported into env), so during warmup
+both TS and ratio shrink together and `needed_samples = B*TS/ratio` ends
+up *smaller* on early iters, not larger. The MIN_ROWS floor in cold-start
+mode keeps the very first training run from being skipped (see also
+shuffle.py's MIN_ROWS gate).
 
 Prints N_games to stdout (one integer) so run.sh can `GAMES=$(python ...)`.
 """
