@@ -112,11 +112,14 @@ static int argmax_index(const std::vector<float>& p) {
     return static_cast<int>(std::distance(p.begin(), std::max_element(p.begin(), p.end())));
 }
 
-static void print_policy_grid(const std::vector<float>& p, int board_size, const std::string& title) {
+// `p` is canvas-stride (length MAX_AREA, indexed r*stride+c). We display only
+// the in-board sub-grid [0, board_size) x [0, board_size).
+static void print_policy_grid(const std::vector<float>& p, int board_size, int stride,
+                              const std::string& title) {
     std::cout << title << "\n";
     for (int r = 0; r < board_size; ++r) {
         for (int c = 0; c < board_size; ++c) {
-            const int idx = r * board_size + c;
+            const int idx = r * stride + c;
             const float v = (idx >= 0 && idx < static_cast<int>(p.size())) ? p[idx] : 0.0f;
             if (v < 0.01f) {
                 std::cout << "     . ";  // aligned with "%6.2f "
@@ -131,12 +134,12 @@ static void print_policy_grid(const std::vector<float>& p, int board_size, const
 // Signed variant for futurepos (values in [-1, +1] after tanh; sign encodes
 // own (+) vs opponent (-) future stone). Width matches print_policy_grid so
 // the Python-side whitespace-tokenized parser handles both.
-static void print_signed_grid(const std::vector<float>& p, int board_size, const std::string& title,
-                              float thresh = 0.05f) {
+static void print_signed_grid(const std::vector<float>& p, int board_size, int stride,
+                              const std::string& title, float thresh = 0.05f) {
     std::cout << title << "\n";
     for (int r = 0; r < board_size; ++r) {
         for (int c = 0; c < board_size; ++c) {
-            const int idx = r * board_size + c;
+            const int idx = r * stride + c;
             const float v = (idx >= 0 && idx < static_cast<int>(p.size())) ? p[idx] : 0.0f;
             if (std::fabs(v) < thresh) {
                 std::cout << "     . ";  // 7 chars total, matches "%+6.2f "
@@ -385,7 +388,8 @@ int main(int argc, char** argv) {
 
             std::vector<float> logits(static_cast<size_t>(area), 0.0f);
             std::memcpy(logits.data(), op, static_cast<size_t>(area) * sizeof(float));
-            const auto legal = game.get_is_legal_actions(state, to_play);
+            // logits is canvas-stride (MAX_AREA); use the canvas legal mask.
+            const auto legal = game.get_is_legal_actions_canvas(state, to_play);
             for (size_t i = 0; i < logits.size(); ++i) {
                 if (i >= legal.size() || !legal[i]) {
                     logits[i] = -std::numeric_limits<float>::infinity();
@@ -609,16 +613,26 @@ int main(int argc, char** argv) {
                 std::cout << "AlphaZero thinking...\n";
 
                 const auto out = mcts.search(state, to_play, cfg.num_simulations, root);
-                int action = out.gumbel_action;
-                if (action < 0) action = argmax_index(out.mcts_policy);
-                if (action < 0) {
+                // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
+                // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
+                // at the boundary, mirroring selfplay_manager.h:577.
+                constexpr int M = Gomoku::MAX_BOARD_SIZE;
+                int canvas_action = out.gumbel_action;
+                if (canvas_action < 0) canvas_action = argmax_index(out.mcts_policy);
+                if (canvas_action < 0) {
                     std::cout << "No legal action found. Exiting game.\n";
+                    return 1;
+                }
+                const int action = Gomoku::canvas_pos_to_loc(canvas_action, game.board_size);
+                if (action < 0) {
+                    std::cout << "AI returned off-board canvas action " << canvas_action
+                              << ". Exiting game.\n";
                     return 1;
                 }
                 const int row = action / game.board_size;
                 const int col = action % game.board_size;
 
-                print_policy_grid(out.mcts_policy, game.board_size, "MCTS Strategy (improved policy):");
+                print_policy_grid(out.mcts_policy, game.board_size, M, "MCTS Strategy (improved policy):");
                 std::vector<float> visit_dist(out.visit_counts.size(), 0.0f);
                 {
                     const float sum_n = std::accumulate(out.visit_counts.begin(), out.visit_counts.end(), 0.0f);
@@ -628,14 +642,14 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
-                print_policy_grid(visit_dist, game.board_size, "MCTS Visits (N(s,a)/sum):");
-                print_policy_grid(out.nn_policy, game.board_size, "NN Strategy:");
+                print_policy_grid(visit_dist, game.board_size, M, "MCTS Visits (N(s,a)/sum):");
+                print_policy_grid(out.nn_policy, game.board_size, M, "NN Strategy:");
                 {
                     std::vector<float> fp8, fp32;
                     auto opp_policy = forward_opp_policy(state, to_play, &fp8, &fp32);
-                    print_policy_grid(opp_policy, game.board_size, "NN Opp Strategy:");
-                    print_signed_grid(fp8,  game.board_size, "NN Futurepos +8:");
-                    print_signed_grid(fp32, game.board_size, "NN Futurepos +32:");
+                    print_policy_grid(opp_policy, game.board_size, M, "NN Opp Strategy:");
+                    print_signed_grid(fp8,  game.board_size, M, "NN Futurepos +8:");
+                    print_signed_grid(fp32, game.board_size, M, "NN Futurepos +32:");
                 }
 
                 const float root_value = out.v_mix[0] - out.v_mix[2];
@@ -660,8 +674,10 @@ int main(int argc, char** argv) {
                     std::cout << "Gumbel Phase " << i
                               << " (" << out.gumbel_phases[i].size() << "):";
                     for (int a : out.gumbel_phases[i]) {
-                        std::cout << ' ' << (a / game.board_size)
-                                  << ',' << (a % game.board_size);
+                        // a is a canvas-stride position; for in-board canvas
+                        // cells, canvas (r, c) coincides with board (r, c).
+                        std::cout << ' ' << (a / M)
+                                  << ',' << (a % M);
                     }
                     std::cout << '\n';
                 }
