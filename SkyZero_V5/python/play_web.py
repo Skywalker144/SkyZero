@@ -193,6 +193,19 @@ class EngineSession:
         if "Undo successful" in line:
             self.game_over = False
             self.status = "Undo"
+            # The engine pops two plies but does not re-run a search, so any
+            # cached search outputs still reflect the just-undone position.
+            # Clear them so the chart/WDL/heatmaps don't attribute stale values
+            # to the rolled-back state until the next AI think refills them.
+            self.root_value = None
+            self.nn_value = None
+            self.mcts_policy = None
+            self.mcts_visits = None
+            self.nn_policy = None
+            self.nn_opp_policy = None
+            self.nn_futurepos_8 = None
+            self.nn_futurepos_32 = None
+            self.gumbel_phases = None
             return
         if "Human step" in line:
             if not self.game_over:
@@ -1547,8 +1560,18 @@ function recordValues(st) {
   while (valueHistory.length && valueHistory[valueHistory.length - 1].step > step) {
     valueHistory.pop();
   }
-  if (rw == null && nw == null) return;
   const last = valueHistory[valueHistory.length - 1];
+  if (rw == null && nw == null) {
+    // No fresh AI values. After an undo, root_value/nn_value are cleared, so
+    // we still want each subsequent move to extend the chart with a
+    // carry-forward of the last known eval — matching the normal-play rhythm
+    // where every ply produces a point. (Pre-game has no `last` and is left
+    // empty until the first AI think.)
+    if (last && step > last.step) {
+      valueHistory.push({step, root: last.root, nn: last.nn});
+    }
+    return;
+  }
   if (last && last.step === step) {
     if (rw != null) last.root = rw;
     if (nw != null) last.nn = nw;
