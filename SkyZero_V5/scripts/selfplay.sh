@@ -35,7 +35,7 @@ fi
 
 # Per-iter warmup for NUM_SIMULATIONS. Falls back to cfg's NUM_SIMULATIONS
 # when NUM_SIMULATIONS_STAGES has < 2 entries (warmup disabled).
-NSIM=$( cd "$ROOT/python" && "$PY" compute_num_simulations.py --data-dir "$DATA_DIR" )
+NSIM=$( cd "$ROOT/python" && "$PY" warmup.py num-simulations --data-dir "$DATA_DIR" )
 
 echo "[selfplay.sh] iter=$iter games=$games num_simulations=$NSIM main_gpu=$MAIN_GPU devices=${INFERENCE_SERVER_DEVICES}"
 "$SELFPLAY_BIN" \
