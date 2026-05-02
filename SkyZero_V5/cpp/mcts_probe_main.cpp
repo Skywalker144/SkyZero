@@ -265,10 +265,12 @@ int main(int argc, char** argv) {
         if (!cli.log_path.empty()) {
             const int board_size = cfg.board_size;
             const int c0 = board_size / 2;
-            auto euclid_dist = [&](int action) -> float {
-                if (action < 0) return -1.0f;
-                const int row = action / board_size;
-                const int col = action % board_size;
+            // sr.gumbel_action is canvas-stride (r*MAX_BOARD_SIZE + c); for
+            // in-board canvas cells canvas (r, c) coincides with board (r, c).
+            auto euclid_dist = [&](int canvas_action) -> float {
+                if (canvas_action < 0) return -1.0f;
+                const int row = canvas_action / Gomoku::MAX_BOARD_SIZE;
+                const int col = canvas_action % Gomoku::MAX_BOARD_SIZE;
                 const int dr = row - c0;
                 const int dc = col - c0;
                 return std::sqrt(static_cast<float>(dr * dr + dc * dc));
