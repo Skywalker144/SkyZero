@@ -13,7 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-BOARD_SIZE = 15
+BOARD_SIZE = 15  # default only; per-session size lives on EngineSession.board_size
 
 HEADER_RE = re.compile(r"^\s*0\s+1\s+2\s+3\s+4\s+5")
 AI_MOVE_RE = re.compile(r"AI move:\s*\((\d+),\s*(\d+)\)")
@@ -30,15 +30,16 @@ GUMBEL_PHASE_RE = re.compile(r"Gumbel Phase (\d+) \((\d+)\):(.*)$")
 class EngineSession:
     """Wraps one gomoku_play subprocess; reader thread updates self.state."""
 
-    def __init__(self, play_bin, model, config, human_side):
+    def __init__(self, play_bin, model, config, human_side, board_size):
         self.play_bin = play_bin
         self.model = model
         self.config = config
         self.human_side = human_side
+        self.board_size = board_size
 
         self.lock = threading.Lock()
         self.version = 0
-        self.board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        self.board = [[0] * board_size for _ in range(board_size)]
         self.last_move = None
         self.status = "Launching engine..."
         self.root_value = None  # {w,d,l,wl}
@@ -58,7 +59,7 @@ class EngineSession:
 
         self.proc = subprocess.Popen(
             [str(play_bin), "--model", str(model), "--config", str(config),
-             "--human-side", str(human_side)],
+             "--human-side", str(human_side), "--board-size", str(board_size)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             bufsize=1, text=True,
         )
@@ -82,10 +83,9 @@ class EngineSession:
             self.status = "Engine exited."
             self._bump()
 
-    @staticmethod
-    def _try_parse_grid_row(line):
+    def _try_parse_grid_row(self, line):
         toks = line.split()
-        if len(toks) != BOARD_SIZE:
+        if len(toks) != self.board_size:
             return None
         row = []
         for t in toks:
@@ -101,7 +101,7 @@ class EngineSession:
     def _parse_line(self, line):
         if self._pending_rows is not None:
             self._pending_rows.append(line)
-            if len(self._pending_rows) == BOARD_SIZE:
+            if len(self._pending_rows) == self.board_size:
                 self._apply_board(self._pending_rows)
                 self._pending_rows = None
             return
@@ -136,7 +136,7 @@ class EngineSession:
             row = self._try_parse_grid_row(line)
             if row is not None:
                 self._pending_grid_rows.append(row)
-                if len(self._pending_grid_rows) == BOARD_SIZE:
+                if len(self._pending_grid_rows) == self.board_size:
                     setattr(self, self._pending_grid_key, self._pending_grid_rows)
                     self._pending_grid_key = None
                     self._pending_grid_rows = None
@@ -207,11 +207,11 @@ class EngineSession:
             return
 
     def _apply_board(self, rows):
-        new_board = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        new_board = [[0] * self.board_size for _ in range(self.board_size)]
         last = None
         for r, line in enumerate(rows):
             body = line[3:] if len(line) > 3 else ""
-            for c in range(BOARD_SIZE):
+            for c in range(self.board_size):
                 base = c * 3
                 if base + 2 >= len(body):
                     break
@@ -250,6 +250,7 @@ class EngineSession:
             return {
                 "version": self.version,
                 "board": self.board,
+                "board_size": self.board_size,
                 "last_move": list(self.last_move) if self.last_move else None,
                 "status": self.status,
                 "root_value": self.root_value,
@@ -267,11 +268,14 @@ class EngineSession:
 
 
 class App:
-    def __init__(self, play_bin, config, models, current_model_id):
+    def __init__(self, play_bin, config, models, current_model_id,
+                 board_sizes, default_board_size):
         self.play_bin = play_bin
         self.config = config
         self.models = models  # id -> abs Path
         self.current_model_id = current_model_id
+        self.board_sizes = board_sizes
+        self.current_board_size = default_board_size
         self.session = None
         self.session_lock = threading.Lock()
 
@@ -279,13 +283,16 @@ class App:
     def model(self):
         return self.models[self.current_model_id]
 
-    def start(self, human_side, model_id=None):
+    def start(self, human_side, model_id=None, board_size=None):
         with self.session_lock:
             if model_id is not None and model_id in self.models:
                 self.current_model_id = model_id
+            if board_size is not None and board_size in self.board_sizes:
+                self.current_board_size = board_size
             if self.session is not None:
                 self.session.stop()
-            self.session = EngineSession(self.play_bin, self.model, self.config, human_side)
+            self.session = EngineSession(self.play_bin, self.model, self.config,
+                                         human_side, self.current_board_size)
 
     def current(self):
         with self.session_lock:
@@ -860,6 +867,15 @@ HTML_PAGE = r"""<!doctype html>
       </div>
 
       <div class="card">
+        <div class="card-body side-row">
+          <div class="card-title" style="margin:0;">Board size</div>
+          <select id="size_select" class="num"
+                  style="width:auto; min-width:84px; height:32px; text-align:left; font-family: var(--font-mono);">
+          </select>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="card-body">
           <div class="card-title">Search</div>
           <div class="field-row">
@@ -1029,7 +1045,7 @@ HTML_PAGE = r"""<!doctype html>
 </div>
 
 <script>
-const N = 15;
+let N = 15;
 const MARGIN = 28;
 let CELL = 36;
 let BOARD_LOGICAL = MARGIN*2 + CELL*(N-1); // recomputed in syncBoardSize()
@@ -1426,8 +1442,11 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(p, MARGIN); ctx.lineTo(p, MARGIN + CELL*(N-1)); ctx.stroke();
   }
   ctx.fillStyle = boardStar;
-  for (const [r,c] of [[3,3],[3,11],[11,3],[11,11],[7,7]]) {
-    ctx.beginPath(); ctx.arc(MARGIN+c*CELL, MARGIN+r*CELL, 3.5, 0, Math.PI*2); ctx.fill();
+  {
+    const ctr = Math.floor(N / 2);
+    ctx.beginPath();
+    ctx.arc(MARGIN + ctr*CELL, MARGIN + ctr*CELL, 3.5, 0, Math.PI*2);
+    ctx.fill();
   }
   ctx.fillStyle = boardLine;
   ctx.font = `11px ${MONO_FONT}`;
@@ -1649,6 +1668,13 @@ function statusVariant(s) {
 async function refresh() {
   try {
     const r = await fetch('/state'); state = await r.json();
+    if (state && state.board_size && state.board_size !== N) {
+      N = state.board_size;
+      valueHistory = [];
+      syncBoardSize();
+      const ss = document.getElementById('size_select');
+      if (ss && ss.value !== String(N)) ss.value = String(N);
+    }
     if (pendingSwapBaseline) {
       const stale = valuesEqual(state.root_value, pendingSwapBaseline.root)
                  && valuesEqual(state.nn_value,   pendingSwapBaseline.nn);
@@ -1747,7 +1773,7 @@ function setSide(side) {
   drawValueChart();
   sendCmd('side ' + side);
 }
-async function newGame(side, modelId) {
+async function newGame(side, modelId, boardSize) {
   if (side === undefined) side = selectedSide;
   else { selectedSide = side; updateSideButtons(); }
   valueHistory = [];
@@ -1756,6 +1782,7 @@ async function newGame(side, modelId) {
   drawValueChart();
   const payload = {human_side: side};
   if (modelId) payload.model = modelId;
+  if (Number.isFinite(boardSize) && boardSize > 0) payload.board_size = boardSize;
   await fetch('/new', {method:'POST', headers:{'Content-Type':'application/json'},
                        body: JSON.stringify(payload)});
   sendCmd('noise 0');
@@ -1809,6 +1836,26 @@ document.getElementById('model_select').addEventListener('change', (ev) => {
   newGame(selectedSide, ev.target.value);
 });
 
+async function loadConfig() {
+  try {
+    const r = await fetch('/config');
+    const data = await r.json();
+    const sel = document.getElementById('size_select');
+    sel.innerHTML = '';
+    for (const sz of data.board_sizes) {
+      const o = document.createElement('option');
+      o.value = String(sz); o.textContent = String(sz);
+      sel.appendChild(o);
+    }
+    sel.value = String(data.current_board_size);
+  } catch(e) { /* ignore */ }
+}
+document.getElementById('size_select').addEventListener('change', (ev) => {
+  const sz = parseInt(ev.target.value, 10);
+  if (!Number.isFinite(sz)) return;
+  newGame(selectedSide, undefined, sz);
+});
+
 // Auto-apply sims/gumbel_m on change (blur) or Enter, replacing Apply buttons.
 function bindNumInput(id, apply) {
   const el = document.getElementById(id);
@@ -1853,6 +1900,7 @@ window.addEventListener('resize', () => {
 syncBoardSize();
 setInterval(refresh, 250);
 loadModels();
+loadConfig();
 refresh();
 </script>
 </body></html>
@@ -1894,10 +1942,18 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/models":
             self._send_json(200, Handler.app.model_listing())
             return
+        if self.path == "/config":
+            self._send_json(200, {
+                "board_sizes": Handler.app.board_sizes,
+                "current_board_size": Handler.app.current_board_size,
+            })
+            return
         if self.path == "/state":
             sess = Handler.app.current()
             if sess is None:
-                self._send_json(200, {"version": 0, "board": [[0]*BOARD_SIZE for _ in range(BOARD_SIZE)],
+                bs = Handler.app.current_board_size
+                self._send_json(200, {"version": 0, "board": [[0]*bs for _ in range(bs)],
+                                      "board_size": bs,
                                       "last_move": None, "status": "No game. Click New.",
                                       "root_value": None, "nn_value": None,
                                       "game_over": False, "human_side": 1,
@@ -1918,8 +1974,13 @@ class Handler(BaseHTTPRequestHandler):
             model_id = body.get("model")
             if model_id is not None and not isinstance(model_id, str):
                 model_id = None
-            Handler.app.start(side, model_id=model_id)
-            self._send_json(200, {"ok": True, "model": Handler.app.current_model_id})
+            bs = body.get("board_size")
+            if not (isinstance(bs, int) and bs in Handler.app.board_sizes):
+                bs = None
+            Handler.app.start(side, model_id=model_id, board_size=bs)
+            self._send_json(200, {"ok": True,
+                                  "model": Handler.app.current_model_id,
+                                  "board_size": Handler.app.current_board_size})
             return
         if self.path == "/move":
             sess = Handler.app.current()
@@ -1934,6 +1995,34 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
             return
         self.send_response(404); self.end_headers()
+
+
+def parse_board_sizes(run_cfg_path):
+    """Read BOARD_SIZES="17, 16, ..." from run.cfg → sorted list[int] (desc)."""
+    try:
+        for line in Path(run_cfg_path).read_text().splitlines():
+            s = line.strip()
+            if not s.startswith("BOARD_SIZES"):
+                continue
+            _, _, val = s.partition("=")
+            val = val.strip().strip('"').strip("'").split("#", 1)[0]
+            sizes = [int(x.strip()) for x in val.split(",") if x.strip()]
+            return sorted(set(sizes), reverse=True)
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def read_cfg_int(path, key, default):
+    try:
+        for line in Path(path).read_text().splitlines():
+            s = line.strip()
+            if s.startswith(f"{key}=") or s.startswith(f"{key} ="):
+                _, _, val = s.partition("=")
+                return int(val.strip().split("#", 1)[0])
+    except (OSError, ValueError):
+        pass
+    return default
 
 
 def discover_models(root_dir):
@@ -1959,6 +2048,7 @@ def main():
     ap.add_argument("--model", default=str(root_dir / "data" / "models" / "latest.pt"))
     ap.add_argument("--bin", default=str(root_dir / "cpp" / "build" / "gomoku_play"))
     ap.add_argument("--config", default=str(root_dir / "scripts" / "play.cfg"))
+    ap.add_argument("--run-config", default=str(root_dir / "scripts" / "run.cfg"))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--human-side", type=int, default=1, choices=(1, -1))
@@ -1979,8 +2069,14 @@ def main():
         init_id = f"custom/{init_path.name}"
         models = {init_id: init_path, **models}
 
-    app = App(Path(args.bin), Path(args.config), models, init_id)
-    app.start(args.human_side)
+    board_sizes = parse_board_sizes(args.run_config) or [BOARD_SIZE]
+    default_board_size = read_cfg_int(args.config, "BOARD_SIZE", BOARD_SIZE)
+    if default_board_size not in board_sizes:
+        board_sizes = [default_board_size] + board_sizes
+
+    app = App(Path(args.bin), Path(args.config), models, init_id,
+              board_sizes, default_board_size)
+    app.start(args.human_side, board_size=default_board_size)
     Handler.app = app
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
