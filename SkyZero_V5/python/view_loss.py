@@ -175,10 +175,9 @@ def main() -> int:
         cols = {name: [float(r[i]) for r in rows] for i, name in enumerate(header)}
         x = cols.get("global_step_samples", cols.get("iter", list(range(len(rows)))))
         xlabel = "samples" if "global_step_samples" in cols else "iter"
-        keys = [k for k in ("policy_loss", "opp_policy_loss", "soft_policy_loss",
-                              "soft_opp_policy_loss",
-                              "value_loss", "td_value_loss", "futurepos_loss",
-                              "intermediate_loss", "total_loss") if k in cols]
+        keys = [k for k in ("total_loss", "policy_loss", "opp_policy_loss",
+                              "intermediate_loss", "soft_policy_loss", "soft_opp_policy_loss",
+                              "futurepos_loss", "value_loss", "td_value_loss") if k in cols]
         # Grid layout: square-ish (ncols ≈ √n) so many losses stay readable.
         # ≤3 panes => single column (vertical), keeping shared x-axis natural.
         n = len(keys)
