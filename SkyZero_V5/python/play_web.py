@@ -1442,11 +1442,17 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(p, MARGIN); ctx.lineTo(p, MARGIN + CELL*(N-1)); ctx.stroke();
   }
   ctx.fillStyle = boardStar;
-  {
-    const ctr = Math.floor(N / 2);
-    ctx.beginPath();
-    ctx.arc(MARGIN + ctr*CELL, MARGIN + ctr*CELL, 3.5, 0, Math.PI*2);
-    ctx.fill();
+  // 4-4 corner hoshi for N>=13, 3-3 for smaller; tengen only on odd N (no
+  // fake off-center tengen on even boards).
+  if (N >= 7) {
+    const off = (N >= 13) ? 3 : 2;
+    const pts = [[off, off], [off, N-1-off], [N-1-off, off], [N-1-off, N-1-off]];
+    if (N % 2 === 1) pts.push([(N-1)/2, (N-1)/2]);
+    for (const [r, c] of pts) {
+      ctx.beginPath();
+      ctx.arc(MARGIN + c*CELL, MARGIN + r*CELL, 3.5, 0, Math.PI*2);
+      ctx.fill();
+    }
   }
   ctx.fillStyle = boardLine;
   ctx.font = `11px ${MONO_FONT}`;
