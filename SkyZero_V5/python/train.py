@@ -96,14 +96,20 @@ def weighted_soft_ce(logits: torch.Tensor, target: torch.Tensor, weight: torch.T
     return (per_sample * weight).sum() / denom
 
 
-def soft_policy_target(p: torch.Tensor) -> torch.Tensor:
-    """KataGo soft-policy target: (p + 1e-7)^0.25, renormalized.
+def soft_policy_target(p: torch.Tensor, on_board_mask: torch.Tensor) -> torch.Tensor:
+    """KataGo soft-policy target: (p + 1e-7)^0.25, masked to legal cells, renormalized.
 
     Mirrors KataGomo metrics_pytorch.py:462-464. Flattens the visit-count
     distribution so the soft head learns "everything reasonable" rather than
     just the top move — empirically helps generalization.
+
+    on_board_mask must be (B, H*W) with 1.0 on legal cells and 0.0 off-board.
+    Without the mask, off-board cells get (1e-7)^0.25 ≈ 0.018 of soft mass,
+    which combined with the policy head's -5000 off-board logit produces a
+    huge per-sample CE penalty (the off-board contribution dominates) and
+    diverges training under multi-board-size canvases.
     """
-    soft = (p + 1e-7).clamp_min(0.0).pow(0.25)
+    soft = (p + 1e-7).clamp_min(0.0).pow(0.25) * on_board_mask
     return soft / soft.sum(dim=-1, keepdim=True).clamp_min(1e-8)
 
 
@@ -442,10 +448,11 @@ def main() -> int:
         # On-board mask (B, 1, H, W) for futurepos masking. Same source as the
         # network's internal mask (input plane 0 in nets_v2.py:653).
         fp_mask = state[:, 0:1, :, :]
+        on_board_flat = fp_mask.view(B, -1)
         # Soft targets are derived in fp32 once per batch (not transformed by
         # D4 — already done above on the underlying main/opp targets).
-        soft_main_target = soft_policy_target(policy_target)
-        soft_opp_target = soft_policy_target(opp_policy_target)
+        soft_main_target = soft_policy_target(policy_target, on_board_flat)
+        soft_opp_target = soft_policy_target(opp_policy_target, on_board_flat)
         opp_weight = sample_weight * opp_mask
         with torch.amp.autocast("cuda", enabled=use_amp):
             out = model(state, global_features)
