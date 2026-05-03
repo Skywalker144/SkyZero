@@ -13,6 +13,19 @@
 - Python 3 + PyTorch (re-uses V5 `nets.py` / `model_config.py`) for the export script
 - Cloudflare Pages for deployment (zero-build, git-connected)
 
+**Environment note (Claude Code shell):** Node 24.15 is installed via nvm at
+`/home/sky/.nvm/versions/node/v24.15.0/bin/`, but Claude's non-interactive
+bash does NOT source `~/.bashrc` so `nvm.sh` doesn't run and `node`/`npm`
+aren't on the default PATH. **All shell commands that invoke `node` or `npm`
+in this plan must prepend that bin dir to PATH:**
+
+```bash
+export PATH=/home/sky/.nvm/versions/node/v24.15.0/bin:$PATH
+```
+
+(Or `PATH=...:$PATH npm test` inline.) Subagents executing these tasks
+should do this in every shell invocation that needs node/npm.
+
 **Source spec:** `SkyZero_V5/docs/superpowers/specs/2026-05-03-skyzeroweb-v5-design.md`
 
 ---
