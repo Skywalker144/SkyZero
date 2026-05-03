@@ -182,16 +182,17 @@ Create `/home/sky/RL/SkyZero/SkyZeroWeb/package.json`:
   "name": "skyzeroweb",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "scripts": {
     "test": "node --test 'tests/test_*.mjs'"
   }
 }
 ```
 
-`"type": "module"` makes `.mjs` files first-class ESM — important so the test
-files can `import` from `gomoku.js` / `mcts.js` (which we write in classic
-script style for browser/worker consumption — bridged in Step 4 below).
+No `"type": "module"` field — that would make `.js` files ESM, which breaks
+the `if (typeof module !== "undefined")` CommonJS export pattern that
+`gomoku.js` / `mcts.js` use for dual browser/Node consumption. `.mjs` files
+are always ESM regardless of the `type` field, so test files can still use
+`import`. Without `"type"`, `.js` files default to CJS — exactly what we want.
 
 - [ ] **Step 3: Verify the runner works on an empty suite**
 
