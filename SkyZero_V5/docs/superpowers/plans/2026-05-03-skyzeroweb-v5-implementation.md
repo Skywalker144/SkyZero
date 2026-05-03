@@ -2220,15 +2220,10 @@ async function runSearch(state, toPlay, ply, sims, gumbelM, searchId) {
     if (latestSearchId !== searchId) return;
     postMessage({ type: "progress", progress: 100, searchId });
 
-    const visits = mcts.getMCTSPolicy(root);   // visits/sum (already normalized)
-    // Visits raw (not normalized) for the "Visits Dist" heatmap.
-    const visitsRaw = new Float32Array(currentBoardSize * currentBoardSize);
-    let maxVisit = 0;
-    for (const c of root.children) {
-        visitsRaw[c.actionTaken] = c.n;
-        if (c.n > maxVisit) maxVisit = c.n;
-    }
-    if (maxVisit > 0) for (let i = 0; i < visitsRaw.length; i++) visitsRaw[i] /= maxVisit;
+    // Visit distribution N(s,a)/sum — matches V5 cpp label "MCTS Visits (N(s,a)/sum)".
+    // (drawHeat re-normalizes by max for color, but the data we transmit is sum-normalized
+    // to keep semantics aligned with cpp.)
+    const visitDist = mcts.getMCTSPolicy(root);   // already returns N(s,a)/sum
 
     postMessage({
         type: "result",
@@ -2236,9 +2231,9 @@ async function runSearch(state, toPlay, ply, sims, gumbelM, searchId) {
         gumbelAction,
         rootValueWDL: vMix,                   // [W, D, L] from vMix
         nnValueWDL,                           // [W, D, L] root NN
-        mctsPolicy:    Array.from(improvedPolicy),
-        mctsVisits:    Array.from(visitsRaw),
-        nnPolicy:      Array.from(visits),    // visit-count-derived policy is what V5 calls "MCTS Strategy"
+        mctsPolicy:    Array.from(improvedPolicy),  // V5 "MCTS Strategy (improved policy)"
+        mctsVisits:    Array.from(visitDist),       // V5 "MCTS Visits (N(s,a)/sum)"
+        nnPolicy:      Array.from(root.nnPolicy || new Float32Array(currentBoardSize * currentBoardSize)),  // V5 "NN Strategy" (channel 0 softmax, masked)
         nnOppPolicy:   Array.from(oppPolicy),
         nnFuturepos8:  Array.from(future8),
         nnFuturepos32: Array.from(future32),
@@ -2279,39 +2274,14 @@ onmessage = async (e) => {
 };
 ```
 
-**Note on `nnPolicy` vs `mctsPolicy`** — V5 `play_web.py` calls them:
-- `mcts_policy` = improved policy from completed Q (what AI uses for move selection)
-- `mcts_visits` = raw visit counts normalized to [0,1] for display
-- `nn_policy` = the NN's own softmax (channel 0 main)
-- `nn_opp_policy` = the NN's softmax (channel 1 opp)
+**Output field semantics** (matches V5 `cpp/gomoku_play_main.cpp:644-661`):
+- `mctsPolicy` = improved policy from Gumbel completed-Q (V5 "MCTS Strategy (improved policy)")
+- `mctsVisits` = N(s,a) / sum (V5 "MCTS Visits (N(s,a)/sum)")
+- `nnPolicy` = root.nnPolicy = NN's main-policy softmax with illegal moves masked (V5 "NN Strategy")
+- `nnOppPolicy` = NN's opp-policy softmax (V5 "NN Opp Strategy", channel 1)
+- `nnFuturepos8` / `nnFuturepos32` = tanh of value_futurepos channels (V5 "NN Futurepos +8 / +32")
 
-In our worker we set:
-- `mctsPolicy` = `improvedPolicy` from Gumbel halving (matches V5 `mcts_policy`)
-- `mctsVisits` = visits normalized by max (matches V5 `mcts_visits`)
-- `nnPolicy` = visit-count proportion (root.nnPolicy is the NN softmax — fix this in Task 24 if mismatch shows up)
-
-**Correction inline:** for proper parity, `nnPolicy` should be `root.nnPolicy`
-(the NN softmax cached on the root). Replace `Array.from(visits)` with
-`Array.from(root.nnPolicy || new Float32Array(currentBoardSize ** 2))` — do
-this NOW in this step before committing.
-
-Apply that fix now.
-
-- [ ] **Step 2: Apply the nnPolicy fix**
-
-In the `postMessage({ type: "result", ... })` block, change:
-
-```js
-        nnPolicy:      Array.from(visits),
-```
-
-to:
-
-```js
-        nnPolicy:      Array.from(root.nnPolicy || new Float32Array(currentBoardSize * currentBoardSize)),
-```
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
 git add worker.js
@@ -3945,11 +3915,7 @@ git commit -m "deploy: add Cloudflare _headers and full README"
   reads `data.gumbelPhases` and stores in module-level `gumbelPhases`.
 - ELO field type: number throughout (manifest.json, dropdown formatting).
 - `boardSize` parameter naming consistent across worker messages.
-- One small inconsistency to flag: V5 `play_web.py` calls the visit-count
-  policy `mcts_policy` and the visit-count distribution `mcts_visits`.
-  Our worker emits `mcts_policy` from `improvedPolicy` (the Gumbel-derived
-  improved policy used for move selection — matches V5 since V5's
-  "MCTS Strategy" grid is indeed the improved policy in the original
-  C++ output) and `mcts_visits` from the raw visit-count proportions.
-  The naming is consistent with V5; if visual output looks wrong during
-  Task 25 smoke, swap the two field assignments in worker.js.
+- `mcts_policy` / `mcts_visits` semantics confirmed against V5 cpp
+  `gomoku_play_main.cpp:644,654`: `mcts_policy` = improved policy
+  (Gumbel completed-Q derived), `mcts_visits` = N(s,a) / sum. Worker
+  emits both correctly named.
