@@ -184,7 +184,7 @@ Create `/home/sky/RL/SkyZero/SkyZeroWeb/package.json`:
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test 'tests/test_*.mjs'"
   }
 }
 ```
