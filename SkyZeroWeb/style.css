@@ -134,6 +134,27 @@
   html[data-theme-mode="light"] .icon-btn .sun-icon,
   html[data-theme-mode="dark"]  .icon-btn .moon-icon,
   html[data-theme-mode="auto"]  .icon-btn .auto-icon { display: inline-block; }
+  .topbar-actions { display: flex; align-items: center; gap: 8px; }
+  .seg-row.compact {
+    display: flex; gap: 0;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .seg-row.compact .seg-btn {
+    flex: 0 0 auto; min-width: 34px; height: 30px;
+    padding: 0 10px; font-size: 12px; font-weight: 600;
+    background: transparent; color: var(--fg-muted);
+    border: none; border-right: 1px solid var(--border); border-radius: 0;
+    letter-spacing: 0.02em;
+  }
+  .seg-row.compact .seg-btn:last-child { border-right: none; }
+  .seg-row.compact .seg-btn:hover {
+    background: var(--surface-2); color: var(--fg); border-color: var(--border-strong);
+  }
+  .seg-row.compact .seg-btn[aria-pressed="true"] {
+    background: var(--surface-2); color: var(--fg);
+  }
+  .seg-row.compact .seg-btn svg { width: 14px; height: 14px; display: block; }
 
   /* ---------- Layout ---------- */
   .main {
@@ -175,7 +196,14 @@
   }
   .seg-btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
   .seg-btn[aria-pressed="true"] {
-    background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+    color: var(--accent);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .seg-btn[aria-pressed="true"]:hover {
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+    border-color: var(--accent);
   }
   .seg-stone {
     width: 14px; height: 14px; border-radius: 50%;

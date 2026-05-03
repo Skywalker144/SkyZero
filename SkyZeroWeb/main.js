@@ -30,33 +30,42 @@ function clearLogical(ctx) { ctx.clearRect(0, 0, ctx._logicalW, ctx._logicalH); 
 const cv = document.getElementById("board");
 const ctx = setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
 
-// Theme controller (tri-state).
-const themeBtn = document.getElementById("theme_toggle");
-const THEME_NEXT = { auto: "light", light: "dark", dark: "auto" };
+// Theme controller (tri-state segmented buttons).
+const THEME_MODES = ["auto", "light", "dark"];
 function resolveTheme(mode) {
     if (mode === "light" || mode === "dark") return mode;
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
-function setThemeTooltip(mode) {
-    const label = mode.charAt(0).toUpperCase() + mode.slice(1);
-    const nxt = THEME_NEXT[mode];
-    themeBtn.title = "Theme: " + label + " (click for " + nxt.charAt(0).toUpperCase() + nxt.slice(1) + ")";
+function updateThemeSegPressed(mode) {
+    const seg = document.getElementById("theme_seg");
+    if (!seg) return;
+    for (const b of seg.querySelectorAll(".seg-btn[data-theme]")) {
+        b.setAttribute("aria-pressed", b.dataset.theme === mode ? "true" : "false");
+    }
 }
 function applyTheme(mode) {
+    if (!THEME_MODES.includes(mode)) mode = "auto";
     document.documentElement.dataset.theme = resolveTheme(mode);
     document.documentElement.dataset.themeMode = mode;
-    setThemeTooltip(mode);
+    updateThemeSegPressed(mode);
     if (typeof drawAll === "function") drawAll();
 }
-setThemeTooltip(document.documentElement.dataset.themeMode || "auto");
-themeBtn.addEventListener("click", () => {
-    const cur = document.documentElement.dataset.themeMode || "auto";
-    const next = THEME_NEXT[cur] || "auto";
-    try {
-        if (next === "auto") localStorage.removeItem("skz_theme");
-        else localStorage.setItem("skz_theme", next);
-    } catch (_) {}
-    applyTheme(next);
+updateThemeSegPressed(document.documentElement.dataset.themeMode || "auto");
+document.addEventListener("DOMContentLoaded", () => {
+    const seg = document.getElementById("theme_seg");
+    if (!seg) return;
+    for (const b of seg.querySelectorAll(".seg-btn[data-theme]")) {
+        b.addEventListener("click", () => {
+            const next = b.dataset.theme;
+            if (!THEME_MODES.includes(next)) return;
+            try {
+                if (next === "auto") localStorage.removeItem("skz_theme");
+                else localStorage.setItem("skz_theme", next);
+            } catch (_) {}
+            applyTheme(next);
+        });
+    }
+    updateThemeSegPressed(document.documentElement.dataset.themeMode || "auto");
 });
 try {
     const mql = window.matchMedia("(prefers-color-scheme: dark)");
@@ -383,7 +392,7 @@ function openHeatModal(sourceId) {
     expandedSourceId = sourceId;
     const card = document.getElementById(sourceId).parentElement;
     const titleEl = card.querySelector(".grid-title-text");
-    document.getElementById("heat_modal_title").textContent = titleEl ? titleEl.textContent : "Heatmap";
+    document.getElementById("heat_modal_title").textContent = titleEl ? titleEl.textContent : t("heatmap_default_title");
     document.getElementById("heat_modal").classList.remove("hidden");
     setupModalCanvas();
     paintHeatModal();
@@ -487,7 +496,7 @@ function drawValueChart() {
         vctx.fillStyle = subtle;
         vctx.font = `11px ${MONO_FONT}`;
         vctx.textAlign = "center"; vctx.textBaseline = "middle";
-        vctx.fillText("no data", padL + innerW / 2, padT + innerH / 2);
+        vctx.fillText(t("chart_no_data"), padL + innerW / 2, padT + innerH / 2);
         return;
     }
     const maxStep = Math.max(1, valueHistory[valueHistory.length - 1].step);
@@ -519,6 +528,8 @@ function drawValueChart() {
 }
 
 // --- WDL bars ---
+let lastRootWDL = null;
+let lastNNWDL = null;
 function normalizeWDL(v) {
     if (!v) return null;
     const s = v.w + v.d + v.l;
@@ -527,6 +538,8 @@ function normalizeWDL(v) {
     return { w: v.w, d: v.d, l: v.l, wl: v.wl };
 }
 function renderWDL(prefix, vWDL) {
+    if (prefix === "root") lastRootWDL = vWDL || null;
+    else if (prefix === "nn") lastNNWDL = vWDL || null;
     const bar = document.getElementById("wdl_" + prefix + "_bar");
     const wlEl = document.getElementById("wdl_" + prefix + "_wl");
     const det = document.getElementById("wdl_" + prefix + "_detail");
@@ -536,7 +549,7 @@ function renderWDL(prefix, vWDL) {
         segs[0].style.width = "0";
         segs[1].style.width = "100%";
         segs[2].style.width = "0";
-        wlEl.textContent = "—";
+        wlEl.textContent = t("wdl_dash");
         wlEl.classList.remove("pos", "neg");
         det.textContent = "";
         return;
@@ -607,14 +620,22 @@ function setLoadingProgress(pct) {
 function hideLoadingOverlay() {
     const o = document.getElementById("loading_overlay");
     if (o) o.style.display = "none";
+    lastLoadingMsg = null;
 }
-function showLoadingOverlay(text) {
+let lastLoadingMsg = null; // { key, args }
+function showLoadingOverlay(key, ...args) {
     const o = document.getElementById("loading_overlay");
     if (!o) return;
     o.style.display = "";
-    const t = document.getElementById("loading_text");
-    if (t && text) t.textContent = text;
+    lastLoadingMsg = { key, args };
+    const tEl = document.getElementById("loading_text");
+    if (tEl) tEl.textContent = t(key, ...args);
     setLoadingProgress(0);
+}
+function rerenderLoadingOverlay() {
+    if (!lastLoadingMsg) return;
+    const tEl = document.getElementById("loading_text");
+    if (tEl) tEl.textContent = t(lastLoadingMsg.key, ...lastLoadingMsg.args);
 }
 
 // --- Game state (mirrors V5 gomoku semantics, in-browser) ---
@@ -633,20 +654,32 @@ let history = [];         // [{ board: Int8Array, toPlay, lastMove, ply, gumbelP
 const worker = new Worker("worker.js?v=" + Date.now());
 worker.onerror = (e) => {
     const where = e.filename ? ` (${e.filename}:${e.lineno})` : "";
-    const msg = "Worker failed: " + (e.message || "unknown error") + where;
-    setStatus(msg, "error");
-    const t = document.getElementById("loading_text");
-    if (t) t.textContent = msg;
+    const msg = t("err_worker_failed", e.message || t("err_unknown"), where);
+    setStatusRaw(msg, "error");
+    const tEl = document.getElementById("loading_text");
+    if (tEl) tEl.textContent = msg;
     console.error("[worker.onerror]", e);
 };
 worker.onmessageerror = (e) => {
-    setStatus("Worker message error", "error");
+    setStatus("err_worker_msg", "error");
     console.error("[worker.onmessageerror]", e);
 };
 
-function setStatus(text, variant) {
+let lastStatus = { key: "status_idle", args: [], variant: "idle", raw: null };
+function setStatus(key, variant, ...args) {
+    lastStatus = { key, args, variant, raw: null };
+    document.getElementById("status").textContent = t(key, ...args);
+    document.getElementById("status_pill").dataset.variant = variant || "idle";
+}
+function setStatusRaw(text, variant) {
+    lastStatus = { key: null, args: [], variant, raw: text };
     document.getElementById("status").textContent = text;
     document.getElementById("status_pill").dataset.variant = variant || "idle";
+}
+function rerenderStatus() {
+    if (lastStatus.raw != null) return;
+    if (!lastStatus.key) return;
+    document.getElementById("status").textContent = t(lastStatus.key, ...lastStatus.args);
 }
 
 function board1Dto2D(b1d) {
@@ -709,11 +742,13 @@ function newGame() {
     history = [];
     valueHistory = [];
     gumbelPhases = null;
+    renderWDL("root", null);
+    renderWDL("nn", null);
     publishStateForDrawing();
     drawAll();
     worker.postMessage({ type: "reset", boardSize: N, ply: 0, rule: currentRule });
     if (humanSide === toPlay) {
-        setStatus("Your turn", "active");
+        setStatus("status_your_turn", "active");
     } else {
         triggerAISearch();
     }
@@ -723,7 +758,7 @@ function triggerAISearch() {
     if (gameOver) return;
     aiThinking = true;
     searchId++;
-    setStatus("AI thinking…", "thinking");
+    setStatus("status_ai_thinking", "thinking");
     const sims = parseInt(document.getElementById("sims_input").value, 10) || 128;
     worker.postMessage({
         type: "search",
@@ -743,6 +778,8 @@ function applyMoveLocal(action) {
         lastMove: lastMove ? { ...lastMove } : null,
         ply,
         gumbelPhases,
+        rootWDL: lastRootWDL,
+        nnWDL: lastNNWDL,
     });
     const r = (action / N) | 0, c = action % N;
     boardState = game.getNextState(boardState, action, toPlay);
@@ -753,11 +790,11 @@ function applyMoveLocal(action) {
     ply++;
     if (winner !== null) {
         gameOver = true;
-        let msg;
-        if      (winner === 1)  msg = "Black wins!";
-        else if (winner === -1) msg = "White wins!";
-        else                    msg = "Draw!";
-        setStatus(msg, "done");
+        let key;
+        if      (winner === 1)  key = "status_black_wins";
+        else if (winner === -1) key = "status_white_wins";
+        else                    key = "status_draw";
+        setStatus(key, "done");
     }
     publishStateForDrawing(state || {});
     drawAll();
@@ -800,7 +837,7 @@ worker.onmessage = (e) => {
         return;
     }
     if (data.type === "error") {
-        setStatus("Error: " + data.message, "error");
+        setStatusRaw(t("err_prefix", data.message), "error");
         aiThinking = false;
         return;
     }
@@ -839,7 +876,7 @@ worker.onmessage = (e) => {
         if (winner === null && humanSide !== toPlay) {
             // AI vs AI? Should not happen in normal play. Stop.
         } else if (winner === null) {
-            setStatus("Your turn", "active");
+            setStatus("status_your_turn", "active");
         }
     }
 };
@@ -854,6 +891,7 @@ document.getElementById("undo_btn").addEventListener("click", () => {
     if (toPlay !== humanSide) target = Math.max(0, target - 1);
     else                      target = Math.max(0, target - 2);
     if (target === history.length) return;
+    let restoredRootWDL = null, restoredNNWDL = null;
     while (history.length > target) {
         const prev = history.pop();
         boardState = prev.board;
@@ -861,6 +899,8 @@ document.getElementById("undo_btn").addEventListener("click", () => {
         lastMove = prev.lastMove;
         ply = prev.ply;
         gumbelPhases = prev.gumbelPhases;
+        restoredRootWDL = prev.rootWDL || null;
+        restoredNNWDL = prev.nnWDL || null;
     }
     gameOver = false;
     aiThinking = false;
@@ -868,11 +908,13 @@ document.getElementById("undo_btn").addEventListener("click", () => {
     while (valueHistory.length && valueHistory[valueHistory.length - 1].step > stoneCount(board1Dto2D(boardState))) {
         valueHistory.pop();
     }
+    renderWDL("root", restoredRootWDL);
+    renderWDL("nn", restoredNNWDL);
     publishStateForDrawing();
     drawAll();
     worker.postMessage({ type: "reset", boardSize: N, ply, rule: currentRule });
     if (toPlay === humanSide) {
-        setStatus("Your turn", "active");
+        setStatus("status_your_turn", "active");
     } else {
         triggerAISearch();
     }
@@ -918,28 +960,42 @@ document.getElementById("model_select").addEventListener("change", (ev) => {
     const m = modelById(id);
     if (!m) return;
     currentModelId = id;
-    showLoadingOverlay("Loading " + m.label + "…");
+    showLoadingOverlay("loading_model", m.label);
     searchId++;
     aiThinking = false;
     worker.postMessage({ type: "swap-model", modelUrl: "models/" + m.file });
 });
 
+// Re-render dynamic strings (status, loading overlay, modal title,
+// value-chart 'no data') when the user switches language.
+registerI18nCallback(() => {
+    rerenderStatus();
+    rerenderLoadingOverlay();
+    if (expandedSourceId) {
+        const card = document.getElementById(expandedSourceId).parentElement;
+        const titleEl = card.querySelector(".grid-title-text");
+        document.getElementById("heat_modal_title").textContent =
+            titleEl ? titleEl.textContent : t("heatmap_default_title");
+    }
+    if (typeof drawValueChart === "function") drawValueChart();
+});
+
 // --- Bootstrap on load ---
 (async function bootstrap() {
     populateSizeSelect();
-    showLoadingOverlay("Loading manifest…");
+    showLoadingOverlay("loading_manifest");
     try {
         await loadManifest();
     } catch (err) {
-        setStatus("manifest load failed: " + err.message, "error");
+        setStatusRaw(t("err_manifest_load", err.message), "error");
         return;
     }
     const startModel = modelById(currentModelId) || manifest.models[0];
     if (!startModel) {
-        setStatus("manifest empty — add models", "error");
+        setStatus("err_manifest_empty", "error");
         return;
     }
-    showLoadingOverlay("Loading " + startModel.label + "…");
+    showLoadingOverlay("loading_model", startModel.label);
     worker.postMessage({
         type: "init",
         modelUrl: "models/" + startModel.file,

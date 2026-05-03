@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SkyZero Gomoku · ONNX Web</title>
+  <title>SkyZero 五子棋 · ONNX Web</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -23,6 +23,16 @@
         document.documentElement.dataset.themeMode = 'auto';
       }
     })();
+    // Set lang before first paint so static fallback content is in the right language.
+    (function(){
+      try {
+        var lang = localStorage.getItem('skz_lang');
+        if (lang !== 'zh' && lang !== 'en') lang = 'zh';
+        document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+      } catch(e) {
+        document.documentElement.lang = 'zh-CN';
+      }
+    })();
   </script>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -31,7 +41,7 @@
   <div id="loading_overlay">
     <div class="loader-card">
       <div class="loader-spin"></div>
-      <div class="loader-text" id="loading_text">Loading model…</div>
+      <div class="loader-text" id="loading_text">正在加载模型…</div>
       <div class="loader-bar"><div class="loader-fill" id="loading_fill"></div></div>
       <div class="loader-pct" id="loading_pct">0%</div>
     </div>
@@ -41,22 +51,34 @@
     <!-- Header -->
     <header class="topbar">
       <div class="brand">
-        <div class="brand-title">SkyZero Gomoku</div>
-        <div class="brand-sub">AlphaZero-style self-play · ONNX · static web</div>
+        <div class="brand-title" data-i18n="brand_title">SkyZero 五子棋</div>
+        <div class="brand-sub" data-i18n="brand_sub">AlphaZero 风格自对弈 · ONNX · 静态网页</div>
       </div>
-      <button class="icon-btn" id="theme_toggle" aria-label="Toggle color theme" title="Toggle theme">
-        <svg class="sun-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="8" cy="8" r="3"></circle>
-          <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"></path>
-        </svg>
-        <svg class="moon-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
-        </svg>
-        <svg class="auto-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-          <circle cx="8" cy="8" r="6"></circle>
-          <path d="M8 2 a6 6 0 0 1 0 12 z" fill="currentColor" stroke="none"></path>
-        </svg>
-      </button>
+      <div class="topbar-actions">
+        <div class="seg-row compact" id="lang_seg" role="group" data-i18n-aria-group="aria_lang" aria-label="切换语言">
+          <button class="seg-btn" data-lang="zh" aria-pressed="true">中</button>
+          <button class="seg-btn" data-lang="en" aria-pressed="false">EN</button>
+        </div>
+        <div class="seg-row compact" id="theme_seg" role="group" data-i18n-aria-group="aria_theme" aria-label="切换配色主题">
+          <button class="seg-btn" data-theme="auto" aria-pressed="true" data-i18n-title="theme_label_auto" data-i18n-aria="theme_label_auto" aria-label="自动" title="自动">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <circle cx="8" cy="8" r="6"></circle>
+              <path d="M8 2 a6 6 0 0 1 0 12 z" fill="currentColor" stroke="none"></path>
+            </svg>
+          </button>
+          <button class="seg-btn" data-theme="light" aria-pressed="false" data-i18n-title="theme_label_light" data-i18n-aria="theme_label_light" aria-label="明亮" title="明亮">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="8" cy="8" r="3"></circle>
+              <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"></path>
+            </svg>
+          </button>
+          <button class="seg-btn" data-theme="dark" aria-pressed="false" data-i18n-title="theme_label_dark" data-i18n-aria="theme_label_dark" aria-label="暗黑" title="暗黑">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
     </header>
 
     <div class="main">
@@ -65,26 +87,26 @@
         <div class="card status-card">
           <div class="status-pill" id="status_pill" data-variant="idle">
             <span class="dot"></span>
-            <span id="status">idle</span>
+            <span id="status">空闲</span>
           </div>
         </div>
 
         <div class="card">
           <div class="card-body side-row">
-            <div class="card-title" style="margin:0;">Model</div>
+            <div class="card-title" style="margin:0;" data-i18n="label_model">模型</div>
             <select id="model_select" class="num" style="flex:1; min-width:0; height:32px; text-align:left; font-family: var(--font-mono);"></select>
           </div>
         </div>
 
         <div class="card">
           <div class="card-body side-row">
-            <div class="card-title" style="margin:0;">Human side</div>
+            <div class="card-title" style="margin:0;" data-i18n="label_human_side">我方执子</div>
             <div class="seg-row">
               <button class="seg-btn" id="side_black" aria-pressed="true">
-                <span class="seg-stone black"></span>Black
+                <span class="seg-stone black"></span><span data-i18n="side_black">黑棋</span>
               </button>
               <button class="seg-btn" id="side_white" aria-pressed="false">
-                <span class="seg-stone white"></span>White
+                <span class="seg-stone white"></span><span data-i18n="side_white">白棋</span>
               </button>
             </div>
           </div>
@@ -92,27 +114,27 @@
 
         <div class="card">
           <div class="card-body side-row">
-            <div class="card-title" style="margin:0;">Board size</div>
+            <div class="card-title" style="margin:0;" data-i18n="label_board_size">棋盘大小</div>
             <select id="size_select" class="num" style="width:auto; min-width:84px; height:32px; text-align:left; font-family: var(--font-mono);"></select>
           </div>
         </div>
 
         <div class="card">
           <div class="card-body">
-            <div class="card-title">Rule</div>
+            <div class="card-title" data-i18n="label_rule">规则</div>
             <div class="seg-row">
-              <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="true">Renju</button>
-              <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false">Standard</button>
-              <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false">Freestyle</button>
+              <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="true"  data-i18n="rule_renju">连珠</button>
+              <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" data-i18n="rule_standard">标准</button>
+              <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false" data-i18n="rule_freestyle">无禁</button>
             </div>
           </div>
         </div>
 
         <div class="card">
           <div class="card-body">
-            <div class="card-title">Search</div>
+            <div class="card-title" data-i18n="label_search">搜索</div>
             <div class="field-row">
-              <label for="sims_input">sims</label>
+              <label for="sims_input" data-i18n="label_sims">模拟数</label>
               <input class="num" type="number" id="sims_input" min="1" step="1" value="128">
             </div>
           </div>
@@ -120,9 +142,9 @@
 
         <div class="card">
           <div class="card-body">
-            <div class="card-title">Value estimates</div>
+            <div class="card-title" data-i18n="label_value_estimates">胜率估计</div>
             <div class="wdl-row">
-              <span class="wdl-label">root</span>
+              <span class="wdl-label" data-i18n="legend_root">根</span>
               <div class="wdl-bar" id="wdl_root_bar">
                 <span class="seg w" style="width:0"></span>
                 <span class="seg d" style="width:0"></span>
@@ -132,7 +154,7 @@
             </div>
             <div class="wdl-detail" id="wdl_root_detail"></div>
             <div class="wdl-row" style="margin-top:4px;">
-              <span class="wdl-label">nn</span>
+              <span class="wdl-label" data-i18n="legend_nn">网络</span>
               <div class="wdl-bar" id="wdl_nn_bar">
                 <span class="seg w" style="width:0"></span>
                 <span class="seg d" style="width:0"></span>
@@ -143,9 +165,9 @@
             <div class="wdl-detail" id="wdl_nn_detail"></div>
             <div class="value-chart-wrap">
               <div class="value-chart-legend">
-                <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span>root</span>
-                <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span>nn</span>
-                <span class="vc-axis">W/L · −1…+1</span>
+                <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span><span data-i18n="legend_root">根</span></span>
+                <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span><span data-i18n="legend_nn">网络</span></span>
+                <span class="vc-axis" data-i18n="legend_axis">胜负 · −1…+1</span>
               </div>
               <canvas id="value_chart"></canvas>
             </div>
@@ -159,8 +181,8 @@
           <canvas id="board"></canvas>
         </div>
         <div class="board-actions">
-          <button class="btn primary" id="new_btn">New game</button>
-          <button class="btn danger-ghost" id="undo_btn">Undo</button>
+          <button class="btn primary" id="new_btn" data-i18n="btn_new_game">新对局</button>
+          <button class="btn danger-ghost" id="undo_btn" data-i18n="btn_undo">悔棋</button>
         </div>
       </section>
 
@@ -168,38 +190,38 @@
       <aside class="side-col" id="right_col">
         <div class="grids">
           <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text">Improved Policy</span>
-              <button class="expand-btn" data-target="h_mcts_policy" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_improved_policy">改进策略</span>
+              <button class="expand-btn" data-target="h_mcts_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
             </div>
             <canvas class="heat" id="h_mcts_policy"></canvas>
           </div>
           <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text">Visits Dist</span>
-              <button class="expand-btn" data-target="h_mcts_visits" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_visits_dist">访问分布</span>
+              <button class="expand-btn" data-target="h_mcts_visits" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
             </div>
             <canvas class="heat" id="h_mcts_visits"></canvas>
           </div>
           <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text">NN Policy</span>
-              <button class="expand-btn" data-target="h_nn_policy" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_policy">网络策略</span>
+              <button class="expand-btn" data-target="h_nn_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
             </div>
             <canvas class="heat" id="h_nn_policy"></canvas>
           </div>
           <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text">NN Opp Policy</span>
-              <button class="expand-btn" data-target="h_nn_opp_policy" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_opp_policy">对手策略</span>
+              <button class="expand-btn" data-target="h_nn_opp_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
             </div>
             <canvas class="heat" id="h_nn_opp_policy"></canvas>
           </div>
           <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text">NN Futurepos +8</span>
-              <button class="expand-btn" data-target="h_nn_futurepos_8" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_futurepos_8">未来落点 +8</span>
+              <button class="expand-btn" data-target="h_nn_futurepos_8" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
             </div>
             <canvas class="heat" id="h_nn_futurepos_8"></canvas>
           </div>
           <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text">NN Futurepos +32</span>
-              <button class="expand-btn" data-target="h_nn_futurepos_32" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_futurepos_32">未来落点 +32</span>
+              <button class="expand-btn" data-target="h_nn_futurepos_32" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
             </div>
             <canvas class="heat" id="h_nn_futurepos_32"></canvas>
           </div>
@@ -211,8 +233,8 @@
     <div class="heat-modal hidden" id="heat_modal" role="dialog" aria-modal="true">
       <div class="heat-modal-card">
         <div class="heat-modal-header">
-          <span class="heat-modal-title" id="heat_modal_title">Heatmap</span>
-          <button class="heat-modal-close" id="heat_modal_close" aria-label="Close">
+          <span class="heat-modal-title" id="heat_modal_title">热力图</span>
+          <button class="heat-modal-close" id="heat_modal_close" data-i18n-aria="aria_close" aria-label="关闭">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l10 10M13 3L3 13"/></svg>
           </button>
         </div>
@@ -221,6 +243,7 @@
     </div>
   </div>
 
+  <script src="i18n.js"></script>
   <script src="gomoku.js"></script>
   <script src="mcts.js"></script>
   <script src="main.js"></script>
