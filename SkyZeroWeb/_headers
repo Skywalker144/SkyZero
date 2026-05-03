@@ -1,0 +1,8 @@
+/*.onnx
+  Cache-Control: public, max-age=31536000, immutable
+
+/models/manifest.json
+  Cache-Control: public, max-age=300
+
+/*
+  Cache-Control: public, max-age=3600

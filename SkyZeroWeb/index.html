@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkyZero Gomoku · ONNX Web</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    // Set theme before first paint to avoid flash. Tri-state: auto/light/dark.
+    (function(){
+      try {
+        var saved = localStorage.getItem('skz_theme');
+        var mode = (saved === 'light' || saved === 'dark') ? saved : 'auto';
+        var resolved = (mode === 'auto')
+          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : mode;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.themeMode = mode;
+      } catch(e) {
+        document.documentElement.dataset.theme = 'light';
+        document.documentElement.dataset.themeMode = 'auto';
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Loading overlay shown while downloading the first ONNX model -->
+  <div id="loading_overlay">
+    <div class="loader-card">
+      <div class="loader-spin"></div>
+      <div class="loader-text" id="loading_text">Loading model…</div>
+      <div class="loader-bar"><div class="loader-fill" id="loading_fill"></div></div>
+      <div class="loader-pct" id="loading_pct">0%</div>
+    </div>
+  </div>
+
+  <div class="app">
+    <!-- Header -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-title">SkyZero Gomoku</div>
+        <div class="brand-sub">AlphaZero-style self-play · ONNX · static web</div>
+      </div>
+      <button class="icon-btn" id="theme_toggle" aria-label="Toggle color theme" title="Toggle theme">
+        <svg class="sun-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="8" cy="8" r="3"></circle>
+          <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"></path>
+        </svg>
+        <svg class="moon-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
+        </svg>
+        <svg class="auto-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <circle cx="8" cy="8" r="6"></circle>
+          <path d="M8 2 a6 6 0 0 1 0 12 z" fill="currentColor" stroke="none"></path>
+        </svg>
+      </button>
+    </header>
+
+    <div class="main">
+      <!-- Left column: status, model, side, size, search params, value -->
+      <aside class="side-col" id="left_col">
+        <div class="card status-card">
+          <div class="status-pill" id="status_pill" data-variant="idle">
+            <span class="dot"></span>
+            <span id="status">idle</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="card-title">Model</div>
+            <select id="model_select" class="num" style="width:100%; height:32px; text-align:left; font-family: var(--font-mono);"></select>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body side-row">
+            <div class="card-title" style="margin:0;">Human side</div>
+            <div class="seg-row">
+              <button class="seg-btn" id="side_black" aria-pressed="true">
+                <span class="seg-stone black"></span>Black
+              </button>
+              <button class="seg-btn" id="side_white" aria-pressed="false">
+                <span class="seg-stone white"></span>White
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body side-row">
+            <div class="card-title" style="margin:0;">Board size</div>
+            <select id="size_select" class="num" style="width:auto; min-width:84px; height:32px; text-align:left; font-family: var(--font-mono);"></select>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="card-title">Rule</div>
+            <div class="seg-row">
+              <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="true">Renju</button>
+              <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false">Standard</button>
+              <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false">Freestyle</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="card-title">Search</div>
+            <div class="field-row">
+              <label for="sims_input">sims</label>
+              <input class="num" type="number" id="sims_input" min="1" step="1" value="256">
+            </div>
+            <div class="field-row">
+              <label for="gm_input">gumbel_m</label>
+              <input class="num" type="number" id="gm_input" min="1" step="1" value="16">
+            </div>
+            <div class="divider"></div>
+            <label class="toggle">
+              <span>Gumbel overlay</span>
+              <span style="display:inline-flex;">
+                <input type="checkbox" id="gumbel_toggle" checked>
+                <span class="track"></span>
+              </span>
+            </label>
+            <!-- root symmetry prune toggle removed: no symmetry in browser version -->
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="card-title">Value estimates</div>
+            <div class="wdl-row">
+              <span class="wdl-label">root</span>
+              <div class="wdl-bar" id="wdl_root_bar">
+                <span class="seg w" style="width:0"></span>
+                <span class="seg d" style="width:0"></span>
+                <span class="seg l" style="width:0"></span>
+              </div>
+              <span class="wdl-wl" id="wdl_root_wl">—</span>
+            </div>
+            <div class="wdl-detail" id="wdl_root_detail"></div>
+            <div class="wdl-row" style="margin-top:4px;">
+              <span class="wdl-label">nn</span>
+              <div class="wdl-bar" id="wdl_nn_bar">
+                <span class="seg w" style="width:0"></span>
+                <span class="seg d" style="width:0"></span>
+                <span class="seg l" style="width:0"></span>
+              </div>
+              <span class="wdl-wl" id="wdl_nn_wl">—</span>
+            </div>
+            <div class="wdl-detail" id="wdl_nn_detail"></div>
+            <div class="value-chart-wrap">
+              <div class="value-chart-legend">
+                <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span>root</span>
+                <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span>nn</span>
+                <span class="vc-axis">W/L · −1…+1</span>
+              </div>
+              <canvas id="value_chart"></canvas>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center column: board -->
+      <section class="board-col">
+        <div class="card board-card">
+          <canvas id="board"></canvas>
+          <div id="gumbel_legend">
+            <span class="legend-head">Gumbel Sequential Halving</span>
+            <span class="chip"><span class="dot" style="background:#9ca3af;"></span>16</span>
+            <span class="chip"><span class="dot" style="background:#3b82f6;"></span>8</span>
+            <span class="chip"><span class="dot" style="background:#10b981;"></span>4</span>
+            <span class="chip"><span class="dot" style="background:#f59e0b;"></span>2</span>
+            <span class="chip"><span class="dot" style="background:#ef4444;"></span>1 (picked)</span>
+          </div>
+        </div>
+        <div class="board-actions">
+          <button class="btn primary" id="new_btn">New game</button>
+          <button class="btn danger-ghost" id="undo_btn">Undo</button>
+        </div>
+      </section>
+
+      <!-- Right column: 6 heatmaps -->
+      <aside class="side-col" id="right_col">
+        <div class="grids">
+          <div class="card grid-card">
+            <div class="grid-title"><span class="grid-title-text">Improved Policy</span>
+              <button class="expand-btn" data-target="h_mcts_policy" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            </div>
+            <canvas class="heat" id="h_mcts_policy"></canvas>
+          </div>
+          <div class="card grid-card">
+            <div class="grid-title"><span class="grid-title-text">Visits Dist</span>
+              <button class="expand-btn" data-target="h_mcts_visits" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            </div>
+            <canvas class="heat" id="h_mcts_visits"></canvas>
+          </div>
+          <div class="card grid-card">
+            <div class="grid-title"><span class="grid-title-text">NN Policy</span>
+              <button class="expand-btn" data-target="h_nn_policy" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            </div>
+            <canvas class="heat" id="h_nn_policy"></canvas>
+          </div>
+          <div class="card grid-card">
+            <div class="grid-title"><span class="grid-title-text">NN Opp Policy</span>
+              <button class="expand-btn" data-target="h_nn_opp_policy" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            </div>
+            <canvas class="heat" id="h_nn_opp_policy"></canvas>
+          </div>
+          <div class="card grid-card">
+            <div class="grid-title"><span class="grid-title-text">NN Futurepos +8</span>
+              <button class="expand-btn" data-target="h_nn_futurepos_8" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            </div>
+            <canvas class="heat" id="h_nn_futurepos_8"></canvas>
+          </div>
+          <div class="card grid-card">
+            <div class="grid-title"><span class="grid-title-text">NN Futurepos +32</span>
+              <button class="expand-btn" data-target="h_nn_futurepos_32" aria-label="Expand"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+            </div>
+            <canvas class="heat" id="h_nn_futurepos_32"></canvas>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Heat modal (fullscreen single heatmap) -->
+    <div class="heat-modal hidden" id="heat_modal" role="dialog" aria-modal="true">
+      <div class="heat-modal-card">
+        <div class="heat-modal-header">
+          <span class="heat-modal-title" id="heat_modal_title">Heatmap</span>
+          <button class="heat-modal-close" id="heat_modal_close" aria-label="Close">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l10 10M13 3L3 13"/></svg>
+          </button>
+        </div>
+        <canvas id="heat_modal_canvas"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script src="gomoku.js"></script>
+  <script src="mcts.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

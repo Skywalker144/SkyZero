@@ -1,0 +1,15 @@
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python (export_onnx.py byproducts)
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Local dev
+.cache/
