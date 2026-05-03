@@ -175,6 +175,7 @@ struct CliArgs {
     int num_simulations_override = -1;
     int human_side_override = 0;  // 0 = ask interactively
     int board_size_override = -1;
+    std::string rule_override;  // empty = use cfg
 };
 
 static CliArgs parse_cli(int argc, char** argv) {
@@ -190,12 +191,13 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
         else if (k == "--human-side") a.human_side_override = std::stoi(need("--human-side"));
         else if (k == "--board-size") a.board_size_override = std::stoi(need("--board-size"));
+        else if (k == "--rule") a.rule_override = need("--rule");
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.config.empty()) {
         throw std::runtime_error("usage: gomoku_play --model PATH --config PATH "
                                  "[--num-simulations N] [--human-side {1,-1}] "
-                                 "[--board-size N]");
+                                 "[--board-size N] [--rule {renju,standard,freestyle}]");
     }
     return a;
 }
@@ -258,6 +260,7 @@ int main(int argc, char** argv) {
         // V5: 5-plane padded encoding + 12-dim global features
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
         const std::string rule_str = ([&]() -> std::string {
+            if (!cli.rule_override.empty()) return cli.rule_override;
             auto it = cfg_map.find("RULE");
             return (it != cfg_map.end()) ? it->second : "renju";
         })();
