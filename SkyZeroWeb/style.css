@@ -154,6 +154,14 @@
     display: flex; flex-direction: column; gap: 12px;
     min-width: 0;
   }
+  @media (min-width: 1400px) {
+    /* Keep total page within viewport so board + action buttons are never obscured.
+       Reserved (~170px): app padding-y (64) + topbar with margin (~84) + main margin-bottom (20). */
+    .side-col {
+      max-height: calc(100vh - 170px);
+      overflow-y: auto;
+    }
+  }
   .seg-row { display: flex; gap: 8px; }
   .side-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .side-row .seg-row { flex: 1; max-width: 180px; }
@@ -366,28 +374,6 @@
     background: var(--board-bg); border-radius: var(--radius-sm);
     display: block; cursor: crosshair;
   }
-  #gumbel_legend {
-    font-size: 11.5px; color: var(--fg-muted);
-    margin-top: 14px;
-    display: flex; align-items: center; justify-content: center;
-    flex-wrap: wrap; gap: 6px 10px;
-  }
-  #gumbel_legend .legend-head {
-    font-weight: 600; color: var(--fg-subtle);
-    text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px;
-    margin-right: 2px;
-  }
-  #gumbel_legend .chip {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 2px 8px; border-radius: 999px;
-    background: var(--surface-2);
-    font-family: var(--font-mono);
-    font-size: 11px;
-  }
-  #gumbel_legend .dot {
-    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
-  }
-
   /* ---------- Heat grid ---------- */
   #right_col { min-width: 0; }
   .grids {

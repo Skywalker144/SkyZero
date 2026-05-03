@@ -70,9 +70,9 @@
         </div>
 
         <div class="card">
-          <div class="card-body">
-            <div class="card-title">Model</div>
-            <select id="model_select" class="num" style="width:100%; height:32px; text-align:left; font-family: var(--font-mono);"></select>
+          <div class="card-body side-row">
+            <div class="card-title" style="margin:0;">Model</div>
+            <select id="model_select" class="num" style="flex:1; min-width:0; height:32px; text-align:left; font-family: var(--font-mono);"></select>
           </div>
         </div>
 
@@ -113,21 +113,8 @@
             <div class="card-title">Search</div>
             <div class="field-row">
               <label for="sims_input">sims</label>
-              <input class="num" type="number" id="sims_input" min="1" step="1" value="256">
+              <input class="num" type="number" id="sims_input" min="1" step="1" value="128">
             </div>
-            <div class="field-row">
-              <label for="gm_input">gumbel_m</label>
-              <input class="num" type="number" id="gm_input" min="1" step="1" value="16">
-            </div>
-            <div class="divider"></div>
-            <label class="toggle">
-              <span>Gumbel overlay</span>
-              <span style="display:inline-flex;">
-                <input type="checkbox" id="gumbel_toggle" checked>
-                <span class="track"></span>
-              </span>
-            </label>
-            <!-- root symmetry prune toggle removed: no symmetry in browser version -->
           </div>
         </div>
 
@@ -170,14 +157,6 @@
       <section class="board-col">
         <div class="card board-card">
           <canvas id="board"></canvas>
-          <div id="gumbel_legend">
-            <span class="legend-head">Gumbel Sequential Halving</span>
-            <span class="chip"><span class="dot" style="background:#9ca3af;"></span>16</span>
-            <span class="chip"><span class="dot" style="background:#3b82f6;"></span>8</span>
-            <span class="chip"><span class="dot" style="background:#10b981;"></span>4</span>
-            <span class="chip"><span class="dot" style="background:#f59e0b;"></span>2</span>
-            <span class="chip"><span class="dot" style="background:#ef4444;"></span>1 (picked)</span>
-          </div>
         </div>
         <div class="board-actions">
           <button class="btn primary" id="new_btn">New game</button>

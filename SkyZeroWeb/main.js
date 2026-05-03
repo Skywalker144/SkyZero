@@ -74,7 +74,10 @@ const rightCol = document.getElementById("right_col");
 const boardCard = document.querySelector(".board-card");
 const boardActions = document.querySelector(".board-actions");
 const mainEl = document.querySelector(".main");
-const gumbelLegend = document.getElementById("gumbel_legend");
+
+const topbarEl = document.querySelector(".topbar");
+const appEl = document.querySelector(".app");
+const boardColEl = document.querySelector(".board-col");
 
 function syncBoardSize() {
     if (window.matchMedia("(max-width: 1399px)").matches) {
@@ -92,16 +95,25 @@ function syncBoardSize() {
     const cardCS = getComputedStyle(boardCard);
     const cardPadX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
     const cardPadY = parseFloat(cardCS.paddingTop)  + parseFloat(cardCS.paddingBottom);
-    const legendCS = getComputedStyle(gumbelLegend);
-    const legendH = gumbelLegend.classList.contains("hidden")
-        ? 0
-        : gumbelLegend.offsetHeight + parseFloat(legendCS.marginTop || 0);
-    const sizeByHeight = leftCol.offsetHeight - cardPadY - legendH;
+    const legendH = 0;
     const mainCS = getComputedStyle(mainEl);
     const gap = parseFloat(mainCS.columnGap || mainCS.gap) || 20;
     const remaining = mainEl.clientWidth - leftCol.offsetWidth - 2 * gap;
     const sizeByWidth = Math.floor(remaining / 2 - cardPadX);
-    let size = Math.max(360, Math.min(sizeByHeight, sizeByWidth));
+
+    // Cap by viewport height so board + action buttons stay fully visible.
+    const topbarCS = getComputedStyle(topbarEl);
+    const topbarH = topbarEl.offsetHeight + parseFloat(topbarCS.marginBottom || 0);
+    const appCS = getComputedStyle(appEl);
+    const appPadY = parseFloat(appCS.paddingTop) + parseFloat(appCS.paddingBottom);
+    const mainMb = parseFloat(mainCS.marginBottom || 0);
+    const colCS = getComputedStyle(boardColEl);
+    const colGap = parseFloat(colCS.rowGap || colCS.gap) || 0;
+    const actionsH = boardActions.offsetHeight;
+    const reserved = appPadY + topbarH + mainMb + cardPadY + legendH + colGap + actionsH;
+    const sizeByViewport = window.innerHeight - reserved;
+
+    let size = Math.max(280, Math.min(sizeByWidth, sizeByViewport));
     CELL = Math.max(20, Math.floor((size - 2 * MARGIN) / (N - 1)));
     BOARD_LOGICAL = MARGIN * 2 + CELL * (N - 1);
     const need = cv.width !== Math.round(BOARD_LOGICAL * DPR);
@@ -115,15 +127,8 @@ window.addEventListener("resize", syncBoardSize);
 
 // Module-level game-display state. Updated by handlers in Task 24.
 let state = null;        // { board: 2D N×N int, last_move: [r,c]|null, board_size: N }
-let showGumbel = true;
+let showGumbel = false;
 let gumbelPhases = null; // last search's gumbel phases [[r,c]...] per phase
-
-document.getElementById("gumbel_toggle").addEventListener("change", (ev) => {
-    showGumbel = ev.target.checked;
-    gumbelLegend.classList.toggle("hidden", !showGumbel);
-    syncBoardSize();
-    draw();
-});
 
 function draw() {
     clearLogical(ctx);
@@ -719,15 +724,14 @@ function triggerAISearch() {
     aiThinking = true;
     searchId++;
     setStatus("AI thinking…", "thinking");
-    const sims = parseInt(document.getElementById("sims_input").value, 10) || 256;
-    const gm = parseInt(document.getElementById("gm_input").value, 10) || 16;
+    const sims = parseInt(document.getElementById("sims_input").value, 10) || 128;
     worker.postMessage({
         type: "search",
         state: boardState,
         toPlay: toPlay,
         ply: ply,
         sims: sims,
-        gumbel_m: gm,
+        gumbel_m: 16,
         searchId: searchId,
     });
 }
