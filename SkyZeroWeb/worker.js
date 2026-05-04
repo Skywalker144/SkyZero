@@ -1,6 +1,10 @@
+// Propagate main.js's `worker.js?v=<ts>` cache-bust to importScripts: without
+// it, _headers' max-age=3600 makes the browser keep serving stale gomoku.js /
+// mcts.js even when the worker itself is refreshed.
+const _qs = self.location.search || ("?v=" + Date.now());
 importScripts("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js");
-importScripts("gomoku.js");
-importScripts("mcts.js");
+importScripts("gomoku.js" + _qs);
+importScripts("mcts.js" + _qs);
 
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/";
 ort.env.wasm.numThreads = 1;   // SharedArrayBuffer cross-origin fragility; force single-thread
