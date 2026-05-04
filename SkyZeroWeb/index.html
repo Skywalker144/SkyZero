@@ -45,6 +45,14 @@
         if (v === '1') document.body.classList.add('show-analysis');
       } catch(e) {}
     })();
+    // Apply search-disabled before first paint to avoid the sims input
+    // flashing on then collapsing when the toggle was previously off.
+    (function(){
+      try {
+        var v = localStorage.getItem('skz_search_enabled');
+        if (v === '0') document.body.classList.add('search-disabled');
+      } catch(e) {}
+    })();
   </script>
 
   <!-- Loading overlay shown while downloading the first ONNX model -->
@@ -138,13 +146,19 @@
         <div class="card">
           <div class="card-body side-row">
             <div class="card-title" style="margin:0;" data-i18n="label_board_size">棋盘大小</div>
-            <select id="size_select" class="num" style="width:auto; min-width:84px; height:32px; text-align:left; font-family: var(--font-mono);"></select>
+            <div class="seg-row" id="size_seg" role="group" aria-label="棋盘大小">
+              <button class="seg-btn" data-size="13" aria-pressed="false">13</button>
+              <button class="seg-btn" data-size="14" aria-pressed="false">14</button>
+              <button class="seg-btn" data-size="15" aria-pressed="true">15</button>
+              <button class="seg-btn" data-size="16" aria-pressed="false">16</button>
+              <button class="seg-btn" data-size="17" aria-pressed="false">17</button>
+            </div>
           </div>
         </div>
 
         <div class="card">
-          <div class="card-body">
-            <div class="card-title" data-i18n="label_rule">规则</div>
+          <div class="card-body side-row">
+            <div class="card-title" style="margin:0;" data-i18n="label_rule">规则</div>
             <div class="seg-row">
               <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="true"  data-i18n="rule_renju">连珠</button>
               <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" data-i18n="rule_standard">标准</button>
@@ -155,15 +169,25 @@
 
         <div class="card">
           <div class="card-body">
-            <div class="card-title" data-i18n="label_search">搜索</div>
-            <div class="field-row">
-              <label for="sims_input">
-                <span class="label-sims-simple"   data-i18n="label_sims_depth">思考深度</span>
-                <span class="label-sims-analysis" data-i18n="label_sims_count">模拟次数</span>
+            <div class="side-row">
+              <div class="card-title" style="margin:0;">
+                <span data-i18n="label_search">搜索</span>
+                <span class="card-title-hint" data-i18n="label_search_hint">(关闭则 AI 直接凭直觉落子)</span>
+              </div>
+              <label class="toggle" data-i18n-aria="aria_search_toggle" aria-label="切换搜索">
+                <input type="checkbox" id="search_enable_input" checked aria-controls="sims_wrapper">
+                <span class="track"></span>
               </label>
-              <input class="num" type="number" id="sims_input" min="0" step="1" value="32">
             </div>
-            <div id="sims_mode_hint" class="mode-hint" hidden data-i18n="pure_nn_hint">纯网络 — 策略头 argmax</div>
+            <div id="sims_wrapper">
+              <div class="field-row">
+                <label for="sims_input">
+                  <span class="label-sims-simple"   data-i18n="label_sims_depth">思考深度</span>
+                  <span class="label-sims-analysis" data-i18n="label_sims_count">模拟次数</span>
+                </label>
+                <input class="num" type="number" id="sims_input" min="0" step="1" value="32">
+              </div>
+            </div>
           </div>
         </div>
       </aside>
