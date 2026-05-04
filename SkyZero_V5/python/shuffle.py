@@ -288,6 +288,7 @@ def main() -> int:
     min_rows = _env_int("MIN_ROWS", 250_000)
     exponent = _env_float("TAPER_WINDOW_EXPONENT", 0.65)
     expand_per_row = _env_float("EXPAND_WINDOW_PER_ROW", 0.4)
+    keep_target_rows = _env_int("KEEP_TARGET_ROWS", 20_000_000)
 
     if not selfplay_dir.exists():
         print(f"[Shuffle] selfplay dir missing: {selfplay_dir}", file=sys.stderr)
@@ -333,23 +334,33 @@ def main() -> int:
             pool.join()
         return 2
 
-    window = compute_window_size(total, min_rows, exponent, expand_per_row)
+    pool_size = compute_window_size(total, min_rows, exponent, expand_per_row)
+    keep = min(pool_size, keep_target_rows)
+    ratio = keep / pool_size if pool_size > 0 else 1.0
 
-    print(f"[Shuffle] total_rows={total} window={window} "
-          f"(min_rows={min_rows}, exponent={exponent}, "
-          f"expand_per_row={expand_per_row}) discover={t_discover:.2f}s")
+    print(f"[Shuffle] total_rows={total} pool={pool_size} keep={keep} "
+          f"ratio={ratio:.4f} (min_rows={min_rows}, exponent={exponent}, "
+          f"expand_per_row={expand_per_row}, keep_target={keep_target_rows}) "
+          f"discover={t_discover:.2f}s")
 
     rng = np.random.default_rng(None if args.seed < 0 else args.seed)
 
-    # Take newest files until we cover `window` rows. Partial-take the oldest.
+    # KataGo-aligned: walk newest-first to define an eligible pool of `pool_size`
+    # rows, then per-file sub-sample at uniform `ratio` so old rows are partially
+    # retained when pool > keep_target_rows. Within-file sampling is already
+    # uniform-random in `_shardify_job`.
     chosen: list[tuple[pathlib.Path, int]] = []
+    pool_covered = 0
     covered = 0
     for p, r in files_rows:
-        if covered >= window:
+        if pool_covered >= pool_size:
             break
-        take = min(r, window - covered)
-        chosen.append((p, take))
-        covered += take
+        elig = min(r, pool_size - pool_covered)
+        take = int(round(elig * ratio))
+        if take > 0:
+            chosen.append((p, take))
+            covered += take
+        pool_covered += elig
 
     shard_rows = args.shard_rows
     K = max(1, math.ceil(covered / shard_rows))
