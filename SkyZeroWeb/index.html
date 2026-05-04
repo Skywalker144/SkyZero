@@ -165,7 +165,21 @@
             <div id="sims_mode_hint" class="mode-hint" hidden data-i18n="pure_nn_hint">纯网络 — 策略头 argmax</div>
           </div>
         </div>
+      </aside>
 
+      <!-- Center column: board -->
+      <section class="board-col">
+        <div class="card board-card">
+          <canvas id="board"></canvas>
+        </div>
+        <div class="board-actions">
+          <button class="btn primary" id="new_btn" data-i18n="btn_new_game">新对局</button>
+          <button class="btn danger-ghost" id="undo_btn" data-i18n="btn_undo">悔棋</button>
+        </div>
+      </section>
+
+      <!-- Right column: value estimates + (in analysis mode) 6 heatmaps -->
+      <aside class="side-col" id="right_col">
         <div class="card">
           <div class="card-body">
             <div class="card-title" data-i18n="label_value_estimates">胜率估计</div>
@@ -192,28 +206,13 @@
             <div class="value-chart-wrap">
               <div class="value-chart-legend">
                 <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span><span data-i18n="legend_root">根</span></span>
-                <span class="vc-item vc-item--nn"><span class="vc-swatch" style="background:#cf222e;"></span><span data-i18n="legend_nn">网络</span></span>
+                <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span><span data-i18n="legend_nn">网络</span></span>
                 <span class="vc-axis" data-i18n="legend_axis">胜负 · −1…+1</span>
               </div>
               <canvas id="value_chart"></canvas>
             </div>
           </div>
         </div>
-      </aside>
-
-      <!-- Center column: board -->
-      <section class="board-col">
-        <div class="card board-card">
-          <canvas id="board"></canvas>
-        </div>
-        <div class="board-actions">
-          <button class="btn primary" id="new_btn" data-i18n="btn_new_game">新对局</button>
-          <button class="btn danger-ghost" id="undo_btn" data-i18n="btn_undo">悔棋</button>
-        </div>
-      </section>
-
-      <!-- Right column: 6 heatmaps -->
-      <aside class="side-col" id="right_col">
         <div class="grids">
           <div class="card grid-card">
             <div class="grid-title"><span class="grid-title-text" data-i18n="heat_improved_policy">改进策略</span>

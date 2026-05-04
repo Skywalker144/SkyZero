@@ -548,12 +548,21 @@
 .loader-pct { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
 
   /* ---------- Show-analysis toggle ---------- */
-  /* Default state (no body.show-analysis): hide the right-column heatmaps,
-     the network WDL row, and the "网络" legend item on the value chart.
-     Toggle wiring lives in main.js (setShowAnalysis). */
-  body:not(.show-analysis) #right_col,
+  /* Default state (no body.show-analysis): hide the heatmap grid, the
+     network WDL row + detail, the value-chart legend, and the "根" WDL
+     label (with only the root bar present, the card title alone is enough
+     to caption it). Right column itself stays visible to host the
+     value-estimates card to the right of the board. Toggle wiring lives
+     in main.js (setShowAnalysis). */
+  body:not(.show-analysis) .grids,
   body:not(.show-analysis) .wdl-row--nn,
   body:not(.show-analysis) #wdl_nn_detail,
-  body:not(.show-analysis) .vc-item--nn {
+  body:not(.show-analysis) .value-chart-legend,
+  body:not(.show-analysis) .wdl-label {
     display: none;
+  }
+  /* When the wdl-label is hidden, drop its column from the row's grid
+     so the bar stretches into the freed space. */
+  body:not(.show-analysis) .wdl-row {
+    grid-template-columns: minmax(0,1fr) 64px;
   }
