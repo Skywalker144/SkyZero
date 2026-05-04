@@ -169,10 +169,10 @@ function syncBoardSize() {
     const remaining = mainEl.clientWidth - leftCol.offsetWidth - 2 * gap;
     // Analysis mode: right col equals board width (heatmaps take the same
     // span as the board), so board gets half of the remaining space.
-    // Simple mode: right col is a fixed 320px (mirroring the left col), so
+    // Simple mode: right col is a fixed 350px (mirroring the left col), so
     // the board fills everything else. Keep this constant in sync with the
-    // CSS rule `body:not(.show-analysis) #right_col { width: 320px; }`.
-    const SIMPLE_RIGHT_COL_PX = 320;
+    // CSS rule `body:not(.show-analysis) #right_col { width: 350px; }`.
+    const SIMPLE_RIGHT_COL_PX = 350;
     const isSimple = !document.body.classList.contains("show-analysis");
     const sizeByWidth = isSimple
         ? Math.floor(remaining - SIMPLE_RIGHT_COL_PX - cardPadX)
@@ -849,7 +849,7 @@ function triggerAISearch() {
     searchId++;
     setStatus("status_ai_thinking", "thinking");
     const simsRaw = parseInt(document.getElementById("sims_input").value, 10);
-    const sims = (Number.isFinite(simsRaw) && simsRaw >= 0) ? simsRaw : 128;
+    const sims = (Number.isFinite(simsRaw) && simsRaw >= 0) ? simsRaw : 32;
     worker.postMessage({
         type: "search",
         state: boardState,
