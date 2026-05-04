@@ -98,7 +98,7 @@ public:
         std::lock_guard<std::mutex> lock(mtx_);
         const int size = sizes_[size_dist_(rng_)];
         const RuleType rule = rules_[rule_dist_(rng_)];
-        const bool forbidden_plane = (rule != RuleType::FREESTYLE);
+        const bool forbidden_plane = (rule == RuleType::RENJU);
         return Gomoku(size, rule, forbidden_plane);
     }
 
