@@ -79,6 +79,28 @@ try {
     else if (mql.addListener) mql.addListener(onSysChange);
 } catch (_) {}
 
+// Show-analysis toggle (heatmaps + network WDL + "nn" line on value chart).
+// State persisted in localStorage("skz_show_analysis") as "1" / "0".
+// A pre-paint inline script in index.html applies body.show-analysis before
+// first paint to avoid flashing the analysis surfaces on load.
+function getShowAnalysis() {
+    try { return localStorage.getItem("skz_show_analysis") === "1"; }
+    catch (_) { return false; }
+}
+function setShowAnalysis(on) {
+    document.body.classList.toggle("show-analysis", !!on);
+    try { localStorage.setItem("skz_show_analysis", on ? "1" : "0"); } catch (_) {}
+    const btn = document.getElementById("show_analysis_btn");
+    if (btn) btn.setAttribute("aria-pressed", on ? "true" : "false");
+    if (typeof drawValueChart === "function") drawValueChart();
+}
+document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("show_analysis_btn");
+    if (!btn) return;
+    setShowAnalysis(getShowAnalysis());
+    btn.addEventListener("click", () => setShowAnalysis(!getShowAnalysis()));
+});
+
 // Drives sizing of right-column to match left-column height (port from play_web.py).
 const leftCol = document.getElementById("left_col");
 const rightCol = document.getElementById("right_col");
@@ -553,7 +575,9 @@ function drawValueChart() {
         }
     }
     plot("root", "#0969da");
-    plot("nn",   "#cf222e");
+    if (document.body.classList.contains("show-analysis")) {
+        plot("nn", "#cf222e");
+    }
 }
 
 // --- WDL bars ---
