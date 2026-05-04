@@ -83,15 +83,34 @@ try {
 // State persisted in localStorage("skz_show_analysis") as "1" / "0".
 // A pre-paint inline script in index.html applies body.show-analysis before
 // first paint to avoid flashing the analysis surfaces on load.
+//
+// Simple mode: value-estimates card sits in the right column (default HTML
+// position) so it mirrors the left controls column around the board.
+// Analysis mode: card moves down into the left column so the right column
+// can dedicate its full board-matching width to the 2x3 heatmap grid.
 function getShowAnalysis() {
     try { return localStorage.getItem("skz_show_analysis") === "1"; }
     catch (_) { return false; }
 }
+function moveValueCard(toAnalysisMode) {
+    const card = document.querySelector('[data-i18n="label_value_estimates"]')?.closest(".card");
+    if (!card) return;
+    const left = document.getElementById("left_col");
+    const right = document.getElementById("right_col");
+    if (!left || !right) return;
+    if (toAnalysisMode) {
+        if (card.parentElement !== left) left.appendChild(card);
+    } else {
+        if (card.parentElement !== right) right.insertBefore(card, right.firstElementChild);
+    }
+}
 function setShowAnalysis(on) {
     document.body.classList.toggle("show-analysis", !!on);
+    moveValueCard(!!on);
     try { localStorage.setItem("skz_show_analysis", on ? "1" : "0"); } catch (_) {}
     const btn = document.getElementById("show_analysis_btn");
     if (btn) btn.setAttribute("aria-pressed", on ? "true" : "false");
+    if (typeof syncBoardSize === "function") syncBoardSize();
     if (typeof drawValueChart === "function") drawValueChart();
 }
 document.addEventListener("DOMContentLoaded", () => {
@@ -167,8 +186,16 @@ function syncBoardSize() {
     BOARD_LOGICAL = MARGIN * 2 + CELL * (N - 1);
     const need = cv.width !== Math.round(BOARD_LOGICAL * DPR);
     if (need) setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
-    rightCol.style.height = boardCard.offsetHeight + "px";
-    rightCol.style.width  = boardCard.offsetWidth  + "px";
+    if (document.body.classList.contains("show-analysis")) {
+        rightCol.style.height = boardCard.offsetHeight + "px";
+        rightCol.style.width  = boardCard.offsetWidth  + "px";
+    } else {
+        // Simple mode: right column hosts only the value-estimates card.
+        // Width is constrained by CSS to mirror the left controls column;
+        // height is content-sized.
+        rightCol.style.height = "";
+        rightCol.style.width  = "";
+    }
     if (need && typeof draw === "function") draw();
 }
 new ResizeObserver(syncBoardSize).observe(leftCol);

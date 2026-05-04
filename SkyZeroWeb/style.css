@@ -566,3 +566,11 @@
   body:not(.show-analysis) .wdl-row {
     grid-template-columns: minmax(0,1fr) 64px;
   }
+  /* Simple mode on desktop: right column hosts only the value-estimates
+     card and should mirror the left controls column's width (260px), not
+     the full board width that syncBoardSize otherwise sets in inline JS. */
+  @media (min-width: 1400px) {
+    body:not(.show-analysis) #right_col {
+      width: 260px;
+    }
+  }
