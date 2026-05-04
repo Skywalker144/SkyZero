@@ -241,7 +241,7 @@
   }
   .seg-row { display: flex; gap: 8px; }
   .side-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .side-row .seg-row { flex: 1; max-width: 180px; }
+  .side-row .seg-row { flex: 1; }
   .seg-btn {
     flex: 1; height: 36px; font-size: 13px; font-weight: 500;
     background: var(--surface); color: var(--fg);
@@ -284,13 +284,19 @@
   canvas { max-width: 100%; }
   .card-body { padding: 8px 14px; }
   .card-title {
-    font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
+    font-size: 14px; line-height: 18px;
+    font-weight: 600; letter-spacing: 0.06em;
     text-transform: uppercase; color: var(--fg-subtle);
     margin: 0 0 4px;
   }
+  .card-title-hint {
+    margin-left: 6px;
+    font-size: 11px; font-weight: 400; letter-spacing: 0;
+    text-transform: none; color: var(--fg-muted);
+  }
 
   /* ---------- Status pill ---------- */
-  .status-card { padding: 6px 12px; }
+  .status-card { padding: 6px 12px; text-align: center; }
   .status-pill {
     display: inline-flex; align-items: center; gap: 10px;
     padding: 4px 12px 4px 10px;
@@ -388,13 +394,10 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
   }
-  .mode-hint {
-    font-size: 11px; color: var(--accent);
-    font-family: var(--font-mono);
-    text-align: right;
-    padding: 2px 0 4px 0;
-    letter-spacing: 0.4px;
-  }
+  /* Collapse the sims input when the search toggle is off. The body class
+     is applied pre-paint from a script in index.html, and toggled at
+     runtime by the search-toggle handler in main.js. */
+  body.search-disabled #sims_wrapper { display: none; }
 
   .divider {
     height: 1px; background: var(--border); margin: 4px 0;
@@ -447,7 +450,7 @@
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    min-height: 140px;
+    min-height: 125px;
   }
   .value-chart-legend {
     display: flex; align-items: center; gap: 12px;
@@ -458,7 +461,7 @@
   .vc-item { display: inline-flex; align-items: center; gap: 5px; }
   .vc-swatch { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
   .vc-axis { margin-left: auto; color: var(--fg-subtle); font-size: 10.5px; }
-  #value_chart { display: block; width: 100%; height: 140px; min-height: 120px; }
+  #value_chart { display: block; width: 100%; height: 125px; min-height: 105px; }
   /* Value chart is empty until the user plays a few moves; keep it compact
      on phones so it doesn't dominate the (stacked) left column. */
   @media (max-width: 720px) {
@@ -624,9 +627,32 @@
   }
   /* Simple mode on desktop: right column hosts only the value-estimates
      card and should mirror the left controls column's width (350px), not
-     the full board width that syncBoardSize otherwise sets in inline JS. */
+     the full board width that syncBoardSize otherwise sets in inline JS.
+     The card and inner value chart flex-grow so the card's total height
+     matches the left controls column (set by syncBoardSize). */
   @media (min-width: 1400px) {
     body:not(.show-analysis) #right_col {
       width: 350px;
+    }
+    body:not(.show-analysis) #right_col > .card {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    body:not(.show-analysis) #right_col > .card > .card-body {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    body:not(.show-analysis) #right_col .value-chart-wrap {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    body:not(.show-analysis) #right_col #value_chart {
+      flex: 1 1 auto;
+      height: auto;
+      min-height: 0;
     }
   }
