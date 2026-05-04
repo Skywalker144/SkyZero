@@ -483,7 +483,12 @@ int main(int argc, char** argv) {
                         root.reset(new MCTSNode{state, to_play});
                         const int sims = a_to_move ? cfg_a.num_simulations : cfg_b.num_simulations;
                         const auto res = mcts.search(state, to_play, sims, root);
-                        int action = res.gumbel_action;
+                        // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
+                        // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
+                        // at the boundary, mirroring gomoku_elo_main.cpp.
+                        int action = (res.gumbel_action >= 0)
+                            ? Gomoku::canvas_pos_to_loc(res.gumbel_action, game.board_size)
+                            : -1;
                         if (action < 0) {
                             const auto legal = game.get_is_legal_actions(state, to_play);
                             for (int i = 0; i < static_cast<int>(legal.size()); ++i) {
