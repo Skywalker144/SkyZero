@@ -118,13 +118,10 @@
     border-bottom: 1px solid var(--border);
     margin-bottom: 24px;
   }
-  .brand { display: flex; flex-direction: column; gap: 2px; }
+  .brand { display: flex; align-items: center; }
   .brand-title {
-    font-size: 18px; font-weight: 600; letter-spacing: -0.01em;
+    font-size: 22px; font-weight: 600; letter-spacing: -0.01em;
     color: var(--fg);
-  }
-  .brand-sub {
-    font-size: 13px; color: var(--fg-muted); letter-spacing: 0.01em;
   }
   .icon-btn {
     width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;

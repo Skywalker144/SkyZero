@@ -5,8 +5,7 @@
 const I18N_STRINGS = {
     en: {
         page_title: "SkyZero Gomoku · ONNX Web",
-        brand_title: "SkyZero Gomoku",
-        brand_sub: "AlphaZero-style self-play · ONNX · static web",
+        brand_title: "SkyZero Gomoku Engine",
         aria_theme: "Toggle color theme",
         aria_lang: "Switch language",
         status_idle: "idle",
@@ -60,8 +59,7 @@ const I18N_STRINGS = {
     },
     zh: {
         page_title: "SkyZero 五子棋 · ONNX Web",
-        brand_title: "SkyZero 五子棋",
-        brand_sub: "AlphaZero 风格自对弈 · ONNX · 静态网页",
+        brand_title: "SkyZero 五子棋引擎",
         aria_theme: "切换配色主题",
         aria_lang: "切换语言",
         status_idle: "空闲",
