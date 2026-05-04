@@ -249,7 +249,7 @@ int main(int argc, char** argv) {
         cfg.root_symmetry_pruning =
             cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
-        if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
+        if (cli.num_simulations_override >= 0) cfg.num_simulations = cli.num_simulations_override;
         if (cli.board_size_override > 0) {
             if (cli.board_size_override > Gomoku::MAX_BOARD_SIZE) {
                 throw std::runtime_error("--board-size exceeds compile-time MAX_BOARD_SIZE");
@@ -480,9 +480,9 @@ int main(int argc, char** argv) {
             std::string kw;
             if (!(iss >> kw)) return false;
             if (kw == "sims") {
-                int n = 0;
-                if (!(iss >> n) || n < 1) {
-                    std::cout << "Invalid input: sims requires N >= 1.\n";
+                int n = -1;
+                if (!(iss >> n) || n < 0) {
+                    std::cout << "Invalid input: sims requires N >= 0 (0 = pure NN argmax).\n";
                     return true;
                 }
                 cfg.num_simulations = n;
