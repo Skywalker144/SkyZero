@@ -1,6 +1,8 @@
 // Board geometry — N is mutable (board size dropdown can change it).
 let N = 15;
-const MARGIN = 28;
+const MARGIN_DESKTOP = 28;   // leaves room for top + left coordinate labels
+const MARGIN_COMPACT = 10;   // mobile / portrait — labels hidden, just enough for stones
+let MARGIN = MARGIN_DESKTOP;
 let CELL = 36;
 let BOARD_LOGICAL = MARGIN * 2 + CELL * (N - 1);
 const MONO_FONT = '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace';
@@ -94,15 +96,18 @@ function syncBoardSize() {
         rightCol.style.width = "";
         // Stacked layout — fit board to the column's available width so it never
         // overflows the viewport on phones / narrow tablets. Cap at 560 so it
-        // doesn't grow unreasonably large in tablet portrait.
+        // doesn't grow unreasonably large in tablet portrait. Use a compact
+        // margin since labels are hidden in this mode (see draw()).
         const cardCS = getComputedStyle(boardCard);
         const cardPadX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
         const cardBorderX = parseFloat(cardCS.borderLeftWidth) + parseFloat(cardCS.borderRightWidth);
         const availW = Math.max(0, mainEl.clientWidth - cardPadX - cardBorderX);
         const target = Math.min(560, Math.floor(availW));
-        const cell = Math.max(12, Math.floor((target - 2 * MARGIN) / (N - 1)));
-        const logical = MARGIN * 2 + cell * (N - 1);
-        if (logical !== BOARD_LOGICAL) {
+        const newMargin = MARGIN_COMPACT;
+        const cell = Math.max(12, Math.floor((target - 2 * newMargin) / (N - 1)));
+        const logical = newMargin * 2 + cell * (N - 1);
+        if (logical !== BOARD_LOGICAL || newMargin !== MARGIN) {
+            MARGIN = newMargin;
             CELL = cell;
             BOARD_LOGICAL = logical;
             setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
@@ -111,6 +116,9 @@ function syncBoardSize() {
         }
         return;
     }
+    // Desktop: restore the wider margin used for coordinate labels. The
+    // recompute below will pick this up via the cv.width !== ... check.
+    if (MARGIN !== MARGIN_DESKTOP) MARGIN = MARGIN_DESKTOP;
     const cardCS = getComputedStyle(boardCard);
     const cardPadX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
     const cardPadY = parseFloat(cardCS.paddingTop)  + parseFloat(cardCS.paddingBottom);
@@ -143,14 +151,17 @@ function syncBoardSize() {
 }
 new ResizeObserver(syncBoardSize).observe(leftCol);
 window.addEventListener("resize", syncBoardSize);
-// Run once synchronously so the first paint is already correctly sized,
-// instead of flashing the 560px default on small viewports.
-syncBoardSize();
 
 // Module-level game-display state. Updated by handlers in Task 24.
 let state = null;        // { board: 2D N×N int, last_move: [r,c]|null, board_size: N }
 let showGumbel = false;
 let gumbelPhases = null; // last search's gumbel phases [[r,c]...] per phase
+
+// Run once synchronously so the first paint is already correctly sized,
+// instead of flashing the 560px default on small viewports. Must run after
+// the `state` / `gumbelPhases` lets above, since syncBoardSize may invoke
+// draw() which reads them (TDZ otherwise).
+syncBoardSize();
 
 function draw() {
     clearLogical(ctx);
@@ -180,12 +191,16 @@ function draw() {
             ctx.fill();
         }
     }
-    ctx.fillStyle = boardLine;
-    ctx.font = `11px ${MONO_FONT}`;
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    for (let i = 0; i < N; i++) {
-        ctx.fillText(i, MARGIN + i * CELL, 12);
-        ctx.fillText(i, 10, MARGIN + i * CELL);
+    // Coordinate labels need ~14px of margin space; skip them in compact mode
+    // so the board can use the saved real estate for larger cells.
+    if (MARGIN >= 16) {
+        ctx.fillStyle = boardLine;
+        ctx.font = `11px ${MONO_FONT}`;
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        for (let i = 0; i < N; i++) {
+            ctx.fillText(i, MARGIN + i * CELL, 12);
+            ctx.fillText(i, 10, MARGIN + i * CELL);
+        }
     }
     if (!state) return;
 
@@ -433,10 +448,11 @@ window.addEventListener("resize", () => {
 });
 
 // --- Value chart ---
+// Sizing is handled by CSS (#value_chart in style.css) so that mobile media
+// queries can shrink the canvas — JS just keeps the bitmap in sync via the
+// ResizeObserver below.
 const vcCanvas = document.getElementById("value_chart");
-let vctx = setupCanvas(vcCanvas, 280, 160);
-vcCanvas.style.width = "100%";
-vcCanvas.style.height = "100%";
+let vctx = setupCanvas(vcCanvas, 280, 160, false);
 function resizeValueChart() {
     const rect = vcCanvas.getBoundingClientRect();
     const w = Math.max(120, Math.floor(rect.width));
@@ -772,7 +788,8 @@ function triggerAISearch() {
     aiThinking = true;
     searchId++;
     setStatus("status_ai_thinking", "thinking");
-    const sims = parseInt(document.getElementById("sims_input").value, 10) || 128;
+    const simsRaw = parseInt(document.getElementById("sims_input").value, 10);
+    const sims = (Number.isFinite(simsRaw) && simsRaw >= 0) ? simsRaw : 128;
     worker.postMessage({
         type: "search",
         state: boardState,
@@ -893,6 +910,17 @@ worker.onmessage = (e) => {
         }
     }
 };
+
+// Pure-NN mode hint: visible iff sims_input parses to 0.
+function updateSimsModeHint() {
+    const el = document.getElementById("sims_input");
+    const hint = document.getElementById("sims_mode_hint");
+    if (!el || !hint) return;
+    const n = parseInt(el.value, 10);
+    hint.hidden = !(Number.isFinite(n) && n === 0);
+}
+document.getElementById("sims_input").addEventListener("input", updateSimsModeHint);
+updateSimsModeHint();
 
 // --- Buttons ---
 document.getElementById("new_btn").addEventListener("click", newGame);
