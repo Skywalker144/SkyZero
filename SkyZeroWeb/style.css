@@ -91,7 +91,7 @@
   }
   body {
     font-family: var(--font-sans);
-    font-size: 14px; line-height: 1.5;
+    font-size: 15px; line-height: 1.5;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "cv11", "ss01", "tnum";
     margin: 0; background: var(--bg); color: var(--fg);
@@ -120,11 +120,11 @@
   }
   .brand { display: flex; flex-direction: column; gap: 2px; }
   .brand-title {
-    font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+    font-size: 18px; font-weight: 600; letter-spacing: -0.01em;
     color: var(--fg);
   }
   .brand-sub {
-    font-size: 12px; color: var(--fg-muted); letter-spacing: 0.01em;
+    font-size: 13px; color: var(--fg-muted); letter-spacing: 0.01em;
   }
   .icon-btn {
     width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
@@ -147,8 +147,8 @@
     overflow: hidden;
   }
   .seg-row.compact .seg-btn {
-    flex: 0 0 auto; min-width: 34px; height: 30px;
-    padding: 0 10px; font-size: 12px; font-weight: 600;
+    flex: 0 0 auto; min-width: 38px; height: 34px;
+    padding: 0 12px; font-size: 13px; font-weight: 600;
     background: transparent; color: var(--fg-muted);
     border: none; border-right: 1px solid var(--border); border-radius: 0;
     letter-spacing: 0.02em;
@@ -165,7 +165,7 @@
   /* ---------- Layout ---------- */
   .main {
     display: grid;
-    grid-template-columns: 260px minmax(0, auto) minmax(0, auto);
+    grid-template-columns: 290px minmax(0, auto) minmax(0, auto);
     gap: 20px;
     align-items: start;
     justify-content: center;
@@ -194,7 +194,7 @@
   .side-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .side-row .seg-row { flex: 1; max-width: 180px; }
   .seg-btn {
-    flex: 1; height: 34px; font-size: 13px; font-weight: 500;
+    flex: 1; height: 38px; font-size: 14px; font-weight: 500;
     background: var(--surface); color: var(--fg);
     border: 1px solid var(--border); border-radius: var(--radius-sm);
     cursor: pointer;
@@ -233,9 +233,9 @@
   }
   /* Canvases must not blow out their grid/flex parents before JS sizes them. */
   canvas { max-width: 100%; }
-  .card-body { padding: 14px 16px; }
+  .card-body { padding: 16px 18px; }
   .card-title {
-    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.06em;
     text-transform: uppercase; color: var(--fg-subtle);
     margin: 0 0 10px;
   }
@@ -244,9 +244,9 @@
   .status-card { padding: 12px 16px; }
   .status-pill {
     display: inline-flex; align-items: center; gap: 8px;
-    padding: 4px 10px 4px 8px;
+    padding: 5px 12px 5px 10px;
     border-radius: 999px;
-    font-size: 12.5px; font-weight: 500;
+    font-size: 14px; font-weight: 500;
     background: var(--surface-2); color: var(--fg);
     border: 1px solid var(--border);
   }
@@ -276,7 +276,7 @@
 
   /* ---------- Buttons ---------- */
   .btn {
-    height: 30px; padding: 0 12px; font-size: 13px; font-weight: 500;
+    height: 34px; padding: 0 14px; font-size: 14px; font-weight: 500;
     background: var(--surface); color: var(--fg);
     border: 1px solid var(--border); border-radius: var(--radius-sm);
     cursor: pointer; white-space: nowrap;
@@ -297,7 +297,7 @@
   .toggle {
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px; cursor: pointer; user-select: none;
-    font-size: 13px; color: var(--fg);
+    font-size: 14px; color: var(--fg);
     padding: 6px 0;
   }
   .toggle input { position: absolute; opacity: 0; pointer-events: none; }
@@ -322,11 +322,11 @@
     gap: 12px; padding: 6px 0;
   }
   .field-row label {
-    font-size: 13px; color: var(--fg-muted);
+    font-size: 14px; color: var(--fg-muted);
     font-family: var(--font-mono);
   }
   .num {
-    width: 80px; height: 28px; padding: 0 8px; font-size: 13px;
+    width: 88px; height: 32px; padding: 0 10px; font-size: 14px;
     background: var(--surface); color: var(--fg);
     border: 1px solid var(--border); border-radius: var(--radius-sm);
     font-family: var(--font-mono);
@@ -340,7 +340,7 @@
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
   }
   .mode-hint {
-    font-size: 11px; color: var(--accent);
+    font-size: 12px; color: var(--accent);
     font-family: var(--font-mono);
     text-align: right;
     padding: 2px 0 4px 0;
@@ -361,7 +361,7 @@
   }
   .wdl-label {
     font-family: var(--font-mono);
-    font-size: 11.5px; color: var(--fg-muted);
+    font-size: 13px; color: var(--fg-muted);
     text-transform: uppercase; letter-spacing: 0.04em;
   }
   .wdl-bar {
@@ -378,14 +378,14 @@
   }
   .wdl-wl {
     font-family: var(--font-mono);
-    font-size: 12px; text-align: right; color: var(--fg);
+    font-size: 13px; text-align: right; color: var(--fg);
     font-variant-numeric: tabular-nums;
   }
   .wdl-wl.pos { color: var(--success); }
   .wdl-wl.neg { color: var(--danger); }
-  .wdl-empty { color: var(--fg-subtle); font-size: 12px; padding: 8px 0; text-align: center; }
+  .wdl-empty { color: var(--fg-subtle); font-size: 13px; padding: 8px 0; text-align: center; }
   .wdl-detail {
-    margin-top: 6px; font-size: 11.5px; color: var(--fg-muted);
+    margin-top: 6px; font-size: 12.5px; color: var(--fg-muted);
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     display: flex; gap: 10px;
@@ -402,13 +402,13 @@
   }
   .value-chart-legend {
     display: flex; align-items: center; gap: 12px;
-    font-size: 11px; color: var(--fg-muted);
+    font-size: 12px; color: var(--fg-muted);
     font-family: var(--font-mono);
     margin-bottom: 6px;
   }
   .vc-item { display: inline-flex; align-items: center; gap: 5px; }
   .vc-swatch { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
-  .vc-axis { margin-left: auto; color: var(--fg-subtle); font-size: 10.5px; }
+  .vc-axis { margin-left: auto; color: var(--fg-subtle); font-size: 11.5px; }
   #value_chart { display: block; width: 100%; height: 140px; min-height: 120px; }
   /* Value chart is empty until the user plays a few moves; keep it compact
      on phones so it doesn't dominate the (stacked) left column. */
@@ -445,7 +445,7 @@
     min-height: 0;
   }
   .grid-card .grid-title {
-    font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+    font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
     color: var(--fg-subtle);
     margin-bottom: 12px; text-align: left;
     flex-shrink: 0;
@@ -494,7 +494,7 @@
     flex-shrink: 0;
   }
   .heat-modal-header .heat-modal-title {
-    font-size: 14px; font-weight: 600; color: var(--fg);
+    font-size: 16px; font-weight: 600; color: var(--fg);
     letter-spacing: 0.01em;
   }
   .heat-modal-close {
@@ -541,12 +541,12 @@
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .loader-spin { animation: none; } }
-.loader-text { font-size: 13px; color: var(--fg); }
+.loader-text { font-size: 14px; color: var(--fg); }
 .loader-bar { width: 100%; height: 6px; background: var(--surface-2);
               border-radius: 999px; overflow: hidden; }
 .loader-fill { height: 100%; background: var(--accent); width: 0;
                transition: width 0.15s linear; }
-.loader-pct { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
+.loader-pct { font-family: var(--font-mono); font-size: 12px; color: var(--fg-muted); }
 
   /* ---------- Show-analysis toggle ---------- */
   /* Default state (no body.show-analysis): hide the heatmap grid, the
@@ -568,10 +568,10 @@
     grid-template-columns: minmax(0,1fr) 64px;
   }
   /* Simple mode on desktop: right column hosts only the value-estimates
-     card and should mirror the left controls column's width (260px), not
+     card and should mirror the left controls column's width (290px), not
      the full board width that syncBoardSize otherwise sets in inline JS. */
   @media (min-width: 1400px) {
     body:not(.show-analysis) #right_col {
-      width: 260px;
+      width: 290px;
     }
   }
