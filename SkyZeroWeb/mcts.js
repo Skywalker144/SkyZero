@@ -339,19 +339,31 @@ class MCTS {
         }
         const improvedPolicy = new Float32Array(softmax(improvedLogits));
 
-        // Pick gumbelAction = among most-visited surviving actions, max(logits + sigma_q).
-        let maxNSurviving = 0;
-        for (const a of survivingActions) {
-            if (nValues[a] > maxNSurviving) maxNSurviving = nValues[a];
-        }
-        const mostVisited = survivingActions.filter(a => nValues[a] === maxNSurviving);
-        let gumbelAction = mostVisited[0] || 0;
-        let bestFinalScore = -Infinity;
-        for (const a of mostVisited) {
-            const s = logits[a] + g[a] + sigmaQ[a];
-            if (s > bestFinalScore) {
-                bestFinalScore = s;
-                gumbelAction = a;
+        // Pick gumbelAction. With numSimulations > 0: among most-visited surviving
+        // actions, max(logits + sigma_q). With numSimulations === 0 (pure-NN
+        // mode): no survivors, fall back to argmax(improvedPolicy) over legal
+        // moves — same fallback as cpp/alphazero_tree_parallel.h:735-738.
+        let gumbelAction;
+        if (survivingActions.length > 0) {
+            let maxNSurviving = 0;
+            for (const a of survivingActions) {
+                if (nValues[a] > maxNSurviving) maxNSurviving = nValues[a];
+            }
+            const mostVisited = survivingActions.filter(a => nValues[a] === maxNSurviving);
+            gumbelAction = mostVisited[0];
+            let bestFinalScore = -Infinity;
+            for (const a of mostVisited) {
+                const s = logits[a] + g[a] + sigmaQ[a];
+                if (s > bestFinalScore) {
+                    bestFinalScore = s;
+                    gumbelAction = a;
+                }
+            }
+        } else {
+            gumbelAction = -1;
+            let best = -Infinity;
+            for (let a = 0; a < boardArea; a++) {
+                if (improvedPolicy[a] > best) { best = improvedPolicy[a]; gumbelAction = a; }
             }
         }
 
