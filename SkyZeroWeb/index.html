@@ -37,6 +37,17 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <script>
+    // Set show-analysis class before first paint so analysis surfaces don't
+    // flash when the user has them turned off.
+    (function(){
+      try {
+        var v = localStorage.getItem('skz_show_analysis');
+        if (v === '1') document.body.classList.add('show-analysis');
+      } catch(e) {}
+    })();
+  </script>
+
   <!-- Loading overlay shown while downloading the first ONNX model -->
   <div id="loading_overlay">
     <div class="loader-card">
@@ -75,6 +86,20 @@
           <button class="seg-btn" data-theme="dark" aria-pressed="false" data-i18n-title="theme_label_dark" data-i18n-aria="theme_label_dark" aria-label="暗黑" title="暗黑">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="seg-row compact" id="show_analysis_seg" role="group" aria-label="Show analysis">
+          <button class="seg-btn" id="show_analysis_btn" type="button" aria-pressed="false"
+                  data-i18n-title="show_analysis_label" data-i18n-aria="show_analysis_label"
+                  aria-label="Show analysis" title="Show analysis">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="1.5" y="1.5"  width="5" height="3.5" rx="0.8"></rect>
+              <rect x="9.5" y="1.5"  width="5" height="3.5" rx="0.8"></rect>
+              <rect x="1.5" y="6.25" width="5" height="3.5" rx="0.8"></rect>
+              <rect x="9.5" y="6.25" width="5" height="3.5" rx="0.8"></rect>
+              <rect x="1.5" y="11"   width="5" height="3.5" rx="0.8"></rect>
+              <rect x="9.5" y="11"   width="5" height="3.5" rx="0.8"></rect>
             </svg>
           </button>
         </div>
@@ -154,7 +179,7 @@
               <span class="wdl-wl" id="wdl_root_wl">—</span>
             </div>
             <div class="wdl-detail" id="wdl_root_detail"></div>
-            <div class="wdl-row" style="margin-top:4px;">
+            <div class="wdl-row wdl-row--nn" style="margin-top:4px;">
               <span class="wdl-label" data-i18n="legend_nn">网络</span>
               <div class="wdl-bar" id="wdl_nn_bar">
                 <span class="seg w" style="width:0"></span>
@@ -167,7 +192,7 @@
             <div class="value-chart-wrap">
               <div class="value-chart-legend">
                 <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span><span data-i18n="legend_root">根</span></span>
-                <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span><span data-i18n="legend_nn">网络</span></span>
+                <span class="vc-item vc-item--nn"><span class="vc-swatch" style="background:#cf222e;"></span><span data-i18n="legend_nn">网络</span></span>
                 <span class="vc-axis" data-i18n="legend_axis">胜负 · −1…+1</span>
               </div>
               <canvas id="value_chart"></canvas>
