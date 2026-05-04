@@ -108,16 +108,16 @@ function setShowAnalysis(on) {
     document.body.classList.toggle("show-analysis", !!on);
     moveValueCard(!!on);
     try { localStorage.setItem("skz_show_analysis", on ? "1" : "0"); } catch (_) {}
-    const btn = document.getElementById("show_analysis_btn");
-    if (btn) btn.setAttribute("aria-pressed", on ? "true" : "false");
+    const input = document.getElementById("show_analysis_input");
+    if (input) input.checked = !!on;
     if (typeof syncBoardSize === "function") syncBoardSize();
     if (typeof drawValueChart === "function") drawValueChart();
 }
 document.addEventListener("DOMContentLoaded", () => {
-    const btn = document.getElementById("show_analysis_btn");
-    if (!btn) return;
+    const input = document.getElementById("show_analysis_input");
+    if (!input) return;
     setShowAnalysis(getShowAnalysis());
-    btn.addEventListener("click", () => setShowAnalysis(!getShowAnalysis()));
+    input.addEventListener("change", () => setShowAnalysis(input.checked));
 });
 
 // Drives sizing of right-column to match left-column height (port from play_web.py).
@@ -215,6 +215,7 @@ window.addEventListener("resize", syncBoardSize);
 let state = null;        // { board: 2D N×N int, last_move: [r,c]|null, board_size: N }
 let showGumbel = false;
 let gumbelPhases = null; // last search's gumbel phases [[r,c]...] per phase
+let boardOverlayHeatId = null; // heat canvas id currently mirrored on the board
 
 // Run once synchronously so the first paint is already correctly sized,
 // instead of flashing the 560px default on small viewports. Must run after
@@ -324,6 +325,69 @@ function draw() {
             ctx.fillStyle = "#ef4444"; ctx.fill();
         }
     }
+
+    if (boardOverlayHeatId) drawBoardHeatOverlay(boardOverlayHeatId);
+}
+
+// Tint cells centered on intersections; skip labels on occupied cells so
+// numbers don't pile up on the stones already drawn underneath.
+function drawBoardHeatOverlay(canvasId) {
+    if (!state) return;
+    const gridKey = HEAT_GRID_KEYS[canvasId];
+    if (!gridKey) return;
+    const grid = state[gridKey];
+    if (!grid) return;
+    const signed = SIGNED_HEAT_IDS.has(canvasId);
+    const heatText = cssVar("--heat-text") || "#111";
+
+    let maxV = 0;
+    if (!signed) {
+        for (let r = 0; r < N; r++) for (let k = 0; k < N; k++) {
+            if (grid[r][k] > maxV) maxV = grid[r][k];
+        }
+    }
+
+    const tileX0 = MARGIN - CELL / 2;
+    const tileSpan = CELL * N;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(tileX0, tileX0, tileSpan, tileSpan);
+    ctx.clip();
+
+    const fontPx = Math.max(8, Math.floor(CELL * (signed ? 0.32 : 0.38)));
+    ctx.font = `${fontPx}px ${MONO_FONT}`;
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+
+    for (let r = 0; r < N; r++) for (let k = 0; k < N; k++) {
+        const v = grid[r][k];
+        const cx = MARGIN + k * CELL;
+        const cy = MARGIN + r * CELL;
+        const x = cx - CELL / 2;
+        const y = cy - CELL / 2;
+
+        let alpha;
+        if (signed) {
+            alpha = Math.min(1, Math.abs(v));
+            if (v > 0) ctx.fillStyle = `rgba(9,105,218,${(alpha * 0.7).toFixed(3)})`;
+            else if (v < 0) ctx.fillStyle = `rgba(207,34,46,${(alpha * 0.7).toFixed(3)})`;
+            else continue;
+        } else {
+            alpha = (maxV > 0 && v > 0) ? Math.min(1, v / maxV) : 0;
+            if (alpha === 0) continue;
+            ctx.fillStyle = `rgba(220,38,38,${(alpha * 0.7).toFixed(3)})`;
+        }
+        ctx.fillRect(x, y, CELL, CELL);
+
+        if (state.board[r][k]) continue;
+        const showThreshold = signed ? 0.05 : 0.01;
+        if (Math.abs(v) < showThreshold) continue;
+        ctx.fillStyle = alpha > 0.55 ? "#fff" : heatText;
+        const label = signed
+            ? (v >= 0 ? "+" : "") + (v * 100).toFixed(0)
+            : (v * 100).toFixed(0);
+        ctx.fillText(label, cx, cy);
+    }
+    ctx.restore();
 }
 
 // --- Six heatmap canvases ---
@@ -374,6 +438,20 @@ for (const id of Object.keys(heatCtxs)) {
         drawHeatById(id, grid);
     }).observe(c.parentElement);
     fitHeatCanvas(id);
+    const card = c.parentElement;
+    card.addEventListener("mouseenter", () => {
+        if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+        if (!document.body.classList.contains("show-analysis")) return;
+        if (expandedSourceId !== null) return;
+        boardOverlayHeatId = id;
+        draw();
+    });
+    card.addEventListener("mouseleave", () => {
+        if (boardOverlayHeatId === id) {
+            boardOverlayHeatId = null;
+            draw();
+        }
+    });
 }
 
 function drawHeatById(id, grid) {
