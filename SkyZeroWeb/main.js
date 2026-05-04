@@ -92,9 +92,19 @@ function syncBoardSize() {
     if (window.matchMedia("(max-width: 1399px)").matches) {
         rightCol.style.height = "";
         rightCol.style.width = "";
-        if (BOARD_LOGICAL !== 560) {
-            CELL = 36;
-            BOARD_LOGICAL = MARGIN * 2 + CELL * (N - 1);
+        // Stacked layout — fit board to the column's available width so it never
+        // overflows the viewport on phones / narrow tablets. Cap at 560 so it
+        // doesn't grow unreasonably large in tablet portrait.
+        const cardCS = getComputedStyle(boardCard);
+        const cardPadX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
+        const cardBorderX = parseFloat(cardCS.borderLeftWidth) + parseFloat(cardCS.borderRightWidth);
+        const availW = Math.max(0, mainEl.clientWidth - cardPadX - cardBorderX);
+        const target = Math.min(560, Math.floor(availW));
+        const cell = Math.max(12, Math.floor((target - 2 * MARGIN) / (N - 1)));
+        const logical = MARGIN * 2 + cell * (N - 1);
+        if (logical !== BOARD_LOGICAL) {
+            CELL = cell;
+            BOARD_LOGICAL = logical;
             setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
             ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
             if (typeof draw === "function") draw();
@@ -133,6 +143,9 @@ function syncBoardSize() {
 }
 new ResizeObserver(syncBoardSize).observe(leftCol);
 window.addEventListener("resize", syncBoardSize);
+// Run once synchronously so the first paint is already correctly sized,
+// instead of flashing the 560px default on small viewports.
+syncBoardSize();
 
 // Module-level game-display state. Updated by handlers in Task 24.
 let state = null;        // { board: 2D N×N int, last_move: [r,c]|null, board_size: N }
