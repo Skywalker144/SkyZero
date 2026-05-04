@@ -105,7 +105,10 @@
 
   .app { max-width: 2000px; margin: 0 auto; padding: 16px 24px 48px; }
   @media (max-width: 720px) {
-    .app { padding: 12px 12px 32px; }
+    .app { padding: 12px 8px 32px; }
+    /* Maximize board real estate on phones — tight card padding, no
+       coordinate-label margin reservations (handled in JS). */
+    .board-card { padding: 6px; }
   }
 
   /* ---------- Top bar ---------- */
@@ -335,6 +338,13 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
   }
+  .mode-hint {
+    font-size: 11px; color: var(--accent);
+    font-family: var(--font-mono);
+    text-align: right;
+    padding: 2px 0 4px 0;
+    letter-spacing: 0.4px;
+  }
 
   .divider {
     height: 1px; background: var(--border); margin: 4px 0;
@@ -399,6 +409,12 @@
   .vc-swatch { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
   .vc-axis { margin-left: auto; color: var(--fg-subtle); font-size: 10.5px; }
   #value_chart { display: block; width: 100%; height: 140px; min-height: 120px; }
+  /* Value chart is empty until the user plays a few moves; keep it compact
+     on phones so it doesn't dominate the (stacked) left column. */
+  @media (max-width: 720px) {
+    .value-chart-wrap { min-height: 110px; }
+    #value_chart { height: 90px; min-height: 80px; }
+  }
   /* ---------- Board ---------- */
   .board-card {
     padding: 16px;
