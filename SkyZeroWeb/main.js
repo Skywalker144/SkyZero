@@ -167,7 +167,16 @@ function syncBoardSize() {
     const mainCS = getComputedStyle(mainEl);
     const gap = parseFloat(mainCS.columnGap || mainCS.gap) || 20;
     const remaining = mainEl.clientWidth - leftCol.offsetWidth - 2 * gap;
-    const sizeByWidth = Math.floor(remaining / 2 - cardPadX);
+    // Analysis mode: right col equals board width (heatmaps take the same
+    // span as the board), so board gets half of the remaining space.
+    // Simple mode: right col is a fixed 260px (mirroring the left col), so
+    // the board fills everything else. Keep this constant in sync with the
+    // CSS rule `body:not(.show-analysis) #right_col { width: 260px; }`.
+    const SIMPLE_RIGHT_COL_PX = 260;
+    const isSimple = !document.body.classList.contains("show-analysis");
+    const sizeByWidth = isSimple
+        ? Math.floor(remaining - SIMPLE_RIGHT_COL_PX - cardPadX)
+        : Math.floor(remaining / 2 - cardPadX);
 
     // Cap by viewport height so board + action buttons stay fully visible.
     const topbarCS = getComputedStyle(topbarEl);
