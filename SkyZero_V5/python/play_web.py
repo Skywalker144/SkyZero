@@ -651,6 +651,13 @@ HTML_PAGE = r"""<!doctype html>
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
   }
+  .mode-hint {
+    font-size: 11px; color: var(--accent);
+    font-family: var(--font-mono);
+    text-align: right;
+    padding: 2px 0 4px 0;
+    letter-spacing: 0.4px;
+  }
 
   .divider {
     height: 1px; background: var(--border); margin: 4px 0;
@@ -917,8 +924,9 @@ HTML_PAGE = r"""<!doctype html>
           <div class="card-title">Search</div>
           <div class="field-row">
             <label for="sims_input">sims</label>
-            <input class="num" type="number" id="sims_input" min="1" step="1" value="800">
+            <input class="num" type="number" id="sims_input" min="0" step="1" value="800">
           </div>
+          <div id="sims_mode_hint" class="mode-hint" hidden>Pure NN — argmax of policy head</div>
           <div class="field-row">
             <label for="gm_input">gumbel_m</label>
             <input class="num" type="number" id="gm_input" min="1" step="1" value="16">
@@ -1783,10 +1791,18 @@ async function sendCmd(cmd) {
                         body: JSON.stringify({cmd})});
   refresh();
 }
+function updateSimsModeHint() {
+  const el = document.getElementById('sims_input');
+  const hint = document.getElementById('sims_mode_hint');
+  if (!el || !hint) return;
+  const n = parseInt(el.value, 10);
+  hint.hidden = !(Number.isFinite(n) && n === 0);
+}
 function applySims() {
   const el = document.getElementById('sims_input');
   const n = parseInt(el.value, 10);
-  if (Number.isFinite(n) && n >= 1) sendCmd('sims ' + n);
+  if (Number.isFinite(n) && n >= 0) sendCmd('sims ' + n);
+  updateSimsModeHint();
 }
 function applyGm() {
   const el = document.getElementById('gm_input');
@@ -1842,7 +1858,7 @@ async function newGame(side, modelId, boardSize, rule) {
   sendCmd('noise 0');
   sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
   const sims = parseInt(document.getElementById('sims_input').value, 10);
-  if (Number.isFinite(sims) && sims >= 1) sendCmd('sims ' + sims);
+  if (Number.isFinite(sims) && sims >= 0) sendCmd('sims ' + sims);
   const gm = parseInt(document.getElementById('gm_input').value, 10);
   if (Number.isFinite(gm) && gm >= 1) sendCmd('gm ' + gm);
   refresh();
@@ -1939,6 +1955,8 @@ function bindNumInput(id, apply) {
 }
 bindNumInput('sims_input', applySims);
 bindNumInput('gm_input', applyGm);
+document.getElementById('sims_input').addEventListener('input', updateSimsModeHint);
+updateSimsModeHint();
 sendCmd('noise 0'); // ensure engine starts with Gumbel noise off
 sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
 
