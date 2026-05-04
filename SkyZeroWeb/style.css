@@ -546,3 +546,14 @@
 .loader-fill { height: 100%; background: var(--accent); width: 0;
                transition: width 0.15s linear; }
 .loader-pct { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted); }
+
+  /* ---------- Show-analysis toggle ---------- */
+  /* Default state (no body.show-analysis): hide the right-column heatmaps,
+     the network WDL row, and the "网络" legend item on the value chart.
+     Toggle wiring lives in main.js (setShowAnalysis). */
+  body:not(.show-analysis) #right_col,
+  body:not(.show-analysis) .wdl-row--nn,
+  body:not(.show-analysis) #wdl_nn_detail,
+  body:not(.show-analysis) .vc-item--nn {
+    display: none;
+  }
