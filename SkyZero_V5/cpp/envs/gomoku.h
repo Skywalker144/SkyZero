@@ -15,10 +15,13 @@
 
 namespace skyzero {
 
-// Rule variants for multi-rule training (V5).
+// Rule variants for multi-rule training (V5). Aligned with KataGomo's
+// gamelogic.cpp::getMovePriorityOneDirectionAssumeLegal + checkWinnerAfterPlayed.
 //   FREESTYLE: no forbidden moves; any 5+ stones in a row wins for both colors.
-//   STANDARD:  black wins only with exactly 5 (overline ≥6 forbidden, black loses);
-//              white can win with any 5+; no three-three/four-four restriction.
+//   STANDARD:  black wins only with exactly 5; overline (≥6) is neither a win
+//              nor a loss for either color (game continues). Matches KataGomo
+//              BASICRULE_STANDARD (isSixWinMe=false, no forbidden check).
+//              White also wins only with exactly 5 (no overline win).
 //   RENJU:     black: exactly 5 wins; three-three / four-four / long-row forbidden;
 //              white: any 5+ wins, no restriction.
 enum class RuleType : int8_t {
@@ -46,7 +49,7 @@ inline const char* rule_to_string(RuleType r) {
 // 12-dim global feature vector fed to KataGoNet.linear_global.
 // dims 0-2: rule one-hot (freestyle, standard, renju)
 // dim 3:    renju_color_sign (Renju+Black=-1, Renju+White=+1, else 0)
-// dim 4:    has_forbidden (rule != FREESTYLE)
+// dim 4:    has_forbidden (rule == RENJU; KataGomo nninputs.cpp:589)
 // dim 5:    ply / (board_size²)
 // dims 6-11: VCF placeholder, zero (Phase C / Sprint 4 will fill via VCF solver)
 struct GlobalFeatures {
@@ -84,7 +87,7 @@ public:
         : board_size(size),
           num_planes(NUM_SPATIAL_PLANES_V5),
           use_renju(r == RuleType::RENJU),
-          enable_forbidden_point_plane(forbidden_plane && r != RuleType::FREESTYLE),
+          enable_forbidden_point_plane(forbidden_plane && r == RuleType::RENJU),
           rule(r) {}
 
     // Legacy constructor (V4-compatible; bool renju → RuleType::RENJU else FREESTYLE).
@@ -177,59 +180,12 @@ public:
         return next;
     }
 
+    // Backwards-compatible board-stride entry point. All callers — both legacy
+    // board-stride paths (random_opening.h, gomoku_*main.cpp) and the canvas
+    // wrapper get_winner_canvas — now route through the multi-rule
+    // KataGomo-aligned implementation in get_winner_v5.
     int get_winner(const std::vector<int8_t>& state, int last_action = -1, int last_player = 0) const {
-        if (use_renju && last_action >= 0 && last_player == 1) {
-            const int row = last_action / board_size;
-            const int col = last_action % board_size;
-            ForbiddenPointFinder fpf(board_size);
-            for (int i = 0; i < static_cast<int>(state.size()); ++i) {
-                if (i == last_action || state[i] == 0) {
-                    continue;
-                }
-                const int r = i / board_size;
-                const int c = i % board_size;
-                fpf.set_stone(r, c, state[i] == 1 ? C_BLACK : C_WHITE);
-            }
-            if (fpf.is_forbidden(row, col)) {
-                return -1;
-            }
-        }
-
-        const int dirs[4][2] = {{1, 0}, {0, 1}, {1, 1}, {1, -1}};
-        for (int r = 0; r < board_size; ++r) {
-            for (int c = 0; c < board_size; ++c) {
-                const int stone = state[r * board_size + c];
-                if (stone == 0) {
-                    continue;
-                }
-                for (const auto& d : dirs) {
-                    const int pr = r - d[0];
-                    const int pc = c - d[1];
-                    if (on_board(pr, pc) && state[pr * board_size + pc] == stone) {
-                        continue;
-                    }
-                    int len = 1;
-                    int nr = r + d[0];
-                    int nc = c + d[1];
-                    while (on_board(nr, nc) && state[nr * board_size + nc] == stone) {
-                        ++len;
-                        nr += d[0];
-                        nc += d[1];
-                    }
-                    if (stone == 1 && len == 5) {
-                        return stone;  // Black wins with exactly 5 (overline is forbidden)
-                    }
-                    if (stone == -1 && len >= 5) {
-                        return stone;  // White wins with 5 or more
-                    }
-                }
-            }
-        }
-
-        if (std::all_of(state.begin(), state.end(), [](int8_t v) { return v != 0; })) {
-            return 0;
-        }
-        return 2;
+        return get_winner_v5(state, last_action, last_player);
     }
 
     bool is_terminal(const std::vector<int8_t>& state, int last_action = -1, int last_player = 0) const {
@@ -420,20 +376,19 @@ public:
             }
         }
 
-        // Planes 3-4: forbidden (only fill when rule has forbidden semantics)
-        if (enable_forbidden_point_plane && rule != RuleType::FREESTYLE) {
+        // Planes 3-4: forbidden. Aligned with KataGomo (nninputs.cpp:589):
+        // hasForbiddenFeature is true ONLY under RENJU; STANDARD/FREESTYLE
+        // leave both planes zero (STANDARD has no forbidden moves — long-row
+        // is neither a win nor a loss). Plane index encodes turn: plane 3
+        // when black-to-move, plane 4 when white-to-move; both record where
+        // BLACK would be forbidden (white has no forbidden moves under any rule).
+        if (enable_forbidden_point_plane && rule == RuleType::RENJU) {
             ForbiddenPointFinder fpf(N);
             for (int i = 0; i < N * N; ++i) {
                 if (state[i] == 0) continue;
                 fpf.set_stone(i / N, i % N, state[i] == 1 ? C_BLACK : C_WHITE);
             }
             const int fb_plane = (to_play == 1) ? 3 : 4;
-            // STANDARD only forbids long-row for black; we still write that into
-            // the same plane via FPF.is_forbidden, which checks all renju
-            // patterns. For STANDARD, callers should ignore this plane content
-            // for non-long-row patterns OR (simpler) train the network to
-            // interpret the plane as a generic "forbidden hint" — the rule
-            // one-hot in global features tells it which subset to weigh.
             for (int r = 0; r < N; ++r) {
                 for (int c = 0; c < N; ++c) {
                     if (state[r * N + c] != 0) continue;
@@ -470,8 +425,9 @@ public:
         g.data[2] = (rule == RuleType::RENJU)     ? 1.0f : 0.0f;
         // dim 3: renju_color_sign (only fires under Renju, captures "black has tighter constraints")
         g.data[3] = (rule == RuleType::RENJU) ? (to_play == 1 ? -1.0f : +1.0f) : 0.0f;
-        // dim 4: has_forbidden (RENJU or STANDARD both have forbidden semantics for black)
-        g.data[4] = (rule != RuleType::FREESTYLE) ? 1.0f : 0.0f;
+        // dim 4: has_forbidden — only RENJU has a forbidden-move concept.
+        // KataGomo nninputs.cpp:589: hasForbiddenFeature requires RENJU.
+        g.data[4] = (rule == RuleType::RENJU) ? 1.0f : 0.0f;
         // dim 5: ply normalized by actual board area (not MAX_AREA — different boards
         // have different game lengths, this gives a size-invariant progress signal)
         g.data[5] = float(ply) / float(board_size * board_size);
@@ -479,30 +435,44 @@ public:
         return g;
     }
 
-    // V5 multi-rule winner check. Returns 1 (black wins), -1 (white wins),
+    // V5 multi-rule winner check, aligned with KataGomo
+    // GameLogic::checkWinnerAfterPlayed + getMovePriorityOneDirectionAssumeLegal
+    // (gamelogic.cpp:80-103, 248-302). Returns 1 (black wins), -1 (white wins),
     // 0 (draw, board full), 2 (game ongoing).
-    // last_action / last_player describe the move just played; used for
-    // forbidden-move detection (RENJU full check, STANDARD long-row only).
+    //
+    // Per-rule win semantics (matches KataGomo's isSixWinMe / isSixWinOpp):
+    //   FREESTYLE: black 5+, white 5+ (overline counts as a win for both).
+    //   STANDARD:  black exactly 5, white exactly 5 (overline neither wins
+    //              nor loses for either color; game continues).
+    //   RENJU:     black exactly 5, white 5+ (overline counts for white only).
+    //              Additionally, Black playing a forbidden move (overline /
+    //              double-three / double-four) loses immediately — checked
+    //              against the just-played move via ForbiddenPointFinder.
     int get_winner_v5(const std::vector<int8_t>& state, int last_action = -1, int last_player = 0) const {
-        // Forbidden-move detection: if the last player was Black and the rule
-        // forbids the move, Black loses immediately.
-        if (last_action >= 0 && last_player == 1 && rule != RuleType::FREESTYLE) {
+        // Forbidden-move detection: KataGomo only checks this under
+        // RENJU + Black (gamelogic.cpp:292-297). STANDARD has no forbidden
+        // moves; long-row simply doesn't trigger sudden-win in the run-scan
+        // below, and doesn't lose either.
+        if (last_action >= 0 && last_player == 1 && rule == RuleType::RENJU) {
             const int row = last_action / board_size;
             const int col = last_action % board_size;
-            if (rule == RuleType::RENJU) {
-                ForbiddenPointFinder fpf(board_size);
-                for (int i = 0; i < static_cast<int>(state.size()); ++i) {
-                    if (i == last_action || state[i] == 0) continue;
-                    fpf.set_stone(i / board_size, i % board_size,
-                                  state[i] == 1 ? C_BLACK : C_WHITE);
-                }
-                if (fpf.is_forbidden(row, col)) return -1;   // black loses
-            } else {  // STANDARD
-                if (is_overline_at(state, row, col, /*color=*/1)) return -1;
+            ForbiddenPointFinder fpf(board_size);
+            for (int i = 0; i < static_cast<int>(state.size()); ++i) {
+                if (i == last_action || state[i] == 0) continue;
+                fpf.set_stone(i / board_size, i % board_size,
+                              state[i] == 1 ? C_BLACK : C_WHITE);
             }
+            if (fpf.is_forbidden(row, col)) return -1;   // black loses
         }
 
-        // Standard win check: scan for runs.
+        // Run-scan win check, mirroring KataGomo's
+        //   myConNum == 5 || (myConNum > 5 && isSixWinMe)
+        // with isSixWin per-color-per-rule:
+        //   FREESTYLE: black=true, white=true     → 5+ wins for both
+        //   STANDARD:  black=false, white=false   → only exactly 5 for both
+        //   RENJU:     black=false, white=true    → black exact-5, white 5+
+        const bool black_six_wins = (rule == RuleType::FREESTYLE);
+        const bool white_six_wins = (rule != RuleType::STANDARD);
         const int dirs[4][2] = {{1, 0}, {0, 1}, {1, 1}, {1, -1}};
         for (int r = 0; r < board_size; ++r) {
             for (int c = 0; c < board_size; ++c) {
@@ -520,18 +490,11 @@ public:
                         nr += d[0];
                         nc += d[1];
                     }
-                    // Black: FREESTYLE wins on 5+, STANDARD/RENJU only on exactly 5.
-                    // (overline already handled above; if we see len>=6 here for black under
-                    // STANDARD/RENJU it means the overline check missed — should not happen)
                     if (stone == 1) {
-                        if (rule == RuleType::FREESTYLE) {
-                            if (len >= 5) return 1;
-                        } else {
-                            if (len == 5) return 1;
-                        }
+                        if (len == 5 || (len > 5 && black_six_wins)) return 1;
+                    } else {  // stone == -1
+                        if (len == 5 || (len > 5 && white_six_wins)) return -1;
                     }
-                    // White: always wins on 5+ (all rules).
-                    if (stone == -1 && len >= 5) return -1;
                 }
             }
         }
@@ -543,25 +506,6 @@ public:
     }
 
 private:
-    // Check whether the stone at (r, c) of given color forms a run of length ≥ 6
-    // through any of the 4 directions. Used for STANDARD overline detection.
-    bool is_overline_at(const std::vector<int8_t>& state, int r, int c, int color) const {
-        const int dirs[4][2] = {{1, 0}, {0, 1}, {1, 1}, {1, -1}};
-        for (const auto& d : dirs) {
-            int len = 1;
-            int nr = r + d[0], nc = c + d[1];
-            while (on_board(nr, nc) && state[nr * board_size + nc] == color) {
-                ++len; nr += d[0]; nc += d[1];
-            }
-            nr = r - d[0]; nc = c - d[1];
-            while (on_board(nr, nc) && state[nr * board_size + nc] == color) {
-                ++len; nr -= d[0]; nc -= d[1];
-            }
-            if (len >= 6) return true;
-        }
-        return false;
-    }
-
     static constexpr int C_EMPTY = 0;
     static constexpr int C_BLACK = 1;
     static constexpr int C_WHITE = 2;
