@@ -564,6 +564,12 @@
   body:not(.show-analysis) .wdl-row {
     grid-template-columns: minmax(0,1fr) 64px;
   }
+  /* Sims label swaps between modes: "思考深度" in simple, "模拟次数" in
+     analysis. Both spans live in the markup and CSS shows one at a time. */
+  body:not(.show-analysis) .label-sims-analysis,
+  body.show-analysis        .label-sims-simple {
+    display: none;
+  }
   /* Simple mode on desktop: right column hosts only the value-estimates
      card and should mirror the left controls column's width (290px), not
      the full board width that syncBoardSize otherwise sets in inline JS. */
