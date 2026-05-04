@@ -56,6 +56,7 @@ const I18N_STRINGS = {
         theme_label_auto: "Auto",
         theme_label_light: "Light",
         theme_label_dark: "Dark",
+        show_analysis_label: "Show analysis",
     },
     zh: {
         page_title: "SkyZero 五子棋 · ONNX Web",
@@ -110,6 +111,7 @@ const I18N_STRINGS = {
         theme_label_auto: "自动",
         theme_label_light: "明亮",
         theme_label_dark: "暗黑",
+        show_analysis_label: "显示分析",
     },
 };
 
