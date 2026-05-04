@@ -201,8 +201,9 @@ function syncBoardSize() {
     } else {
         // Simple mode: right column hosts only the value-estimates card.
         // Width is constrained by CSS to mirror the left controls column;
-        // height is content-sized.
-        rightCol.style.height = "";
+        // height matches the left controls column so the value chart fills
+        // the freed vertical space (CSS makes the card + chart flex-grow).
+        rightCol.style.height = leftCol.offsetHeight + "px";
         rightCol.style.width  = "";
     }
     if (need && typeof draw === "function") draw();
@@ -516,7 +517,12 @@ function resizeValueChart() {
     const w = Math.max(120, Math.floor(rect.width));
     const h = Math.max(120, Math.floor(rect.height));
     if (vctx._logicalW === w && vctx._logicalH === h) return;
-    vctx = setupCanvas(vcCanvas, w, h);
+    // setStyle=false: leave the displayed size to CSS so the canvas can
+    // shrink back when toggling out of simple mode (where flex-grow lets
+    // it expand to fill the right column). An inline style.height set
+    // here would otherwise persist and keep the chart tall in analysis
+    // mode.
+    vctx = setupCanvas(vcCanvas, w, h, false);
     drawValueChart();
 }
 new ResizeObserver(resizeValueChart).observe(vcCanvas);
@@ -650,9 +656,9 @@ function renderWDL(prefix, vWDL) {
     wlEl.classList.toggle("pos", n.wl > 0.01);
     wlEl.classList.toggle("neg", n.wl < -0.01);
     det.innerHTML =
-        '<span><span class="k">W</span> ' + n.w.toFixed(1) + "%</span>" +
-        '<span><span class="k">D</span> ' + n.d.toFixed(1) + "%</span>" +
-        '<span><span class="k">L</span> ' + n.l.toFixed(1) + "%</span>";
+        '<span><span class="k">' + t("wdl_w") + '</span> ' + n.w.toFixed(1) + "%</span>" +
+        '<span><span class="k">' + t("wdl_d") + '</span> ' + n.d.toFixed(1) + "%</span>" +
+        '<span><span class="k">' + t("wdl_l") + '</span> ' + n.l.toFixed(1) + "%</span>";
 }
 
 // --- Model dropdown (loads from models/manifest.json) ---
@@ -682,19 +688,8 @@ function modelById(id) {
     return manifest.models.find(m => m.id === id);
 }
 
-// --- Board size dropdown (hard-coded 13-17) ---
-const BOARD_SIZES = [17, 16, 15, 14, 13];
-function populateSizeSelect() {
-    const sel = document.getElementById("size_select");
-    sel.innerHTML = "";
-    for (const sz of BOARD_SIZES) {
-        const o = document.createElement("option");
-        o.value = String(sz);
-        o.textContent = String(sz);
-        sel.appendChild(o);
-    }
-    sel.value = String(N);
-}
+// --- Board size buttons (hard-coded 13-17) ---
+const BOARD_SIZES = [13, 14, 15, 16, 17];
 
 // --- Loading overlay (only shown for first model load) ---
 function setLoadingProgress(pct) {
@@ -848,8 +843,12 @@ function triggerAISearch() {
     aiThinking = true;
     searchId++;
     setStatus("status_ai_thinking", "thinking");
-    const simsRaw = parseInt(document.getElementById("sims_input").value, 10);
-    const sims = (Number.isFinite(simsRaw) && simsRaw >= 0) ? simsRaw : 32;
+    const searchOn = !!document.getElementById("search_enable_input")?.checked;
+    let sims = 0;
+    if (searchOn) {
+        const simsRaw = parseInt(document.getElementById("sims_input").value, 10);
+        sims = (Number.isFinite(simsRaw) && simsRaw >= 0) ? simsRaw : 32;
+    }
     worker.postMessage({
         type: "search",
         state: boardState,
@@ -971,16 +970,24 @@ worker.onmessage = (e) => {
     }
 };
 
-// Pure-NN mode hint: visible iff sims_input parses to 0.
-function updateSimsModeHint() {
-    const el = document.getElementById("sims_input");
-    const hint = document.getElementById("sims_mode_hint");
-    if (!el || !hint) return;
-    const n = parseInt(el.value, 10);
-    hint.hidden = !(Number.isFinite(n) && n === 0);
+// Search toggle: when off, sims=0 is sent to the worker (pure NN, policy-head
+// argmax). State persisted in localStorage("skz_search_enabled") as "1"/"0".
+// A pre-paint inline script in index.html applies body.search-disabled before
+// first paint so the sims input doesn't flash before collapsing on load.
+function setSearchEnabled(on) {
+    document.body.classList.toggle("search-disabled", !on);
+    const cb = document.getElementById("search_enable_input");
+    if (cb) cb.checked = !!on;
+    try { localStorage.setItem("skz_search_enabled", on ? "1" : "0"); } catch (_) {}
 }
-document.getElementById("sims_input").addEventListener("input", updateSimsModeHint);
-updateSimsModeHint();
+(function initSearchToggle() {
+    const cb = document.getElementById("search_enable_input");
+    if (!cb) return;
+    let saved = null;
+    try { saved = localStorage.getItem("skz_search_enabled"); } catch (_) {}
+    setSearchEnabled(saved === "0" ? false : true);
+    cb.addEventListener("change", () => setSearchEnabled(cb.checked));
+})();
 
 // --- Buttons ---
 document.getElementById("new_btn").addEventListener("click", newGame);
@@ -1046,14 +1053,20 @@ for (const b of document.querySelectorAll(".seg-btn[data-rule]")) {
     b.addEventListener("click", () => setRule(b.dataset.rule));
 }
 
-// Size dropdown.
-document.getElementById("size_select").addEventListener("change", (ev) => {
-    const sz = parseInt(ev.target.value, 10);
+// Size segmented buttons (mirrors setRule).
+function setSize(sz) {
     if (!Number.isFinite(sz) || !BOARD_SIZES.includes(sz)) return;
+    if (sz === N) return;
     N = sz;
+    for (const b of document.querySelectorAll(".seg-btn[data-size]")) {
+        b.setAttribute("aria-pressed", parseInt(b.dataset.size, 10) === sz ? "true" : "false");
+    }
     syncBoardSize();
     newGame();
-});
+}
+for (const b of document.querySelectorAll(".seg-btn[data-size]")) {
+    b.addEventListener("click", () => setSize(parseInt(b.dataset.size, 10)));
+}
 
 // Model dropdown.
 document.getElementById("model_select").addEventListener("change", (ev) => {
@@ -1079,11 +1092,12 @@ registerI18nCallback(() => {
             titleEl ? titleEl.textContent : t("heatmap_default_title");
     }
     if (typeof drawValueChart === "function") drawValueChart();
+    renderWDL("root", lastRootWDL);
+    renderWDL("nn",   lastNNWDL);
 });
 
 // --- Bootstrap on load ---
 (async function bootstrap() {
-    populateSizeSelect();
     showLoadingOverlay("loading_manifest");
     try {
         await loadManifest();
