@@ -2,10 +2,10 @@
 """Export SkyZero V5 checkpoints to ONNX for browser inference.
 
 Wraps SkyZero_V5's nets.KataGoNet, drops the value_td and intermediate_*
-outputs (UI doesn't display them), and reorders to a (1, 4, 17, 17) +
+outputs (UI doesn't display them), and reorders to a (1, 5, 19, 19) +
 (1, 12) → (policy_logits, value_wdl_logits, value_futurepos_pretanh)
 signature. Spatial dims fixed at MAX_BOARD_SIZE so the same .onnx serves
-all board sizes 13-17 via the mask plane.
+all board sizes 9-19 via the mask plane.
 
 Two usage modes:
 
@@ -14,13 +14,13 @@ Two usage modes:
         --ckpt /path/to/model.pt --out models/level3.onnx \\
         --num-blocks 10 --num-channels 128
 
-    # Batch (auto-detects b{N}c{M} from filenames):
-    python tools/export_onnx.py --src /path/to/v5/anchors \\
+    # Batch (--src defaults to SkyZeroWeb/origin_models/):
+    python tools/export_onnx.py \\
         b4c64iter180.pt b10c128iter80.pt b10c128b15iter234.pt
         # → models/level1.onnx, models/level2.onnx, models/level3.onnx
 
     # Batch with explicit slot mapping:
-    python tools/export_onnx.py --src /path/to/v5/anchors \\
+    python tools/export_onnx.py \\
         b4c64iter180.pt:lv1 b10c128iter80.pt:lv3 b10c128b15iter234.pt:lv5
         # → models/level1.onnx, models/level3.onnx, models/level5.onnx
 """
@@ -48,9 +48,33 @@ from model_config import NetConfig         # noqa: E402
 # Default output dir for batch mode (SkyZeroWeb/models/).
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
+DEFAULT_SRC_DIR = PROJECT_ROOT / "origin_models"
 
 # Filename arch regex: matches "b10c128", "b4c64", etc.
 ARCH_RE = re.compile(r"b(\d+)c(\d+)")
+# Filename iter regex: matches "iter_000044", "iter44", "iter80" etc.
+ITER_RE = re.compile(r"iter_?(\d+)")
+
+
+def scan_and_rank(src: Path, top_n: int = 5) -> list[tuple[str, str]]:
+    """Pick top-N .pt files in `src` by iter number (desc), map to lv{N}..lv1.
+
+    Highest iter → lv{N}, second-highest → lv{N-1}, etc. Files without an
+    iter token in the name are skipped.
+    """
+    candidates = []
+    for p in sorted(src.glob("*.pt")):
+        m = ITER_RE.search(p.name)
+        if not m:
+            continue
+        candidates.append((int(m.group(1)), p.name))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: -x[0])
+    chosen = candidates[:top_n]
+    # Highest iter → highest tier. With 5 files, lv5 is best.
+    n = len(chosen)
+    return [(name, f"lv{n - i}") for i, (_, name) in enumerate(chosen)]
 
 
 class ExportWrapper(torch.nn.Module):
@@ -122,7 +146,7 @@ def export_one(
     out: Path,
     num_blocks: int,
     num_channels: int,
-    max_board_size: int = 17,
+    max_board_size: int = 19,
     num_planes: int = 5,
     num_global_features: int = 12,
     opset: int = 18,
@@ -217,8 +241,8 @@ def main() -> int:
     ap.add_argument("--out",  type=Path, help="single-file mode: output .onnx path")
 
     # Batch mode
-    ap.add_argument("--src", type=Path, default=None,
-                    help="batch mode: source dir containing .pt files")
+    ap.add_argument("--src", type=Path, default=DEFAULT_SRC_DIR,
+                    help=f"batch mode: source dir containing .pt files (default: {DEFAULT_SRC_DIR})")
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_MODELS_DIR,
                     help=f"batch mode: output dir (default: {DEFAULT_MODELS_DIR})")
     ap.add_argument("files", nargs="*",
@@ -228,7 +252,7 @@ def main() -> int:
     # Architecture overrides (single-file mode; batch auto-detects)
     ap.add_argument("--num-blocks",   type=int, default=None)
     ap.add_argument("--num-channels", type=int, default=None)
-    ap.add_argument("--max-board-size", type=int, default=17)
+    ap.add_argument("--max-board-size", type=int, default=19)
     ap.add_argument("--num-planes", type=int, default=5)
     ap.add_argument("--num-global-features", type=int, default=12)
     # opset 18 is the minimum that supports Mish (V5's default activation).
@@ -253,13 +277,18 @@ def main() -> int:
         return 0
 
     # ----- Batch mode -----
-    if not args.files:
-        ap.error("provide either --ckpt + --out (single mode) "
-                 "or --src + filenames (batch mode); see --help")
-    if args.src is None:
-        ap.error("batch mode requires --src DIR")
     if not args.src.is_dir():
         ap.error(f"--src dir not found: {args.src}")
+
+    # Auto-rank: if no positional filenames, scan src dir, rank by iter desc,
+    # map highest → lv5, next → lv4, ..., lowest → lv1 (or lv{N} where N = file count).
+    if not args.files:
+        ranked = scan_and_rank(args.src, top_n=5)
+        if not ranked:
+            ap.error(f"no *.pt files with 'iter_NNN' in name found under {args.src} — "
+                     "pass filenames explicitly or use --ckpt + --out")
+        args.files = [f"{name}:{tier}" for name, tier in ranked]
+        print(f"[export_onnx] auto-rank: {len(args.files)} file(s) by iter desc")
 
     # Resolve each spec
     plan = []
@@ -274,10 +303,7 @@ def main() -> int:
             nb, nc = args.num_blocks, args.num_channels
         else:
             arch = detect_arch(filename)
-            if arch is None:
-                ap.error(f"cannot auto-detect arch from '{filename}' "
-                         "(need 'b{N}c{M}' in name) — pass --num-blocks/--num-channels explicitly")
-            nb, nc = arch
+            nb, nc = arch if arch is not None else (10, 128)
         plan.append((ckpt, out, nb, nc, tier))
 
     def _short(p: Path) -> str:
