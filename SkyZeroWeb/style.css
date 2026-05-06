@@ -155,9 +155,9 @@
     border-radius: 4px;
   }
 
-  .app { max-width: 2000px; margin: 0 auto; padding: 16px 24px 48px; }
+  .app { max-width: 2000px; margin: 0 auto; padding: 12px 24px 16px; }
   @media (max-width: 720px) {
-    .app { padding: 12px 8px 32px; }
+    .app { padding: 8px 8px 12px; }
     /* Maximize board real estate on phones — tight card padding, no
        coordinate-label margin reservations (handled in JS). */
     .board-card { padding: 6px; }
@@ -166,9 +166,9 @@
   /* ---------- Top bar ---------- */
   .topbar {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 0 20px;
+    padding: 4px 0 12px;
     border-bottom: 1px solid var(--border);
-    margin-bottom: 24px;
+    margin-bottom: 14px;
   }
   .brand { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-width: 0; }
   .brand-title {
@@ -221,7 +221,7 @@
     gap: 20px;
     align-items: start;
     justify-content: center;
-    margin-bottom: 20px;
+    margin-bottom: 0;
   }
   @media (max-width: 1399px) {
     .main { grid-template-columns: 1fr; }
@@ -235,10 +235,11 @@
     min-width: 0;
   }
   @media (min-width: 1400px) {
-    /* Keep total page within viewport so board + action buttons are never obscured.
-       Reserved (~170px): app padding-y (64) + topbar with margin (~84) + main margin-bottom (20). */
+    /* Side cols may exceed viewport in analysis mode (left col gains the value
+       card; right col gains the heatmap grid). main.js#updateSideColMaxHeight
+       sets an inline max-height from the column's measured top, so a fixed
+       reserve here would only matter as a fallback if JS doesn't run. */
     .side-col {
-      max-height: calc(100vh - 170px);
       overflow-y: auto;
     }
   }
@@ -288,8 +289,8 @@
   .card-body { padding: 8px 14px; }
   .card-title {
     font-size: 14px; line-height: 18px;
-    font-weight: 600; letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--fg-subtle);
+    font-weight: 600; letter-spacing: 0.01em;
+    color: var(--fg-subtle);
     margin: 0 0 4px;
   }
   .card-title-hint {
@@ -297,6 +298,15 @@
     font-size: 11px; font-weight: 400; letter-spacing: 0;
     text-transform: none; color: var(--fg-muted);
   }
+  /* Header row that hosts the card title plus the prominent root win% on
+     the right (see #wdl_root_wl in the value-estimates card). */
+  .card-title-row {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 4px;
+  }
+  .card-title-row .card-title { margin: 0; }
+  .wdl-wl--header { line-height: 1; letter-spacing: 0; }
 
   /* ---------- Status pill ---------- */
   .status-card { padding: 6px 12px; text-align: center; }
@@ -406,21 +416,95 @@
     height: 1px; background: var(--border); margin: 4px 0;
   }
 
+  /* ---------- Settings card (left column) ---------- */
+  .settings-card .card-body { padding: 4px 14px 10px; }
+  .settings-group + .settings-group {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+  }
+  .settings-group-title {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    font-size: 14px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg);
+    padding: 6px 0 2px;
+  }
+  .settings-group-title .toggle { padding: 0; margin-left: auto; }
+  .settings-group-hint {
+    font-size: 10.5px; font-weight: 400; letter-spacing: 0;
+    text-transform: none; color: var(--fg-muted);
+  }
+  .settings-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; min-height: 36px; padding: 4px 0;
+  }
+  .settings-row + .settings-row {
+    border-top: 1px solid var(--surface-2);
+  }
+  .settings-label {
+    flex: 0 0 88px;
+    font-size: 13px; color: var(--fg-muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .settings-control {
+    display: inline-flex; align-items: center; justify-content: flex-end;
+  }
+  .settings-row .seg-row.settings-control { flex: 1; gap: 6px; }
+  .settings-row .seg-row.settings-control .seg-btn { flex: 1; height: 32px; font-size: 12.5px; }
+  .settings-control--select {
+    flex: 1; min-width: 0; max-width: 100%;
+    height: 32px; padding: 0 8px;
+    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    font-family: var(--font-mono); font-size: 12.5px;
+    cursor: pointer;
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .settings-control--select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .settings-control--num { width: 96px; height: 32px; }
+  .settings-row .toggle.settings-control { flex: 0 0 auto; padding: 0; }
+
+  .size-control {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .size-control input[type="range"] {
+    flex: 1; min-width: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
+    margin: 0;
+  }
+  .size-value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px; color: var(--fg);
+    min-width: 20px; text-align: right;
+  }
+
   /* ---------- WDL ---------- */
+  /* Row 1: label + bar inline (label hides in simple mode and the bar fills
+     the row). Row 2: W/D/L breakdown wraps below via flex: 1 1 100%. */
   .wdl-row {
-    display: grid;
-    grid-template-columns: 42px minmax(0,1fr) 64px;
+    display: flex;
+    flex-flow: row wrap;
     align-items: center;
-    gap: 10px;
-    padding: 2px 0;
+    gap: 4px 8px;
+    padding: 1px 0;
   }
   .wdl-label {
+    flex: 0 0 36px;
     font-family: var(--font-mono);
     font-size: 12px; color: var(--fg-muted);
     text-transform: uppercase; letter-spacing: 0.04em;
   }
   .wdl-bar {
-    display: flex; height: 8px; width: 100%;
+    display: flex; height: 8px;
+    flex: 1 1 0; min-width: 0;
     background: var(--surface-2);
     border-radius: 999px; overflow: hidden;
   }
@@ -433,20 +517,33 @@
   }
   .wdl-wl {
     font-family: var(--font-mono);
-    font-size: 12px; text-align: right; color: var(--fg);
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--fg);
     font-variant-numeric: tabular-nums;
+    line-height: 1.05;
   }
   .wdl-wl.pos { color: var(--success); }
   .wdl-wl.neg { color: var(--danger); }
   .wdl-empty { color: var(--fg-subtle); font-size: 12px; padding: 8px 0; text-align: center; }
+  /* Wraps to its own line under the bar (flex: 1 1 100%) and centers the
+     small W/D/L breakdown horizontally. */
   .wdl-detail {
-    margin-top: 2px; font-size: 11.5px; color: var(--fg-muted);
+    flex: 1 1 100%;
+    margin-top: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .wdl-breakdown {
+    display: flex; gap: 10px;
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
-    display: flex; gap: 10px;
-    min-height: 18px;
+    font-size: 11.5px; color: var(--fg-muted);
+    min-height: 16px;
   }
-  .wdl-detail .k { color: var(--fg-subtle); }
+  .wdl-breakdown .k { color: var(--fg-subtle); }
   .value-chart-wrap {
     margin-top: 8px;
     padding-top: 8px;
@@ -612,16 +709,13 @@
      in main.js (setShowAnalysis). */
   body:not(.show-analysis) .grids,
   body:not(.show-analysis) .wdl-row--nn,
-  body:not(.show-analysis) #wdl_nn_detail,
   body:not(.show-analysis) .value-chart-legend,
   body:not(.show-analysis) .wdl-label {
     display: none;
   }
-  /* When the wdl-label is hidden, drop its column from the row's grid
-     so the bar stretches into the freed space. */
-  body:not(.show-analysis) .wdl-row {
-    grid-template-columns: minmax(0,1fr) 64px;
-  }
+  /* Analysis mode: drop the big +X% on both the title row and the network
+     row — only the small W/D/L breakdown stays visible. */
+  body.show-analysis .wdl-wl { display: none; }
   /* Sims label swaps between modes: "思考深度" in simple, "模拟次数" in
      analysis. Both spans live in the markup and CSS shows one at a time. */
   body:not(.show-analysis) .label-sims-analysis,
