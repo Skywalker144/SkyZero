@@ -1207,23 +1207,28 @@ for (const b of document.querySelectorAll(".seg-btn[data-rule]")) {
 // game so we don't fire newGame() once per intermediate value.
 //
 // Mid-game resize: keep every stone at its original (r, c) cell index. New
-// rows/columns appear on the bottom-right when growing; on shrink, any stone
-// outside [0, dstN) fails the fit check and triggers the confirm-reset prompt.
-// No center realignment — stones never move on size change, which avoids the
-// half-cell drift that's intrinsic to integer-cell boards crossing odd↔even.
-function tryFitSameIndex(srcBoard, srcN, dstN) {
+// offset = 0 keeps stones at the same (r,c) — bottom-right-only expansion.
+// offset ≠ 0 shifts every stone by offset in both axes, used when both srcN and
+// dstN are odd so new rows/columns are distributed symmetrically on all 4 sides.
+function tryFitSameIndex(srcBoard, srcN, dstN, offset) {
     const dst = new Int8Array(dstN * dstN);
     for (let r = 0; r < srcN; r++) {
         for (let c = 0; c < srcN; c++) {
             const stone = srcBoard[r * srcN + c];
             if (stone === 0) continue;
-            if (r >= dstN || c >= dstN) return null;
-            dst[r * dstN + c] = stone;
+            const nr = r + offset;
+            const nc = c + offset;
+            if (nr < 0 || nr >= dstN || nc < 0 || nc >= dstN) return null;
+            dst[nr * dstN + nc] = stone;
         }
     }
     let translatedLast = null;
-    if (lastMove && lastMove.r < dstN && lastMove.c < dstN) {
-        translatedLast = { r: lastMove.r, c: lastMove.c };
+    if (lastMove) {
+        const nr = lastMove.r + offset;
+        const nc = lastMove.c + offset;
+        if (nr >= 0 && nr < dstN && nc >= 0 && nc < dstN) {
+            translatedLast = { r: nr, c: nc };
+        }
     }
     return { board: dst, lastMove: translatedLast };
 }
@@ -1237,8 +1242,10 @@ function migrateBoardSize(target, fitted) {
     aiThinking = false;
     searchId++;   // abort any in-flight search
     history = [];   // old snapshots are at the previous size — undo can't replay across sizes
-    syncBoardSize();
+    // publish before syncBoardSize: if the canvas resizes, syncBoardSize calls
+    // draw(), which would otherwise iterate 0..N over a stale state.board.
     publishStateForDrawing();
+    syncBoardSize();
     drawAll();
     worker.postMessage({ type: "reset", boardSize: N, ply, rule: currentRule });
     if (!gameOver && toPlay !== humanSide) {
@@ -1258,7 +1265,8 @@ function setSize(sz) {
         syncBoardSize();
         return;
     }
-    const fitted = tryFitSameIndex(boardState, N, sz);
+    const offset = Math.floor((sz - 1) / 2) - Math.floor((N - 1) / 2);
+    const fitted = tryFitSameIndex(boardState, N, sz, offset);
     if (fitted) {
         migrateBoardSize(sz, fitted);
     } else {
