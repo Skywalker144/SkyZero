@@ -60,7 +60,7 @@ async function fetchModelWithProgress(url) {
  */
 async function inference(state, toPlay) {
     if (!session) throw new Error("session not ready");
-    const M = 17, A = M * M;                     // padded canvas
+    const M = MAX_BOARD_SIZE, A = M * M;         // padded canvas (from gomoku.js)
     const N = currentBoardSize, NA = N * N;      // game canvas
 
     const spatial = game.encodeState(state, toPlay);
