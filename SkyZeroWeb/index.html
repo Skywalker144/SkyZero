@@ -114,7 +114,7 @@
     </header>
 
     <div class="main">
-      <!-- Left column: status, model, side, size, search params, value -->
+      <!-- Left column: status pill + unified settings card -->
       <aside class="side-col" id="left_col">
         <div class="card status-card">
           <div class="status-pill" id="status_pill" data-variant="idle">
@@ -123,70 +123,61 @@
           </div>
         </div>
 
-        <div class="card">
-          <div class="card-body side-row">
-            <div class="card-title" style="margin:0;" data-i18n="label_model">模型</div>
-            <select id="model_select" class="num" style="flex:1; min-width:0; height:32px; text-align:left; font-family: var(--font-mono);"></select>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-body side-row">
-            <div class="card-title" style="margin:0;" data-i18n="label_human_side">我方执子</div>
-            <div class="seg-row">
-              <button class="seg-btn" id="side_black" aria-pressed="true">
-                <span class="seg-stone black"></span><span data-i18n="side_black">黑棋</span>
-              </button>
-              <button class="seg-btn" id="side_white" aria-pressed="false">
-                <span class="seg-stone white"></span><span data-i18n="side_white">白棋</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-body side-row">
-            <div class="card-title" style="margin:0;" data-i18n="label_board_size">棋盘大小</div>
-            <div class="seg-row" id="size_seg" role="group" aria-label="棋盘大小">
-              <button class="seg-btn" data-size="13" aria-pressed="false">13</button>
-              <button class="seg-btn" data-size="14" aria-pressed="false">14</button>
-              <button class="seg-btn" data-size="15" aria-pressed="true">15</button>
-              <button class="seg-btn" data-size="16" aria-pressed="false">16</button>
-              <button class="seg-btn" data-size="17" aria-pressed="false">17</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-body side-row">
-            <div class="card-title" style="margin:0;" data-i18n="label_rule">规则</div>
-            <div class="seg-row">
-              <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="true"  data-i18n="rule_renju">连珠</button>
-              <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" data-i18n="rule_standard">标准</button>
-              <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false" data-i18n="rule_freestyle">无禁</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
+        <div class="card settings-card">
           <div class="card-body">
-            <div class="side-row">
-              <div class="card-title" style="margin:0;">
-                <span data-i18n="label_search">搜索</span>
-                <span class="card-title-hint" data-i18n="label_search_hint">(关闭则 AI 直接凭直觉落子)</span>
+            <div class="settings-group">
+              <div class="settings-group-title" data-i18n="settings_group_game">对局</div>
+
+              <div class="settings-row">
+                <span class="settings-label" data-i18n="label_model">模型</span>
+                <select id="model_select" class="settings-control settings-control--select"></select>
               </div>
-              <label class="toggle" data-i18n-aria="aria_search_toggle" aria-label="切换搜索">
-                <input type="checkbox" id="search_enable_input" checked aria-controls="sims_wrapper">
-                <span class="track"></span>
-              </label>
+
+              <div class="settings-row">
+                <span class="settings-label" data-i18n="label_human_side">我方执子</span>
+                <div class="seg-row settings-control">
+                  <button class="seg-btn" id="side_black" aria-pressed="true">
+                    <span class="seg-stone black"></span><span data-i18n="side_black">黑棋</span>
+                  </button>
+                  <button class="seg-btn" id="side_white" aria-pressed="false">
+                    <span class="seg-stone white"></span><span data-i18n="side_white">白棋</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <span class="settings-label" data-i18n="label_rule">规则</span>
+                <div class="seg-row settings-control">
+                  <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="true"  data-i18n="rule_freestyle">无禁手</button>
+                  <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="false" data-i18n="rule_renju">连珠</button>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <span class="settings-label" data-i18n="label_board_size">棋盘大小</span>
+                <div class="size-control settings-control">
+                  <input type="range" id="size_input" min="9" max="19" step="1" value="15" data-i18n-aria="label_board_size" aria-label="棋盘大小">
+                  <span class="size-value" id="size_value">15</span>
+                </div>
+              </div>
             </div>
-            <div id="sims_wrapper">
-              <div class="field-row">
-                <label for="sims_input">
+
+            <div class="settings-group">
+              <div class="settings-group-title">
+                <span data-i18n="settings_group_search">搜索</span>
+                <span class="settings-group-hint" data-i18n="label_search_hint">(关闭则 AI 直接凭直觉落子)</span>
+                <label class="toggle" data-i18n-aria="aria_search_toggle" aria-label="切换搜索">
+                  <input type="checkbox" id="search_enable_input" checked aria-controls="sims_wrapper">
+                  <span class="track"></span>
+                </label>
+              </div>
+
+              <div class="settings-row" id="sims_wrapper">
+                <span class="settings-label">
                   <span class="label-sims-simple"   data-i18n="label_sims_depth">思考深度</span>
                   <span class="label-sims-analysis" data-i18n="label_sims_count">模拟次数</span>
-                </label>
-                <input class="num" type="number" id="sims_input" min="0" step="1" value="32">
+                </span>
+                <input class="num settings-control settings-control--num" type="number" id="sims_input" min="0" step="1" value="32">
               </div>
             </div>
           </div>
@@ -208,7 +199,10 @@
       <aside class="side-col" id="right_col">
         <div class="card">
           <div class="card-body">
-            <div class="card-title" data-i18n="label_value_estimates">胜率估计</div>
+            <div class="card-title-row">
+              <div class="card-title" data-i18n="label_value_estimates">胜率估计</div>
+              <span class="wdl-wl wdl-wl--header" id="wdl_root_wl">—</span>
+            </div>
             <div class="wdl-row">
               <span class="wdl-label" data-i18n="legend_root">根</span>
               <div class="wdl-bar" id="wdl_root_bar">
@@ -216,19 +210,19 @@
                 <span class="seg d" style="width:0"></span>
                 <span class="seg l" style="width:0"></span>
               </div>
-              <span class="wdl-wl" id="wdl_root_wl">—</span>
+              <div class="wdl-detail" id="wdl_root_detail"></div>
             </div>
-            <div class="wdl-detail" id="wdl_root_detail"></div>
-            <div class="wdl-row wdl-row--nn" style="margin-top:4px;">
+            <div class="wdl-row wdl-row--nn">
               <span class="wdl-label" data-i18n="legend_nn">网络</span>
               <div class="wdl-bar" id="wdl_nn_bar">
                 <span class="seg w" style="width:0"></span>
                 <span class="seg d" style="width:0"></span>
                 <span class="seg l" style="width:0"></span>
               </div>
-              <span class="wdl-wl" id="wdl_nn_wl">—</span>
+              <div class="wdl-detail" id="wdl_nn_detail">
+                <span class="wdl-wl" id="wdl_nn_wl">—</span>
+              </div>
             </div>
-            <div class="wdl-detail" id="wdl_nn_detail"></div>
             <div class="value-chart-wrap">
               <div class="value-chart-legend">
                 <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span><span data-i18n="legend_root">根</span></span>
