@@ -210,11 +210,11 @@ test("getWinner: full board with no 5-row returns 0 (draw)", () => {
     assert.notStrictEqual(w, null);
 });
 
-const MAX = 17;          // V5 MAX_BOARD_SIZE
+const MAX = 19;          // V5 MAX_BOARD_SIZE
 const PADDED_AREA = MAX * MAX;
 const NUM_PLANES = 5;
 
-test("encodeState: 13x13 board pads to 17x17, mask only inside [0,13)", () => {
+test("encodeState: 13x13 board pads to 19x19, mask only inside [0,13)", () => {
     const g = new Gomoku(13);
     const s = g.getInitialState();
     const enc = g.encodeState(s, 1);
