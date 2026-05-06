@@ -3,7 +3,7 @@ const C_BLACK = 1;
 const C_WHITE = 2;
 const C_WALL = 3;
 
-const MAX_BOARD_SIZE = 17;     // V5 MAX_BOARD_SIZE
+const MAX_BOARD_SIZE = 19;     // V5 MAX_BOARD_SIZE
 const MAX_AREA = MAX_BOARD_SIZE * MAX_BOARD_SIZE;
 const NUM_SPATIAL_PLANES = 5;
 
@@ -355,7 +355,7 @@ class Gomoku {
     }
 
     /**
-     * V5 encode: 5 planes padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE = 17×17.
+     * V5 encode: 5 planes padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE = 19×19.
      * Plane 0: on-board mask (1 inside [0, boardSize), 0 in padding)
      * Plane 1: own stones
      * Plane 2: opponent stones
