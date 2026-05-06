@@ -571,7 +571,7 @@
   /* ---------- Board ---------- */
   .board-card {
     padding: 16px;
-    display: inline-flex; flex-direction: column; align-items: center;
+    display: inline-flex; flex-direction: column; align-items: flex-start;
   }
   #board {
     background: var(--board-bg); border-radius: var(--radius-sm);
