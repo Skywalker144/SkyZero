@@ -668,6 +668,35 @@
     margin: auto;
   }
 
+  /* ---------- Confirm modal ---------- */
+  .confirm-modal {
+    position: fixed; inset: 0; z-index: 1100;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .confirm-modal-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+    padding: 20px 22px 18px;
+    width: min(420px, 92vw);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .confirm-modal-title {
+    font-size: 14px; font-weight: 600; color: var(--fg);
+    letter-spacing: 0.01em;
+  }
+  .confirm-modal-body {
+    font-size: 13px; color: var(--fg-muted);
+    line-height: 1.55;
+  }
+  .confirm-modal-actions {
+    display: flex; justify-content: flex-end; gap: 8px;
+    margin-top: 4px;
+  }
+
   .hidden { display: none !important; }
 
 /* Loading overlay (Task 23 — not in V5 since the C++ engine is local) */

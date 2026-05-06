@@ -227,7 +227,7 @@
               <div class="value-chart-legend">
                 <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span><span data-i18n="legend_root">根</span></span>
                 <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span><span data-i18n="legend_nn">网络</span></span>
-                <span class="vc-axis" data-i18n="legend_axis">胜负 · −1…+1</span>
+                <span class="vc-axis" data-i18n="legend_axis">胜率 · 0…100%</span>
               </div>
               <canvas id="value_chart"></canvas>
             </div>
@@ -272,6 +272,18 @@
           </div>
         </div>
       </aside>
+    </div>
+
+    <!-- Board-size confirm modal -->
+    <div class="confirm-modal hidden" id="size_confirm_modal" role="dialog" aria-modal="true" aria-labelledby="size_confirm_title">
+      <div class="confirm-modal-card">
+        <div class="confirm-modal-title" id="size_confirm_title" data-i18n="size_confirm_title">切换棋盘大小?</div>
+        <div class="confirm-modal-body" id="size_confirm_body"></div>
+        <div class="confirm-modal-actions">
+          <button class="btn" id="size_confirm_cancel" data-i18n="btn_cancel">取消</button>
+          <button class="btn primary" id="size_confirm_ok" data-i18n="btn_confirm_reset">重置</button>
+        </div>
+      </div>
     </div>
 
     <!-- Heat modal (fullscreen single heatmap) -->

@@ -700,16 +700,16 @@ function drawValueChart() {
     const subtle = cssVar("--fg-subtle") || "#8b949e";
     const axis = cssVar("--border") || "#d8dee4";
     vctx.strokeStyle = grid; vctx.lineWidth = 1;
-    for (const v of [-1, 0, 1]) {
-        const y = padT + ((1 - v) / 2) * innerH + 0.5;
+    for (const wr of [0, 0.5, 1]) {
+        const y = padT + (1 - wr) * innerH + 0.5;
         vctx.beginPath(); vctx.moveTo(padL, y); vctx.lineTo(W - padR, y); vctx.stroke();
     }
     vctx.fillStyle = subtle;
     vctx.font = `10px ${MONO_FONT}`;
     vctx.textAlign = "right"; vctx.textBaseline = "middle";
-    for (const v of [1, 0, -1]) {
-        const y = padT + ((1 - v) / 2) * innerH;
-        vctx.fillText((v > 0 ? "+" : "") + v.toFixed(0), padL - 4, y);
+    for (const wr of [1, 0.5, 0]) {
+        const y = padT + (1 - wr) * innerH;
+        vctx.fillText((wr * 100).toFixed(0) + "%", padL - 4, y);
     }
     vctx.strokeStyle = axis;
     vctx.beginPath();
@@ -724,7 +724,9 @@ function drawValueChart() {
     }
     const maxStep = Math.max(1, valueHistory[valueHistory.length - 1].step);
     const xOf = (s) => padL + (s / maxStep) * innerW;
-    const yOf = (v) => padT + ((1 - v) / 2) * innerH;
+    // valueHistory stores v in [-1, +1] (= (w-l)/(w+d+l)); display as win rate.
+    const wrOf = (v) => (v + 1) / 2;
+    const yOf = (wr) => padT + (1 - wr) * innerH;
     vctx.fillStyle = muted;
     vctx.textAlign = "center"; vctx.textBaseline = "top";
     vctx.fillText("0", xOf(0), H - padB + 2);
@@ -735,14 +737,14 @@ function drawValueChart() {
         vctx.strokeStyle = color; vctx.lineWidth = 1.5;
         vctx.beginPath();
         pts.forEach((p, i) => {
-            const x = xOf(p.step), y = yOf(p[key]);
+            const x = xOf(p.step), y = yOf(wrOf(p[key]));
             if (i === 0) vctx.moveTo(x, y); else vctx.lineTo(x, y);
         });
         vctx.stroke();
         vctx.fillStyle = color;
         for (const p of pts) {
             vctx.beginPath();
-            vctx.arc(xOf(p.step), yOf(p[key]), 2, 0, Math.PI * 2);
+            vctx.arc(xOf(p.step), yOf(wrOf(p[key])), 2, 0, Math.PI * 2);
             vctx.fill();
         }
     }
@@ -788,8 +790,8 @@ function renderWDL(prefix, vWDL) {
     segs[0].style.width = n.w.toFixed(2) + "%";
     segs[1].style.width = n.d.toFixed(2) + "%";
     segs[2].style.width = n.l.toFixed(2) + "%";
-    const wlPct = n.wl * 100;
-    wlEl.textContent = (wlPct >= 0 ? "+" : "") + wlPct.toFixed(0) + "%";
+    const wrPct = (n.wl + 1) * 50;
+    wlEl.textContent = wrPct.toFixed(0) + "%";
     wlEl.classList.toggle("pos", n.wl > 0.01);
     wlEl.classList.toggle("neg", n.wl < -0.01);
     bk.innerHTML =
@@ -1203,18 +1205,112 @@ for (const b of document.querySelectorAll(".seg-btn[data-rule]")) {
 // Board size slider (input range 9..19). `input` updates the display label
 // continuously during drag; `change` (release) is what actually rebuilds the
 // game so we don't fire newGame() once per intermediate value.
+//
+// Mid-game resize: keep every stone at its original (r, c) cell index. New
+// rows/columns appear on the bottom-right when growing; on shrink, any stone
+// outside [0, dstN) fails the fit check and triggers the confirm-reset prompt.
+// No center realignment — stones never move on size change, which avoids the
+// half-cell drift that's intrinsic to integer-cell boards crossing odd↔even.
+function tryFitSameIndex(srcBoard, srcN, dstN) {
+    const dst = new Int8Array(dstN * dstN);
+    for (let r = 0; r < srcN; r++) {
+        for (let c = 0; c < srcN; c++) {
+            const stone = srcBoard[r * srcN + c];
+            if (stone === 0) continue;
+            if (r >= dstN || c >= dstN) return null;
+            dst[r * dstN + c] = stone;
+        }
+    }
+    let translatedLast = null;
+    if (lastMove && lastMove.r < dstN && lastMove.c < dstN) {
+        translatedLast = { r: lastMove.r, c: lastMove.c };
+    }
+    return { board: dst, lastMove: translatedLast };
+}
+
+function migrateBoardSize(target, fitted) {
+    N = target;
+    game = new Gomoku(N, currentRule);
+    boardState = fitted.board;
+    lastMove = fitted.lastMove;
+    gumbelPhases = null;
+    aiThinking = false;
+    searchId++;   // abort any in-flight search
+    history = [];   // old snapshots are at the previous size — undo can't replay across sizes
+    syncBoardSize();
+    publishStateForDrawing();
+    drawAll();
+    worker.postMessage({ type: "reset", boardSize: N, ply, rule: currentRule });
+    if (!gameOver && toPlay !== humanSide) {
+        triggerAISearch();
+    } else if (!gameOver) {
+        setStatus("status_your_turn", "active");
+    }
+}
+
 function setSize(sz) {
     if (!Number.isFinite(sz) || !BOARD_SIZES.includes(sz)) return;
     if (sz === N) return;
-    N = sz;
-    syncBoardSize();
-    newGame();
+    if (!boardState) {
+        // Pre-bootstrap (worker still loading the first model). The ready
+        // handler will create the game once via newGame(); just update sizes.
+        N = sz;
+        syncBoardSize();
+        return;
+    }
+    const fitted = tryFitSameIndex(boardState, N, sz);
+    if (fitted) {
+        migrateBoardSize(sz, fitted);
+    } else {
+        showSizeConfirmModal(sz);
+    }
+}
+
+// --- Board-size confirm modal ---
+let pendingSizeChange = null;   // target size while modal is open
+function syncSizeSlider() {
+    const sizeInput   = document.getElementById("size_input");
+    const sizeValueEl = document.getElementById("size_value");
+    if (sizeInput)   sizeInput.value = String(N);
+    if (sizeValueEl) sizeValueEl.textContent = String(N);
+}
+function renderSizeConfirmBody() {
+    if (pendingSizeChange == null) return;
+    const el = document.getElementById("size_confirm_body");
+    if (el) el.textContent = t("size_confirm_body", pendingSizeChange);
+}
+function showSizeConfirmModal(target) {
+    pendingSizeChange = target;
+    renderSizeConfirmBody();
+    document.getElementById("size_confirm_modal").classList.remove("hidden");
+}
+function closeSizeConfirmModal(commit) {
+    if (pendingSizeChange == null) return;
+    const target = pendingSizeChange;
+    pendingSizeChange = null;
+    document.getElementById("size_confirm_modal").classList.add("hidden");
+    if (commit) {
+        N = target;
+        syncBoardSize();
+        newGame();
+    } else {
+        syncSizeSlider();
+    }
 }
 {
     const sizeInput   = document.getElementById("size_input");
     const sizeValueEl = document.getElementById("size_value");
     sizeInput.addEventListener("input",  () => { sizeValueEl.textContent = sizeInput.value; });
     sizeInput.addEventListener("change", () => { setSize(parseInt(sizeInput.value, 10)); });
+
+    document.getElementById("size_confirm_ok").addEventListener("click", () => closeSizeConfirmModal(true));
+    document.getElementById("size_confirm_cancel").addEventListener("click", () => closeSizeConfirmModal(false));
+    document.getElementById("size_confirm_modal").addEventListener("click", (ev) => {
+        if (ev.target === ev.currentTarget) closeSizeConfirmModal(false);
+    });
+    document.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape" && pendingSizeChange != null) closeSizeConfirmModal(false);
+    });
 }
 
 // Model dropdown.
@@ -1243,6 +1339,7 @@ registerI18nCallback(() => {
     if (typeof drawValueChart === "function") drawValueChart();
     renderWDL("root", lastRootWDL);
     renderWDL("nn",   lastNNWDL);
+    renderSizeConfirmBody();
 });
 
 // --- Bootstrap on load ---
