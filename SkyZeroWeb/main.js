@@ -131,7 +131,25 @@ const topbarEl = document.querySelector(".topbar");
 const appEl = document.querySelector(".app");
 const boardColEl = document.querySelector(".board-col");
 
+// Pin each side column to the actual remaining viewport so a 1-2px scrollbar
+// from sub-pixel rounding doesn't appear. Run before syncBoardSize's right-col
+// mirroring so the measured leftCol.offsetHeight is already constrained.
+function updateSideColMaxHeight() {
+    const cols = [leftCol, rightCol].filter(Boolean);
+    if (window.matchMedia("(max-width: 1399px)").matches) {
+        cols.forEach(el => { el.style.maxHeight = ""; });
+        return;
+    }
+    cols.forEach(el => { el.style.maxHeight = ""; });
+    cols.forEach(el => {
+        let top = 0;
+        for (let cur = el; cur; cur = cur.offsetParent) top += cur.offsetTop;
+        el.style.maxHeight = (window.innerHeight - top - 4) + "px";
+    });
+}
+
 function syncBoardSize() {
+    updateSideColMaxHeight();
     if (window.matchMedia("(max-width: 1399px)").matches) {
         rightCol.style.height = "";
         rightCol.style.width = "";
@@ -174,9 +192,38 @@ function syncBoardSize() {
     // CSS rule `body:not(.show-analysis) #right_col { width: 350px; }`.
     const SIMPLE_RIGHT_COL_PX = 350;
     const isSimple = !document.body.classList.contains("show-analysis");
+
+    // Heat-grid geometry (analysis mode only). Right col holds a 2x3 grid of
+    // square heat canvases; we want zero horizontal whitespace inside each
+    // card. Cells are square-heat with cellH = cellW + delta where
+    //   delta = heatPadY + titleH - heatPadX.
+    // Right col height = board card height = B + boardPadY, so cellH is fixed
+    // by B, giving cellW and right-col width. Solving the horizontal budget
+    // (board card + right col = remaining) for B yields the formula below.
+    let gridGap = 12, heatCardDelta = 30;
+    if (!isSimple) {
+        const grids = rightCol.querySelector(".grids");
+        if (grids) {
+            const gcs = getComputedStyle(grids);
+            gridGap = parseFloat(gcs.rowGap || gcs.gap) || 12;
+            const sample = grids.querySelector(".grid-card");
+            if (sample) {
+                const ccs = getComputedStyle(sample);
+                const hPadX = parseFloat(ccs.paddingLeft) + parseFloat(ccs.paddingRight);
+                const hPadY = parseFloat(ccs.paddingTop)  + parseFloat(ccs.paddingBottom);
+                const t = sample.querySelector(".grid-title");
+                let titleH = 0;
+                if (t) {
+                    const tcs = getComputedStyle(t);
+                    titleH = t.offsetHeight + parseFloat(tcs.marginTop || 0) + parseFloat(tcs.marginBottom || 0);
+                }
+                heatCardDelta = hPadY + titleH - hPadX;
+            }
+        }
+    }
     const sizeByWidth = isSimple
         ? Math.floor(remaining - SIMPLE_RIGHT_COL_PX - cardPadX)
-        : Math.floor(remaining / 2 - cardPadX);
+        : Math.floor((3 * remaining - 3 * cardPadX - 2 * cardPadY + 6 * heatCardDelta + gridGap) / 5);
 
     // Cap by viewport height so board + action buttons stay fully visible.
     const topbarCS = getComputedStyle(topbarEl);
@@ -197,7 +244,12 @@ function syncBoardSize() {
     if (need) setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
     if (document.body.classList.contains("show-analysis")) {
         rightCol.style.height = boardCard.offsetHeight + "px";
-        rightCol.style.width  = boardCard.offsetWidth  + "px";
+        // Width follows the heat-grid geometry (square heat with no horizontal
+        // whitespace) rather than mirroring the board card width.
+        const rightH = boardCard.offsetHeight;
+        const cellH = (rightH - 2 * gridGap) / 3;
+        const cellW = Math.max(60, cellH - heatCardDelta);
+        rightCol.style.width = Math.floor(2 * cellW + gridGap) + "px";
     } else {
         // Simple mode: right column hosts only the value-estimates card.
         // Width is constrained by CSS to mirror the left controls column;
@@ -718,22 +770,29 @@ function renderWDL(prefix, vWDL) {
     const det = document.getElementById("wdl_" + prefix + "_detail");
     const n = normalizeWDL(vWDL);
     const segs = bar.querySelectorAll(".seg");
+    let bk = det.querySelector(".wdl-breakdown");
+    if (!bk) {
+        bk = document.createElement("div");
+        bk.className = "wdl-breakdown";
+        det.appendChild(bk);
+    }
     if (!n) {
         segs[0].style.width = "0";
         segs[1].style.width = "100%";
         segs[2].style.width = "0";
         wlEl.textContent = t("wdl_dash");
         wlEl.classList.remove("pos", "neg");
-        det.textContent = "";
+        bk.innerHTML = "";
         return;
     }
     segs[0].style.width = n.w.toFixed(2) + "%";
     segs[1].style.width = n.d.toFixed(2) + "%";
     segs[2].style.width = n.l.toFixed(2) + "%";
-    wlEl.textContent = (n.wl >= 0 ? "+" : "") + n.wl.toFixed(2);
+    const wlPct = n.wl * 100;
+    wlEl.textContent = (wlPct >= 0 ? "+" : "") + wlPct.toFixed(0) + "%";
     wlEl.classList.toggle("pos", n.wl > 0.01);
     wlEl.classList.toggle("neg", n.wl < -0.01);
-    det.innerHTML =
+    bk.innerHTML =
         '<span><span class="k">' + t("wdl_w") + '</span> ' + n.w.toFixed(1) + "%</span>" +
         '<span><span class="k">' + t("wdl_d") + '</span> ' + n.d.toFixed(1) + "%</span>" +
         '<span><span class="k">' + t("wdl_l") + '</span> ' + n.l.toFixed(1) + "%</span>";
@@ -766,8 +825,18 @@ function modelById(id) {
     return manifest.models.find(m => m.id === id);
 }
 
-// --- Board size buttons (hard-coded 13-17) ---
-const BOARD_SIZES = [13, 14, 15, 16, 17];
+// Build the model URL with a cache-busting query string derived from the
+// model's `params` field (e.g., "b10c128 iter44"). _headers marks .onnx as
+// immutable for a year, so without this, replacing a model file leaves
+// browsers serving the stale cached blob. Same params → same URL → cache
+// hit; new iter → new URL → fresh fetch.
+function modelUrl(m) {
+    const v = encodeURIComponent(m.params || m.file);
+    return `models/${m.file}?v=${v}`;
+}
+
+// --- Board size buttons (hard-coded 9-19) ---
+const BOARD_SIZES = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
 
 // --- Loading overlay (only shown for first model load) ---
 function setLoadingProgress(pct) {
@@ -805,7 +874,7 @@ let game = null;          // Gomoku instance (rebuilt on size change)
 let boardState = null;    // Int8Array(N*N), +1 / -1 / 0
 let toPlay = 1;           // 1 = black, -1 = white
 let humanSide = 1;        // 1 = human is black; -1 = human is white
-let currentRule = "renju"; // "renju" | "standard" | "freestyle"
+let currentRule = "freestyle"; // "renju" | "freestyle"
 let lastMove = null;      // { r, c }
 let ply = 0;              // half-move counter
 let gameOver = false;
@@ -1117,9 +1186,9 @@ function setSide(side) {
 document.getElementById("side_black").addEventListener("click", () => setSide(1));
 document.getElementById("side_white").addEventListener("click", () => setSide(-1));
 
-// Rule toggle buttons (renju / standard / freestyle).
+// Rule toggle buttons (renju / freestyle).
 function setRule(rl) {
-    if (rl !== "renju" && rl !== "standard" && rl !== "freestyle") return;
+    if (rl !== "renju" && rl !== "freestyle") return;
     if (rl === currentRule) return;
     currentRule = rl;
     for (const b of document.querySelectorAll(".seg-btn[data-rule]")) {
@@ -1131,19 +1200,21 @@ for (const b of document.querySelectorAll(".seg-btn[data-rule]")) {
     b.addEventListener("click", () => setRule(b.dataset.rule));
 }
 
-// Size segmented buttons (mirrors setRule).
+// Board size slider (input range 9..19). `input` updates the display label
+// continuously during drag; `change` (release) is what actually rebuilds the
+// game so we don't fire newGame() once per intermediate value.
 function setSize(sz) {
     if (!Number.isFinite(sz) || !BOARD_SIZES.includes(sz)) return;
     if (sz === N) return;
     N = sz;
-    for (const b of document.querySelectorAll(".seg-btn[data-size]")) {
-        b.setAttribute("aria-pressed", parseInt(b.dataset.size, 10) === sz ? "true" : "false");
-    }
     syncBoardSize();
     newGame();
 }
-for (const b of document.querySelectorAll(".seg-btn[data-size]")) {
-    b.addEventListener("click", () => setSize(parseInt(b.dataset.size, 10)));
+{
+    const sizeInput   = document.getElementById("size_input");
+    const sizeValueEl = document.getElementById("size_value");
+    sizeInput.addEventListener("input",  () => { sizeValueEl.textContent = sizeInput.value; });
+    sizeInput.addEventListener("change", () => { setSize(parseInt(sizeInput.value, 10)); });
 }
 
 // Model dropdown.
@@ -1155,7 +1226,7 @@ document.getElementById("model_select").addEventListener("change", (ev) => {
     showLoadingOverlay("loading_model", m.label);
     searchId++;
     aiThinking = false;
-    worker.postMessage({ type: "swap-model", modelUrl: "models/" + m.file });
+    worker.postMessage({ type: "swap-model", modelUrl: modelUrl(m) });
 });
 
 // Re-render dynamic strings (status, loading overlay, modal title,
@@ -1191,7 +1262,7 @@ registerI18nCallback(() => {
     showLoadingOverlay("loading_model", startModel.label);
     worker.postMessage({
         type: "init",
-        modelUrl: "models/" + startModel.file,
+        modelUrl: modelUrl(startModel),
         boardSize: N,
         rule: currentRule,
     });
