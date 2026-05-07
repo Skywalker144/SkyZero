@@ -31,8 +31,27 @@ public:
     using InferenceFn = std::function<
         std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
 
+    // Single-judge constructor (selfplay): one network evaluates everything.
     RandomOpening(const Game& game, InferenceFn infer_fn, const AlphaZeroConfig& cfg, uint64_t seed)
-        : game_(game), infer_fn_(std::move(infer_fn)), cfg_(cfg), rng_(seed) {}
+        : game_(game),
+          infer_fn_(std::move(infer_fn)),
+          infer_fn_b_(),
+          have_two_judges_(false),
+          cfg_(cfg),
+          rng_(seed) {}
+
+    // Two-judge constructor (Elo match): mirrors KataGomo randomopening.cpp:93,
+    // which picks botB or botW once per balance step (entire opening uses the
+    // same chosen network). Coin-flipping symmetrizes any "judge favors its
+    // own definition of balanced" bias across the two models in a matchup.
+    RandomOpening(const Game& game, InferenceFn infer_a, InferenceFn infer_b,
+                  const AlphaZeroConfig& cfg, uint64_t seed)
+        : game_(game),
+          infer_fn_(std::move(infer_a)),
+          infer_fn_b_(std::move(infer_b)),
+          have_two_judges_(true),
+          cfg_(cfg),
+          rng_(seed) {}
 
     // Overwrites `state` and `to_play` with a balanced-opening start position.
     void initialize(std::vector<int8_t>& state, int& to_play) {
@@ -48,11 +67,16 @@ public:
     }
 
 private:
+    // Returns the active judge for the current try_once attempt.
+    const InferenceFn& current_judge() const {
+        return current_is_b_ ? infer_fn_b_ : infer_fn_;
+    }
+
     // WDL-utility from `next_player`'s perspective: positive → next_player
     // is winning, |value| near 0 → balanced.
     double board_value(const std::vector<int8_t>& state, int next_player) const {
         const auto encoded = game_.encode_state_v5(state, next_player);   // V5
-        auto res = infer_fn_(encoded);
+        auto res = current_judge()(encoded);
         const auto& v = res.second;
         return static_cast<double>(v[0]) - static_cast<double>(v[2]);
     }
@@ -191,7 +215,8 @@ private:
             // a winning position to the opponent, i.e. next_player lost tempo.
             // `val_opp` near 0 means the position is balanced either way.
             const double val_opp = board_value(next_state, -next_player);
-            const double p = std::pow(std::max(0.0, 1.0 - val_opp * val_opp), 4.0);
+            const double p = std::pow(std::max(0.0, 1.0 - val_opp * val_opp),
+                                      static_cast<double>(cfg_.balanced_opening_value_exponent));
             prob[a] = p;
             if (p > max_prob) max_prob = p;
         }
@@ -213,6 +238,11 @@ private:
         // KataGomo VCNRULE_NOVC weights for randomMoveNum in [0..11].
         static const std::array<float, 12> kMoveNumWeights =
             {10.0f, 30.0f, 50.0f, 80.0f, 60.0f, 40.0f, 20.0f, 10.0f, 5.0f, 1.0f, 0.0f, 0.0f};
+
+        // Pick the active judge once per attempt (mirrors KataGomo
+        // randomopening.cpp:93). All NN evals inside this try_once use the
+        // same network, so root-vs-move value scales stay consistent.
+        current_is_b_ = have_two_judges_ && rand_bool(0.5);
 
         auto board = state;
         int player = to_play;
@@ -259,6 +289,9 @@ private:
 
     const Game& game_;
     InferenceFn infer_fn_;
+    InferenceFn infer_fn_b_;
+    bool have_two_judges_;
+    bool current_is_b_ = false;
     const AlphaZeroConfig& cfg_;
     std::mt19937 rng_;
 };
