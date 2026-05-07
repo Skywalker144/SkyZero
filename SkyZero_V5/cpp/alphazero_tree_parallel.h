@@ -41,26 +41,19 @@ template <typename Game>
 class TreeParallelMCTS {
 public:
     using InferenceFn = std::function<std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
-    using BatchInferenceFn = std::function<
-        std::vector<std::pair<std::vector<float>, std::array<float, 3>>>(
-            const std::vector<std::vector<int8_t>>&
-        )>;
 
     TreeParallelMCTS(
         Game& game,
         const AlphaZeroConfig& cfg,
         int search_threads_per_tree,
         InferenceFn infer_fn,
-        BatchInferenceFn batch_infer_fn,
         uint64_t seed
     )
         : game_(game),
           cfg_(cfg),
           num_threads_(std::max(1, search_threads_per_tree)),
           infer_fn_(std::move(infer_fn)),
-          batch_infer_fn_(std::move(batch_infer_fn)),
           rng_(seed) {
-        (void)batch_infer_fn_;  // shared-tree submits one leaf per thread
         start_workers();
     }
 
@@ -351,12 +344,14 @@ private:
     MCTSNode* select_child(MCTSNode& node) {
         // Snapshot parent counters (need the mutex for coherent n + v[] read).
         int parent_n, parent_vloss;
+        float parent_q_sum_sq;
         std::array<float, 3> parent_v;
         std::array<float, 3> parent_nn_value;
         {
             std::lock_guard<std::mutex> lk(node_mutex(&node));
             parent_n = node.n;
             parent_vloss = node.vloss;
+            parent_q_sum_sq = node.q_sum_sq;
             parent_v = node.v;
             parent_nn_value = node.nn_value_probs;
         }
@@ -376,6 +371,7 @@ private:
         MCTSNode snap;
         snap.n = parent_n;
         snap.v = parent_v;
+        snap.q_sum_sq = parent_q_sum_sq;
         snap.nn_value_probs = parent_nn_value;
         snap.parent = node.parent;
         const int effective_parent_n = parent_n + parent_vloss;
@@ -758,7 +754,6 @@ private:
     const AlphaZeroConfig& cfg_;
     int num_threads_;
     InferenceFn infer_fn_;
-    BatchInferenceFn batch_infer_fn_;
     std::mt19937 rng_;
 
     std::array<std::mutex, kNumStripes> stripe_mutexes_;
