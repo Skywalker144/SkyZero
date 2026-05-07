@@ -124,7 +124,14 @@ document.addEventListener("DOMContentLoaded", () => {
 const leftCol = document.getElementById("left_col");
 const rightCol = document.getElementById("right_col");
 const boardCard = document.querySelector(".board-card");
-const boardActions = document.querySelector(".board-actions");
+// There are two .board-actions rows: the play actions (new/undo/edit) and the
+// edit toolbar; CSS hides whichever isn't current. Use Math.max so syncBoardSize
+// reserves the right vertical budget regardless of which mode is active.
+function actionsHeight() {
+    const a = document.getElementById("play_actions");
+    const b = document.getElementById("edit_toolbar");
+    return Math.max(a ? a.offsetHeight : 0, b ? b.offsetHeight : 0);
+}
 const mainEl = document.querySelector(".main");
 
 const topbarEl = document.querySelector(".topbar");
@@ -233,7 +240,7 @@ function syncBoardSize() {
     const mainMb = parseFloat(mainCS.marginBottom || 0);
     const colCS = getComputedStyle(boardColEl);
     const colGap = parseFloat(colCS.rowGap || colCS.gap) || 0;
-    const actionsH = boardActions.offsetHeight;
+    const actionsH = actionsHeight();
     const reserved = appPadY + topbarH + mainMb + cardPadY + legendH + colGap + actionsH;
     const sizeByViewport = window.innerHeight - reserved;
 
@@ -884,6 +891,14 @@ let aiThinking = false;
 let searchId = 0;
 let history = [];         // [{ board: Int8Array, toPlay, lastMove, ply, gumbelPhases }]
 
+// Position-edit mode (manual setup). When active, board clicks place / erase
+// stones according to editTool instead of playing a move; the AI is paused
+// and a snapshot is held so cancel can fully revert.
+let editMode = false;
+let editTool = "alternate";   // "alternate" | "black" | "white" | "erase"
+let editSnapshot = null;
+const EDIT_TOOLS = ["alternate", "black", "white", "erase"];
+
 const worker = new Worker("worker.js?v=" + Date.now());
 worker.onerror = (e) => {
     const where = e.filename ? ` (${e.filename}:${e.lineno})` : "";
@@ -1048,6 +1063,7 @@ function applyMoveLocal(action) {
 
 // --- Board click (human move) ---
 cv.addEventListener("click", (ev) => {
+    if (editMode) { handleEditClick(ev); return; }
     if (gameOver || aiThinking) return;
     if (toPlay !== humanSide) return;
     const rect = cv.getBoundingClientRect();
@@ -1060,6 +1076,36 @@ cv.addEventListener("click", (ev) => {
     const { winner } = applyMoveLocal(r * N + c);
     if (winner === null) triggerAISearch();
 });
+
+function handleEditClick(ev) {
+    const rect = cv.getBoundingClientRect();
+    const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+    const c = Math.round((x - MARGIN) / CELL), r = Math.round((y - MARGIN) / CELL);
+    if (r < 0 || r >= N || c < 0 || c >= N) return;
+    const idx = r * N + c;
+    let target;
+    if (editTool === "alternate") {
+        // Alternate: only fill empty cells (skip occupied so a misclick doesn't
+        // overwrite). Color follows normal alternation rules — black if
+        // counts are equal, otherwise the side with fewer stones plays.
+        if (boardState[idx] !== 0) return;
+        let nB = 0, nW = 0;
+        for (let i = 0; i < boardState.length; i++) {
+            if (boardState[i] === 1) nB++;
+            else if (boardState[i] === -1) nW++;
+        }
+        target = (nB <= nW) ? 1 : -1;
+    } else {
+        target = (editTool === "black") ? 1 : (editTool === "white") ? -1 : 0;
+    }
+    if (boardState[idx] === target) return;
+    boardState[idx] = target;
+    publishStateForDrawing();
+    draw();
+    // Clear any prior "invalid count" warning so the user sees they're free
+    // to keep editing once the position has changed.
+    setStatus("status_editing", "info");
+}
 
 // --- Worker message router ---
 worker.onmessage = (e) => {
@@ -1177,13 +1223,170 @@ document.getElementById("undo_btn").addEventListener("click", () => {
     }
 });
 
-// Side toggle buttons.
+// --- Edit-position mode ---
+// On enter we snapshot the live game state; cancel restores it byte-for-byte
+// without needing to talk to the worker (worker still mirrors the snapshot
+// since we don't send it any move/reset during the edit).
+//
+// On commit we derive `toPlay` from stone counts (B==W → black to move,
+// B==W+1 → white to move; anything else is a setup error and the user is
+// kept in edit mode until they fix it). History/undo and the value chart
+// reset because the new starting position has no recorded prior plies.
+function snapshotForEdit() {
+    return {
+        boardState: new Int8Array(boardState),
+        toPlay,
+        lastMove: lastMove ? { ...lastMove } : null,
+        ply, gameOver,
+        gumbelPhases,
+        history: history.slice(),
+        valueHistory: valueHistory.slice(),
+        lastRootWDL, lastNNWDL,
+        lastStatus: { ...lastStatus, args: lastStatus.args.slice() },
+        aiThinking,
+    };
+}
+
+function setEditTool(tool) {
+    if (!EDIT_TOOLS.includes(tool)) return;
+    editTool = tool;
+    for (const b of document.querySelectorAll(".seg-btn[data-edit-tool]")) {
+        b.setAttribute("aria-pressed", b.dataset.editTool === tool ? "true" : "false");
+    }
+}
+
+function enterEditMode() {
+    if (editMode) return;
+    editMode = true;
+    editSnapshot = snapshotForEdit();
+    searchId++;            // abort any in-flight search
+    aiThinking = false;
+    gameOver = false;      // edits are unrestricted; we recheck on commit
+    gumbelPhases = null;   // hide gumbel overlay during setup
+    document.body.classList.add("editing");
+    setEditTool(editTool);
+    setStatus("status_editing", "info");
+    publishStateForDrawing();
+    syncBoardSize();   // toolbar height differs from play actions
+    draw();
+}
+
+function exitEditMode(commit) {
+    if (!editMode) return;
+
+    if (!commit) {
+        const s = editSnapshot;
+        boardState = new Int8Array(s.boardState);
+        toPlay = s.toPlay;
+        lastMove = s.lastMove ? { ...s.lastMove } : null;
+        ply = s.ply;
+        gameOver = s.gameOver;
+        gumbelPhases = s.gumbelPhases;
+        history = s.history.slice();
+        valueHistory = s.valueHistory.slice();
+        renderWDL("root", s.lastRootWDL);
+        renderWDL("nn", s.lastNNWDL);
+        editMode = false;
+        editSnapshot = null;
+        document.body.classList.remove("editing");
+        publishStateForDrawing();
+        syncBoardSize();
+        drawAll();
+        // Restore exact prior status text and resume search if AI was thinking.
+        const ls = s.lastStatus;
+        if (ls.raw != null) setStatusRaw(ls.raw, ls.variant);
+        else if (ls.key) setStatus(ls.key, ls.variant, ...ls.args);
+        if (s.aiThinking) triggerAISearch();
+        return;
+    }
+
+    // Commit: validate stone counts → derive toPlay.
+    let nB = 0, nW = 0;
+    for (let i = 0; i < boardState.length; i++) {
+        if (boardState[i] === 1) nB++;
+        else if (boardState[i] === -1) nW++;
+    }
+    let derived;
+    if (nB === nW) derived = 1;            // black to play
+    else if (nB === nW + 1) derived = -1;  // white to play
+    else {
+        setStatus("status_edit_invalid", "warn", nB, nW);
+        return;   // stay in edit mode
+    }
+
+    toPlay = derived;
+    ply = nB + nW;
+    lastMove = null;
+    history = [];
+    valueHistory = [];
+    gumbelPhases = null;
+    renderWDL("root", null);
+    renderWDL("nn", null);
+    gameOver = false;
+
+    // If the setup is already a finished position (5-in-a-row), surface that.
+    // We pass null for lastAction so the renju forbidden-detect path is
+    // skipped — there is no "last move" in a setup.
+    const winner = game.getWinner(boardState, null, null);
+    if (winner !== null) {
+        gameOver = true;
+        const key = winner === 1 ? "status_black_wins"
+                  : winner === -1 ? "status_white_wins"
+                  : "status_draw";
+        setStatus(key, "done");
+    }
+
+    editMode = false;
+    editSnapshot = null;
+    document.body.classList.remove("editing");
+    publishStateForDrawing();
+    syncBoardSize();
+    drawAll();
+
+    // Wipe the worker's MCTS root and let it rebuild from the new position
+    // on the next search.
+    worker.postMessage({ type: "reset", boardSize: N, ply, rule: currentRule });
+
+    if (gameOver) return;
+    if (toPlay === humanSide) setStatus("status_your_turn", "active");
+    else triggerAISearch();
+}
+
+document.getElementById("edit_btn").addEventListener("click", enterEditMode);
+document.getElementById("edit_done_btn").addEventListener("click", () => exitEditMode(true));
+document.getElementById("edit_cancel_btn").addEventListener("click", () => exitEditMode(false));
+for (const b of document.querySelectorAll(".seg-btn[data-edit-tool]")) {
+    b.addEventListener("click", () => setEditTool(b.dataset.editTool));
+}
+document.addEventListener("keydown", (ev) => {
+    if (!editMode) return;
+    const tag = ev.target && ev.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (ev.key === "Escape") { ev.preventDefault(); exitEditMode(false); }
+    else if (ev.key === "Enter") { ev.preventDefault(); exitEditMode(true); }
+    else if (ev.key === "a" || ev.key === "A") setEditTool("alternate");
+    else if (ev.key === "b" || ev.key === "B") setEditTool("black");
+    else if (ev.key === "w" || ev.key === "W") setEditTool("white");
+    else if (ev.key === "e" || ev.key === "E") setEditTool("erase");
+});
+
+// Side toggle buttons. Non-destructive: just swaps who plays which color
+// without resetting the position. After an edit-mode setup the user may
+// switch sides to ask the AI to play the side it shows as next-to-move; the
+// position must survive that switch. The MCTS root tree is keyed on
+// (state, toPlay) — neither changes here — so it's safe to keep.
 function setSide(side) {
     if (side !== 1 && side !== -1) return;
+    if (humanSide === side) return;
     humanSide = side;
     document.getElementById("side_black").setAttribute("aria-pressed", side === 1 ? "true" : "false");
     document.getElementById("side_white").setAttribute("aria-pressed", side === -1 ? "true" : "false");
-    newGame();
+    if (!boardState) return;            // pre-bootstrap: nothing else to do
+    searchId++;                          // abort any in-flight search
+    aiThinking = false;
+    if (gameOver) return;
+    if (toPlay === humanSide) setStatus("status_your_turn", "active");
+    else triggerAISearch();
 }
 document.getElementById("side_black").addEventListener("click", () => setSide(1));
 document.getElementById("side_white").addEventListener("click", () => setSide(-1));

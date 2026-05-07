@@ -272,8 +272,43 @@
   }
   .seg-stone.black { background: radial-gradient(circle at 30% 30%, var(--stone-black-0), var(--stone-black-1)); }
   .seg-stone.white { background: radial-gradient(circle at 30% 30%, var(--stone-white-0), var(--stone-white-1)); }
+  /* "Alternate" tool icon: left half black, right half white. */
+  .seg-stone.alt {
+    background: linear-gradient(90deg,
+      var(--stone-black-1) 0%, var(--stone-black-1) 50%,
+      var(--stone-white-1) 50%, var(--stone-white-1) 100%);
+  }
   .board-actions {
     display: flex; gap: 8px; width: 100%; max-width: 560px; justify-content: center;
+  }
+
+  /* Edit-position mode: swap the standard play actions for the edit toolbar.
+     Toolbar holds a 3-way tool palette (black / white / erase) plus the
+     done & cancel buttons, all on one row (wraps on narrow viewports). */
+  body.editing #play_actions { display: none; }
+  body:not(.editing) .edit-toolbar { display: none; }
+  .edit-toolbar { flex-wrap: wrap; }
+  .edit-toolbar .edit-tools {
+    flex: 1 1 220px;
+    display: flex; gap: 4px;
+  }
+  .edit-toolbar .edit-tools .seg-btn {
+    height: 34px; font-size: 13px; padding: 0 10px;
+  }
+  /* SVG inside the edit button + erase tool button has no intrinsic size,
+     so browsers default to 300×150 and blow out the button. Match the
+     existing topbar / settings convention of 14×14 icons. */
+  #edit_btn svg,
+  .edit-toolbar .seg-btn svg {
+    width: 14px; height: 14px;
+    display: block; flex-shrink: 0;
+  }
+  /* While editing, lock down settings (model / side / rule / size / search):
+     changing those mid-edit would either reset the board or desync the
+     worker. The user must commit or cancel first. */
+  body.editing .settings-card {
+    pointer-events: none;
+    opacity: 0.55;
   }
 
   /* ---------- Card ---------- */

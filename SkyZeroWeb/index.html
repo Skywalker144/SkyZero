@@ -189,9 +189,32 @@
         <div class="card board-card">
           <canvas id="board"></canvas>
         </div>
-        <div class="board-actions">
+        <div class="board-actions" id="play_actions">
           <button class="btn primary" id="new_btn" data-i18n="btn_new_game">新对局</button>
           <button class="btn danger-ghost" id="undo_btn" data-i18n="btn_undo">悔棋</button>
+          <button class="btn" id="edit_btn">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 1.5l3 3-9 9H2.5v-3z"/></svg>
+            <span data-i18n="btn_edit_position">编辑棋形</span>
+          </button>
+        </div>
+        <div class="board-actions edit-toolbar" id="edit_toolbar">
+          <div class="seg-row edit-tools" id="edit_tool_seg" role="group" data-i18n-aria="aria_edit_tool" aria-label="编辑工具">
+            <button class="seg-btn" data-edit-tool="alternate" aria-pressed="true">
+              <span class="seg-stone alt"></span><span data-i18n="edit_tool_alternate">轮流</span>
+            </button>
+            <button class="seg-btn" data-edit-tool="black" aria-pressed="false">
+              <span class="seg-stone black"></span><span data-i18n="edit_tool_black">放黑</span>
+            </button>
+            <button class="seg-btn" data-edit-tool="white" aria-pressed="false">
+              <span class="seg-stone white"></span><span data-i18n="edit_tool_white">放白</span>
+            </button>
+            <button class="seg-btn" data-edit-tool="erase" aria-pressed="false">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12.5l9-9 1 1-9 9zM2 14h12"/></svg>
+              <span data-i18n="edit_tool_erase">擦除</span>
+            </button>
+          </div>
+          <button class="btn primary" id="edit_done_btn" data-i18n="btn_edit_done">完成</button>
+          <button class="btn" id="edit_cancel_btn" data-i18n="btn_cancel">取消</button>
         </div>
       </section>
 
