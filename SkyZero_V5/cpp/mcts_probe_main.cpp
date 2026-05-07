@@ -167,7 +167,8 @@ int main(int argc, char** argv) {
         if (use_cuda) model.to(torch::kHalf);
         std::mutex model_mu;
 
-        // V5: hardcoded c=5, board=15, regardless of game.board_size (padded)
+        // V5: NUM_SPATIAL_PLANES_V5 planes on a MAX_BOARD_SIZE canvas,
+        // regardless of game.board_size (padded).
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
         const int board = Gomoku::MAX_BOARD_SIZE;
         const int area = board * board;
