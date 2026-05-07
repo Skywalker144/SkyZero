@@ -343,7 +343,7 @@ public:
     // V5 API: 5-plane padded encode + global features + multi-rule winner
     // ============================================================
 
-    // V5 encode: 5 planes, padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE = 15×15.
+    // V5 encode: NUM_SPATIAL_PLANES_V5 planes, padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE.
     // Plane layout:
     //   0: on-board mask  (1 inside [0, board_size), 0 in padding)
     //   1: own stones     (1 where state[i] == to_play)
