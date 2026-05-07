@@ -56,9 +56,6 @@ from full_nets import (
     NestedBottleneckResBlock,
     init_weights,
     compute_gain,
-    TD_LONG_SLICE,
-    TD_MID_SLICE,
-    TD_SHORT_SLICE,
 )
 
 
