@@ -259,37 +259,55 @@
         <div class="grids">
           <div class="card grid-card">
             <div class="grid-title"><span class="grid-title-text" data-i18n="heat_improved_policy">改进策略</span>
-              <button class="expand-btn" data-target="h_mcts_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              <span class="grid-title-actions">
+                <button class="pin-btn" data-target="h_mcts_policy" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
+                <button class="expand-btn" data-target="h_mcts_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              </span>
             </div>
             <canvas class="heat" id="h_mcts_policy"></canvas>
           </div>
           <div class="card grid-card">
             <div class="grid-title"><span class="grid-title-text" data-i18n="heat_visits_dist">访问分布</span>
-              <button class="expand-btn" data-target="h_mcts_visits" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              <span class="grid-title-actions">
+                <button class="pin-btn" data-target="h_mcts_visits" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
+                <button class="expand-btn" data-target="h_mcts_visits" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              </span>
             </div>
             <canvas class="heat" id="h_mcts_visits"></canvas>
           </div>
           <div class="card grid-card">
             <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_policy">网络策略</span>
-              <button class="expand-btn" data-target="h_nn_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              <span class="grid-title-actions">
+                <button class="pin-btn" data-target="h_nn_policy" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
+                <button class="expand-btn" data-target="h_nn_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              </span>
             </div>
             <canvas class="heat" id="h_nn_policy"></canvas>
           </div>
           <div class="card grid-card">
             <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_opp_policy">对手策略</span>
-              <button class="expand-btn" data-target="h_nn_opp_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              <span class="grid-title-actions">
+                <button class="pin-btn" data-target="h_nn_opp_policy" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
+                <button class="expand-btn" data-target="h_nn_opp_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              </span>
             </div>
             <canvas class="heat" id="h_nn_opp_policy"></canvas>
           </div>
           <div class="card grid-card">
             <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_futurepos_8">未来落点 +8</span>
-              <button class="expand-btn" data-target="h_nn_futurepos_8" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              <span class="grid-title-actions">
+                <button class="pin-btn" data-target="h_nn_futurepos_8" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
+                <button class="expand-btn" data-target="h_nn_futurepos_8" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              </span>
             </div>
             <canvas class="heat" id="h_nn_futurepos_8"></canvas>
           </div>
           <div class="card grid-card">
             <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_futurepos_32">未来落点 +32</span>
-              <button class="expand-btn" data-target="h_nn_futurepos_32" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              <span class="grid-title-actions">
+                <button class="pin-btn" data-target="h_nn_futurepos_32" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
+                <button class="expand-btn" data-target="h_nn_futurepos_32" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
+              </span>
             </div>
             <canvas class="heat" id="h_nn_futurepos_32"></canvas>
           </div>

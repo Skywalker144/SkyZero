@@ -112,6 +112,11 @@ function setShowAnalysis(on) {
     if (input) input.checked = !!on;
     if (typeof syncBoardSize === "function") syncBoardSize();
     if (typeof drawValueChart === "function") drawValueChart();
+    // Pinned overlay only applies inside analysis mode.
+    if (typeof boardOverlayHeatId !== "undefined") {
+        boardOverlayHeatId = on ? (pinnedHeatId || null) : null;
+        if (typeof draw === "function") draw();
+    }
 }
 document.addEventListener("DOMContentLoaded", () => {
     const input = document.getElementById("show_analysis_input");
@@ -468,6 +473,34 @@ const HEAT_GRID_KEYS = {
 };
 const SIGNED_HEAT_IDS = new Set(["h_nn_futurepos_8", "h_nn_futurepos_32"]);
 
+// Pinned heatmap (radio: at most one). When set, the board mirrors it
+// persistently; hover still previews other heatmaps temporarily and falls
+// back to the pinned id on mouseleave.
+let pinnedHeatId = (function() {
+    try {
+        const v = localStorage.getItem("skz_pinned_heat");
+        return v && HEAT_GRID_KEYS[v] ? v : null;
+    } catch (_) { return null; }
+})();
+function syncPinButtonsUI() {
+    for (const btn of document.querySelectorAll(".pin-btn")) {
+        const on = btn.dataset.target === pinnedHeatId;
+        btn.classList.toggle("active", on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+}
+function setPinnedHeatId(id) {
+    pinnedHeatId = (id && HEAT_GRID_KEYS[id]) ? id : null;
+    try {
+        if (pinnedHeatId) localStorage.setItem("skz_pinned_heat", pinnedHeatId);
+        else localStorage.removeItem("skz_pinned_heat");
+    } catch (_) {}
+    syncPinButtonsUI();
+    boardOverlayHeatId = document.body.classList.contains("show-analysis")
+        ? pinnedHeatId : null;
+    draw();
+}
+
 function fitHeatCanvas(canvasId) {
     const c = document.getElementById(canvasId);
     const card = c.parentElement;
@@ -507,11 +540,25 @@ for (const id of Object.keys(heatCtxs)) {
     });
     card.addEventListener("mouseleave", () => {
         if (boardOverlayHeatId === id) {
-            boardOverlayHeatId = null;
+            boardOverlayHeatId = pinnedHeatId;
             draw();
         }
     });
+    const pinBtn = card.querySelector(".pin-btn");
+    if (pinBtn) {
+        pinBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            setPinnedHeatId(pinnedHeatId === id ? null : id);
+        });
+    }
 }
+// Apply persisted pinned overlay on first load (analysis mode is set on
+// <body> by the pre-paint inline script before main.js runs).
+if (pinnedHeatId && document.body.classList.contains("show-analysis")) {
+    boardOverlayHeatId = pinnedHeatId;
+    draw();
+}
+syncPinButtonsUI();
 
 function drawHeatById(id, grid) {
     if (SIGNED_HEAT_IDS.has(id)) drawHeatSigned(id, grid);
