@@ -77,10 +77,9 @@ struct AlphaZeroConfig {
     // Recommended ON for elo / human play.
     bool root_symmetry_pruning = false;
 
-    // Surprise weighting / value target mixing
+    // Surprise weighting
     float policy_surprise_data_weight = 0.5f;
     float value_surprise_data_weight = 0.1f;
-    float value_target_mix_now_factor_constant = 0.2f;
 
     // Balanced opening (KataGomo-style). Each game samples r ~ U(0,1):
     //   r <  balance_opening_prob → NN-scored random opening;
@@ -90,6 +89,10 @@ struct AlphaZeroConfig {
     float balanced_opening_avg_dist_factor = 0.8f;
     float balanced_opening_reject_prob = 0.995f;
     float balanced_opening_reject_prob_fallback = 0.8f;
+    // Power applied to (1 - v^2) when sampling the final balance move. KataGomo
+    // uses 4 for selfplay (looser, more diverse) and 10 for match-mode Elo
+    // (sharper concentration on |v|≈0). See randomopening.cpp:152.
+    float balanced_opening_value_exponent = 4.0f;
 
     // Policy-initialization (KataGomo initGamesWithPolicy). After balanced
     // opening, play ~Exp(1)*policy_init_avg_move_num extra moves sampled from
@@ -127,10 +130,6 @@ struct SelfplayParallelConfig {
     int inference_batch_wait_us = 100;
     int leaf_batch_size = 8;
     int max_result_queue_size = 0;  // 0 = auto (2 * num_workers); <0 = unbounded
-    // GPU index per inference server. Length must equal num_inference_servers
-    // when set; empty = single-GPU legacy behavior (selfplay_main fills in
-    // cuda:0 for every server). -1 means CPU.
-    std::vector<int> inference_server_devices;
 };
 
 // ---------------------------------------------------------------------------
