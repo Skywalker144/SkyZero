@@ -306,8 +306,6 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
         cfg.policy_surprise_data_weight = cfg_get<float>(cfg_map, "POLICY_SURPRISE_DATA_WEIGHT", 0.5f);
         cfg.value_surprise_data_weight = cfg_get<float>(cfg_map, "VALUE_SURPRISE_DATA_WEIGHT", 0.1f);
-        cfg.value_target_mix_now_factor_constant =
-            cfg_get<float>(cfg_map, "VALUE_TARGET_MIX_NOW_FACTOR_CONSTANT", 0.2f);
         cfg.balance_opening_prob = cfg_get<float>(cfg_map, "BALANCE_OPENING_PROB", 0.8f);
         cfg.balanced_opening_max_tries = cfg_get<int>(cfg_map, "BALANCED_OPENING_MAX_TRIES", 20);
         cfg.balanced_opening_avg_dist_factor =
@@ -376,11 +374,6 @@ int main(int argc, char** argv) {
                         "INFERENCE_SERVER_DEVICES has " + std::to_string(server_devices.size())
                         + " entries but NUM_INFERENCE_SERVERS=" + std::to_string(n));
                 }
-            }
-            pcfg.inference_server_devices.clear();
-            pcfg.inference_server_devices.reserve(server_devices.size());
-            for (const auto& d : server_devices) {
-                pcfg.inference_server_devices.push_back(d.is_cuda() ? d.index() : -1);
             }
         }
 
@@ -478,18 +471,50 @@ int main(int argc, char** argv) {
         // Daemon mode skips this — last_run.tsv is per-iter, the daemon has no iter
         // boundary, and the readout is purely cosmetic anyway (shuffle.py recomputes
         // the window from live NPZ row counts).
+        //
+        // Resume hygiene: if a prior run finished selfplay (so it appended a
+        // last_run.tsv row) but train/export got interrupted, state.json still
+        // points at the previous iter; resume reruns this same iter, the
+        // orphan NPZ parts are cleaned below, but the tsv row would otherwise
+        // double-count. Drop any rows with iter >= cli.iter before aggregating.
         int64_t cum_games = 0;
         int64_t cum_rows = 0;
         int64_t window_size = 0;
         if (!cli.daemon) {
-            std::ifstream hf(fs::path(cli.log_dir) / "last_run.tsv");
-            std::string line;
-            bool first = true;
-            while (std::getline(hf, line)) {
-                if (first) { first = false; if (line.rfind("iter", 0) == 0) continue; }
-                std::istringstream ls(line);
-                int it; int64_t g, r;
-                if (ls >> it >> g >> r) { cum_games += g; cum_rows += r; }
+            const fs::path last_run_path = fs::path(cli.log_dir) / "last_run.tsv";
+            std::vector<std::string> kept_lines;
+            std::string header_line;
+            bool had_header = false;
+            int dropped = 0;
+            {
+                std::ifstream hf(last_run_path);
+                std::string line;
+                bool first = true;
+                while (std::getline(hf, line)) {
+                    if (first) {
+                        first = false;
+                        if (line.rfind("iter", 0) == 0) {
+                            header_line = line;
+                            had_header = true;
+                            continue;
+                        }
+                    }
+                    std::istringstream ls(line);
+                    int it; int64_t g, r;
+                    if (!(ls >> it >> g >> r)) { kept_lines.push_back(line); continue; }
+                    if (it >= cli.iter) { ++dropped; continue; }
+                    cum_games += g;
+                    cum_rows += r;
+                    kept_lines.push_back(line);
+                }
+            }
+            if (dropped > 0) {
+                std::ofstream of(last_run_path, std::ios::trunc);
+                if (had_header) of << header_line << "\n";
+                for (const auto& l : kept_lines) of << l << "\n";
+                std::cout << "[SelfPlay] dropped " << dropped
+                          << " stale last_run.tsv row(s) with iter >= "
+                          << cli.iter << " (resume after interrupted train)\n";
             }
             if (cum_rows <= min_rows) {
                 window_size = cum_rows;
@@ -542,8 +567,9 @@ int main(int argc, char** argv) {
             }
         }
 
-        // V5: state is padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE = 15×15
-        // regardless of game.board_size, so state_row_override = 5*225 = 1125.
+        // V5: state is padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE
+        // regardless of game.board_size, so
+        // state_row_override = NUM_SPATIAL_PLANES_V5 * MAX_AREA.
         const int state_row = Gomoku::NUM_SPATIAL_PLANES_V5 * Gomoku::MAX_AREA;
         NpzWriter writer(cli.output_dir, npz_prefix, Gomoku::MAX_BOARD_SIZE, num_planes,
                          max_rows_per_npz, /*max_pending_jobs=*/4,
