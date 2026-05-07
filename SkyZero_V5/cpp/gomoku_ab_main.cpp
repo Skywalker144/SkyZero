@@ -166,8 +166,8 @@ static CliArgs parse_cli(int argc, char** argv) {
     return a;
 }
 
-// Load a TorchScript model and return an (infer_fn, batch_infer_fn) pair plus
-// a holder that keeps the module alive for the lifetime of the closures.
+// Holder that keeps a loaded TorchScript module alive across worker
+// closures and serializes forward calls via mu.
 struct ModelHandle {
     torch::jit::script::Module module;
     std::mutex mu;
@@ -422,7 +422,6 @@ int main(int argc, char** argv) {
                                       infer_wait_us, &game);
 
         auto infer = [&](const std::vector<int8_t>& e) { return server.infer(e); };
-        auto fwd   = [&](const std::vector<std::vector<int8_t>>& b) { return server.infer_batch(b); };
 
         const uint64_t seed = cli.seed_set ? cli.seed : std::random_device{}();
 
@@ -454,8 +453,8 @@ int main(int argc, char** argv) {
             try {
                 std::mt19937 rng(seed
                     + 0x9E3779B97F4A7C15ULL * static_cast<uint64_t>(tid + 1));
-                TreeParallelMCTS<Gomoku> mcts_a(game, cfg_a, threads_a, infer, fwd, rng());
-                TreeParallelMCTS<Gomoku> mcts_b(game, cfg_b, threads_b, infer, fwd, rng());
+                TreeParallelMCTS<Gomoku> mcts_a(game, cfg_a, threads_a, infer, rng());
+                TreeParallelMCTS<Gomoku> mcts_b(game, cfg_b, threads_b, infer, rng());
                 std::unique_ptr<MCTSNode> root_a, root_b;
 
                 while (!abort_flag.load()) {
@@ -470,9 +469,6 @@ int main(int argc, char** argv) {
                     int last_action = -1;
                     int last_player = 0;
                     int plies = 0;
-
-                    root_a.reset(new MCTSNode{state, to_play});
-                    root_b.reset(new MCTSNode{state, to_play});
 
                     while (!game.is_terminal(state, last_action, last_player)) {
                         const bool a_to_move = (a_is_black && to_play == 1)
