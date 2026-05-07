@@ -182,7 +182,7 @@ public:
 private:
     // ---- Inference request plumbing (V5) ----
     struct InferenceRequest {
-        std::vector<int8_t> encoded;                   // V5: 5*MAX_AREA = 1125 int8
+        std::vector<int8_t> encoded;                   // V5: NUM_SPATIAL_PLANES_V5 * MAX_AREA int8
         std::array<float, 12> globals{};               // V5: 12-dim global features
         std::promise<std::pair<std::vector<float>, std::array<float, 3>>> promise;
     };
@@ -196,7 +196,7 @@ private:
     static std::array<float, 12> derive_globals_from_encoded(
         const Game& g, const std::vector<int8_t>& encoded
     ) {
-        constexpr int A = Game::MAX_AREA;   // 225
+        constexpr int A = Game::MAX_AREA;
         int ply = 0;
         for (size_t i = A; i < 3 * static_cast<size_t>(A); ++i) ply += encoded[i];
         const int to_play = (ply % 2 == 0) ? 1 : -1;
@@ -249,12 +249,13 @@ private:
     }
 
     void inference_server_loop(int server_idx) {
-        // V5: state is 5-plane padded to MAX_BOARD_SIZE × MAX_BOARD_SIZE (15×15).
-        // Network output is (B, 6, 225) for policy (we take main head idx 0)
+        // V5: state is NUM_SPATIAL_PLANES_V5-plane padded to
+        // MAX_BOARD_SIZE × MAX_BOARD_SIZE. Network output is
+        // (B, NUM_POLICY_OUTPUTS, MAX_AREA) for policy (we take main head idx 0)
         // and (B, 3) for value_wdl from a flat dict.
-        const int c = Game::NUM_SPATIAL_PLANES_V5;     // 5
-        const int board = Game::MAX_BOARD_SIZE;        // 15
-        const int area = board * board;                // 225
+        const int c = Game::NUM_SPATIAL_PLANES_V5;
+        const int board = Game::MAX_BOARD_SIZE;
+        const int area = board * board;
         constexpr int g_dim = 12;                      // num_global_features
         const int max_batch = std::max(1, pcfg_.inference_batch_size);
         const torch::Device device = devices_[server_idx];
@@ -339,10 +340,11 @@ private:
                     out_iv = inference_models_[server_idx].forward({input_gpu, global_gpu});
                 }
 
-                // V5: dict output. Keys: policy (B, 6, area), value_wdl (B, 3).
-                // Take main head (idx 0 of 6 policy outputs per v15 spec).
+                // V5: dict output. Keys: policy (B, NUM_POLICY_OUTPUTS, area),
+                // value_wdl (B, 3). NUM_POLICY_OUTPUTS=4 in the slim head
+                // (python/nets.py); we take main head idx 0.
                 auto out_dict = out_iv.toGenericDict();
-                auto policy_all = out_dict.at("policy").toTensor();      // (B, 6, area)
+                auto policy_all = out_dict.at("policy").toTensor();      // (B, 4, area)
                 auto policy_logits = policy_all.select(1, 0).contiguous();   // (B, area)
                 auto value_logits = out_dict.at("value_wdl").toTensor();     // (B, 3)
 
@@ -631,7 +633,7 @@ private:
             // V5: canvas-pad encoded state and per-step global features here,
             // using the *per-game* `game_` (with this game's rule + size).
             // selfplay_main.cpp must NOT re-encode — by the time samples leave
-            // selfplay_once, state is already 5*MAX_AREA = 1125 int8.
+            // selfplay_once, state is already NUM_SPATIAL_PLANES_V5 * MAX_AREA int8.
             int ply_for_step = 0;
             for (int8_t v : s.state) if (v != 0) ++ply_for_step;
             auto gf = game_.compute_global_features(ply_for_step, s.to_play);
