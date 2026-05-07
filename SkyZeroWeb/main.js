@@ -844,10 +844,9 @@ function renderWDL(prefix, vWDL) {
     segs[0].style.width = n.w.toFixed(2) + "%";
     segs[1].style.width = n.d.toFixed(2) + "%";
     segs[2].style.width = n.l.toFixed(2) + "%";
-    const wrPct = (n.wl + 1) * 50;
-    wlEl.textContent = wrPct.toFixed(0) + "%";
-    wlEl.classList.toggle("pos", n.wl > 0.01);
-    wlEl.classList.toggle("neg", n.wl < -0.01);
+    wlEl.textContent = n.w.toFixed(0) + "%";
+    wlEl.classList.toggle("pos", n.w > 50);
+    wlEl.classList.toggle("neg", n.w < 50);
     bk.innerHTML =
         '<span><span class="k">' + t("wdl_w") + '</span> ' + n.w.toFixed(1) + "%</span>" +
         '<span><span class="k">' + t("wdl_d") + '</span> ' + n.d.toFixed(1) + "%</span>" +
