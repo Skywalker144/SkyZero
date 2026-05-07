@@ -450,9 +450,11 @@ private:
 
         const auto is_legal = game_.get_is_legal_actions_canvas(root.state, root.to_play);
 
-        // Gumbel noise
+        // Gumbel noise (mirrors TreeParallelMCTS: zero vector when disabled
+        // collapses to argmax-on-prior at the root, used by deterministic
+        // evaluation paths).
         std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
-        {
+        if (cfg_.gumbel_noise_enabled) {
             std::extreme_value_distribution<float> gumbel_dist(0.0f, 1.0f);
             for (int i = 0; i < action_size; ++i) {
                 g[static_cast<size_t>(i)] = gumbel_dist(rng_);
