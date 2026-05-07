@@ -23,11 +23,26 @@
 namespace skyzero {
 
 // ---------------------------------------------------------------------------
+// Search algorithm at the root. GUMBEL is the existing Gumbel + sequential
+// halving path; PUCT is KataGomo-aligned vanilla AlphaZero (root Dirichlet,
+// PUCT descent every playout, chosenMove temperature for action selection).
+// Interior PUCT is identical for both — they share compute_select_params.
+// ---------------------------------------------------------------------------
+enum class SearchAlgo {
+    GUMBEL = 0,
+    PUCT = 1,
+};
+
+// ---------------------------------------------------------------------------
 // Config — only the fields the C++ selfplay path needs.
 // Python side owns everything training-related.
 // ---------------------------------------------------------------------------
 struct AlphaZeroConfig {
     int board_size = 15;
+
+    // Default to Gumbel for backward compat with existing selfplay/elo/play
+    // entry points. Switch via SEARCH_ALGO=puct in the .cfg.
+    SearchAlgo search_algo = SearchAlgo::GUMBEL;
 
     // Gumbel MCTS
     int num_simulations = 64;
@@ -53,6 +68,22 @@ struct AlphaZeroConfig {
     float fpu_reduction_max = 0.08f;
     float fpu_loss_prop = 0.0f;
 
+    // KataGo searchexplorehelpers.cpp:287 — root vs non-root FPU split.
+    // Root only sees the descent-time FPU (children that are sometimes
+    // unvisited within a single search); the absolute Q at root is never
+    // consumed by upstream PUCT, so a smaller reduction wastes fewer sims
+    // on long-tail children. KataGo defaults: root 0.1, non-root 0.2.
+    // V6 uses root 0.1 / non-root 0.08 (V6 baseline).
+    float root_fpu_reduction_max = 0.1f;
+    float root_fpu_loss_prop = 0.0f;
+
+    // KataGo nneval.cpp:696 — global NN policy temperature applied to legal
+    // logits before softmax everywhere in the tree (root + child). T > 1
+    // flattens (more exploration off-policy), T < 1 sharpens. T == 1 is
+    // identity. Note: also applies on the Gumbel path via nn_logits, so
+    // changing this with SEARCH_ALGO=gumbel may require retuning gumbel_c_visit.
+    float nn_policy_temperature = 1.0f;
+
     // Variance-scaled cpuct (KataGo searchexplorehelpers.cpp:280-297, v1.9+).
     // Multiplies cpuct by `1 + scale * (stdev/prior - 1)` where stdev is
     // Bayesian-shrunk per-visit utility stdev at the parent. High-variance
@@ -62,6 +93,35 @@ struct AlphaZeroConfig {
     float cpuct_utility_stdev_prior = 0.40f;
     float cpuct_utility_stdev_prior_weight = 2.0f;
     float cpuct_utility_stdev_scale = 0.85f;
+
+    // KataGomo PUCT — root Dirichlet noise (selfplay exploration). Mirrors
+    // SearchParams.{rootNoiseEnabled,rootDirichletNoiseTotalConcentration,
+    // rootDirichletNoiseWeight}. Only used when search_algo == PUCT and the
+    // node passed to search() is a fresh root (n == 0); on tree-reuse we do
+    // NOT re-noise — KataGomo's behavior is identical, see Search::search.
+    // Total concentration is the sum α₁+…+α_K of the Dirichlet vector;
+    // KataGomo's 10.83 ≈ 0.03·361 (AlphaZero Go default × 19² cells). With K
+    // legal moves the per-move α is total / K; weight is the convex blend
+    //   prior' = (1 − w)·prior + w·dir_sample.
+    bool root_noise_enabled = false;
+    float root_dirichlet_total_concentration = 10.83f;
+    float root_noise_weight = 0.25f;
+
+    // KataGomo PUCT — chosenMove temperature schedule for selfplay action
+    // selection over visit counts. Mirrors SearchParams.{chosenMoveTemperature,
+    // chosenMoveTemperatureEarly,chosenMoveTemperatureHalflife,chosenMoveSubtract,
+    // chosenMovePrune}. KataGomo selfplay8b defaults: 0.15 / 0.75 / 19 / 0 / 1.
+    // Effective T at move m: T_final + (T_early − T_final) * 2^(−m / halflife);
+    // halflife is in plies and is scaled by board_area/(19*19) internally so
+    // shorter games decay faster (KataGomo searchresults.cpp:getChosenMoveLoc).
+    // Subtract drops `subtract` from each visit count before tempering, prune
+    // zeroes any move with strictly fewer than `prune` visits.
+    // T == 0 ⇒ deterministic argmax-visit (Gumbel-style greedy).
+    float chosen_move_temperature = 0.15f;
+    float chosen_move_temperature_early = 0.75f;
+    float chosen_move_temperature_halflife = 19.0f;
+    float chosen_move_subtract = 0.0f;
+    float chosen_move_prune = 1.0f;
 
     // Stochastic transform / symmetry at inference time
     bool enable_stochastic_transform_inference_for_root = true;
@@ -188,6 +248,17 @@ inline float wdl_utility(const std::array<float, 3>& v) {
     return v[0] - v[2];
 }
 
+// KataGo nneval.cpp:696. Apply temperature to legal logits in place. Skip
+// `-inf` entries (illegal moves) so they remain masked. Caller must have
+// already set illegal logits to -inf. T == 1.0 is a no-op.
+inline void apply_nn_policy_temperature(std::vector<float>& logits, float T) {
+    if (T == 1.0f) return;
+    const float inv_t = 1.0f / std::max(T, 1e-6f);
+    for (auto& l : logits) {
+        if (std::isfinite(l)) l *= inv_t;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PUCT + FPU helpers.
 // (Dynamic variance-scaled cPUCT removed: stdev_factor is fixed at 1.0.)
@@ -199,11 +270,14 @@ struct SelectParams {
 };
 
 // effective_parent_n = node.n (single-thread) or node.n + node.vloss (parallel).
+// is_root selects {fpu_reduction_max, fpu_loss_prop} between regular and root_*
+// values, mirroring KataGo searchexplorehelpers.cpp:287-288.
 inline SelectParams compute_select_params(
     const MCTSNode& node,
     int effective_parent_n,
     float visited_policy_mass,
-    const AlphaZeroConfig& cfg
+    const AlphaZeroConfig& cfg,
+    bool is_root = false
 ) {
     const float total_child_weight = static_cast<float>(std::max(0, effective_parent_n - 1));
 
@@ -249,9 +323,11 @@ inline SelectParams compute_select_params(
     const float avg_weight = std::min(1.0f, static_cast<float>(std::pow(visited_policy_mass, cfg.fpu_pow)));
     const float parent_utility_for_fpu = avg_weight * parent_utility + (1.0f - avg_weight) * nn_utility;
 
-    const float reduction = cfg.fpu_reduction_max * std::sqrt(visited_policy_mass);
+    const float fpu_reduction_max = is_root ? cfg.root_fpu_reduction_max : cfg.fpu_reduction_max;
+    const float fpu_loss_prop = is_root ? cfg.root_fpu_loss_prop : cfg.fpu_loss_prop;
+    const float reduction = fpu_reduction_max * std::sqrt(visited_policy_mass);
     float fpu_value = parent_utility_for_fpu - reduction;
-    fpu_value = fpu_value + ((-1.0f) - fpu_value) * cfg.fpu_loss_prop;
+    fpu_value = fpu_value + ((-1.0f) - fpu_value) * fpu_loss_prop;
 
     return {explore_scaling, fpu_value};
 }

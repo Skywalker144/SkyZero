@@ -6,6 +6,7 @@
 // lockstep on hyperparameters.
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -293,6 +294,9 @@ int main(int argc, char** argv) {
         cfg.fpu_pow = cfg_get<float>(cfg_map, "FPU_POW", 1.0f);
         cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.08f);
         cfg.fpu_loss_prop = cfg_get<float>(cfg_map, "FPU_LOSS_PROP", 0.0f);
+        cfg.root_fpu_reduction_max = cfg_get<float>(cfg_map, "ROOT_FPU_REDUCTION_MAX", 0.1f);
+        cfg.root_fpu_loss_prop = cfg_get<float>(cfg_map, "ROOT_FPU_LOSS_PROP", 0.0f);
+        cfg.nn_policy_temperature = cfg_get<float>(cfg_map, "NN_POLICY_TEMPERATURE", 1.0f);
         cfg.cpuct_utility_stdev_prior = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR", 0.40f);
         cfg.cpuct_utility_stdev_prior_weight = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 2.0f);
         cfg.cpuct_utility_stdev_scale = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_SCALE", 0.85f);
@@ -324,6 +328,27 @@ int main(int argc, char** argv) {
         cfg.reduced_visits_fraction = cfg_get<float>(cfg_map, "REDUCED_VISITS_FRACTION", 0.25f);
         cfg.reduced_visits_min_floor = cfg_get<int>(cfg_map, "REDUCED_VISITS_MIN_FLOOR", 16);
         cfg.enable_tree_reuse = cfg_get_bool(cfg_map, "ENABLE_TREE_REUSE", true);
+
+        // KataGomo PUCT (selfplay). SEARCH_ALGO=gumbel (default) | puct.
+        {
+            std::string algo = cfg_get<std::string>(cfg_map, "SEARCH_ALGO", std::string("gumbel"));
+            std::transform(algo.begin(), algo.end(), algo.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (algo == "puct") cfg.search_algo = SearchAlgo::PUCT;
+            else if (algo == "gumbel") cfg.search_algo = SearchAlgo::GUMBEL;
+            else throw std::runtime_error("SEARCH_ALGO must be 'gumbel' or 'puct', got: " + algo);
+        }
+        cfg.root_noise_enabled = cfg_get_bool(cfg_map, "ROOT_NOISE_ENABLED", false);
+        cfg.root_dirichlet_total_concentration =
+            cfg_get<float>(cfg_map, "ROOT_DIRICHLET_TOTAL_CONCENTRATION", 10.83f);
+        cfg.root_noise_weight = cfg_get<float>(cfg_map, "ROOT_NOISE_WEIGHT", 0.25f);
+        cfg.chosen_move_temperature = cfg_get<float>(cfg_map, "CHOSEN_MOVE_TEMPERATURE", 0.15f);
+        cfg.chosen_move_temperature_early =
+            cfg_get<float>(cfg_map, "CHOSEN_MOVE_TEMPERATURE_EARLY", 0.75f);
+        cfg.chosen_move_temperature_halflife =
+            cfg_get<float>(cfg_map, "CHOSEN_MOVE_TEMPERATURE_HALFLIFE", 19.0f);
+        cfg.chosen_move_subtract = cfg_get<float>(cfg_map, "CHOSEN_MOVE_SUBTRACT", 0.0f);
+        cfg.chosen_move_prune = cfg_get<float>(cfg_map, "CHOSEN_MOVE_PRUNE", 1.0f);
 
         const bool use_cuda = torch::cuda::is_available();
         cfg.device = use_cuda ? torch::Device(torch::kCUDA, 0) : torch::Device(torch::kCPU);

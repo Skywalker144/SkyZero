@@ -110,6 +110,107 @@ public:
         return out;
     }
 
+    // KataGomo-aligned vanilla PUCT MCTS (tree-parallel). num_threads_ workers
+    // each run one full PUCT descent → leaf NN eval → backprop, repeated in
+    // chunks until num_simulations is consumed. Root Dirichlet noise applied
+    // once per call; mcts_policy returned as raw visit-count distribution.
+    MCTSSearchOutput search(
+        const std::vector<int8_t>& state,
+        int to_play,
+        int num_simulations,
+        std::unique_ptr<MCTSNode>& root
+    ) {
+        if (!root) {
+            root.reset(new MCTSNode{state, to_play});
+        }
+        std::vector<float> nn_policy;
+        std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};
+        if (!root->is_expanded()) {
+            auto pair = root_expand(*root);
+            nn_policy = pair.first;
+            nn_value_probs = pair.second;
+            backpropagate_from_root(root.get(), nn_value_probs);
+        } else {
+            nn_policy = root->nn_policy;
+            nn_value_probs = root->nn_value_probs;
+        }
+
+        // Dirichlet noise — sampled once per search() call, before any worker
+        // dispatch, so writes to child->prior are race-free (no other thread
+        // is reading the tree at this point).
+        if (cfg_.root_noise_enabled && root->is_expanded()) {
+            inject_root_dirichlet(*root);
+        }
+
+        const int action_size = Game::MAX_AREA;
+        MCTSSearchOutput out;
+        out.mcts_policy.assign(static_cast<size_t>(action_size), 0.0f);
+        out.visit_counts.assign(static_cast<size_t>(action_size), 0.0f);
+        out.nn_policy = nn_policy;
+        out.nn_value_probs = nn_value_probs;
+        out.v_mix = nn_value_probs;
+        out.gumbel_action = -1;
+
+        if (!root->is_expanded()) {
+            // No legal moves at root.
+            return out;
+        }
+
+        current_root_ = root.get();
+        int sims_remaining = num_simulations;
+        while (sims_remaining > 0) {
+            const int chunk = std::min(num_threads_, sims_remaining);
+            std::vector<SimTask> batch(static_cast<size_t>(chunk), SimTask{/*root_action=*/-1});
+            submit_and_wait(batch);
+            sims_remaining -= chunk;
+        }
+        current_root_ = nullptr;
+
+        int total_child_visits = 0;
+        int best_action = -1;
+        int best_n = -1;
+        for (const auto& c : root->children) {
+            if (!c) continue;
+            const int a = c->action_taken;
+            if (a < 0 || a >= action_size) continue;
+            int cn;
+            std::array<float, 3> cv;
+            {
+                std::lock_guard<std::mutex> lk(node_mutex(c.get()));
+                cn = c->n;
+                cv = c->v;
+            }
+            (void)cv;
+            out.visit_counts[static_cast<size_t>(a)] = static_cast<float>(cn);
+            total_child_visits += cn;
+            if (cn > best_n) {
+                best_n = cn;
+                best_action = a;
+            }
+        }
+        if (total_child_visits > 0) {
+            const float inv = 1.0f / static_cast<float>(total_child_visits);
+            for (int a = 0; a < action_size; ++a) {
+                out.mcts_policy[static_cast<size_t>(a)] =
+                    out.visit_counts[static_cast<size_t>(a)] * inv;
+            }
+        }
+        out.gumbel_action = best_action;
+        {
+            std::lock_guard<std::mutex> lk(node_mutex(root.get()));
+            if (root->n > 0) {
+                const float inv_n = 1.0f / static_cast<float>(root->n);
+                out.v_mix = {
+                    root->v[0] * inv_n,
+                    root->v[1] * inv_n,
+                    root->v[2] * inv_n,
+                };
+            }
+        }
+        out.nn_policy = std::move(nn_policy);
+        return out;
+    }
+
 private:
     // ------------------------------------------------------------------
     // Striped mutex pool for per-node state (n, v[], vloss, children read).
@@ -275,6 +376,7 @@ private:
                 logits[i] = -std::numeric_limits<float>::infinity();
             }
         }
+        apply_nn_policy_temperature(logits, cfg_.nn_policy_temperature);
         return {softmax(logits), pair.second, logits};
     }
 
@@ -337,11 +439,43 @@ private:
         return {ir.policy, ir.value};
     }
 
+    // KataGomo-aligned Dirichlet noise at root. Called once per search() entry
+    // BEFORE worker dispatch — no other thread is touching the tree, so prior
+    // writes are race-free without taking stripe mutexes. Reads of prior in
+    // select_child remain lockless (matching pre-existing tree-parallel
+    // pattern); next search() call will rewrite from un-noised root.nn_policy.
+    void inject_root_dirichlet(MCTSNode& root) {
+        std::vector<MCTSNode*> kids;
+        kids.reserve(root.children.size());
+        for (auto& c : root.children) if (c) kids.push_back(c.get());
+        if (kids.empty()) return;
+        const int K = static_cast<int>(kids.size());
+        const float alpha = std::max(
+            1e-3f,
+            cfg_.root_dirichlet_total_concentration / static_cast<float>(K));
+        std::gamma_distribution<float> gamma_dist(alpha, 1.0f);
+        std::vector<float> dir(static_cast<size_t>(K), 0.0f);
+        float sum = 0.0f;
+        for (int i = 0; i < K; ++i) {
+            const float g = gamma_dist(rng_);
+            dir[static_cast<size_t>(i)] = g;
+            sum += g;
+        }
+        if (sum <= 0.0f) return;
+        const float w = cfg_.root_noise_weight;
+        const int policy_size = static_cast<int>(root.nn_policy.size());
+        for (int i = 0; i < K; ++i) {
+            const int a = kids[i]->action_taken;
+            const float raw = (a >= 0 && a < policy_size) ? root.nn_policy[a] : kids[i]->prior;
+            kids[i]->prior = (1.0f - w) * raw + w * (dir[i] / sum);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Selection — PUCT + FPU + virtual loss, reads node state under its
     // stripe mutex to get a consistent Q snapshot.
     // ------------------------------------------------------------------
-    MCTSNode* select_child(MCTSNode& node) {
+    MCTSNode* select_child(MCTSNode& node, bool is_root = false) {
         // Snapshot parent counters (need the mutex for coherent n + v[] read).
         int parent_n, parent_vloss;
         float parent_q_sum_sq;
@@ -375,7 +509,7 @@ private:
         snap.nn_value_probs = parent_nn_value;
         snap.parent = node.parent;
         const int effective_parent_n = parent_n + parent_vloss;
-        const auto sp = compute_select_params(snap, effective_parent_n, visited_policy_mass, cfg_);
+        const auto sp = compute_select_params(snap, effective_parent_n, visited_policy_mass, cfg_, is_root);
 
         float best_score = -std::numeric_limits<float>::infinity();
         MCTSNode* best_child = nullptr;
@@ -438,26 +572,38 @@ private:
 
     // ------------------------------------------------------------------
     // Per-simulation logic. Called by worker threads.
+    // task.root_action >= 0  → Gumbel sequential halving forces this first
+    //                          move (skip root PUCT).
+    // task.root_action == -1 → KataGomo PUCT: select_child(root) decides.
     // ------------------------------------------------------------------
     void run_one_simulation(const SimTask& task, std::mt19937& local_rng) {
         MCTSNode* root = current_root_;
         if (root == nullptr) return;
 
-        // Pick the fixed root child corresponding to task.root_action.
-        MCTSNode* child = nullptr;
-        for (auto& c : root->children) {
-            if (c && c->action_taken == task.root_action) { child = c.get(); break; }
-        }
-        if (child == nullptr) return;
-
         std::vector<MCTSNode*> path;
         path.reserve(64);
         add_vloss(root);
         path.push_back(root);
-        add_vloss(child);
-        path.push_back(child);
 
-        MCTSNode* node = child;
+        MCTSNode* node = root;
+        // Gumbel forces first child past root → first select_child happens at
+        // a non-root node. PUCT (root_action == -1) starts at root, so the
+        // first select_child IS at root and gets the rootFpu split.
+        bool is_root_pass = (task.root_action == -1);
+        if (task.root_action >= 0) {
+            // Gumbel: forced first child.
+            MCTSNode* child = nullptr;
+            for (auto& c : root->children) {
+                if (c && c->action_taken == task.root_action) { child = c.get(); break; }
+            }
+            if (child == nullptr) {
+                remove_vloss_path(path);
+                return;
+            }
+            add_vloss(child);
+            path.push_back(child);
+            node = child;
+        }
         while (true) {
             // Check expansion under the node's mutex.
             bool expanded;
@@ -467,7 +613,7 @@ private:
             }
             if (!expanded) break;
 
-            MCTSNode* next = select_child(*node);
+            MCTSNode* next = select_child(*node, is_root_pass);
             if (next == nullptr) {
                 remove_vloss_path(path);
                 return;
@@ -475,6 +621,7 @@ private:
             add_vloss(next);
             path.push_back(next);
             node = next;
+            is_root_pass = false;
         }
 
         // `node` is now an unexpanded leaf (or terminal).

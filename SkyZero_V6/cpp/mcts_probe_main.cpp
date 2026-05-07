@@ -2,7 +2,9 @@
 // Gomoku board, and prints the root value (v_mix). Used as a post-export
 // diagnostic in the training loop.
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -136,6 +138,9 @@ int main(int argc, char** argv) {
         cfg.fpu_pow = cfg_get<float>(cfg_map, "FPU_POW", 1.0f);
         cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.08f);
         cfg.fpu_loss_prop = cfg_get<float>(cfg_map, "FPU_LOSS_PROP", 0.0f);
+        cfg.root_fpu_reduction_max = cfg_get<float>(cfg_map, "ROOT_FPU_REDUCTION_MAX", 0.1f);
+        cfg.root_fpu_loss_prop = cfg_get<float>(cfg_map, "ROOT_FPU_LOSS_PROP", 0.0f);
+        cfg.nn_policy_temperature = cfg_get<float>(cfg_map, "NN_POLICY_TEMPERATURE", 1.0f);
         cfg.enable_stochastic_transform_inference_for_root =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", true);
         cfg.enable_stochastic_transform_inference_for_child =
@@ -144,6 +149,20 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
         cfg.enable_symmetry_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
+
+        // KataGomo PUCT probe-mode dispatch.
+        {
+            std::string algo = cfg_get<std::string>(cfg_map, "SEARCH_ALGO", std::string("gumbel"));
+            std::transform(algo.begin(), algo.end(), algo.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (algo == "puct") cfg.search_algo = SearchAlgo::PUCT;
+            else if (algo == "gumbel") cfg.search_algo = SearchAlgo::GUMBEL;
+            else throw std::runtime_error("SEARCH_ALGO must be 'gumbel' or 'puct', got: " + algo);
+        }
+        cfg.root_noise_enabled = cfg_get_bool(cfg_map, "ROOT_NOISE_ENABLED", false);
+        cfg.root_dirichlet_total_concentration =
+            cfg_get<float>(cfg_map, "ROOT_DIRICHLET_TOTAL_CONCENTRATION", 10.83f);
+        cfg.root_noise_weight = cfg_get<float>(cfg_map, "ROOT_NOISE_WEIGHT", 0.25f);
 
         // Probe-specific simulation budget: PROBE_NUM_SIMULATIONS in run.cfg
         // (falls back to NUM_SIMULATIONS). CLI --num-simulations still wins.
@@ -251,7 +270,9 @@ int main(int argc, char** argv) {
 
         auto init = game.get_initial_state(rng);
         std::unique_ptr<MCTSNode> root(new MCTSNode{init.board, init.to_play});
-        const auto sr = mcts.gumbel_search(init.board, init.to_play, cfg.num_simulations, root);
+        const auto sr = (cfg.search_algo == SearchAlgo::PUCT)
+            ? mcts.search(init.board, init.to_play, cfg.num_simulations, root)
+            : mcts.gumbel_search(init.board, init.to_play, cfg.num_simulations, root);
 
         std::cout << "[mcts_probe] simulations=" << cfg.num_simulations
                   << " device=" << (use_cuda ? "cuda" : "cpu") << "\n";

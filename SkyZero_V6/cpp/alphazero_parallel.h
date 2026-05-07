@@ -101,11 +101,12 @@ public:
         return out;
     }
 
-    // Vanilla cPUCT MCTS (AlphaZero-style). Sequential single-leaf rollouts:
-    // descend via PUCT (`select`) to a leaf, NN-evaluate + expand, backprop.
-    // No Gumbel sampling, no sequential halving, no leaf batching, no Dirichlet
-    // noise. mcts_policy is the visit-count distribution; gumbel_action holds
-    // the argmax-visit action (field reused for output compatibility).
+    // KataGomo-aligned vanilla AlphaZero PUCT MCTS. Selfplay mode: root
+    // Dirichlet noise + leaf-parallel batched playouts (vloss) + PUCT descent
+    // + tree reuse. Output `mcts_policy` is the raw root visit-count
+    // distribution (KataGomo's `getPlaySelectionValues`); chosenMove
+    // temperature schedule is applied by the caller. `gumbel_action` is the
+    // argmax-visit action (field name retained for output compatibility).
     MCTSSearchOutput search(
         const std::vector<int8_t>& state,
         int to_play,
@@ -127,37 +128,38 @@ public:
             nn_value_probs = root->nn_value_probs;
         }
 
-        for (int sim = 0; sim < num_simulations; ++sim) {
-            // Descend via PUCT until we reach an unexpanded node or a dead end.
-            MCTSNode* node = root.get();
-            while (node->is_expanded()) {
-                MCTSNode* next = select(*node);
-                if (next == nullptr) break;  // no legal child (rare degenerate)
-                node = next;
-            }
-            if (node == root.get() && !root->is_expanded()) break;
+        // KataGomo-aligned Dirichlet (Search::beginSearch → addDirichletNoise).
+        // Re-sampled every search() entry: child->prior is rebuilt from the
+        // un-noised root.nn_policy each time, so noise does not compound on
+        // tree-reuse. Visit counts (which steer subsequent select()) carry the
+        // history, but the prior bias is freshly noisy each search step.
+        if (cfg_.root_noise_enabled && root->is_expanded()) {
+            inject_root_dirichlet(*root);
+        }
 
-            // Terminal? action_taken records the move that produced node->state;
-            // the player who played it is the parent's to_play, i.e. -node->to_play.
-            if (node->parent != nullptr
-                && game_.is_terminal_canvas(node->state, node->action_taken, -node->to_play)) {
-                std::array<float, 3> value{0.0f, 1.0f, 0.0f};
-                const int result = game_.get_winner_canvas(node->state, node->action_taken, -node->to_play)
-                    * node->to_play;
-                if (result == 1) value = {1.0f, 0.0f, 0.0f};
-                else if (result == -1) value = {0.0f, 0.0f, 1.0f};
-                backpropagate(node, value);
-                continue;
-            }
+        if (!root->is_expanded()) {
+            // No legal moves at root (e.g. renju black with all moves
+            // forbidden). Caller treats result with empty policy as a draw.
+            const int action_size = Game::MAX_AREA;
+            MCTSSearchOutput out;
+            out.mcts_policy.assign(static_cast<size_t>(action_size), 0.0f);
+            out.visit_counts.assign(static_cast<size_t>(action_size), 0.0f);
+            out.nn_policy = std::move(nn_policy);
+            out.nn_value_probs = nn_value_probs;
+            out.v_mix = nn_value_probs;
+            out.gumbel_action = -1;
+            return out;
+        }
 
-            // Leaf NN eval + expand + backprop.
-            const auto ir = inference(
-                node->state, node->to_play,
-                cfg_.enable_stochastic_transform_inference_for_child,
-                cfg_.enable_symmetry_inference_for_child
-            );
-            expand_with(ir, *node);
-            backpropagate(node, ir.value);
+        // Leaf-parallel rollouts in chunks of leaf_batch_size, identical to
+        // gumbel_search's batching loop but with no forced-first-action and no
+        // sequential-halving budget split.
+        int sims_budget = num_simulations;
+        while (sims_budget > 0) {
+            const int chunk = std::min(leaf_batch_size_, sims_budget);
+            const int before = sims_budget;
+            run_puct_rollouts(*root, chunk, sims_budget);
+            if (sims_budget == before) break;  // forward progress check
         }
 
         const int action_size = Game::MAX_AREA;
@@ -300,6 +302,7 @@ private:
                     logits[i] = -std::numeric_limits<float>::infinity();
                 }
             }
+            apply_nn_policy_temperature(logits, cfg_.nn_policy_temperature);
             return {softmax(logits), value, logits};
         }
 
@@ -325,6 +328,7 @@ private:
                 logits[i] = -std::numeric_limits<float>::infinity();
             }
         }
+        apply_nn_policy_temperature(logits, cfg_.nn_policy_temperature);
         return {softmax(logits), pair.second, logits};
     }
 
@@ -358,7 +362,7 @@ private:
         return {ir.policy, ir.value};
     }
 
-    MCTSNode* select(MCTSNode& node) {
+    MCTSNode* select(MCTSNode& node, bool is_root = false) {
         float visited_policy_mass = 0.0f;
         for (auto& child_ptr : node.children) {
             if (child_ptr->n > 0 || child_ptr->vloss > 0) {
@@ -367,7 +371,7 @@ private:
         }
 
         const int effective_parent_n = node.n + node.vloss;
-        const auto sp = compute_select_params(node, effective_parent_n, visited_policy_mass, cfg_);
+        const auto sp = compute_select_params(node, effective_parent_n, visited_policy_mass, cfg_, is_root);
 
         float best_score = -std::numeric_limits<float>::infinity();
         MCTSNode* best_child = nullptr;
@@ -389,69 +393,12 @@ private:
         return best_child;
     }
 
-    void run_rollouts(MCTSNode& root, const std::vector<int>& actions, int& sims_budget) {
-        if (actions.empty() || sims_budget <= 0) return;
-
-        std::vector<PendingLeaf> pending;
-        pending.reserve(actions.size());
-
-        for (int action : actions) {
-            if (sims_budget <= 0) break;
-
-            MCTSNode* child = nullptr;
-            for (auto& c : root.children) {
-                if (c && c->action_taken == action) { child = c.get(); break; }
-            }
-            if (child == nullptr) continue;
-
-            std::vector<MCTSNode*> path;
-            path.reserve(64);
-            root.vloss += 1;
-            path.push_back(&root);
-
-            MCTSNode* node = child;
-            node->vloss += 1;
-            path.push_back(node);
-
-            while (node->is_expanded()) {
-                node = select(*node);
-                if (node == nullptr) {
-                    remove_vloss_on_path(path);
-                    break;
-                }
-                node->vloss += 1;
-                path.push_back(node);
-            }
-            if (node == nullptr) continue;
-
-            if (game_.is_terminal_canvas(node->state, node->action_taken, -node->to_play)) {
-                std::array<float, 3> value{0.0f, 1.0f, 0.0f};
-                const int result = game_.get_winner_canvas(node->state, node->action_taken, -node->to_play) * node->to_play;
-                if (result == 1) value = {1.0f, 0.0f, 0.0f};
-                else if (result == -1) value = {0.0f, 0.0f, 1.0f};
-                backpropagate_path_with_vloss(path, value);
-                sims_budget -= 1;
-                continue;
-            }
-
-            PendingLeaf pl;
-            pl.leaf = node;
-            pl.path = std::move(path);
-            pl.encoded = game_.encode_state_v5(node->state, node->to_play);   // V5
-
-            if (cfg_.enable_stochastic_transform_inference_for_child) {
-                std::uniform_int_distribution<int> dist(0, 7);
-                const int transform_type = dist(rng_);
-                pl.transform_k = transform_type % 4;
-                pl.transform_flip = transform_type >= 4;
-                pl.encoded = transform_encoded_state(pl.encoded, game_.num_planes, Game::MAX_BOARD_SIZE, pl.transform_k, pl.transform_flip);
-            } else if (cfg_.enable_symmetry_inference_for_child) {
-                pl.infer_count = 8;
-            }
-
-            pending.push_back(std::move(pl));
-        }
-
+    // Shared leaf-batch tail: encode + (optional 8-fold symmetry) + batch
+    // infer + legal-mask + expand + backprop_path_with_vloss for every
+    // pending leaf. Caller built each PendingLeaf with vloss applied to the
+    // descent path. sims_budget decremented once per successfully-expanded
+    // leaf.
+    void expand_pending_leaves(std::vector<PendingLeaf>& pending, int& sims_budget) {
         if (pending.empty()) return;
 
         std::vector<std::vector<int8_t>> encoded_batch;
@@ -530,6 +477,7 @@ private:
                     logits[j] = -std::numeric_limits<float>::infinity();
                 }
             }
+            apply_nn_policy_temperature(logits, cfg_.nn_policy_temperature);
 
             InferenceResult ir;
             ir.masked_logits = logits;
@@ -538,6 +486,164 @@ private:
             expand_with(ir, *pending[i].leaf);
             backpropagate_path_with_vloss(pending[i].path, ir.value);
             sims_budget -= 1;
+        }
+    }
+
+    // Build a PendingLeaf for an already-descended path (terminal handling
+    // already done by caller). Picks transform / 8-fold per cfg, encodes V5.
+    PendingLeaf make_pending_leaf(MCTSNode* leaf, std::vector<MCTSNode*> path) {
+        PendingLeaf pl;
+        pl.leaf = leaf;
+        pl.path = std::move(path);
+        pl.encoded = game_.encode_state_v5(leaf->state, leaf->to_play);   // V5
+        if (cfg_.enable_stochastic_transform_inference_for_child) {
+            std::uniform_int_distribution<int> dist(0, 7);
+            const int transform_type = dist(rng_);
+            pl.transform_k = transform_type % 4;
+            pl.transform_flip = transform_type >= 4;
+            pl.encoded = transform_encoded_state(
+                pl.encoded, game_.num_planes, Game::MAX_BOARD_SIZE,
+                pl.transform_k, pl.transform_flip);
+        } else if (cfg_.enable_symmetry_inference_for_child) {
+            pl.infer_count = 8;
+        }
+        return pl;
+    }
+
+    void run_rollouts(MCTSNode& root, const std::vector<int>& actions, int& sims_budget) {
+        if (actions.empty() || sims_budget <= 0) return;
+
+        std::vector<PendingLeaf> pending;
+        pending.reserve(actions.size());
+
+        for (int action : actions) {
+            if (sims_budget <= 0) break;
+
+            MCTSNode* child = nullptr;
+            for (auto& c : root.children) {
+                if (c && c->action_taken == action) { child = c.get(); break; }
+            }
+            if (child == nullptr) continue;
+
+            std::vector<MCTSNode*> path;
+            path.reserve(64);
+            root.vloss += 1;
+            path.push_back(&root);
+
+            MCTSNode* node = child;
+            node->vloss += 1;
+            path.push_back(node);
+
+            while (node->is_expanded()) {
+                node = select(*node);
+                if (node == nullptr) {
+                    remove_vloss_on_path(path);
+                    break;
+                }
+                node->vloss += 1;
+                path.push_back(node);
+            }
+            if (node == nullptr) continue;
+
+            if (game_.is_terminal_canvas(node->state, node->action_taken, -node->to_play)) {
+                std::array<float, 3> value{0.0f, 1.0f, 0.0f};
+                const int result = game_.get_winner_canvas(node->state, node->action_taken, -node->to_play) * node->to_play;
+                if (result == 1) value = {1.0f, 0.0f, 0.0f};
+                else if (result == -1) value = {0.0f, 0.0f, 1.0f};
+                backpropagate_path_with_vloss(path, value);
+                sims_budget -= 1;
+                continue;
+            }
+
+            pending.push_back(make_pending_leaf(node, std::move(path)));
+        }
+
+        expand_pending_leaves(pending, sims_budget);
+    }
+
+    // KataGomo PUCT: select() from root all the way down each rollout, no
+    // forced first action. Used by `search()`.
+    void run_puct_rollouts(MCTSNode& root, int count, int& sims_budget) {
+        if (count <= 0 || sims_budget <= 0) return;
+
+        std::vector<PendingLeaf> pending;
+        pending.reserve(static_cast<size_t>(count));
+
+        for (int k = 0; k < count; ++k) {
+            if (sims_budget <= 0) break;
+
+            std::vector<MCTSNode*> path;
+            path.reserve(64);
+            root.vloss += 1;
+            path.push_back(&root);
+
+            MCTSNode* node = &root;
+            bool dead_end = false;
+            bool is_root_pass = true;
+            while (node->is_expanded()) {
+                MCTSNode* next = select(*node, is_root_pass);
+                if (next == nullptr) {
+                    remove_vloss_on_path(path);
+                    dead_end = true;
+                    break;
+                }
+                next->vloss += 1;
+                path.push_back(next);
+                node = next;
+                is_root_pass = false;
+            }
+            if (dead_end) continue;
+            if (node == &root) {
+                // root unexpanded — caller should have run root_expand
+                remove_vloss_on_path(path);
+                continue;
+            }
+
+            if (game_.is_terminal_canvas(node->state, node->action_taken, -node->to_play)) {
+                std::array<float, 3> value{0.0f, 1.0f, 0.0f};
+                const int result = game_.get_winner_canvas(node->state, node->action_taken, -node->to_play) * node->to_play;
+                if (result == 1) value = {1.0f, 0.0f, 0.0f};
+                else if (result == -1) value = {0.0f, 0.0f, 1.0f};
+                backpropagate_path_with_vloss(path, value);
+                sims_budget -= 1;
+                continue;
+            }
+
+            pending.push_back(make_pending_leaf(node, std::move(path)));
+        }
+
+        expand_pending_leaves(pending, sims_budget);
+    }
+
+    // KataGomo Search::addDirichletNoise. With K legal children at root, draw
+    // x_i ~ Gamma(total / K, 1), normalize, blend into each child's prior:
+    //   prior' = (1 − w) · root.nn_policy[a] + w · (x_i / Σ x).
+    // root.nn_policy itself is left untouched so the next search() call (or
+    // surprise weighting) sees the un-noised NN policy.
+    void inject_root_dirichlet(MCTSNode& root) {
+        std::vector<MCTSNode*> kids;
+        kids.reserve(root.children.size());
+        for (auto& c : root.children) if (c) kids.push_back(c.get());
+        if (kids.empty()) return;
+        const int K = static_cast<int>(kids.size());
+        const float alpha = std::max(
+            1e-3f,
+            cfg_.root_dirichlet_total_concentration / static_cast<float>(K));
+        std::gamma_distribution<float> gamma_dist(alpha, 1.0f);
+        std::vector<float> dir(static_cast<size_t>(K), 0.0f);
+        float sum = 0.0f;
+        for (int i = 0; i < K; ++i) {
+            const float g = gamma_dist(rng_);
+            dir[static_cast<size_t>(i)] = g;
+            sum += g;
+        }
+        if (sum <= 0.0f) return;
+        const float w = cfg_.root_noise_weight;
+        const int policy_size = static_cast<int>(root.nn_policy.size());
+        for (int i = 0; i < K; ++i) {
+            const int a = kids[i]->action_taken;
+            const float raw = (a >= 0 && a < policy_size) ? root.nn_policy[a] : kids[i]->prior;
+            kids[i]->prior = (1.0f - w) * raw + w * (dir[i] / sum);
         }
     }
 

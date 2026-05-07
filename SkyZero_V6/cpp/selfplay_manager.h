@@ -528,7 +528,9 @@ private:
                 }
             }
 
-            const auto sr = mcts.gumbel_search(state, to_play, num_simulations, root);
+            const auto sr = (cfg_.search_algo == SearchAlgo::PUCT)
+                ? mcts.search(state, to_play, num_simulations, root)
+                : mcts.gumbel_search(state, to_play, num_simulations, root);
 
             // Push v_mix to history in FIXED frame for use in NEXT move's decision.
             // v_mix is from current-player POV; multiplying by to_play (∈ {+1,-1})
@@ -555,18 +557,56 @@ private:
             const int move_count = static_cast<int>(memory.size());
 
             int action = sr.gumbel_action;
-            if (move_count < half_life) {
-                const float inv_t = 1.0f / std::max(cfg_.move_temperature, 1e-6f);
-                std::vector<float> w(sr.visit_counts.size());
-                float sum_w = 0.0f;
-                for (size_t i = 0; i < w.size(); ++i) {
-                    w[i] = (sr.visit_counts[i] > 0.0f)
-                        ? std::pow(sr.visit_counts[i], inv_t) : 0.0f;
-                    sum_w += w[i];
+            if (cfg_.search_algo == SearchAlgo::PUCT) {
+                // KataGomo chosenMove: smooth temperature decay over plies,
+                // halflife scaled by (board_area / 19²); subtract drops a flat
+                // visit count from each move before tempering, prune zeros
+                // any move strictly below the prune threshold. T == 0 ⇒
+                // deterministic argmax-visit (match KataGomo behavior).
+                const float halflife_scaled = std::max(
+                    1e-3f,
+                    cfg_.chosen_move_temperature_halflife
+                        * (static_cast<float>(game_.board_size * game_.board_size)
+                           / (19.0f * 19.0f)));
+                const float decay = std::pow(0.5f, static_cast<float>(move_count) / halflife_scaled);
+                const float t = cfg_.chosen_move_temperature
+                    + (cfg_.chosen_move_temperature_early - cfg_.chosen_move_temperature)
+                        * decay;
+
+                if (t > 1e-4f) {
+                    const float inv_t = 1.0f / t;
+                    std::vector<float> w(sr.visit_counts.size(), 0.0f);
+                    float sum_w = 0.0f;
+                    for (size_t i = 0; i < w.size(); ++i) {
+                        const float v = sr.visit_counts[i];
+                        if (v < cfg_.chosen_move_prune) continue;
+                        const float adjusted = std::max(0.0f, v - cfg_.chosen_move_subtract);
+                        if (adjusted <= 0.0f) continue;
+                        w[i] = std::pow(adjusted, inv_t);
+                        sum_w += w[i];
+                    }
+                    if (sum_w > 0.0f) {
+                        std::discrete_distribution<int> action_dist(w.begin(), w.end());
+                        action = action_dist(worker_rng);
+                    }
                 }
-                if (sum_w > 0.0f) {
-                    std::discrete_distribution<int> action_dist(w.begin(), w.end());
-                    action = action_dist(worker_rng);
+                // t ≈ 0 ⇒ keep argmax-visit (action = sr.gumbel_action).
+            } else {
+                // Gumbel path: existing half_life × visit-count temperature
+                // sampling for the opening, greedy gumbel_action thereafter.
+                if (move_count < half_life) {
+                    const float inv_t = 1.0f / std::max(cfg_.move_temperature, 1e-6f);
+                    std::vector<float> w(sr.visit_counts.size());
+                    float sum_w = 0.0f;
+                    for (size_t i = 0; i < w.size(); ++i) {
+                        w[i] = (sr.visit_counts[i] > 0.0f)
+                            ? std::pow(sr.visit_counts[i], inv_t) : 0.0f;
+                        sum_w += w[i];
+                    }
+                    if (sum_w > 0.0f) {
+                        std::discrete_distribution<int> action_dist(w.begin(), w.end());
+                        action = action_dist(worker_rng);
+                    }
                 }
             }
             if (action < 0) {

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -112,6 +113,9 @@ static AlphaZeroConfig build_mcts_cfg(
     c.fpu_pow = cfg_get<float>(m, "FPU_POW", 1.0f);
     c.fpu_reduction_max = cfg_get<float>(m, "FPU_REDUCTION_MAX", 0.16f);
     c.fpu_loss_prop = cfg_get<float>(m, "FPU_LOSS_PROP", 0.0f);
+    c.root_fpu_reduction_max = cfg_get<float>(m, "ROOT_FPU_REDUCTION_MAX", 0.1f);
+    c.root_fpu_loss_prop = cfg_get<float>(m, "ROOT_FPU_LOSS_PROP", 0.0f);
+    c.nn_policy_temperature = cfg_get<float>(m, "NN_POLICY_TEMPERATURE", 1.0f);
     c.cpuct_utility_stdev_prior = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR", 0.40f);
     c.cpuct_utility_stdev_prior_weight = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 2.0f);
     c.cpuct_utility_stdev_scale = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_SCALE", 0.85f);
@@ -125,6 +129,21 @@ static AlphaZeroConfig build_mcts_cfg(
         cfg_get_bool(m, "ENABLE_SYMMETRY_CHILD", true);
     c.root_symmetry_pruning =
         cfg_get_bool(m, "ROOT_SYMMETRY_PRUNING", true);
+
+    // KataGomo PUCT match-mode dispatch.
+    {
+        std::string algo = cfg_get<std::string>(m, "SEARCH_ALGO", std::string("gumbel"));
+        std::transform(algo.begin(), algo.end(), algo.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (algo == "puct") c.search_algo = SearchAlgo::PUCT;
+        else if (algo == "gumbel") c.search_algo = SearchAlgo::GUMBEL;
+        else throw std::runtime_error("SEARCH_ALGO must be 'gumbel' or 'puct', got: " + algo);
+    }
+    c.root_noise_enabled = cfg_get_bool(m, "ROOT_NOISE_ENABLED", false);
+    c.root_dirichlet_total_concentration =
+        cfg_get<float>(m, "ROOT_DIRICHLET_TOTAL_CONCENTRATION", 10.83f);
+    c.root_noise_weight = cfg_get<float>(m, "ROOT_NOISE_WEIGHT", 0.25f);
+
     c.device = device;
     return c;
 }
@@ -478,7 +497,10 @@ int main(int argc, char** argv) {
 
                         root.reset(new MCTSNode{state, to_play});
                         const int sims = a_to_move ? cfg_a.num_simulations : cfg_b.num_simulations;
-                        const auto res = mcts.gumbel_search(state, to_play, sims, root);
+                        const auto& engine_cfg = a_to_move ? cfg_a : cfg_b;
+                        const auto res = (engine_cfg.search_algo == SearchAlgo::PUCT)
+                            ? mcts.search(state, to_play, sims, root)
+                            : mcts.gumbel_search(state, to_play, sims, root);
                         // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
                         // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
                         // at the boundary, mirroring gomoku_elo_main.cpp.
