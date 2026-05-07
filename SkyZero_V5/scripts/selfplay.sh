@@ -13,7 +13,7 @@ PY="${PY:-python}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
     echo "[selfplay.sh] binary not found or not executable: $SELFPLAY_BIN" >&2
-    echo "Build it first: (cd cpp && cmake -B build && cmake --build build -j)" >&2
+    echo "Build it first: bash scripts/build.sh" >&2
     exit 1
 fi
 
