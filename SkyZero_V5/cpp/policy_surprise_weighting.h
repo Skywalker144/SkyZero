@@ -30,7 +30,7 @@ namespace skyzero {
 // values: +1 = own, -1 = opp, 0 = empty (or off-board pad).
 // ---------------------------------------------------------------------------
 struct TrainSample {
-    std::vector<int8_t> state;                              // V5: 5*MAX_AREA = 1125 int8
+    std::vector<int8_t> state;                              // V5: NUM_SPATIAL_PLANES_V5 * MAX_AREA int8
     std::array<float, 12> global_features{};                // V5: rule one-hot etc.
     int8_t to_play = 1;
     std::vector<float> policy_target;
