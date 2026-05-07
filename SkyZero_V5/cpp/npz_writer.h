@@ -5,7 +5,7 @@
 // Supports int8 / float32 arrays. Enough for the selfplay schema.
 //
 // Schema written per flush (V5):
-//   state                   (N, num_planes, H, W)        int8     (V5: 5*15*15)
+//   state                   (N, num_planes, H, W)        int8     (V5: NUM_SPATIAL_PLANES_V5 × MAX_BOARD_SIZE × MAX_BOARD_SIZE)
 //   global_features         (N, num_global_features)     float32  (V5: 12-dim)
 //   policy_target           (N, H*W)                     float32
 //   opponent_policy_target  (N, H*W)                     float32
@@ -300,7 +300,7 @@ private:
         }
 
         // V5: state padded to MAX_BOARD_SIZE regardless of game's board_size.
-        // state_dim derived from state_row_/num_planes_ (=225 → 15 for V5).
+        // state_dim derived from state_row_ / num_planes_ (a perfect square).
         const int64_t state_dim = static_cast<int64_t>(std::sqrt(static_cast<double>(state_row_ / num_planes_)));
         add_int8_entry(archive, "state.npy",
                        {job.rows, num_planes_, state_dim, state_dim},
