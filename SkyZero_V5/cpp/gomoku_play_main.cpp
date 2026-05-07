@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
         if (use_cuda) model.to(torch::kHalf);
         std::mutex model_mu;
 
-        // V5: c=5 planes, board=15 (MAX), area=225
+        // V5: NUM_SPATIAL_PLANES_V5 planes on a MAX_BOARD_SIZE canvas (MAX_AREA cells).
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
         const int board = Gomoku::MAX_BOARD_SIZE;
         const int area = board * board;
@@ -327,9 +327,9 @@ int main(int argc, char** argv) {
                 torch::NoGradGuard no_grad;
                 out_iv = model.forward({input, global_t});   // V5: double input
             }
-            // V5: dict output. policy (B, 6, area), value_wdl (B, 3).
+            // V5: dict output. policy (B, 4, area), value_wdl (B, 3).
             auto out_dict = out_iv.toGenericDict();
-            auto policy_all = out_dict.at("policy").toTensor();      // (B, 6, area)
+            auto policy_all = out_dict.at("policy").toTensor();      // (B, 4, area)
             auto policy_logits = policy_all.select(1, 0).contiguous();   // main head
             auto value_logits = out_dict.at("value_wdl").toTensor();
             auto policy = policy_logits.reshape({bsz, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
@@ -352,9 +352,6 @@ int main(int argc, char** argv) {
         auto infer_fn = [&](const std::vector<int8_t>& encoded) {
             auto r = run_forward({encoded});
             return r.front();
-        };
-        auto batch_infer_fn = [&](const std::vector<std::vector<int8_t>>& batch) {
-            return run_forward(batch);
         };
 
         // Single forward to extract the opponent-policy head (elements()[1]).
@@ -435,7 +432,7 @@ int main(int argc, char** argv) {
 
         std::mt19937 rng(std::random_device{}());
         const int search_threads = cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 8);
-        TreeParallelMCTS<Gomoku> mcts(game, cfg, search_threads, infer_fn, batch_infer_fn, rng());
+        TreeParallelMCTS<Gomoku> mcts(game, cfg, search_threads, infer_fn, rng());
 
         std::cout << "[gomoku_play] model=" << cli.model
                   << " device=" << (use_cuda ? "cuda" : "cpu")
