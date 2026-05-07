@@ -78,6 +78,22 @@ NUM_GAMES="${NUM_GAMES:-$(cfg_get NUM_GAMES 40)}"
 ANCHORS_CFG="${ANCHORS:-$(cfg_get ANCHORS '')}"
 NEIGHBOR_K="${NEIGHBOR_K:-$(cfg_get NEIGHBOR_K 2)}"
 NEIGHBOR_GAMES="${NEIGHBOR_GAMES:-$(cfg_get NEIGHBOR_GAMES 30)}"
+# Skip checkpoints with iter < START_ITER when building TARGETS / STRIDED.
+# Existing games.jsonl entries below this stay (python/elo.py reads them all);
+# only NEW match scheduling is filtered.
+START_ITER="${START_ITER:-$(cfg_get START_ITER 0)}"
+
+# Returns sorted list of model_iter_*.pt paths with iter >= START_ITER.
+list_models() {
+    while read -r f; do
+        [[ -z "$f" ]] && continue
+        local f_iter
+        f_iter="$(parse_iter "$f")"
+        if (( f_iter >= START_ITER )); then
+            echo "$f"
+        fi
+    done < <(ls "$DATA_DIR"/models/model_iter_*.pt 2>/dev/null | sort)
+}
 
 mkdir -p "$(dirname "$OUT_FILE")"
 
@@ -104,9 +120,9 @@ fi
 TARGETS=()
 NEIGHBOR_PAIRS=()
 if [[ $# -eq 0 ]]; then
-    mapfile -t ALL < <(ls "$DATA_DIR"/models/model_iter_*.pt 2>/dev/null | sort)
+    mapfile -t ALL < <(list_models)
     if [[ ${#ALL[@]} -eq 0 ]]; then
-        echo "[elo.sh] no checkpoints in $DATA_DIR/models/"
+        echo "[elo.sh] no checkpoints in $DATA_DIR/models/ (START_ITER=$START_ITER)"
         exit 1
     fi
     i=0
@@ -120,7 +136,7 @@ if [[ $# -eq 0 ]]; then
     if [[ "${TARGETS[-1]}" != "$last" ]]; then
         TARGETS+=("$last")
     fi
-    echo "[elo.sh] batch mode: ${#TARGETS[@]} checkpoints (stride=$STRIDE of ${#ALL[@]})"
+    echo "[elo.sh] batch mode: ${#TARGETS[@]} checkpoints (stride=$STRIDE of ${#ALL[@]}, start_iter=$START_ITER)"
 
     # Chain pairs: every checkpoint plays its NEIGHBOR_K nearest forward
     # successors. Filenames are zero-padded so string-sort = iter-sort.
@@ -149,7 +165,7 @@ else
     # so that non-numeric paths like "latest.pt" sort to the end as the
     # "highest iter".
     if (( NEIGHBOR_K > 0 )); then
-        mapfile -t ALL < <(ls "$DATA_DIR"/models/model_iter_*.pt 2>/dev/null | sort)
+        mapfile -t ALL < <(list_models)
         STRIDED=()
         i=0
         for f in "${ALL[@]}"; do
