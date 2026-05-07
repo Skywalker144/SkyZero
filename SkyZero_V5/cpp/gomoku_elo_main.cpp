@@ -36,6 +36,7 @@
 #include "alphazero.h"
 #include "alphazero_tree_parallel.h"
 #include "envs/gomoku.h"
+#include "random_opening.h"
 
 using namespace skyzero;
 
@@ -122,8 +123,8 @@ static CliArgs parse_cli(int argc, char** argv) {
     return a;
 }
 
-// Load a TorchScript model and return an (infer_fn, batch_infer_fn) pair plus
-// a holder that keeps the module alive for the lifetime of the closures.
+// Holder that keeps a loaded TorchScript module alive across worker
+// closures and serializes forward calls via mu.
 struct ModelHandle {
     torch::jit::script::Module module;
     std::mutex mu;
@@ -366,6 +367,22 @@ int main(int argc, char** argv) {
         cfg.root_symmetry_pruning =
             cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
+        // Balanced random opening (KataGomo randomopening.cpp). For Elo we
+        // want match-mode strictness: exponent 10 (vs selfplay's 4), 100% of
+        // games use balanced opening.
+        const bool enable_balanced_opening =
+            cfg_get_bool(cfg_map, "ENABLE_BALANCED_OPENING", true);
+        cfg.balanced_opening_max_tries =
+            cfg_get<int>(cfg_map, "BALANCED_OPENING_MAX_TRIES", 20);
+        cfg.balanced_opening_avg_dist_factor =
+            cfg_get<float>(cfg_map, "BALANCED_OPENING_AVG_DIST_FACTOR", 0.8f);
+        cfg.balanced_opening_reject_prob =
+            cfg_get<float>(cfg_map, "BALANCED_OPENING_REJECT_PROB", 0.995f);
+        cfg.balanced_opening_reject_prob_fallback =
+            cfg_get<float>(cfg_map, "BALANCED_OPENING_REJECT_PROB_FALLBACK", 0.8f);
+        cfg.balanced_opening_value_exponent =
+            cfg_get<float>(cfg_map, "BALANCED_OPENING_VALUE_EXPONENT", 10.0f);
+
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
 
         // V5: 5-plane padded encoding + 12-dim global features
@@ -386,7 +403,8 @@ int main(int argc, char** argv) {
         auto ha = load_model(cli.model_a, device);
         auto hb = load_model(cli.model_b, device);
 
-        // V5: hardcoded c=5, board=15, regardless of game.board_size (padded)
+        // V5: NUM_SPATIAL_PLANES_V5 planes on a MAX_BOARD_SIZE canvas,
+        // regardless of game.board_size (padded).
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
         const int board = Gomoku::MAX_BOARD_SIZE;
 
@@ -405,8 +423,6 @@ int main(int argc, char** argv) {
 
         auto infer_a = [&](const std::vector<int8_t>& e) { return server_a.infer(e); };
         auto infer_b = [&](const std::vector<int8_t>& e) { return server_b.infer(e); };
-        auto fwd_a = [&](const std::vector<std::vector<int8_t>>& b) { return server_a.infer_batch(b); };
-        auto fwd_b = [&](const std::vector<std::vector<int8_t>>& b) { return server_b.infer_batch(b); };
 
         const uint64_t seed = cli.seed_set ? cli.seed : std::random_device{}();
 
@@ -421,7 +437,9 @@ int main(int argc, char** argv) {
                   << " concurrent=" << num_concurrent
                   << " infer_batch=" << infer_batch
                   << " games=" << cli.num_games
-                  << " seed=" << seed << "\n";
+                  << " seed=" << seed
+                  << " balanced_opening=" << (enable_balanced_opening ? 1 : 0)
+                  << " value_exp=" << cfg.balanced_opening_value_exponent << "\n";
 
         std::atomic<int> next_game_idx{0};
         std::atomic<int> a_wins{0}, b_wins{0}, draws{0};
@@ -434,9 +452,19 @@ int main(int argc, char** argv) {
             try {
                 std::mt19937 rng(seed
                     + 0x9E3779B97F4A7C15ULL * static_cast<uint64_t>(tid + 1));
-                TreeParallelMCTS<Gomoku> mcts_a(game, cfg, search_threads, infer_a, fwd_a, rng());
-                TreeParallelMCTS<Gomoku> mcts_b(game, cfg, search_threads, infer_b, fwd_b, rng());
+                TreeParallelMCTS<Gomoku> mcts_a(game, cfg, search_threads, infer_a, rng());
+                TreeParallelMCTS<Gomoku> mcts_b(game, cfg, search_threads, infer_b, rng());
                 std::unique_ptr<MCTSNode> root_a, root_b;
+
+                // KataGomo-style balanced opening with two judges. RandomOpening
+                // coin-flips A vs B as the value-judging network at the top of
+                // each try_once, so over a 30-game pair each side judges ~half
+                // the openings — bias-symmetric for Elo.
+                std::unique_ptr<RandomOpening<Gomoku>> opening;
+                if (enable_balanced_opening) {
+                    opening.reset(new RandomOpening<Gomoku>(
+                        game, infer_a, infer_b, cfg, rng()));
+                }
 
                 while (!abort_flag.load()) {
                     const int g = next_game_idx.fetch_add(1);
@@ -450,9 +478,11 @@ int main(int argc, char** argv) {
                     int last_action = -1;
                     int last_player = 0;
                     int plies = 0;
-
-                    root_a.reset(new MCTSNode{state, to_play});
-                    root_b.reset(new MCTSNode{state, to_play});
+                    int opening_plies = 0;
+                    if (opening) {
+                        opening->initialize(state, to_play);
+                        for (int8_t v : state) if (v != 0) ++opening_plies;
+                    }
 
                     while (!game.is_terminal(state, last_action, last_player)) {
                         const bool a_to_move = (a_is_black && to_play == 1)
@@ -502,7 +532,8 @@ int main(int argc, char** argv) {
                             << "\"b\":\"" << cli.model_b << "\","
                             << "\"a_black\":" << (a_is_black ? "true" : "false") << ","
                             << "\"winner_a\":" << winner_a << ","
-                            << "\"plies\":" << plies << "}\n";
+                            << "\"plies\":" << plies << ","
+                            << "\"opening_plies\":" << opening_plies << "}\n";
                         out.flush();
                     }
                     {
