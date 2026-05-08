@@ -14,6 +14,7 @@ import sys
 
 import torch
 
+from checkpoint_utils import zero_pad_for_v6
 from model_config import net_config_from_env
 from nets import build_model
 
@@ -39,12 +40,14 @@ def main() -> int:
     if isinstance(state, dict) and state.get("swa_model_state_dict") is not None:
         swa_sd = state["swa_model_state_dict"]
         stripped = {k[len("module."):]: v for k, v in swa_sd.items() if k.startswith("module.")}
-        model.load_state_dict(stripped)
+        model.load_state_dict(zero_pad_for_v6(
+            stripped, cfg.num_planes, cfg.num_global_features))
         print(f"[export_model] loaded SWA weights from {args.ckpt}")
     else:
         if isinstance(state, dict) and "model_state_dict" in state:
             state = state["model_state_dict"]
-        model.load_state_dict(state)
+        model.load_state_dict(zero_pad_for_v6(
+            state, cfg.num_planes, cfg.num_global_features))
         print(f"[export_model] loaded raw weights from {args.ckpt}")
     # TRAP 3 (NOTES.md §3.3): NormMask.scale not in state_dict. Without this,
     # WDL logits magnitude blows up ~10× (overconfident, "model looks broken").

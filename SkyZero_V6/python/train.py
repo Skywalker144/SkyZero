@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 import torch.nn.functional as F
+from checkpoint_utils import zero_pad_for_v6
 from data_processing import load_npz, random_d4_inplace
 from model_config import net_config_from_env
 from nets import build_model
@@ -274,14 +275,16 @@ def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | N
     if latest.exists():
         state = torch.load(latest, map_location="cpu")
         if isinstance(state, dict) and "model_state_dict" in state:
-            model.load_state_dict(state["model_state_dict"])
+            model.load_state_dict(zero_pad_for_v6(
+                state["model_state_dict"], cfg.num_planes, cfg.num_global_features))
             global_step = int(state.get("global_step", 0))
             optim_state = state.get("optimizer_state_dict")
             scaler_state = state.get("scaler_state_dict")
             swa_state = state.get("swa_model_state_dict")
             swa_accum_steps = int(state.get("swa_accum_steps", 0))
         else:
-            model.load_state_dict(state)
+            model.load_state_dict(zero_pad_for_v6(
+                state, cfg.num_planes, cfg.num_global_features))
         # TRAP 3 (NOTES.md §3.3): NormMask.scale is plain Python float, not in
         # state_dict. Must restore it after load_state_dict.
         model.set_norm_scales()
