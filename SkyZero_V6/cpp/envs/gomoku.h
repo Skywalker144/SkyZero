@@ -46,14 +46,23 @@ inline const char* rule_to_string(RuleType r) {
     return "?";
 }
 
-// 12-dim global feature vector fed to KataGoNet.linear_global.
+// 14-dim global feature vector fed to KataGoNet.linear_global.
+// Aligned with KataGomo nninputs.cpp:809-864 V101 rowGlobal[3..16] subset
+// (V6 has no VCN/maxMoves/pass, so those rows are dropped).
 // dims 0-2: rule one-hot (freestyle, standard, renju)
 // dim 3:    renju_color_sign (Renju+Black=-1, Renju+White=+1, else 0)
 // dim 4:    has_forbidden (rule == RENJU; KataGomo nninputs.cpp:589)
 // dim 5:    ply / (board_size²)
-// dims 6-11: VCF placeholder, zero (Phase C / Sprint 4 will fill via VCF solver)
+// dim 6:    forced-win flag (winner == to_play in ResultsBeforeNN; rowGlobal[7])
+// dim 7:    myVCFresult == 2 (cannot vcf; rowGlobal[8])
+// dim 8:    myVCFresult == 3 (no short vcf; rowGlobal[9])
+// dim 9:    oppVCFresult == 1 (opp can vcf; rowGlobal[10])
+// dim 10:   oppVCFresult == 2 (opp cannot vcf; rowGlobal[11])
+// dim 11:   oppVCFresult == 3 (opp no short vcf; rowGlobal[12])
+// dim 12:   PDA active gate (1.0 if asymmetric playout this game; rowGlobal[15])
+// dim 13:   0.5 * signed_pda_doublings (sign-flipped per to_play; rowGlobal[16])
 struct GlobalFeatures {
-    static constexpr int DIM = 12;
+    static constexpr int DIM = 14;
     float data[DIM];
     GlobalFeatures() { for (int i = 0; i < DIM; ++i) data[i] = 0.0f; }
 };
@@ -74,7 +83,11 @@ class Gomoku {
 public:
     static constexpr int MAX_BOARD_SIZE = SKYZERO_MAX_BOARD_SIZE;
     static constexpr int MAX_AREA = MAX_BOARD_SIZE * MAX_BOARD_SIZE;
-    static constexpr int NUM_SPATIAL_PLANES_V5 = 5;   // mask + own + opp + fb_b + fb_w
+    // mask + own + opp + fb_b + fb_w + my_only_loc one-hot.
+    // plane 5 (KataGomo nninputs spatial[5]) is filled when ResultsBeforeNN
+    // identifies a single forced move (immediate-five / must-block-opp-four /
+    // life-four / VCF first move); zero otherwise.
+    static constexpr int NUM_SPATIAL_PLANES_V5 = 6;
 
     int board_size;
     int num_planes;
@@ -350,10 +363,13 @@ public:
     //   2: opp stones     (1 where state[i] == -to_play)
     //   3: forbidden_black (1 where forbidden when current player is black)
     //   4: forbidden_white (1 where forbidden when current player is white)
-    // Output stride is MAX_BOARD_SIZE = 15 regardless of board_size, so smaller
+    //   5: my_only_loc one-hot (1 at my_only_canvas, 0 elsewhere; -1 means
+    //      "no forced move" — plane stays all zero). canvas-stride.
+    // Output stride is MAX_BOARD_SIZE regardless of board_size, so smaller
     // boards (e.g., 13×13) have the right/bottom rows/cols filled with 0
     // (mask=0 outside).
-    std::vector<int8_t> encode_state_v5(const std::vector<int8_t>& state, int to_play) const {
+    std::vector<int8_t> encode_state_v5(const std::vector<int8_t>& state, int to_play,
+                                        int my_only_canvas = -1) const {
         constexpr int M = MAX_BOARD_SIZE;
         constexpr int A = MAX_AREA;
         const int N = board_size;
@@ -399,41 +415,63 @@ public:
             }
         }
 
+        // Plane 5: my_only_loc one-hot. canvas-stride; -1 means "no forced
+        // move", plane stays all zero. Aligned with KataGomo nninputs
+        // spatial[5] (myOnlyLoc).
+        if (my_only_canvas >= 0 && my_only_canvas < A) {
+            encoded[5 * A + my_only_canvas] = 1;
+        }
+
         return encoded;
     }
 
-    // Batched V5 encode: shape (batch, 5, M, M) flattened.
+    // Batched V5 encode: shape (batch, NUM_SPATIAL_PLANES_V5, M, M) flattened.
+    // my_only_canvases: per-sample canvas index of the forced move, or -1
+    // for "no forced move". Pass an empty vector to skip plane 5 entirely
+    // (equivalent to a vector of all -1).
     std::vector<int8_t> encode_state_v5_batch(
         const std::vector<std::vector<int8_t>>& states,
-        const std::vector<int8_t>& to_plays
+        const std::vector<int8_t>& to_plays,
+        const std::vector<int>& my_only_canvases = {}
     ) const {
         const int batch = static_cast<int>(states.size());
         constexpr int per_sample = NUM_SPATIAL_PLANES_V5 * MAX_AREA;
         std::vector<int8_t> out(static_cast<size_t>(batch) * per_sample, 0);
         for (int b = 0; b < batch; ++b) {
-            auto enc = encode_state_v5(states[b], to_plays[b]);
+            const int my_only = (b < static_cast<int>(my_only_canvases.size()))
+                ? my_only_canvases[b] : -1;
+            auto enc = encode_state_v5(states[b], to_plays[b], my_only);
             std::copy(enc.begin(), enc.end(), out.begin() + b * per_sample);
         }
         return out;
     }
 
-    // 12-dim global features (KataGoNet.linear_global input).
-    GlobalFeatures compute_global_features(int ply, int to_play) const {
-        GlobalFeatures g;   // zero-init
-        g.data[0] = (rule == RuleType::FREESTYLE) ? 1.0f : 0.0f;
-        g.data[1] = (rule == RuleType::STANDARD)  ? 1.0f : 0.0f;
-        g.data[2] = (rule == RuleType::RENJU)     ? 1.0f : 0.0f;
-        // dim 3: renju_color_sign (only fires under Renju, captures "black has tighter constraints")
-        g.data[3] = (rule == RuleType::RENJU) ? (to_play == 1 ? -1.0f : +1.0f) : 0.0f;
-        // dim 4: has_forbidden — only RENJU has a forbidden-move concept.
-        // KataGomo nninputs.cpp:589: hasForbiddenFeature requires RENJU.
-        g.data[4] = (rule == RuleType::RENJU) ? 1.0f : 0.0f;
-        // dim 5: ply normalized by actual board area (not MAX_AREA — different boards
-        // have different game lengths, this gives a size-invariant progress signal)
-        g.data[5] = float(ply) / float(board_size * board_size);
-        // dims 6-11: VCF placeholder, all zero
-        return g;
-    }
+    // 14-dim global features (KataGoNet.linear_global input).
+    //
+    // dim 6-11 fill from a pre-computed `ResultsBeforeNN` (envs/results_before_nn.h):
+    //   6:  forced-win flag (r.winner == to_play)               — rowGlobal[7]
+    //   7:  myVCF == 2  (I cannot vcf)                           — rowGlobal[8]
+    //   8:  myVCF == 3  (no short vcf for me)                    — rowGlobal[9]
+    //   9:  oppVCF == 1 (opp can vcf)                            — rowGlobal[10]
+    //   10: oppVCF == 2 (opp cannot vcf)                         — rowGlobal[11]
+    //   11: oppVCF == 3 (opp no short vcf)                       — rowGlobal[12]
+    // dim 12-13 carry KataGomo PDA (only set in selfplay; evaluation defaults zero):
+    //   12: pda_active gate (0/1)                                — rowGlobal[15]
+    //   13: 0.5 * pda_signed_for_to_play (sign-flipped per to-play) — rowGlobal[16]
+    //
+    // Pass-through default (`r{}`, `pda_signed=0`, `pda_active=false`) leaves
+    // 6-13 zero, matching the historical behavior used outside selfplay.
+    GlobalFeatures compute_global_features(
+        int ply, int to_play,
+        const struct ResultsBeforeNN& r,
+        double pda_signed_for_to_play = 0.0,
+        bool pda_active = false
+    ) const;
+
+    // Convenience overload that constructs an empty ResultsBeforeNN (winner=0,
+    // my_only=-1, no VCF). Equivalent to "no tactical signal known" — used by
+    // diagnostic / probe binaries that don't need VCF.
+    GlobalFeatures compute_global_features(int ply, int to_play) const;
 
     // V5 multi-rule winner check, aligned with KataGomo
     // GameLogic::checkWinnerAfterPlayed + getMovePriorityOneDirectionAssumeLegal
@@ -503,6 +541,25 @@ public:
             return 0;
         }
         return 2;
+    }
+
+    // Renju forbidden check on an arbitrary state (rule must be RENJU). Returns
+    // true iff placing a black stone at (r, c) is a forbidden move (overline /
+    // double-three / double-four). False for non-Renju, non-empty cells, or
+    // out-of-bounds. Builds a fresh ForbiddenPointFinder per call — fine for
+    // the rare MP_MYLIFEFOUR cells where this is queried during MovePriority
+    // scans (KataGomo gamelogic.cpp:112).
+    bool is_renju_forbidden_at(const std::vector<int8_t>& state, int r, int c) const {
+        if (rule != RuleType::RENJU) return false;
+        if (r < 0 || r >= board_size || c < 0 || c >= board_size) return false;
+        if (state[r * board_size + c] != 0) return false;
+        ForbiddenPointFinder fpf(board_size);
+        for (int i = 0; i < board_size * board_size; ++i) {
+            if (state[i] == 0) continue;
+            fpf.set_stone(i / board_size, i % board_size,
+                          state[i] == 1 ? C_BLACK : C_WHITE);
+        }
+        return fpf.is_forbidden(r, c);
     }
 
 private:
