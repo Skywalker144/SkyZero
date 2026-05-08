@@ -39,6 +39,7 @@
 #include "policy_surprise_weighting.h"
 #include "selfplay_manager.h"
 #include "utils.h"
+#include "vct/skyzero_adapter.h"
 
 namespace fs = std::filesystem;
 using namespace skyzero;
@@ -168,8 +169,11 @@ struct CliArgs {
     bool daemon = false;
     int model_watch_poll_ms = 2000;
     // Per-iter warmup override for NUM_SIMULATIONS (computed by
-    // python/compute_num_simulations.py). <= 0 means "use cfg value".
+    // python/warmup.py num-simulations). <= 0 means "use cfg value".
     int num_simulations_override = -1;
+    // Per-iter warmup override for CHEAP_SEARCH_VISITS. KataGo-paper-aligned
+    // ramp shares NUM_SIM_WARMUP_SAMPLES with full visits. <= 0 = cfg value.
+    int cheap_search_visits_override = -1;
 };
 
 static CliArgs parse_cli(int argc, char** argv) {
@@ -192,6 +196,7 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--model-watch-poll-ms") a.model_watch_poll_ms = std::stoi(need("--model-watch-poll-ms"));
         else if (k == "--stats-file") a.stats_file = need("--stats-file");
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
+        else if (k == "--cheap-search-visits") a.cheap_search_visits_override = std::stoi(need("--cheap-search-visits"));
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.output_dir.empty() || a.config.empty()) {
@@ -255,6 +260,9 @@ int main(int argc, char** argv) {
         std::signal(SIGTERM, signal_handler);
         torch::NoGradGuard no_grad;
         c10::InferenceMode im;
+
+        // KataGomo VCFsolver: seed zobrist tables (process-once).
+        skyzero::vct::global_init();
 
         const auto cli = parse_cli(argc, argv);
 
@@ -349,6 +357,30 @@ int main(int argc, char** argv) {
             cfg_get<float>(cfg_map, "CHOSEN_MOVE_TEMPERATURE_HALFLIFE", 19.0f);
         cfg.chosen_move_subtract = cfg_get<float>(cfg_map, "CHOSEN_MOVE_SUBTRACT", 0.0f);
         cfg.chosen_move_prune = cfg_get<float>(cfg_map, "CHOSEN_MOVE_PRUNE", 1.0f);
+        cfg.use_vct = cfg_get_bool(cfg_map, "USE_VCT", false);
+        cfg.vct_max_nodes = cfg_get<int>(cfg_map, "VCT_MAX_NODES", 50000);
+        cfg.use_vct_at_root_only = cfg_get_bool(cfg_map, "USE_VCT_AT_ROOT_ONLY", false);
+
+        // KataGomo Playout Doubling Advantage (PDA). Selfplay-only.
+        cfg.pda_normal_prob = cfg_get<float>(cfg_map, "PDA_NORMAL_PROB", 0.0f);
+        cfg.pda_max_ratio = cfg_get<float>(cfg_map, "PDA_MAX_RATIO", 8.0f);
+        cfg.pda_min_visits_floor = cfg_get<int>(cfg_map, "PDA_MIN_VISITS_FLOOR", 5);
+
+        // Fork pool (docs/v6_fork_pool_design.md). 0/0 disables both directions.
+        cfg.fork_load_prob = cfg_get<float>(cfg_map, "FORK_LOAD_PROB", 0.0f);
+        cfg.fork_save_prob = cfg_get<float>(cfg_map, "FORK_SAVE_PROB", 0.0f);
+        cfg.fork_pool_cap = cfg_get<int>(cfg_map, "FORK_POOL_CAP", 10000);
+        cfg.fork_min_move_to_save = cfg_get<int>(cfg_map, "FORK_MIN_MOVE_TO_SAVE", 8);
+        cfg.fork_random_top_k = cfg_get<int>(cfg_map, "FORK_RANDOM_TOP_K", 0);
+
+        // KataGomo PCR — Playout Cap Randomization (play.cpp:946-981).
+        cfg.cheap_search_prob = cfg_get<float>(cfg_map, "CHEAP_SEARCH_PROB", 0.0f);
+        cfg.cheap_search_visits = cfg_get<int>(cfg_map, "CHEAP_SEARCH_VISITS", 100);
+        if (cli.cheap_search_visits_override > 0) {
+            cfg.cheap_search_visits = cli.cheap_search_visits_override;
+        }
+        cfg.cheap_search_target_weight =
+            cfg_get<float>(cfg_map, "CHEAP_SEARCH_TARGET_WEIGHT", 0.0f);
 
         const bool use_cuda = torch::cuda::is_available();
         cfg.device = use_cuda ? torch::Device(torch::kCUDA, 0) : torch::Device(torch::kCPU);
@@ -404,7 +436,7 @@ int main(int argc, char** argv) {
 
         // V5: num_planes=5 (mask + own + opp + fb_b + fb_w), padded to MAX_BOARD_SIZE.
         const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
-        const int num_global_features = cfg_get<int>(cfg_map, "NUM_GLOBAL_FEATURES", 12);
+        const int num_global_features = cfg_get<int>(cfg_map, "NUM_GLOBAL_FEATURES", 14);
 
         // ---- Per-game (size, rule) sampling, KataGomo bSizes / bSizeRelProbs ----
         // BOARD_SIZES / BOARD_SIZE_RELPROBS / RULES / RULE_RELPROBS are required
@@ -652,6 +684,9 @@ int main(int argc, char** argv) {
             int v_games = 0;
             int64_t v_rows = 0;
             int v_black = 0, v_white = 0, v_draw = 0;
+            int v_from_fork = 0;
+            int64_t v_cheap_steps = 0;
+            int64_t v_total_steps = 0;
             double v_sum_len = 0.0;
             int v_main_games = 0;
             int v_main_black = 0, v_main_white = 0, v_main_draw = 0;
@@ -697,6 +732,8 @@ int main(int argc, char** argv) {
             auto reset_version_counters = [&]() {
                 version_t0 = std::chrono::steady_clock::now();
                 v_games = 0; v_rows = 0; v_black = 0; v_white = 0; v_draw = 0;
+                v_from_fork = 0;
+                v_cheap_steps = 0; v_total_steps = 0;
                 v_sum_len = 0.0;
                 v_main_games = 0; v_main_black = 0; v_main_white = 0; v_main_draw = 0;
                 v_main_sum_len = 0.0;
@@ -766,6 +803,9 @@ int main(int argc, char** argv) {
                 if (r.winner == 1) ++v_black;
                 else if (r.winner == -1) ++v_white;
                 else ++v_draw;
+                if (r.from_fork) ++v_from_fork;
+                v_cheap_steps += r.cheap_steps;
+                v_total_steps += static_cast<int64_t>(r.samples.size());
                 if (r.board_size == main_board_size && r.rule == main_rule) {
                     v_main_sum_len += r.game_len;
                     v_main_games += 1;
@@ -779,10 +819,16 @@ int main(int argc, char** argv) {
                     const double dt = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - t_global).count();
                     const double sps = dt > 0.0 ? total_rows / dt : 0.0;
+                    const double fork_rate = v_games > 0
+                        ? static_cast<double>(v_from_fork) / v_games : 0.0;
+                    const double cheap_rate = v_total_steps > 0
+                        ? static_cast<double>(v_cheap_steps) / v_total_steps : 0.0;
                     std::cout << "[Daemon] v=" << cur_version
                               << " total_games=" << total_games
                               << " total_rows=" << total_rows
                               << " sps=" << std::fixed << std::setprecision(1) << sps
+                              << " fork_rate=" << std::fixed << std::setprecision(3) << fork_rate
+                              << " cheap_rate=" << std::fixed << std::setprecision(3) << cheap_rate
                               << "\n";
                 }
             }
