@@ -205,9 +205,10 @@ inline std::vector<float> compute_policy_surprise_weights(
     return final_weights;
 }
 
-// Stochastic rounding by weight — replicates samples to encode surprise weight.
-// Output TrainSamples all carry the *original* sample_weight (soft-resign level).
-// Aligned to CSkyZero_V3 behavior.
+// Stochastic rounding by weight — write floor(w) copies + Bernoulli(frac).
+// Surviving rows carry sample_weight=1.0 (KataGo data.trainingWeight): the
+// frequency weight is fully consumed at write time, so the loss path treats
+// every written row uniformly.
 inline std::vector<TrainSample> apply_surprise_weighting_to_game(
     const std::vector<PolicySurpriseSample>& game_data,
     const std::vector<float>& weights,
@@ -237,7 +238,7 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.value_target = game_data[i].value_target;
             ts.td_value_target = game_data[i].td_value_target;
             ts.futurepos_target = game_data[i].futurepos_target;
-            ts.sample_weight = game_data[i].sample_weight;
+            ts.sample_weight = 1.0f;
             ts.has_opponent_policy = game_data[i].has_opponent_policy;
             return ts;
         };
