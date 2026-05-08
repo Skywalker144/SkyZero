@@ -77,6 +77,32 @@ struct AlphaZeroConfig {
     float root_fpu_reduction_max = 0.1f;
     float root_fpu_loss_prop = 0.0f;
 
+    // KataGomo gamelogic.cpp:400-411 + nneval.cpp:706-823. Per NN forward,
+    // run a VCT (VCFsolver) for the side-to-move; on a definitive win,
+    // collapse the legal mask to {first_move} and force value to (1,0,0)
+    // WLD. This makes search converge to the winning move automatically at
+    // every expanded node where VCT wins, not just at the search root —
+    // mirrors KataGomo's behavior (search isn't aware VCT happened, NN
+    // legal-mask handles it).
+    bool use_vct = false;
+    int  vct_max_nodes = 50000;
+    // Cheaper fallback: only run VCT at the search root, override the
+    // returned MCTSSearchOutput rather than every leaf NN call. Use when
+    // worker CPU is the bottleneck. ~+30 Elo (vs ~+50 for full alignment).
+    bool use_vct_at_root_only = false;
+
+    // KataGomo cross-game position pool (docs/v6_fork_pool_design.md). New
+    // games occasionally start from a saved mid-game position instead of
+    // running balanced opening, so training data covers the natural mid-game
+    // manifold. fork_random_top_k > 0 makes the loaded position then play
+    // one uniform-random move from the NN's top-K legal moves to add
+    // trajectory divergence beyond the loaded entry.
+    float fork_load_prob = 0.0f;          // P(start new game from pool); 0 disables
+    float fork_save_prob = 0.0f;          // P(save 1 position from this game); 0 disables
+    int   fork_pool_cap = 10000;
+    int   fork_min_move_to_save = 8;
+    int   fork_random_top_k = 0;
+
     // KataGo nneval.cpp:696 — global NN policy temperature applied to legal
     // logits before softmax everywhere in the tree (root + child). T > 1
     // flattens (more exploration off-policy), T < 1 sharpens. T == 1 is
@@ -161,6 +187,22 @@ struct AlphaZeroConfig {
     float policy_init_avg_move_num = 0.0f;
     float policy_init_temperature = 1.0f;
 
+    // KataGomo PCR (Playout Cap Randomization, play.cpp:946-981). Per move,
+    // Bernoulli(cheap_search_prob): cheap → reduce sims to cheap_search_visits
+    // and multiply step_sample_weight by cheap_search_target_weight; full →
+    // run normal sims (and may still be reduced by reduceVisits below). The
+    // two paths are MUTUALLY EXCLUSIVE — KataGomo uses if/else if.
+    // When cheap with cheap_search_target_weight ≤ 0: also enable
+    // KataGomo "removeRootNoise" bundle (play.cpp:1198-1204) — disable root
+    // Dirichlet/Gumbel noise AND collapse root_fpu_{reduction_max,loss_prop}
+    // to the non-root values, so 100-visit cheap searches don't waste budget
+    // on the wide-root exploration meant for full searches.
+    // KataGomo selfplay8b defaults: 0.75 / 200 / 0.0; selfplay1: 0.75 / 100 / 0.0.
+    // V6 default 0.0 disables PCR (back-compat).
+    float cheap_search_prob = 0.0f;
+    int   cheap_search_visits = 100;
+    float cheap_search_target_weight = 0.0f;
+
     // Soft resign (KataGomo reduceVisits-aligned: smooth quadratic interpolation,
     // non-sticky, signed-extreme over fixed-frame v_mix; proportional floor
     // adapted for Gumbel-MCTS warmup-stage NUM_SIMULATIONS).
@@ -177,8 +219,48 @@ struct AlphaZeroConfig {
     // per-action noise reset is needed.
     bool enable_tree_reuse = true;
 
+    // KataGomo Playout Doubling Advantage (PDA). Per-game coin flip plays
+    // one side with up to `pda_max_ratio`× as many simulations as the other,
+    // training the network to robustly play asymmetrically advantaged
+    // positions. Selfplay-only (evaluation binaries leave it disabled).
+    //   pda_normal_prob: P(this game uses PDA). 0 = off (default).
+    //   pda_max_ratio:   max factor f for the favored side (KataGomo
+    //                    `maxAsymmetricRatio` default = 8.0).
+    //   pda_min_visits_floor: minimum visits after redistribution; below this
+    //                    a runtime_error is thrown (mirrors KataGomo behavior;
+    //                    catches misconfigurations early). KataGomo
+    //                    play.cpp:1047 default = 5.
+    // KataGomo references: program/play.cpp:427-440 (per-game roll),
+    // program/play.cpp:1027-1051 (per-move 2f/(f+1) redistribute).
+    float pda_normal_prob = 0.0f;
+    float pda_max_ratio = 8.0f;
+    int   pda_min_visits_floor = 5;
+
     torch::Device device = torch::kCPU;
 };
+
+// Per-game KataGomo Playout Doubling Advantage state. Rolled once at game
+// start (selfplay_manager::selfplay_once); read on each move to redistribute
+// `num_simulations` between the two sides via the 2f/(f+1) formula and to
+// set global feature dims 12-13 (pda_active gate + signed doublings).
+//   side = 0:  PDA disabled this game (no redistribution, dim 12/13 = 0).
+//   side = +1: black is the favored side; black gets f×, white gets 1×.
+//   side = -1: white is the favored side; white gets f×, black gets 1×.
+// where f = 2^abs_doublings is the effective ratio.
+struct PdaState {
+    double abs_doublings = 0.0;
+    int    side = 0;
+};
+
+// Resolves PdaState into the per-NN-forward (pda_signed, pda_active) pair
+// fed to global feature dims 12-13. KataGomo searchnnhelpers.cpp:20-25:
+// pda_signed flips sign per to_play so the favored side always sees a
+// positive doublings value.
+inline std::pair<double, bool> pda_signed_active(const PdaState* pda, int to_play) {
+    if (!pda || pda->side == 0) return {0.0, false};
+    const double signed_v = (to_play == pda->side) ? +pda->abs_doublings : -pda->abs_doublings;
+    return {signed_v, true};
+}
 
 // ---------------------------------------------------------------------------
 // Selfplay parallelism config consumed by ParallelMCTS / SelfplayEngine.
@@ -272,12 +354,17 @@ struct SelectParams {
 // effective_parent_n = node.n (single-thread) or node.n + node.vloss (parallel).
 // is_root selects {fpu_reduction_max, fpu_loss_prop} between regular and root_*
 // values, mirroring KataGo searchexplorehelpers.cpp:287-288.
+// collapse_root_fpu: KataGo "removeRootNoise" bundle (play.cpp:1201-1202).
+// When true and is_root, use {fpu_reduction_max, fpu_loss_prop} at root too —
+// cheap searches reuse the previous tree's root child stats, so unvisited new
+// children should not get the wide-root exploration boost.
 inline SelectParams compute_select_params(
     const MCTSNode& node,
     int effective_parent_n,
     float visited_policy_mass,
     const AlphaZeroConfig& cfg,
-    bool is_root = false
+    bool is_root = false,
+    bool collapse_root_fpu = false
 ) {
     const float total_child_weight = static_cast<float>(std::max(0, effective_parent_n - 1));
 
@@ -323,8 +410,9 @@ inline SelectParams compute_select_params(
     const float avg_weight = std::min(1.0f, static_cast<float>(std::pow(visited_policy_mass, cfg.fpu_pow)));
     const float parent_utility_for_fpu = avg_weight * parent_utility + (1.0f - avg_weight) * nn_utility;
 
-    const float fpu_reduction_max = is_root ? cfg.root_fpu_reduction_max : cfg.fpu_reduction_max;
-    const float fpu_loss_prop = is_root ? cfg.root_fpu_loss_prop : cfg.fpu_loss_prop;
+    const bool use_root_fpu = is_root && !collapse_root_fpu;
+    const float fpu_reduction_max = use_root_fpu ? cfg.root_fpu_reduction_max : cfg.fpu_reduction_max;
+    const float fpu_loss_prop = use_root_fpu ? cfg.root_fpu_loss_prop : cfg.fpu_loss_prop;
     const float reduction = fpu_reduction_max * std::sqrt(visited_policy_mass);
     float fpu_value = parent_utility_for_fpu - reduction;
     fpu_value = fpu_value + ((-1.0f) - fpu_value) * fpu_loss_prop;
