@@ -27,6 +27,8 @@
 #include "alphazero.h"
 #include "alphazero_parallel.h"
 #include "envs/gomoku.h"
+#include "envs/results_before_nn.h"
+#include "vct/skyzero_adapter.h"
 
 using namespace skyzero;
 
@@ -113,6 +115,9 @@ int main(int argc, char** argv) {
         torch::NoGradGuard no_grad;
         c10::InferenceMode im;
 
+        // KataGomo VCFsolver: seed zobrist tables (process-once).
+        skyzero::vct::global_init();
+
         const auto cli = parse_cli(argc, argv);
         const auto cfg_map = parse_cfg(cli.config);
 
@@ -163,6 +168,9 @@ int main(int argc, char** argv) {
         cfg.root_dirichlet_total_concentration =
             cfg_get<float>(cfg_map, "ROOT_DIRICHLET_TOTAL_CONCENTRATION", 10.83f);
         cfg.root_noise_weight = cfg_get<float>(cfg_map, "ROOT_NOISE_WEIGHT", 0.25f);
+        cfg.use_vct = cfg_get_bool(cfg_map, "USE_VCT", false);
+        cfg.vct_max_nodes = cfg_get<int>(cfg_map, "VCT_MAX_NODES", 50000);
+        cfg.use_vct_at_root_only = cfg_get_bool(cfg_map, "USE_VCT_AT_ROOT_ONLY", false);
 
         // Probe-specific simulation budget: PROBE_NUM_SIMULATIONS in run.cfg
         // (falls back to NUM_SIMULATIONS). CLI --num-simulations still wins.
@@ -191,20 +199,10 @@ int main(int argc, char** argv) {
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
         const int board = Gomoku::MAX_BOARD_SIZE;
         const int area = board * board;
-        constexpr int g_dim = 12;
+        constexpr int g_dim = GlobalFeatures::DIM;  // V6: 14
 
-        // V5: derive globals from encoded for forward
-        auto derive_globals = [&](const std::vector<int8_t>& encoded) -> std::array<float, 12> {
-            int ply = 0;
-            for (size_t i = area; i < 3 * static_cast<size_t>(area); ++i) ply += encoded[i];
-            const int to_play = (ply % 2 == 0) ? 1 : -1;
-            auto gf = game.compute_global_features(ply, to_play);
-            std::array<float, 12> out{};
-            for (int i = 0; i < 12; ++i) out[i] = gf.data[i];
-            return out;
-        };
-
-        auto run_forward = [&](const std::vector<std::vector<int8_t>>& batch)
+        auto run_forward = [&](const std::vector<std::vector<int8_t>>& batch,
+                               const std::vector<std::array<float, GlobalFeatures::DIM>>& globals_batch)
                                -> std::vector<std::pair<std::vector<float>, std::array<float, 3>>> {
             const int bsz = static_cast<int>(batch.size());
             std::vector<float> input_buf(static_cast<size_t>(bsz) * c * area, 0.0f);
@@ -218,8 +216,8 @@ int main(int argc, char** argv) {
                 for (int j = 0; j < c * area; ++j) {
                     input_buf[base + j] = static_cast<float>(enc[j]);
                 }
-                auto g = derive_globals(enc);
-                std::memcpy(global_buf.data() + i * g_dim, g.data(), g_dim * sizeof(float));
+                std::memcpy(global_buf.data() + i * g_dim,
+                            globals_batch[i].data(), g_dim * sizeof(float));
             }
             auto input = torch::from_blob(input_buf.data(), {bsz, c, board, board}, torch::kFloat32)
                              .clone().to(device);
@@ -257,12 +255,14 @@ int main(int argc, char** argv) {
             return out;
         };
 
-        auto infer_fn = [&](const std::vector<int8_t>& encoded) {
-            auto r = run_forward({encoded});
+        auto infer_fn = [&](const std::vector<int8_t>& encoded,
+                            const std::array<float, GlobalFeatures::DIM>& globals) {
+            auto r = run_forward({encoded}, {globals});
             return r.front();
         };
-        auto batch_infer_fn = [&](const std::vector<std::vector<int8_t>>& batch) {
-            return run_forward(batch);
+        auto batch_infer_fn = [&](const std::vector<std::vector<int8_t>>& batch,
+                                  const std::vector<std::array<float, GlobalFeatures::DIM>>& globals_batch) {
+            return run_forward(batch, globals_batch);
         };
 
         std::mt19937 rng(std::random_device{}());

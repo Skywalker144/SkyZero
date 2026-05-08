@@ -31,6 +31,8 @@
 
 #include "alphazero_tree_parallel.h"  // transitively provides alphazero.h
 #include "envs/gomoku.h"
+#include "envs/results_before_nn.h"
+#include "vct/skyzero_adapter.h"
 
 using namespace skyzero;
 
@@ -219,6 +221,9 @@ int main(int argc, char** argv) {
         torch::NoGradGuard no_grad;
         c10::InferenceMode im;
 
+        // KataGomo VCFsolver: seed zobrist tables (process-once).
+        skyzero::vct::global_init();
+
         const auto cli = parse_cli(argc, argv);
         const auto cfg_map = parse_cfg(cli.config);
 
@@ -268,6 +273,9 @@ int main(int argc, char** argv) {
         cfg.root_dirichlet_total_concentration =
             cfg_get<float>(cfg_map, "ROOT_DIRICHLET_TOTAL_CONCENTRATION", 10.83f);
         cfg.root_noise_weight = cfg_get<float>(cfg_map, "ROOT_NOISE_WEIGHT", 0.25f);
+        cfg.use_vct = cfg_get_bool(cfg_map, "USE_VCT", false);
+        cfg.vct_max_nodes = cfg_get<int>(cfg_map, "VCT_MAX_NODES", 50000);
+        cfg.use_vct_at_root_only = cfg_get_bool(cfg_map, "USE_VCT_AT_ROOT_ONLY", false);
 
         if (cli.num_simulations_override >= 0) cfg.num_simulations = cli.num_simulations_override;
         if (cli.board_size_override > 0) {
@@ -302,22 +310,15 @@ int main(int argc, char** argv) {
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
         const int board = Gomoku::MAX_BOARD_SIZE;
         const int area = board * board;
-        constexpr int g_dim = 12;
+        constexpr int g_dim = GlobalFeatures::DIM;  // V6: 14
 
-        // V5 helper: derive globals from encoded state (game.rule + ply parity).
-        auto derive_globals = [&](const std::vector<int8_t>& encoded) -> std::array<float, 12> {
-            int ply = 0;
-            for (size_t i = area; i < 3 * static_cast<size_t>(area); ++i) ply += encoded[i];
-            const int to_play = (ply % 2 == 0) ? 1 : -1;
-            auto gf = game.compute_global_features(ply, to_play);
-            std::array<float, 12> out{};
-            for (int i = 0; i < 12; ++i) out[i] = gf.data[i];
-            return out;
-        };
-
-        auto run_forward = [&](const std::vector<std::vector<int8_t>>& batch)
+        auto run_forward = [&](const std::vector<std::vector<int8_t>>& batch,
+                               const std::vector<std::array<float, GlobalFeatures::DIM>>& globals_batch)
                                -> std::vector<std::pair<std::vector<float>, std::array<float, 3>>> {
             const int bsz = static_cast<int>(batch.size());
+            if (static_cast<int>(globals_batch.size()) != bsz) {
+                throw std::runtime_error("globals batch size mismatch");
+            }
             std::vector<float> input_buf(static_cast<size_t>(bsz) * c * area, 0.0f);
             std::vector<float> global_buf(static_cast<size_t>(bsz) * g_dim, 0.0f);
             for (int i = 0; i < bsz; ++i) {
@@ -329,8 +330,8 @@ int main(int argc, char** argv) {
                 for (int j = 0; j < c * area; ++j) {
                     input_buf[base + j] = static_cast<float>(enc[j]);
                 }
-                auto g = derive_globals(enc);
-                std::memcpy(global_buf.data() + i * g_dim, g.data(), g_dim * sizeof(float));
+                std::memcpy(global_buf.data() + i * g_dim,
+                            globals_batch[i].data(), g_dim * sizeof(float));
             }
             auto input = torch::from_blob(input_buf.data(), {bsz, c, board, board}, torch::kFloat32)
                              .clone().to(device);
@@ -369,8 +370,9 @@ int main(int argc, char** argv) {
             return out;
         };
 
-        auto infer_fn = [&](const std::vector<int8_t>& encoded) {
-            auto r = run_forward({encoded});
+        auto infer_fn = [&](const std::vector<int8_t>& encoded,
+                            const std::array<float, GlobalFeatures::DIM>& globals) {
+            auto r = run_forward({encoded}, {globals});
             return r.front();
         };
 
@@ -384,18 +386,19 @@ int main(int argc, char** argv) {
         auto forward_opp_policy = [&](const std::vector<int8_t>& state, int to_play,
                                        std::vector<float>* fp8_out = nullptr,
                                        std::vector<float>* fp32_out = nullptr) {
-            auto encoded = game.encode_state_v5(state, to_play);   // V5
+            // V6: build encoded with plane 5 + globals with VCF dims via
+            // ResultsBeforeNN, matching the MCTS path so opp-policy queries
+            // see the same network input as MCTS' root inference.
+            const auto in = skyzero::prepare_inference_input(
+                game, state, to_play, /*has_vcf=*/cfg.use_vct, cfg.vct_max_nodes);
             std::vector<float> input_buf(static_cast<size_t>(c) * area, 0.0f);
             for (int j = 0; j < c * area; ++j) {
-                input_buf[j] = static_cast<float>(encoded[j]);
+                input_buf[j] = static_cast<float>(in.encoded[j]);
             }
             auto input = torch::from_blob(input_buf.data(), {1, c, board, board}, torch::kFloat32)
                              .clone().to(device);
-            // V5: build globals tensor from state
-            int ply = 0;
-            for (auto v : state) if (v != 0) ++ply;
-            auto gf = game.compute_global_features(ply, to_play);
-            auto global_t = torch::from_blob(gf.data, {1, g_dim}, torch::kFloat32).clone().to(device);
+            std::array<float, GlobalFeatures::DIM> g_arr = in.globals;
+            auto global_t = torch::from_blob(g_arr.data(), {1, g_dim}, torch::kFloat32).clone().to(device);
             if (device.is_cuda()) {
                 input = input.to(torch::kHalf);
                 global_t = global_t.to(torch::kHalf);
@@ -641,9 +644,24 @@ int main(int argc, char** argv) {
                 push_history();
                 std::cout << "AlphaZero thinking...\n";
 
-                const auto out = (cfg.search_algo == SearchAlgo::PUCT)
+                auto out = (cfg.search_algo == SearchAlgo::PUCT)
                     ? mcts.search(state, to_play, cfg.num_simulations, root)
                     : mcts.gumbel_search(state, to_play, cfg.num_simulations, root);
+
+                // VCT root-only override (Pattern 2 fallback).
+                if (cfg.use_vct && cfg.use_vct_at_root_only) {
+                    auto vr = skyzero::vct::solve_vcf(
+                        state, game.board_size, to_play, game.rule, cfg.vct_max_nodes);
+                    if (vr.result == 1 && vr.first_move_canvas >= 0
+                        && vr.first_move_canvas < static_cast<int>(out.mcts_policy.size())) {
+                        std::fill(out.mcts_policy.begin(), out.mcts_policy.end(), 0.0f);
+                        out.mcts_policy[vr.first_move_canvas] = 1.0f;
+                        std::fill(out.visit_counts.begin(), out.visit_counts.end(), 0.0f);
+                        out.visit_counts[vr.first_move_canvas] = 1.0f;
+                        out.v_mix = {1.0f, 0.0f, 0.0f};
+                        out.gumbel_action = vr.first_move_canvas;
+                    }
+                }
                 // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
                 // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
                 // at the boundary, mirroring selfplay_manager.h:577.

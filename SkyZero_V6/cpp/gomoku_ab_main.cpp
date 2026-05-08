@@ -41,6 +41,8 @@
 #include "alphazero.h"
 #include "alphazero_tree_parallel.h"
 #include "envs/gomoku.h"
+#include "envs/results_before_nn.h"
+#include "vct/skyzero_adapter.h"
 
 using namespace skyzero;
 
@@ -143,6 +145,9 @@ static AlphaZeroConfig build_mcts_cfg(
     c.root_dirichlet_total_concentration =
         cfg_get<float>(m, "ROOT_DIRICHLET_TOTAL_CONCENTRATION", 10.83f);
     c.root_noise_weight = cfg_get<float>(m, "ROOT_NOISE_WEIGHT", 0.25f);
+    c.use_vct = cfg_get_bool(m, "USE_VCT", false);
+    c.vct_max_nodes = cfg_get<int>(m, "VCT_MAX_NODES", 50000);
+    c.use_vct_at_root_only = cfg_get_bool(m, "USE_VCT_AT_ROOT_ONLY", false);
 
     c.device = device;
     return c;
@@ -232,9 +237,11 @@ public:
     BatchedInferenceServer(const BatchedInferenceServer&) = delete;
     BatchedInferenceServer& operator=(const BatchedInferenceServer&) = delete;
 
-    Output infer(const std::vector<int8_t>& encoded) {
+    Output infer(const std::vector<int8_t>& encoded,
+                 const std::array<float, GlobalFeatures::DIM>& globals) {
         auto req = std::make_unique<Request>();
         req->encoded = encoded;
+        req->globals = globals;
         auto fut = req->p.get_future();
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -244,14 +251,16 @@ public:
         return fut.get();
     }
 
-    std::vector<Output> infer_batch(const std::vector<std::vector<int8_t>>& batch) {
+    std::vector<Output> infer_batch(const std::vector<std::vector<int8_t>>& batch,
+                                    const std::vector<std::array<float, GlobalFeatures::DIM>>& globals_batch) {
         std::vector<std::future<Output>> futs;
         futs.reserve(batch.size());
         {
             std::lock_guard<std::mutex> lk(mu_);
-            for (const auto& enc : batch) {
+            for (size_t i = 0; i < batch.size(); ++i) {
                 auto req = std::make_unique<Request>();
-                req->encoded = enc;
+                req->encoded = batch[i];
+                req->globals = globals_batch[i];
                 futs.push_back(req->p.get_future());
                 queue_.push_back(std::move(req));
             }
@@ -266,6 +275,7 @@ public:
 private:
     struct Request {
         std::vector<int8_t> encoded;
+        std::array<float, GlobalFeatures::DIM> globals{};
         std::promise<Output> p;
     };
 
@@ -310,7 +320,7 @@ private:
 
     void run_forward(std::vector<std::unique_ptr<Request>>& batch) {
         const int bsz = static_cast<int>(batch.size());
-        constexpr int g_dim = 12;
+        constexpr int g_dim = GlobalFeatures::DIM;  // V6: 14
         std::vector<float> input_buf(static_cast<size_t>(bsz) * c_ * area_, 0.0f);
         std::vector<float> global_buf(static_cast<size_t>(bsz) * g_dim, 0.0f);
         for (int i = 0; i < bsz; ++i) {
@@ -322,14 +332,9 @@ private:
             for (int j = 0; j < c_ * area_; ++j) {
                 input_buf[base + j] = static_cast<float>(enc[j]);
             }
-            // V5: derive globals from encoded (ply via own+opp planes, to_play parity).
-            if (game_) {
-                int ply = 0;
-                for (size_t j = area_; j < 3 * static_cast<size_t>(area_); ++j) ply += enc[j];
-                const int to_play = (ply % 2 == 0) ? 1 : -1;
-                auto gf = game_->compute_global_features(ply, to_play);
-                std::memcpy(global_buf.data() + i * g_dim, gf.data, g_dim * sizeof(float));
-            }
+            // V6: globals supplied by caller via prepare_inference_input.
+            std::memcpy(global_buf.data() + i * g_dim,
+                        batch[i]->globals.data(), g_dim * sizeof(float));
         }
         auto input = torch::from_blob(input_buf.data(), {bsz, c_, board_, board_},
                                       torch::kFloat32)
@@ -396,6 +401,9 @@ int main(int argc, char** argv) {
         torch::NoGradGuard no_grad;
         c10::InferenceMode im;
 
+        // KataGomo VCFsolver: seed zobrist tables (process-once).
+        skyzero::vct::global_init();
+
         const auto cli = parse_cli(argc, argv);
         const auto cfg_ab_map = parse_cfg(cli.config_ab);
         const auto cfg_a_map  = parse_cfg(cli.config_a);
@@ -440,7 +448,10 @@ int main(int argc, char** argv) {
         BatchedInferenceServer server(h.get(), device, c, board, infer_batch,
                                       infer_wait_us, &game);
 
-        auto infer = [&](const std::vector<int8_t>& e) { return server.infer(e); };
+        auto infer = [&](const std::vector<int8_t>& e,
+                         const std::array<float, GlobalFeatures::DIM>& g) {
+            return server.infer(e, g);
+        };
 
         const uint64_t seed = cli.seed_set ? cli.seed : std::random_device{}();
 
@@ -498,9 +509,24 @@ int main(int argc, char** argv) {
                         root.reset(new MCTSNode{state, to_play});
                         const int sims = a_to_move ? cfg_a.num_simulations : cfg_b.num_simulations;
                         const auto& engine_cfg = a_to_move ? cfg_a : cfg_b;
-                        const auto res = (engine_cfg.search_algo == SearchAlgo::PUCT)
+                        auto res = (engine_cfg.search_algo == SearchAlgo::PUCT)
                             ? mcts.search(state, to_play, sims, root)
                             : mcts.gumbel_search(state, to_play, sims, root);
+
+                        // VCT root-only override (uses the active engine cfg).
+                        if (engine_cfg.use_vct && engine_cfg.use_vct_at_root_only) {
+                            auto vr = skyzero::vct::solve_vcf(
+                                state, game.board_size, to_play, game.rule, engine_cfg.vct_max_nodes);
+                            if (vr.result == 1 && vr.first_move_canvas >= 0
+                                && vr.first_move_canvas < static_cast<int>(res.mcts_policy.size())) {
+                                std::fill(res.mcts_policy.begin(), res.mcts_policy.end(), 0.0f);
+                                res.mcts_policy[vr.first_move_canvas] = 1.0f;
+                                std::fill(res.visit_counts.begin(), res.visit_counts.end(), 0.0f);
+                                res.visit_counts[vr.first_move_canvas] = 1.0f;
+                                res.v_mix = {1.0f, 0.0f, 0.0f};
+                                res.gumbel_action = vr.first_move_canvas;
+                            }
+                        }
                         // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
                         // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
                         // at the boundary, mirroring gomoku_elo_main.cpp.
