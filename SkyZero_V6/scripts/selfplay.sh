@@ -33,16 +33,19 @@ if [[ -z "${INFERENCE_SERVER_DEVICES:-}" ]]; then
     export INFERENCE_SERVER_DEVICES="$devices"
 fi
 
-# Per-iter warmup for NUM_SIMULATIONS. Falls back to cfg's NUM_SIMULATIONS
-# when NUM_SIMULATIONS_STAGES has < 2 entries (warmup disabled).
-NSIM=$( cd "$ROOT/python" && "$PY" warmup.py num-simulations --data-dir "$DATA_DIR" )
+# Per-iter warmup for full-search and cheap-search visits. Both ramps share
+# NUM_SIM_WARMUP_SAMPLES (KataGo paper schedule). Falls back to cfg values
+# when the corresponding _STAGES list has < 2 entries (warmup disabled).
+NSIM=$(  cd "$ROOT/python" && "$PY" warmup.py num-simulations      --data-dir "$DATA_DIR" )
+CHEAP=$( cd "$ROOT/python" && "$PY" warmup.py cheap-search-visits --data-dir "$DATA_DIR" )
 
-echo "[selfplay.sh] iter=$iter games=$games num_simulations=$NSIM main_gpu=$MAIN_GPU devices=${INFERENCE_SERVER_DEVICES}"
+echo "[selfplay.sh] iter=$iter games=$games num_simulations=$NSIM cheap_visits=$CHEAP main_gpu=$MAIN_GPU devices=${INFERENCE_SERVER_DEVICES}"
 "$SELFPLAY_BIN" \
     --model "$DATA_DIR/models/latest.pt" \
     --output-dir "$DATA_DIR/selfplay" \
     --iter "$iter" \
     --max-games "$games" \
     --num-simulations "$NSIM" \
+    --cheap-search-visits "$CHEAP" \
     --config "$SCRIPT_DIR/run.cfg" \
     --log-dir "$DATA_DIR/logs"
