@@ -126,7 +126,13 @@
         <div class="card settings-card">
           <div class="card-body">
             <div class="settings-group">
-              <div class="settings-group-title" data-i18n="settings_group_game">对局</div>
+              <div class="settings-group-title">
+                <span data-i18n="settings_group_game">对局</span>
+                <button class="btn btn--mini" id="edit_btn">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 1.5l3 3-9 9H2.5v-3z"/></svg>
+                  <span data-i18n="btn_edit_position">编辑棋形</span>
+                </button>
+              </div>
 
               <div class="settings-row">
                 <span class="settings-label" data-i18n="label_model">模型</span>
@@ -192,10 +198,6 @@
         <div class="board-actions" id="play_actions">
           <button class="btn primary" id="new_btn" data-i18n="btn_new_game">新对局</button>
           <button class="btn danger-ghost" id="undo_btn" data-i18n="btn_undo">悔棋</button>
-          <button class="btn" id="edit_btn">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 1.5l3 3-9 9H2.5v-3z"/></svg>
-            <span data-i18n="btn_edit_position">编辑棋形</span>
-          </button>
         </div>
         <div class="board-actions edit-toolbar" id="edit_toolbar">
           <div class="seg-row edit-tools" id="edit_tool_seg" role="group" data-i18n-aria="aria_edit_tool" aria-label="编辑工具">

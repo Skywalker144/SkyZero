@@ -296,9 +296,11 @@
     height: 34px; font-size: 13px; padding: 0 10px;
   }
   /* SVG inside the edit button + erase tool button has no intrinsic size,
-     so browsers default to 300×150 and blow out the button. Match the
-     existing topbar / settings convention of 14×14 icons. */
-  #edit_btn svg,
+     so browsers default to 300×150 and blow out the button. */
+  #edit_btn svg {
+    width: 12px; height: 12px;
+    display: block; flex-shrink: 0;
+  }
   .edit-toolbar .seg-btn svg {
     width: 14px; height: 14px;
     display: block; flex-shrink: 0;
@@ -395,6 +397,15 @@
   .btn.danger-ghost { color: var(--fg-muted); }
   .btn.danger-ghost:hover { color: var(--danger); border-color: var(--danger); }
   .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  /* Compact button for inline placement inside settings group titles, where
+     vertical budget is dictated by the 14px title text. Reset uppercase /
+     letter-spacing inherited from the title. */
+  .btn--mini {
+    height: 22px; padding: 0 8px; font-size: 11.5px;
+    gap: 4px; border-radius: 6px;
+    text-transform: none; letter-spacing: 0;
+  }
+  .settings-group-title .btn--mini { margin-left: auto; }
 
   /* ---------- Toggle ---------- */
   .toggle {
