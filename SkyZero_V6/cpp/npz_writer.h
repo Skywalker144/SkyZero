@@ -6,7 +6,7 @@
 //
 // Schema written per flush (V5):
 //   state                   (N, num_planes, H, W)        int8     (V5: NUM_SPATIAL_PLANES_V5 × MAX_BOARD_SIZE × MAX_BOARD_SIZE)
-//   global_features         (N, num_global_features)     float32  (V5: 12-dim)
+//   global_features         (N, num_global_features)     float32  (V6: 14-dim — rule one-hot + ply + VCF + PDA)
 //   policy_target           (N, H*W)                     float32
 //   opponent_policy_target  (N, H*W)                     float32
 //   opponent_policy_mask    (N,)                         float32
@@ -101,7 +101,7 @@ public:
         int num_planes,
         int max_rows_per_file,
         int max_pending_jobs = 4,
-        int num_global_features = 12,
+        int num_global_features = 14,
         int state_row_override = -1   // V5: overrides num_planes*board_size² when state is padded to MAX
     )
         : output_dir_(std::move(output_dir)),

@@ -31,7 +31,7 @@ namespace skyzero {
 // ---------------------------------------------------------------------------
 struct TrainSample {
     std::vector<int8_t> state;                              // V5: NUM_SPATIAL_PLANES_V5 * MAX_AREA int8
-    std::array<float, 12> global_features{};                // V5: rule one-hot etc.
+    std::array<float, 14> global_features{};                // V5: rule one-hot etc.
     int8_t to_play = 1;
     std::vector<float> policy_target;
     std::vector<float> opponent_policy_target;
@@ -47,7 +47,7 @@ struct TrainSample {
 // ---------------------------------------------------------------------------
 struct PolicySurpriseSample {
     std::vector<int8_t> state;
-    std::array<float, 12> global_features{};                // V5
+    std::array<float, 14> global_features{};                // V5
     int8_t to_play = 1;
 
     std::vector<float> policy_target;
@@ -124,6 +124,12 @@ inline float compute_kl_divergence(
     return std::max(0.0f, kl);
 }
 
+// KataGomo play.cpp:1560-1631 line-for-line port. The (1-w) * max(0, ps - threshold)
+// rescue term in p_prob_values handles PCR cheap rows correctly: a cheap step
+// with sample_weight=0 contributes 0 to sum_weights / averages but can still
+// receive non-zero training weight if its policy surprise exceeds 1.5×
+// avg(over full-search rows). Same for soft-resign-reduced rows (w<1). No
+// PCR-specific code path is needed — wired purely through sample_weight.
 inline std::vector<float> compute_policy_surprise_weights(
     const std::vector<PolicySurpriseSample>& game_data,
     float policy_surprise_data_weight = 0.5f,
