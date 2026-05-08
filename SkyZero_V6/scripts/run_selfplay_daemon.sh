@@ -55,25 +55,34 @@ if [[ -z "${SELFPLAY_DAEMON_GPUS:-}" ]]; then
     SELFPLAY_DAEMON_GPUS="$gpus"
 fi
 
-# Daemon's server / worker counts default to the main keys.
-DSV="${DAEMON_NUM_INFERENCE_SERVERS:-${NUM_INFERENCE_SERVERS:-2}}"
-DWK="${DAEMON_NUM_WORKERS:-${NUM_WORKERS:-32}}"
+# NUM_INFERENCE_SERVERS / NUM_WORKERS are per-GPU (matches selfplay.sh, which
+# pins N servers + N workers' worth of work to MAIN_GPU). Daemon scales both
+# linearly with n_spare_gpus.
+DSV_PER_GPU="${DAEMON_NUM_INFERENCE_SERVERS:-${NUM_INFERENCE_SERVERS:-2}}"
+DWK_PER_GPU="${DAEMON_NUM_WORKERS:-${NUM_WORKERS:-32}}"
+N_SPARE=$("$PY" -c "
+gpus = '$SELFPLAY_DAEMON_GPUS'.split(',')
+print(len([g for g in gpus if g.strip() != '']))
+")
+DWK_TOTAL=$(( DWK_PER_GPU * N_SPARE ))
 
-# Round-robin INFERENCE_SERVER_DEVICES across SELFPLAY_DAEMON_GPUS.
+# Build INFERENCE_SERVER_DEVICES as "g0,g0,...,g1,g1,..." (per_gpu copies of
+# each spare GPU). Total servers = per_gpu × n_spare_gpus.
 INFERENCE_SERVER_DEVICES=$("$PY" -c "
 gpus = '$SELFPLAY_DAEMON_GPUS'.split(',')
 gpus = [g for g in gpus if g.strip() != '']
-n = $DSV
-print(','.join(gpus[i % len(gpus)] for i in range(n)))
+per = $DSV_PER_GPU
+print(','.join(g for g in gpus for _ in range(per)))
 ")
+DSV_TOTAL=$("$PY" -c "print(len('$INFERENCE_SERVER_DEVICES'.split(',')))")
 export INFERENCE_SERVER_DEVICES
-export NUM_INFERENCE_SERVERS="$DSV"
-export NUM_WORKERS="$DWK"
+export NUM_INFERENCE_SERVERS="$DSV_TOTAL"
+export NUM_WORKERS="$DWK_TOTAL"
 
 POLL_MS="${DAEMON_RELOAD_POLL_MS:-2000}"
 STATS="$DATA_DIR/logs/daemon_stats.tsv"
 
-echo "[daemon-watchdog] gpus=$SELFPLAY_DAEMON_GPUS servers=$DSV workers=$DWK devices=$INFERENCE_SERVER_DEVICES"
+echo "[daemon-watchdog] gpus=$SELFPLAY_DAEMON_GPUS per_gpu(servers/workers)=$DSV_PER_GPU/$DWK_PER_GPU total=$DSV_TOTAL/$DWK_TOTAL devices=$INFERENCE_SERVER_DEVICES"
 echo "[daemon-watchdog] poll_ms=$POLL_MS stats=$STATS"
 
 while true; do
