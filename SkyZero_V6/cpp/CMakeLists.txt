@@ -61,6 +61,49 @@ endif()
 # --- Threads -------------------------------------------------------------
 find_package(Threads REQUIRED)
 
+# --- vct static lib (KataGomo VCFsolver port) ----------------------------
+# Tactical solver lifted from KataGomo cpp/vcfsolver/. Self-contained except
+# for std::mutex (Threads). No torch dependency.
+add_library(vct STATIC
+    vct/vcf_hash_table.cpp
+    vct/vcf_solver.cpp
+    vct/skyzero_adapter.cpp
+)
+target_include_directories(vct PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(vct PUBLIC Threads::Threads)
+target_compile_options(vct PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable -Wno-sign-compare -Wno-unused-but-set-variable)
+set_property(TARGET vct PROPERTY CXX_EXTENSIONS OFF)
+
+# vct unit tests.
+add_executable(vct_test tests/vct_test.cpp)
+target_include_directories(vct_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(vct_test PRIVATE vct Threads::Threads)
+target_compile_options(vct_test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET vct_test PROPERTY CXX_EXTENSIONS OFF)
+
+# fork_pool unit tests.
+add_executable(fork_pool_test tests/fork_pool_test.cpp)
+target_include_directories(fork_pool_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(fork_pool_test PRIVATE Threads::Threads)
+target_compile_options(fork_pool_test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET fork_pool_test PROPERTY CXX_EXTENSIONS OFF)
+
+# ResultsBeforeNN unit tests (envs/results_before_nn.h).
+add_executable(test_results_before_nn tests/test_results_before_nn.cpp)
+target_include_directories(test_results_before_nn PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test_results_before_nn PRIVATE vct Threads::Threads)
+target_compile_options(test_results_before_nn PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET test_results_before_nn PROPERTY CXX_EXTENSIONS OFF)
+
+# PDA factor unit tests. alphazero.h includes <torch/torch.h> for
+# AlphaZeroConfig::device, so we link against torch even though the
+# tested code is pure math.
+add_executable(test_pda_factor tests/test_pda_factor.cpp)
+target_include_directories(test_pda_factor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(test_pda_factor PRIVATE ${TORCH_LIBRARIES} Threads::Threads)
+target_compile_options(test_pda_factor PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET test_pda_factor PROPERTY CXX_EXTENSIONS OFF)
+
 # --- selfplay binary -----------------------------------------------------
 add_executable(selfplay_main selfplay_main.cpp)
 target_include_directories(selfplay_main PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -68,6 +111,7 @@ target_link_libraries(selfplay_main PRIVATE
     ${TORCH_LIBRARIES}
     libzip::zip
     Threads::Threads
+    vct
 )
 target_compile_options(selfplay_main PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
@@ -82,6 +126,7 @@ target_include_directories(mcts_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mcts_probe PRIVATE
     ${TORCH_LIBRARIES}
     Threads::Threads
+    vct
 )
 target_compile_options(mcts_probe PRIVATE -Wall -Wextra -Wno-unused-parameter)
 set_property(TARGET mcts_probe PROPERTY CXX_EXTENSIONS OFF)
@@ -94,6 +139,7 @@ target_include_directories(gomoku_play PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(gomoku_play PRIVATE
     ${TORCH_LIBRARIES}
     Threads::Threads
+    vct
 )
 target_compile_options(gomoku_play PRIVATE -Wall -Wextra -Wno-unused-parameter)
 set_property(TARGET gomoku_play PROPERTY CXX_EXTENSIONS OFF)
@@ -106,6 +152,7 @@ target_include_directories(gomoku_elo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(gomoku_elo PRIVATE
     ${TORCH_LIBRARIES}
     Threads::Threads
+    vct
 )
 target_compile_options(gomoku_elo PRIVATE -Wall -Wextra -Wno-unused-parameter)
 set_property(TARGET gomoku_elo PROPERTY CXX_EXTENSIONS OFF)
@@ -119,6 +166,7 @@ target_include_directories(gomoku_ab PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(gomoku_ab PRIVATE
     ${TORCH_LIBRARIES}
     Threads::Threads
+    vct
 )
 target_compile_options(gomoku_ab PRIVATE -Wall -Wextra -Wno-unused-parameter)
 set_property(TARGET gomoku_ab PROPERTY CXX_EXTENSIONS OFF)
