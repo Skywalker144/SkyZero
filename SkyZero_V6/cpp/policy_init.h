@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "alphazero.h"
+#include "envs/results_before_nn.h"
 #include "utils.h"
 
 namespace skyzero {
@@ -31,10 +32,16 @@ template <typename Game>
 class PolicyInit {
 public:
     using InferenceFn = std::function<
-        std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
+        std::pair<std::vector<float>, std::array<float, 3>>(
+            const std::vector<int8_t>&,
+            const std::array<float, GlobalFeatures::DIM>&
+        )>;
 
     PolicyInit(const Game& game, InferenceFn infer_fn, const AlphaZeroConfig& cfg, uint64_t seed)
         : game_(game), infer_fn_(std::move(infer_fn)), cfg_(cfg), rng_(seed) {}
+
+    // Optional KataGomo PDA per-game state.
+    void set_pda_state(const PdaState* pda) { pda_state_ = pda; }
 
     // Plays ~Exp(1)*avg_move_num policy-sampled moves on `state`/`to_play`,
     // minus 2x the number of stones already on the board (mirrors KataGomo's
@@ -71,8 +78,15 @@ private:
     // positive policy. NN is canvas-native, so logits / probs / legal mask are
     // all size MAX_AREA — no remapping needed at the boundary.
     int sample_policy_move(const std::vector<int8_t>& state, int to_play, double temperature) {
-        const auto encoded = game_.encode_state_v5(state, to_play);   // V5: canvas-padded
-        auto res = infer_fn_(encoded);
+        const auto pda = pda_signed_active(pda_state_, to_play);
+        const auto in = prepare_inference_input(
+            game_, state, to_play, /*has_vcf=*/cfg_.use_vct, cfg_.vct_max_nodes,
+            pda.first, pda.second);
+        // Forced-win short-circuit: skip the NN entirely and play the unique
+        // forced move. KataGomo policy-init has no equivalent, but skipping
+        // the NN here is strictly free (right answer, no compute cost).
+        if (in.vct_winning_canvas >= 0) return in.vct_winning_canvas;
+        auto res = infer_fn_(in.encoded, in.globals);
         std::vector<float> logits = std::move(res.first);
 
         const int area = Game::MAX_AREA;
@@ -120,6 +134,7 @@ private:
     const Game& game_;
     InferenceFn infer_fn_;
     const AlphaZeroConfig& cfg_;
+    const PdaState* pda_state_ = nullptr;
     std::mt19937 rng_;
 };
 

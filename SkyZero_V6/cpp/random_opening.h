@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "alphazero.h"
+#include "envs/results_before_nn.h"
 
 namespace skyzero {
 
@@ -29,7 +30,10 @@ template <typename Game>
 class RandomOpening {
 public:
     using InferenceFn = std::function<
-        std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
+        std::pair<std::vector<float>, std::array<float, 3>>(
+            const std::vector<int8_t>&,
+            const std::array<float, GlobalFeatures::DIM>&
+        )>;
 
     // Single-judge constructor (selfplay): one network evaluates everything.
     RandomOpening(const Game& game, InferenceFn infer_fn, const AlphaZeroConfig& cfg, uint64_t seed)
@@ -53,6 +57,11 @@ public:
           cfg_(cfg),
           rng_(seed) {}
 
+    // Optional KataGomo PDA per-game state. Globals dims 12-13 fill from this
+    // during balanced-opening NN judgments so the network sees the same input
+    // format as the in-game MCTS.
+    void set_pda_state(const PdaState* pda) { pda_state_ = pda; }
+
     // Overwrites `state` and `to_play` with a balanced-opening start position.
     void initialize(std::vector<int8_t>& state, int& to_play) {
         double reject_prob = cfg_.balanced_opening_reject_prob;
@@ -75,8 +84,15 @@ private:
     // WDL-utility from `next_player`'s perspective: positive → next_player
     // is winning, |value| near 0 → balanced.
     double board_value(const std::vector<int8_t>& state, int next_player) const {
-        const auto encoded = game_.encode_state_v5(state, next_player);   // V5
-        auto res = current_judge()(encoded);
+        // RandomOpening pre-search judge call: balanced opening only inspects
+        // value, so a forced-win short-circuit gives the right answer (+1 for
+        // next_player) without the NN. Otherwise feed (encoded, globals).
+        const auto pda = pda_signed_active(pda_state_, next_player);
+        const auto in = prepare_inference_input(
+            game_, state, next_player, /*has_vcf=*/cfg_.use_vct,
+            cfg_.vct_max_nodes, pda.first, pda.second);
+        if (in.vct_winning_canvas >= 0) return 1.0;
+        auto res = current_judge()(in.encoded, in.globals);
         const auto& v = res.second;
         return static_cast<double>(v[0]) - static_cast<double>(v[2]);
     }
@@ -290,6 +306,7 @@ private:
     const Game& game_;
     InferenceFn infer_fn_;
     InferenceFn infer_fn_b_;
+    const PdaState* pda_state_ = nullptr;   // optional
     bool have_two_judges_;
     bool current_is_b_ = false;
     const AlphaZeroConfig& cfg_;
