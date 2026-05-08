@@ -295,6 +295,17 @@
   .edit-toolbar .edit-tools .seg-btn {
     height: 34px; font-size: 13px; padding: 0 10px;
   }
+  /* Three action buttons (undo / done / cancel) share the bottom row.
+     Tighter padding keeps the row roughly as wide as the previous two-button
+     layout while still fitting two-character Chinese / short English labels. */
+  .edit-toolbar #edit_undo_btn,
+  .edit-toolbar #edit_done_btn,
+  .edit-toolbar #edit_cancel_btn {
+    padding: 0 8px;
+  }
+  .edit-toolbar #edit_undo_btn[disabled] {
+    opacity: 0.5; cursor: not-allowed;
+  }
   /* SVG inside the edit button + erase tool button has no intrinsic size,
      so browsers default to 300×150 and blow out the button. */
   #edit_btn svg {
