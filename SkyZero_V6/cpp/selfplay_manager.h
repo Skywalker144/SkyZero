@@ -29,11 +29,14 @@
 
 #include "alphazero.h"
 #include "alphazero_parallel.h"
+#include "envs/results_before_nn.h"
+#include "fork_pool.h"
 #include "game_initializer.h"
 #include "policy_init.h"
 #include "policy_surprise_weighting.h"
 #include "random_opening.h"
 #include "utils.h"
+#include "vct/skyzero_adapter.h"
 
 namespace skyzero {
 
@@ -50,6 +53,8 @@ public:
         int initial_to_play = 1;                    // side to move after opening setup
         int board_size = 0;                         // per-game board size (canvas-aware consumers)
         RuleType rule = RuleType::RENJU;            // per-game rule
+        bool from_fork = false;                     // game started from fork pool entry (stats only)
+        int cheap_steps = 0;                        // # of moves where PCR cheap path was taken (stats only)
     };
 
     SelfplayEngine(
@@ -59,7 +64,8 @@ public:
         const std::string& model_path,
         std::vector<torch::Device> devices
     )
-        : game_init_(game_init), cfg_(cfg), pcfg_(pcfg), devices_(std::move(devices)) {
+        : game_init_(game_init), cfg_(cfg), pcfg_(pcfg), devices_(std::move(devices)),
+          fork_pool_(static_cast<size_t>(std::max(0, cfg.fork_pool_cap))) {
         const int num_servers = std::max(1, pcfg_.num_inference_servers);
         if (static_cast<int>(devices_.size()) != num_servers) {
             throw std::runtime_error(
@@ -183,33 +189,24 @@ private:
     // ---- Inference request plumbing (V5) ----
     struct InferenceRequest {
         std::vector<int8_t> encoded;                   // V5: NUM_SPATIAL_PLANES_V5 * MAX_AREA int8
-        std::array<float, 12> globals{};               // V5: 12-dim global features
+        std::array<float, 14> globals{};               // V6: 14-dim global features (was V5 12-dim; added VCF + PDA)
         std::promise<std::pair<std::vector<float>, std::array<float, 3>>> promise;
     };
 
-    // V5: derive globals from encoded state given the *per-game* Game ref.
-    // Static so the worker thread can pass its own per-game `game_` (each
-    // self-play game has its own rule / board_size / forbidden_plane).
-    // V5 plane layout: 0=mask, 1=own, 2=opp, 3=fb_b, 4=fb_w. ply is recovered
-    // from total stones on planes 1+2 (own + opp), which is mask-correct
-    // because off-board cells are 0 there.
-    static std::array<float, 12> derive_globals_from_encoded(
-        const Game& g, const std::vector<int8_t>& encoded
-    ) {
-        constexpr int A = Game::MAX_AREA;
-        int ply = 0;
-        for (size_t i = A; i < 3 * static_cast<size_t>(A); ++i) ply += encoded[i];
-        const int to_play = (ply % 2 == 0) ? 1 : -1;
-        auto gf = g.compute_global_features(ply, to_play);
-        std::array<float, 12> out{};
-        for (int i = 0; i < 12; ++i) out[i] = gf.data[i];
-        return out;
-    }
+    // V6 NN-forward request plumbing. Globals (14-dim KataGo linear_global
+    // input including VCF + PDA) are computed by the caller via
+    // prepare_inference_input(game, state, to_play, ...) — see
+    // envs/results_before_nn.h. The lambda just hands the bundle to the
+    // inference server. The previous derive_globals_from_encoded helper was
+    // removed in Phase B because reconstructing (state, to_play) from the
+    // encoded planes meant we'd have to re-run ResultsBeforeNN on every NN
+    // forward — building it once at the call site is cheaper and keeps
+    // train-time globals consistent with inference-time globals.
 
     // Caller (worker thread) has computed globals using its per-game Game.
     std::pair<std::vector<float>, std::array<float, 3>> request_inference(
         const std::vector<int8_t>& encoded,
-        const std::array<float, 12>& globals
+        const std::array<float, 14>& globals
     ) {
         auto req = std::unique_ptr<InferenceRequest>(new InferenceRequest{});
         req->encoded = encoded;
@@ -226,7 +223,7 @@ private:
     std::vector<std::pair<std::vector<float>, std::array<float, 3>>>
     request_batch_inference(
         const std::vector<std::vector<int8_t>>& encoded_batch,
-        const std::vector<std::array<float, 12>>& globals_batch
+        const std::vector<std::array<float, 14>>& globals_batch
     ) {
         std::vector<std::future<std::pair<std::vector<float>, std::array<float, 3>>>> futures;
         futures.reserve(encoded_batch.size());
@@ -256,7 +253,7 @@ private:
         const int c = Game::NUM_SPATIAL_PLANES_V5;
         const int board = Game::MAX_BOARD_SIZE;
         const int area = board * board;
-        constexpr int g_dim = 12;                      // num_global_features
+        constexpr int g_dim = GlobalFeatures::DIM;  // num_global_features (V6: 14)
         const int max_batch = std::max(1, pcfg_.inference_batch_size);
         const torch::Device device = devices_[server_idx];
         const bool on_cuda = device.is_cuda();
@@ -419,23 +416,38 @@ private:
         Game& game_ = game;
 
         std::mt19937 worker_rng(seed);
-        // The lambdas capture the per-game Game by reference so each request's
-        // global-feature one-hot (rule + ply) reflects this game's rule, not a
-        // shared one. Inference server itself is rule-agnostic.
-        auto infer_fn = [this, &game_](const std::vector<int8_t>& encoded) {
-            const auto globals = derive_globals_from_encoded(game_, encoded);
+
+        // KataGomo PDA per-game roll (program/play.cpp:427-440).
+        // Coin-flip whether to enable PDA this game; if so, sample doublings
+        // ∈ [0, log2(max_ratio)] uniformly and pick which side gets the
+        // advantage uniformly. The 2f/(f+1) per-move redistribution below
+        // gives the disfavored side `2/(f+1)` of the budget and the favored
+        // side `2f/(f+1)`, with f = 2^abs_doublings.
+        PdaState pda;
+        if (cfg_.pda_normal_prob > 0.0f) {
+            std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+            if (u01(worker_rng) < cfg_.pda_normal_prob) {
+                const double max_doublings = std::log2(std::max(1.0001f, cfg_.pda_max_ratio));
+                pda.abs_doublings =
+                    std::uniform_real_distribution<double>(0.0, max_doublings)(worker_rng);
+                pda.side = (u01(worker_rng) < 0.5f) ? +1 : -1;
+            }
+        }
+        // V6 lambdas: pure forwarding — caller has already built globals via
+        // prepare_inference_input() against the per-game `game_`. Worker
+        // threads share the inference server (rule-agnostic), so the
+        // per-game rule / size / VCF / PDA context lives on the caller side.
+        auto infer_fn = [this](const std::vector<int8_t>& encoded,
+                               const std::array<float, 14>& globals) {
             return request_inference(encoded, globals);
         };
-        auto batch_infer_fn = [this, &game_](const std::vector<std::vector<int8_t>>& batch) {
-            std::vector<std::array<float, 12>> globals_batch;
-            globals_batch.reserve(batch.size());
-            for (const auto& enc : batch) {
-                globals_batch.push_back(derive_globals_from_encoded(game_, enc));
-            }
+        auto batch_infer_fn = [this](const std::vector<std::vector<int8_t>>& batch,
+                                     const std::vector<std::array<float, 14>>& globals_batch) {
             return request_batch_inference(batch, globals_batch);
         };
         ParallelMCTS<Game> mcts(
             game_, cfg_, pcfg_.leaf_batch_size, infer_fn, batch_infer_fn, worker_rng());
+        mcts.set_pda_state(&pda);
         const bool reuse_enabled = cfg_.enable_tree_reuse;
 
         std::vector<MemoryStep> memory;
@@ -444,12 +456,63 @@ private:
         int to_play = init.to_play;
 
         bool used_balanced_opening = false;
+        bool from_fork = false;
         {
             std::uniform_real_distribution<float> u01(0.0f, 1.0f);
-            if (u01(worker_rng) < cfg_.balance_opening_prob) {
-                RandomOpening<Game> ro(game_, infer_fn, cfg_, worker_rng());
-                ro.initialize(state, to_play);
-                used_balanced_opening = true;
+            // Section A (docs/v6_fork_pool_design.md): try fork-load first.
+            // On hit, skip both balanced-opening and policy-init: the loaded
+            // mid-game position is already off the balance plateau.
+            if (cfg_.fork_load_prob > 0.0f && u01(worker_rng) < cfg_.fork_load_prob) {
+                std::vector<int8_t> loaded;
+                int loaded_pla = 0;
+                if (fork_pool_.try_load(game_.board_size, game_.rule, worker_rng, loaded, loaded_pla)) {
+                    state = std::move(loaded);
+                    to_play = loaded_pla;
+                    from_fork = true;
+                }
+            }
+            if (!from_fork) {
+                if (u01(worker_rng) < cfg_.balance_opening_prob) {
+                    RandomOpening<Game> ro(game_, infer_fn, cfg_, worker_rng());
+                    ro.set_pda_state(&pda);
+                    ro.initialize(state, to_play);
+                    used_balanced_opening = true;
+                }
+            }
+        }
+
+        // Section B (docs/v6_fork_pool_design.md): optional top-K policy
+        // deviation right after a fork-load to inject extra trajectory
+        // divergence. fork_random_top_k=0 disables.
+        if (from_fork && cfg_.fork_random_top_k > 0) {
+            const auto pda_pair = pda_signed_active(&pda, to_play);
+            const auto in = prepare_inference_input(
+                game_, state, to_play, /*has_vcf=*/cfg_.use_vct, cfg_.vct_max_nodes,
+                pda_pair.first, pda_pair.second);
+            auto pair = infer_fn(in.encoded, in.globals);
+            const auto& logits = pair.first;
+            const auto legal = game_.get_is_legal_actions_canvas(state, to_play);
+            std::vector<std::pair<float, int>> by_logit;
+            by_logit.reserve(logits.size());
+            for (int a = 0; a < static_cast<int>(logits.size()); ++a) {
+                if (a < static_cast<int>(legal.size()) && legal[a]) {
+                    by_logit.emplace_back(logits[a], a);
+                }
+            }
+            if (!by_logit.empty()) {
+                const int k = std::min(
+                    cfg_.fork_random_top_k, static_cast<int>(by_logit.size()));
+                std::partial_sort(
+                    by_logit.begin(), by_logit.begin() + k, by_logit.end(),
+                    [](const auto& a, const auto& b) { return a.first > b.first; });
+                std::uniform_int_distribution<int> pick(0, k - 1);
+                const int canvas_action = by_logit[pick(worker_rng)].second;
+                const int board_action = Game::canvas_pos_to_loc(canvas_action, game_.board_size);
+                if (board_action >= 0
+                    && !game_.is_terminal_canvas(state, canvas_action, to_play)) {
+                    state = game_.get_next_state_canvas(state, canvas_action, to_play);
+                    to_play = -to_play;
+                }
             }
         }
 
@@ -457,9 +520,12 @@ private:
         // opening, play a few extra policy-sampled moves to shake the position
         // off the "both sides look balanced" plateau. If the sampled trajectory
         // ends the game, drop this game and produce an empty result — consistent
-        // with how a balanced_opening terminal would be handled.
-        if (cfg_.policy_init_avg_move_num > 0.0f) {
+        // with how a balanced_opening terminal would be handled. Skip when the
+        // game came from the fork pool (already mid-game and intentionally
+        // diverse).
+        if (!from_fork && cfg_.policy_init_avg_move_num > 0.0f) {
             PolicyInit<Game> pi(game_, infer_fn, cfg_, worker_rng());
+            pi.set_pda_state(&pda);
             if (!pi.initialize(state, to_play)) {
                 SelfplayResult empty;
                 return empty;
@@ -484,6 +550,8 @@ private:
             cfg_.half_life < 0 ? game_.board_size :
             0;
 
+        int cheap_steps_local = 0;
+
         while (!game_.is_terminal_canvas(state, last_action, last_player)) {
             if (stop_workers_.load()) {
                 SelfplayResult empty;
@@ -507,8 +575,35 @@ private:
             );
             int num_simulations = cfg_.num_simulations;
             float step_sample_weight = 1.0f;
+            bool disable_root_noise_this_move = false;
+            bool cheap_this_move = false;
             const int n_hist = static_cast<int>(historical_v_mix.size());
-            if (n_hist >= cfg_.soft_resign_step_threshold) {
+
+            // KataGomo PCR (play.cpp:946-1025): cheap and reduceVisits are
+            // mutually exclusive (`if/else if`). cheap = per-move random;
+            // reduceVisits = state-dependent dominance reduction. cheap takes
+            // priority — if the dice say cheap, don't apply reduceVisits.
+            if (cfg_.cheap_search_prob > 0.0f) {
+                std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+                if (u01(worker_rng) < cfg_.cheap_search_prob) {
+                    cheap_this_move = true;
+                }
+            }
+            if (cheap_this_move) {
+                ++cheap_steps_local;
+                num_simulations = std::min(cfg_.num_simulations, cfg_.cheap_search_visits);
+                step_sample_weight = cfg_.cheap_search_target_weight;
+                // KataGomo play.cpp:978-981 "removeRootNoise" when not
+                // recording the cheap row. The bundle in V6 (see search()):
+                // (1) skip root Dirichlet (PUCT) / Gumbel noise (Gumbel),
+                // (2) collapse root_fpu_{reduction_max,loss_prop} to non-root
+                //     FPU values (KataGomo play.cpp:1201-1202). Avoids the
+                //     100-visit cheap search wasting budget on wide-root
+                //     exploration meant for full searches.
+                if (cfg_.cheap_search_target_weight <= 0.0f) {
+                    disable_root_noise_this_move = true;
+                }
+            } else if (n_hist >= cfg_.soft_resign_step_threshold) {
                 float minV = std::numeric_limits<float>::infinity();
                 float maxV = -std::numeric_limits<float>::infinity();
                 for (int j = 0; j < cfg_.soft_resign_step_threshold; ++j) {
@@ -528,9 +623,53 @@ private:
                 }
             }
 
-            const auto sr = (cfg_.search_algo == SearchAlgo::PUCT)
-                ? mcts.search(state, to_play, num_simulations, root)
-                : mcts.gumbel_search(state, to_play, num_simulations, root);
+            // KataGomo PDA per-move visit redistribute (program/play.cpp:1027-1051).
+            // 2f/(f+1) for the favored side, 2/(f+1) for the other. KataGomo
+            // forces clearBotBeforeSearchThisMove on PDA-active moves
+            // (play.cpp:1042) — old tree's visit budget no longer matches —
+            // so we drop the reused subtree on this move.
+            bool disable_tree_reuse_this_move = false;
+            if (pda.side != 0) {
+                const double f = std::pow(2.0, pda.abs_doublings);
+                const double factor = (to_play == pda.side)
+                    ? (2.0 * f / (f + 1.0))
+                    : (2.0 / (f + 1.0));
+                num_simulations = static_cast<int>(std::lround(num_simulations * factor));
+                if (num_simulations < cfg_.pda_min_visits_floor) {
+                    throw std::runtime_error(
+                        "PDA reduced num_simulations below pda_min_visits_floor");
+                }
+                disable_tree_reuse_this_move = true;
+            }
+
+            // PDA forces a fresh root tree on this move; matches KataGomo.
+            if (disable_tree_reuse_this_move) {
+                root.reset(new MCTSNode{state, to_play});
+            }
+
+            auto sr = (cfg_.search_algo == SearchAlgo::PUCT)
+                ? mcts.search(state, to_play, num_simulations, root, disable_root_noise_this_move)
+                : mcts.gumbel_search(state, to_play, num_simulations, root, disable_root_noise_this_move);
+
+            // KataGomo nneval.cpp:706-723 root-only VCT fallback. Cheaper
+            // than per-NN-forward VCT (one call per played move vs per leaf).
+            // Overrides mcts_policy / v_mix / visit_counts / gumbel_action so
+            // training data sees a clean (1,0,0) winning signal. Reuses
+            // ResultsBeforeNN to also catch MP_FIVE / my_life_four wins
+            // without invoking the solver.
+            if (cfg_.use_vct && cfg_.use_vct_at_root_only) {
+                ResultsBeforeNN root_r;
+                root_r.init(game_, state, to_play, /*has_vcf=*/true, cfg_.vct_max_nodes);
+                if (root_r.winner == to_play && root_r.my_only_canvas >= 0
+                    && root_r.my_only_canvas < static_cast<int>(sr.mcts_policy.size())) {
+                    std::fill(sr.mcts_policy.begin(), sr.mcts_policy.end(), 0.0f);
+                    sr.mcts_policy[root_r.my_only_canvas] = 1.0f;
+                    std::fill(sr.visit_counts.begin(), sr.visit_counts.end(), 0.0f);
+                    sr.visit_counts[root_r.my_only_canvas] = 1.0f;
+                    sr.v_mix = {1.0f, 0.0f, 0.0f};
+                    sr.gumbel_action = root_r.my_only_canvas;
+                }
+            }
 
             // Push v_mix to history in FIXED frame for use in NEXT move's decision.
             // v_mix is from current-player POV; multiplying by to_play (∈ {+1,-1})
@@ -650,6 +789,25 @@ private:
             }
         }
 
+        // Section C (docs/v6_fork_pool_design.md): save one mid-game
+        // position from this game into the pool. Constraint: !from_fork
+        // (avoid fork-of-fork pool degeneration — the pool's source
+        // distribution must be pinned to original openings).
+        if (!from_fork && cfg_.fork_save_prob > 0.0f) {
+            const int N = static_cast<int>(memory.size());
+            if (N > cfg_.fork_min_move_to_save) {
+                std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+                if (u01(worker_rng) < cfg_.fork_save_prob) {
+                    std::uniform_int_distribution<int> pick(
+                        cfg_.fork_min_move_to_save, N - 1);
+                    const int idx = pick(worker_rng);
+                    fork_pool_.save(
+                        memory[idx].state, memory[idx].to_play,
+                        game_.board_size, game_.rule);
+                }
+            }
+        }
+
         const int winner = game_.get_winner_canvas(state, last_action, last_player);
         SelfplayResult result;
         result.winner = winner;
@@ -657,6 +815,8 @@ private:
         result.initial_state = std::move(initial_state_snapshot);
         result.initial_to_play = initial_to_play_snapshot;
         result.balanced_opening = used_balanced_opening;
+        result.from_fork = from_fork;
+        result.cheap_steps = cheap_steps_local;
         result.board_size = game_.board_size;
         result.rule = game_.rule;
         int total_moves = 0;
@@ -670,17 +830,25 @@ private:
             if (winner_from_side == 1) outcome = {1.0f, 0.0f, 0.0f};
             else if (winner_from_side == -1) outcome = {0.0f, 0.0f, 1.0f};
 
-            // V5: canvas-pad encoded state and per-step global features here,
-            // using the *per-game* `game_` (with this game's rule + size).
-            // selfplay_main.cpp must NOT re-encode — by the time samples leave
-            // selfplay_once, state is already NUM_SPATIAL_PLANES_V5 * MAX_AREA int8.
+            // V6: canvas-pad encoded state (with my_only_loc plane 5) and
+            // per-step global features (with VCF dims 6-11), using the
+            // *per-game* `game_`. Train-time globals must match inference-time
+            // globals, so we rebuild ResultsBeforeNN here per step. The cost
+            // is ~2 VCF solves per recorded move; if profile shows this as a
+            // bottleneck, the inference-time ResultsBeforeNN can be cached
+            // into MemoryStep instead (per-step memory ~1KB).
+            // selfplay_main.cpp must NOT re-encode.
+            ResultsBeforeNN step_r;
+            step_r.init(game_, s.state, s.to_play, /*has_vcf=*/cfg_.use_vct, cfg_.vct_max_nodes);
             int ply_for_step = 0;
             for (int8_t v : s.state) if (v != 0) ++ply_for_step;
-            auto gf = game_.compute_global_features(ply_for_step, s.to_play);
+            const auto pda_pair = pda_signed_active(&pda, s.to_play);
+            auto gf = game_.compute_global_features(
+                ply_for_step, s.to_play, step_r, pda_pair.first, pda_pair.second);
 
             PolicySurpriseSample ps;
-            ps.state = game_.encode_state_v5(s.state, s.to_play);
-            for (int j = 0; j < 12; ++j) ps.global_features[j] = gf.data[j];
+            ps.state = game_.encode_state_v5(s.state, s.to_play, step_r.my_only_canvas);
+            for (int j = 0; j < GlobalFeatures::DIM; ++j) ps.global_features[j] = gf.data[j];
             ps.to_play = static_cast<int8_t>(s.to_play);
             ps.policy_target = s.mcts_policy;
             ps.opponent_policy_target = s.next_mcts_policy.empty()
@@ -796,6 +964,7 @@ private:
     const AlphaZeroConfig& cfg_;
     SelfplayParallelConfig pcfg_;
     std::vector<torch::Device> devices_;
+    ForkPool<Game> fork_pool_;
 
     std::vector<torch::jit::script::Module> inference_models_;
     std::vector<std::unique_ptr<std::mutex>> inference_model_mutexes_;
