@@ -943,7 +943,13 @@ let history = [];         // [{ board: Int8Array, toPlay, lastMove, ply, gumbelP
 let editMode = false;
 let editTool = "alternate";   // "alternate" | "black" | "white" | "erase"
 let editSnapshot = null;
+let editUndoStack = [];       // stack of { idx, prev } for in-edit undo
 const EDIT_TOOLS = ["alternate", "black", "white", "erase"];
+
+function refreshEditUndoBtn() {
+    const btn = document.getElementById("edit_undo_btn");
+    if (btn) btn.disabled = editUndoStack.length === 0;
+}
 
 const worker = new Worker("worker.js?v=" + Date.now());
 worker.onerror = (e) => {
@@ -1145,11 +1151,23 @@ function handleEditClick(ev) {
         target = (editTool === "black") ? 1 : (editTool === "white") ? -1 : 0;
     }
     if (boardState[idx] === target) return;
+    editUndoStack.push({ idx, prev: boardState[idx] });
+    refreshEditUndoBtn();
     boardState[idx] = target;
     publishStateForDrawing();
     draw();
     // Clear any prior "invalid count" warning so the user sees they're free
     // to keep editing once the position has changed.
+    setStatus("status_editing", "info");
+}
+
+function undoEditStep() {
+    if (!editMode || editUndoStack.length === 0) return;
+    const { idx, prev } = editUndoStack.pop();
+    boardState[idx] = prev;
+    refreshEditUndoBtn();
+    publishStateForDrawing();
+    draw();
     setStatus("status_editing", "info");
 }
 
@@ -1305,6 +1323,8 @@ function enterEditMode() {
     if (editMode) return;
     editMode = true;
     editSnapshot = snapshotForEdit();
+    editUndoStack = [];
+    refreshEditUndoBtn();
     searchId++;            // abort any in-flight search
     aiThinking = false;
     gameOver = false;      // edits are unrestricted; we recheck on commit
@@ -1334,6 +1354,8 @@ function exitEditMode(commit) {
         renderWDL("nn", s.lastNNWDL);
         editMode = false;
         editSnapshot = null;
+        editUndoStack = [];
+        refreshEditUndoBtn();
         document.body.classList.remove("editing");
         publishStateForDrawing();
         syncBoardSize();
@@ -1384,6 +1406,8 @@ function exitEditMode(commit) {
 
     editMode = false;
     editSnapshot = null;
+    editUndoStack = [];
+    refreshEditUndoBtn();
     document.body.classList.remove("editing");
     publishStateForDrawing();
     syncBoardSize();
@@ -1401,6 +1425,7 @@ function exitEditMode(commit) {
 document.getElementById("edit_btn").addEventListener("click", enterEditMode);
 document.getElementById("edit_done_btn").addEventListener("click", () => exitEditMode(true));
 document.getElementById("edit_cancel_btn").addEventListener("click", () => exitEditMode(false));
+document.getElementById("edit_undo_btn").addEventListener("click", undoEditStep);
 for (const b of document.querySelectorAll(".seg-btn[data-edit-tool]")) {
     b.addEventListener("click", () => setEditTool(b.dataset.editTool));
 }
@@ -1410,6 +1435,9 @@ document.addEventListener("keydown", (ev) => {
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
     if (ev.key === "Escape") { ev.preventDefault(); exitEditMode(false); }
     else if (ev.key === "Enter") { ev.preventDefault(); exitEditMode(true); }
+    else if ((ev.ctrlKey || ev.metaKey) && (ev.key === "z" || ev.key === "Z")) {
+        ev.preventDefault(); undoEditStep();
+    }
     else if (ev.key === "a" || ev.key === "A") setEditTool("alternate");
     else if (ev.key === "b" || ev.key === "B") setEditTool("black");
     else if (ev.key === "w" || ev.key === "W") setEditTool("white");
