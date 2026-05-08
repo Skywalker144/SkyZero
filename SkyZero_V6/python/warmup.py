@@ -73,6 +73,17 @@ PARAMS = {
         tag="compute_train_steps",
         out_name="TRAIN_STEPS_PER_EPOCH",
     ),
+    # KataGo paper visit warmup: cheap visits ramp 100→200 over the same
+    # NUM_SIM_WARMUP_SAMPLES window the full visits use, so cheap/full move
+    # in lockstep through the warmup.
+    "cheap-search-visits": dict(
+        stages_env="CHEAP_SEARCH_VISITS_STAGES",
+        warmup_env="NUM_SIM_WARMUP_SAMPLES",
+        fallback_env="CHEAP_SEARCH_VISITS",
+        fallback_default="100",
+        tag="compute_cheap_search_visits",
+        out_name="CHEAP_SEARCH_VISITS",
+    ),
 }
 
 
