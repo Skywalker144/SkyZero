@@ -33,14 +33,22 @@
 #include <vector>
 
 #include "alphazero.h"
+#include "envs/results_before_nn.h"
 #include "utils.h"
+#include "vct/skyzero_adapter.h"
 
 namespace skyzero {
 
 template <typename Game>
 class TreeParallelMCTS {
 public:
-    using InferenceFn = std::function<std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
+    // V6: (encoded, globals) → (policy_logits, value_wdl). See
+    // ParallelMCTS<Game>::InferenceFn for the rationale.
+    using InferenceFn = std::function<
+        std::pair<std::vector<float>, std::array<float, 3>>(
+            const std::vector<int8_t>&,
+            const std::array<float, GlobalFeatures::DIM>&
+        )>;
 
     TreeParallelMCTS(
         Game& game,
@@ -57,6 +65,9 @@ public:
         start_workers();
     }
 
+    // Optional KataGomo PDA per-game state. nullptr ⇒ no PDA dims.
+    void set_pda_state(const PdaState* pda) { pda_state_ = pda; }
+
     ~TreeParallelMCTS() {
         stop_workers();
     }
@@ -71,7 +82,8 @@ public:
         const std::vector<int8_t>& state,
         int to_play,
         int num_simulations,
-        std::unique_ptr<MCTSNode>& root
+        std::unique_ptr<MCTSNode>& root,
+        bool disable_root_noise = false
     ) {
         if (!root) {
             root.reset(new MCTSNode{state, to_play});
@@ -87,7 +99,7 @@ public:
             nn_policy = root->nn_policy;
             nn_value_probs = root->nn_value_probs;
         }
-        auto gumbel = gumbel_sequential_halving(*root, num_simulations);
+        auto gumbel = gumbel_sequential_halving(*root, num_simulations, disable_root_noise);
 
         MCTSSearchOutput out;
         out.mcts_policy = std::move(gumbel.improved_policy);
@@ -114,11 +126,13 @@ public:
     // each run one full PUCT descent → leaf NN eval → backprop, repeated in
     // chunks until num_simulations is consumed. Root Dirichlet noise applied
     // once per call; mcts_policy returned as raw visit-count distribution.
+    // disable_root_noise: KataGomo "removeRootNoise" — see ParallelMCTS::search.
     MCTSSearchOutput search(
         const std::vector<int8_t>& state,
         int to_play,
         int num_simulations,
-        std::unique_ptr<MCTSNode>& root
+        std::unique_ptr<MCTSNode>& root,
+        bool disable_root_noise = false
     ) {
         if (!root) {
             root.reset(new MCTSNode{state, to_play});
@@ -138,9 +152,13 @@ public:
         // Dirichlet noise — sampled once per search() call, before any worker
         // dispatch, so writes to child->prior are race-free (no other thread
         // is reading the tree at this point).
-        if (cfg_.root_noise_enabled && root->is_expanded()) {
+        if (cfg_.root_noise_enabled && !disable_root_noise && root->is_expanded()) {
             inject_root_dirichlet(*root);
         }
+        // KataGomo "removeRootNoise" bundle: also collapse root FPU to non-root
+        // FPU values (play.cpp:1201-1202). Read by select_child via
+        // current_collapse_root_fpu_.
+        current_collapse_root_fpu_ = disable_root_noise;
 
         const int action_size = Game::MAX_AREA;
         MCTSSearchOutput out;
@@ -153,6 +171,7 @@ public:
 
         if (!root->is_expanded()) {
             // No legal moves at root.
+            current_collapse_root_fpu_ = false;
             return out;
         }
 
@@ -165,6 +184,7 @@ public:
             sims_remaining -= chunk;
         }
         current_root_ = nullptr;
+        current_collapse_root_fpu_ = false;
 
         int total_child_visits = 0;
         int best_action = -1;
@@ -351,7 +371,23 @@ private:
         std::mt19937* local_rng,
         bool is_root
     ) {
-        auto encoded = game_.encode_state_v5(state, to_play);   // V5: 5-plane padded
+        const int area = Game::MAX_AREA;
+        // KataGomo nneval.cpp:706-723 myOnlyLoc fast path. ResultsBeforeNN
+        // also fills the V5 plane 5 (my_only_loc) and global dims 6-11
+        // (VCF results) — see alphazero_parallel.h for the same pattern.
+        const auto pda = pda_signed_active(pda_state_, to_play);
+        const auto in = prepare_inference_input(
+            game_, state, to_play, /*has_vcf=*/cfg_.use_vct && !cfg_.use_vct_at_root_only,
+            cfg_.vct_max_nodes, pda.first, pda.second);
+        if (in.vct_winning_canvas >= 0 && in.vct_winning_canvas < area) {
+            std::vector<float> logits(static_cast<size_t>(area),
+                                      -std::numeric_limits<float>::infinity());
+            logits[static_cast<size_t>(in.vct_winning_canvas)] = 0.0f;
+            std::vector<float> policy(static_cast<size_t>(area), 0.0f);
+            policy[static_cast<size_t>(in.vct_winning_canvas)] = 1.0f;
+            return {policy, {1.0f, 0.0f, 0.0f}, logits};
+        }
+        auto encoded = in.encoded;
         int k = 0;
         bool do_flip = false;
         if (use_stochastic_transform && local_rng != nullptr) {
@@ -362,7 +398,7 @@ private:
             encoded = transform_encoded_state(encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip);
         }
 
-        auto pair = infer_fn_(encoded);
+        auto pair = infer_fn_(encoded, in.globals);
         std::vector<float> logits = std::move(pair.first);
         if (use_stochastic_transform) {
             logits = undo_transform_flat(logits, Game::MAX_BOARD_SIZE, k, do_flip);
@@ -509,7 +545,9 @@ private:
         snap.nn_value_probs = parent_nn_value;
         snap.parent = node.parent;
         const int effective_parent_n = parent_n + parent_vloss;
-        const auto sp = compute_select_params(snap, effective_parent_n, visited_policy_mass, cfg_, is_root);
+        const auto sp = compute_select_params(
+            snap, effective_parent_n, visited_policy_mass, cfg_, is_root,
+            /*collapse_root_fpu=*/current_collapse_root_fpu_);
 
         float best_score = -std::numeric_limits<float>::infinity();
         MCTSNode* best_child = nullptr;
@@ -688,7 +726,8 @@ private:
         std::vector<std::vector<int>> phase_survivors;  // snapshots: [0]=initial m, then after each halving
     };
 
-    GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations) {
+    GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations,
+                                           bool disable_root_noise = false) {
         const int action_size = Game::MAX_AREA;
         std::vector<float> logits = root.nn_logits;
         if (logits.size() != static_cast<size_t>(action_size)) {
@@ -706,7 +745,7 @@ private:
         }
 
         std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
-        if (cfg_.gumbel_noise_enabled) {
+        if (cfg_.gumbel_noise_enabled && !disable_root_noise) {
             std::extreme_value_distribution<float> gumbel_dist(0.0f, 1.0f);
             for (int i = 0; i < action_size; ++i) {
                 g[static_cast<size_t>(i)] = gumbel_dist(rng_);
@@ -901,6 +940,7 @@ private:
     const AlphaZeroConfig& cfg_;
     int num_threads_;
     InferenceFn infer_fn_;
+    const PdaState* pda_state_ = nullptr;   // optional, nullptr ⇒ no PDA dims
     std::mt19937 rng_;
 
     std::array<std::mutex, kNumStripes> stripe_mutexes_;
@@ -924,6 +964,13 @@ private:
     // Shared by main-thread during a search() call, read by workers.
     // Only set before submit_and_wait and cleared after, so no races.
     MCTSNode* current_root_ = nullptr;
+
+    // KataGomo "removeRootNoise" bundle (play.cpp:1201-1202) — set at search()
+    // entry from disable_root_noise, read by select_child when descending root
+    // (is_root=true). Plain bool: writer = main thread before submit_and_wait,
+    // readers = workers spawned by submit_and_wait, so the queue's mutex/cv
+    // gives the necessary happens-before. Reset at search() exit.
+    bool current_collapse_root_fpu_ = false;
 };
 
 }  // namespace skyzero

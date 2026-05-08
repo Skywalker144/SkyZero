@@ -26,7 +26,9 @@
 #include <vector>
 
 #include "alphazero.h"
+#include "envs/results_before_nn.h"
 #include "utils.h"
+#include "vct/skyzero_adapter.h"
 
 namespace skyzero {
 
@@ -36,10 +38,18 @@ namespace skyzero {
 template <typename Game>
 class ParallelMCTS {
 public:
-    using InferenceFn = std::function<std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
+    // V6 inference signature: (encoded_state, globals) → (policy_logits, value_wdl).
+    // Globals are the 14-dim KataGo linear_global input — every NN forward
+    // builds them via prepare_inference_input() from the per-game `Game`.
+    using InferenceFn = std::function<
+        std::pair<std::vector<float>, std::array<float, 3>>(
+            const std::vector<int8_t>&,
+            const std::array<float, GlobalFeatures::DIM>&
+        )>;
     using BatchInferenceFn = std::function<
         std::vector<std::pair<std::vector<float>, std::array<float, 3>>>(
-            const std::vector<std::vector<int8_t>>&
+            const std::vector<std::vector<int8_t>>&,
+            const std::vector<std::array<float, GlobalFeatures::DIM>>&
         )>;
 
     ParallelMCTS(
@@ -57,13 +67,21 @@ public:
           batch_infer_fn_(std::move(batch_infer_fn)),
           rng_(seed) {}
 
+    // Optional KataGomo PDA per-game state. nullptr (default) keeps global
+    // dims 12-13 zero. Caller (selfplay_manager) sets this after the
+    // per-game roll and clears it (or destroys the MCTS) at game end.
+    void set_pda_state(const PdaState* pda) { pda_state_ = pda; }
+
     // Gumbel MCTS (Danihelka et al. 2022): root uses Gumbel + sequential halving;
     // interior layers use the same PUCT helper as `search` below.
+    // disable_root_noise: KataGomo "removeRootNoise" — used by selfplay PCR
+    // cheap searches to suppress root-level perturbation.
     MCTSSearchOutput gumbel_search(
         const std::vector<int8_t>& state,
         int to_play,
         int num_simulations,
-        std::unique_ptr<MCTSNode>& root
+        std::unique_ptr<MCTSNode>& root,
+        bool disable_root_noise = false
     ) {
         if (!root) {
             root.reset(new MCTSNode{state, to_play});
@@ -79,7 +97,7 @@ public:
             nn_policy = root->nn_policy;
             nn_value_probs = root->nn_value_probs;
         }
-        auto gumbel = gumbel_sequential_halving(*root, num_simulations);
+        auto gumbel = gumbel_sequential_halving(*root, num_simulations, disable_root_noise);
 
         MCTSSearchOutput out;
         out.mcts_policy = std::move(gumbel.improved_policy);
@@ -111,7 +129,8 @@ public:
         const std::vector<int8_t>& state,
         int to_play,
         int num_simulations,
-        std::unique_ptr<MCTSNode>& root
+        std::unique_ptr<MCTSNode>& root,
+        bool disable_root_noise = false
     ) {
         if (!root) {
             root.reset(new MCTSNode{state, to_play});
@@ -133,9 +152,15 @@ public:
         // un-noised root.nn_policy each time, so noise does not compound on
         // tree-reuse. Visit counts (which steer subsequent select()) carry the
         // history, but the prior bias is freshly noisy each search step.
-        if (cfg_.root_noise_enabled && root->is_expanded()) {
+        // disable_root_noise: KataGomo "removeRootNoise" — selfplay PCR cheap
+        // searches with cheap_search_target_weight ≤ 0 skip Dirichlet so the
+        // 100-visit search isn't dominated by noise.
+        if (cfg_.root_noise_enabled && !disable_root_noise && root->is_expanded()) {
             inject_root_dirichlet(*root);
         }
+        // KataGomo "removeRootNoise" bundle: collapse root FPU to non-root FPU
+        // (play.cpp:1201-1202). Read by select() via current_collapse_root_fpu_.
+        current_collapse_root_fpu_ = disable_root_noise;
 
         if (!root->is_expanded()) {
             // No legal moves at root (e.g. renju black with all moves
@@ -148,6 +173,7 @@ public:
             out.nn_value_probs = nn_value_probs;
             out.v_mix = nn_value_probs;
             out.gumbel_action = -1;
+            current_collapse_root_fpu_ = false;
             return out;
         }
 
@@ -161,6 +187,7 @@ public:
             run_puct_rollouts(*root, chunk, sims_budget);
             if (sims_budget == before) break;  // forward progress check
         }
+        current_collapse_root_fpu_ = false;
 
         const int action_size = Game::MAX_AREA;
         MCTSSearchOutput out;
@@ -211,6 +238,12 @@ private:
     struct PendingLeaf {
         MCTSNode* leaf = nullptr;
         std::vector<int8_t> encoded;
+        std::array<float, GlobalFeatures::DIM> globals{};
+        // KataGomo myOnlyLoc per-NN-forward fast path: when ResultsBeforeNN
+        // proves this leaf is a forced win for the to-play side, set this to
+        // the winning canvas pos and skip NN-derived policy/value entirely.
+        // -1 = run NN normally.
+        int vct_winning_canvas = -1;
         int transform_k = 0;
         bool transform_flip = false;
         int infer_offset = 0;
@@ -256,8 +289,27 @@ private:
         bool use_stochastic_transform,
         bool use_symmetry_transform
     ) {
-        auto encoded = game_.encode_state_v5(state, to_play);   // V5: 5-plane padded layout
         const int area = Game::MAX_AREA;
+
+        // KataGomo nneval.cpp:706-723 + 815-819 myOnlyLoc fast path: build
+        // ResultsBeforeNN once, plumb it into both the encoded state (plane 5
+        // = my_only_loc one-hot) and the global features (dims 6-11 = VCF).
+        // If the position is a forced win for to_play (winner == to_play),
+        // skip the NN entirely and return a one-hot policy + (1,0,0) value.
+        const auto pda = pda_signed_active(pda_state_, to_play);
+        const auto in = prepare_inference_input(
+            game_, state, to_play, /*has_vcf=*/cfg_.use_vct && !cfg_.use_vct_at_root_only,
+            cfg_.vct_max_nodes, pda.first, pda.second);
+        if (in.vct_winning_canvas >= 0 && in.vct_winning_canvas < area) {
+            std::vector<float> logits(static_cast<size_t>(area),
+                                      -std::numeric_limits<float>::infinity());
+            logits[static_cast<size_t>(in.vct_winning_canvas)] = 0.0f;
+            std::vector<float> policy(static_cast<size_t>(area), 0.0f);
+            policy[static_cast<size_t>(in.vct_winning_canvas)] = 1.0f;
+            return {policy, {1.0f, 0.0f, 0.0f}, logits};
+        }
+
+        auto encoded = in.encoded;
 
         if (!use_stochastic_transform && use_symmetry_transform) {
             std::vector<std::vector<int8_t>> encoded_batch;
@@ -268,14 +320,16 @@ private:
                     encoded_batch.push_back(transform_encoded_state(encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip));
                 }
             }
+            std::vector<std::array<float, GlobalFeatures::DIM>> globals_batch(
+                encoded_batch.size(), in.globals);
 
             std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
             if (batch_infer_fn_) {
-                infer_results = batch_infer_fn_(encoded_batch);
+                infer_results = batch_infer_fn_(encoded_batch, globals_batch);
             } else {
                 infer_results.reserve(encoded_batch.size());
                 for (const auto& e : encoded_batch) {
-                    infer_results.push_back(infer_fn_(e));
+                    infer_results.push_back(infer_fn_(e, in.globals));
                 }
             }
             if (infer_results.size() != 8) {
@@ -316,7 +370,7 @@ private:
             encoded = transform_encoded_state(encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip);
         }
 
-        auto pair = infer_fn_(encoded);
+        auto pair = infer_fn_(encoded, in.globals);
         std::vector<float> logits = std::move(pair.first);
         if (use_stochastic_transform) {
             logits = undo_transform_flat(logits, Game::MAX_BOARD_SIZE, k, do_flip);
@@ -371,7 +425,9 @@ private:
         }
 
         const int effective_parent_n = node.n + node.vloss;
-        const auto sp = compute_select_params(node, effective_parent_n, visited_policy_mass, cfg_, is_root);
+        const auto sp = compute_select_params(
+            node, effective_parent_n, visited_policy_mass, cfg_, is_root,
+            /*collapse_root_fpu=*/current_collapse_root_fpu_);
 
         float best_score = -std::numeric_limits<float>::infinity();
         MCTSNode* best_child = nullptr;
@@ -402,7 +458,9 @@ private:
         if (pending.empty()) return;
 
         std::vector<std::vector<int8_t>> encoded_batch;
+        std::vector<std::array<float, GlobalFeatures::DIM>> globals_batch;
         encoded_batch.reserve(pending.size() * 8);
+        globals_batch.reserve(pending.size() * 8);
         for (auto& p : pending) {
             p.infer_offset = static_cast<int>(encoded_batch.size());
             if (p.infer_count == 8) {
@@ -412,21 +470,23 @@ private:
                         encoded_batch.push_back(
                             transform_encoded_state(p.encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip)
                         );
+                        globals_batch.push_back(p.globals);
                     }
                 }
             } else {
                 encoded_batch.push_back(p.encoded);
+                globals_batch.push_back(p.globals);
             }
         }
 
         std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
         try {
             if (batch_infer_fn_) {
-                infer_results = batch_infer_fn_(encoded_batch);
+                infer_results = batch_infer_fn_(encoded_batch, globals_batch);
             } else {
                 infer_results.reserve(encoded_batch.size());
-                for (const auto& e : encoded_batch) {
-                    infer_results.push_back(infer_fn_(e));
+                for (size_t i = 0; i < encoded_batch.size(); ++i) {
+                    infer_results.push_back(infer_fn_(encoded_batch[i], globals_batch[i]));
                 }
             }
         } catch (...) {
@@ -471,18 +531,37 @@ private:
                 }
             }
 
-            const auto legal = game_.get_is_legal_actions_canvas(pending[i].leaf->state, pending[i].leaf->to_play);
-            for (size_t j = 0; j < logits.size(); ++j) {
-                if (j >= legal.size() || !legal[j]) {
-                    logits[j] = -std::numeric_limits<float>::infinity();
-                }
-            }
-            apply_nn_policy_temperature(logits, cfg_.nn_policy_temperature);
+            // KataGomo nneval.cpp:706-723 myOnlyLoc per-NN-forward fast path.
+            // Reuses the ResultsBeforeNN already computed in make_pending_leaf
+            // — no second VCF solve. The NN call still happened (we paid the
+            // batch inference), but we discard its policy/value when
+            // ResultsBeforeNN proves a forced win. Pre-batch skipping would
+            // be cheaper; deferred for simpler control flow.
+            const int vct_first = pending[i].vct_winning_canvas;
+            const bool vct_win = (vct_first >= 0 && vct_first < Game::MAX_AREA);
 
             InferenceResult ir;
-            ir.masked_logits = logits;
-            ir.policy = softmax(logits);
-            ir.value = value;
+            if (vct_win) {
+                std::vector<float> one_hot_logits(static_cast<size_t>(Game::MAX_AREA),
+                                                  -std::numeric_limits<float>::infinity());
+                one_hot_logits[static_cast<size_t>(vct_first)] = 0.0f;
+                std::vector<float> one_hot(static_cast<size_t>(Game::MAX_AREA), 0.0f);
+                one_hot[static_cast<size_t>(vct_first)] = 1.0f;
+                ir.masked_logits = std::move(one_hot_logits);
+                ir.policy = std::move(one_hot);
+                ir.value = {1.0f, 0.0f, 0.0f};
+            } else {
+                const auto legal = game_.get_is_legal_actions_canvas(pending[i].leaf->state, pending[i].leaf->to_play);
+                for (size_t j = 0; j < logits.size(); ++j) {
+                    if (j >= legal.size() || !legal[j]) {
+                        logits[j] = -std::numeric_limits<float>::infinity();
+                    }
+                }
+                apply_nn_policy_temperature(logits, cfg_.nn_policy_temperature);
+                ir.masked_logits = logits;
+                ir.policy = softmax(logits);
+                ir.value = value;
+            }
             expand_with(ir, *pending[i].leaf);
             backpropagate_path_with_vloss(pending[i].path, ir.value);
             sims_budget -= 1;
@@ -490,12 +569,20 @@ private:
     }
 
     // Build a PendingLeaf for an already-descended path (terminal handling
-    // already done by caller). Picks transform / 8-fold per cfg, encodes V5.
+    // already done by caller). Picks transform / 8-fold per cfg, runs
+    // ResultsBeforeNN for plane 5 + dims 6-11 + my-side VCT short-circuit.
     PendingLeaf make_pending_leaf(MCTSNode* leaf, std::vector<MCTSNode*> path) {
         PendingLeaf pl;
         pl.leaf = leaf;
         pl.path = std::move(path);
-        pl.encoded = game_.encode_state_v5(leaf->state, leaf->to_play);   // V5
+        const auto pda = pda_signed_active(pda_state_, leaf->to_play);
+        const auto in = prepare_inference_input(
+            game_, leaf->state, leaf->to_play,
+            /*has_vcf=*/cfg_.use_vct && !cfg_.use_vct_at_root_only,
+            cfg_.vct_max_nodes, pda.first, pda.second);
+        pl.encoded = std::move(in.encoded);
+        pl.globals = in.globals;
+        pl.vct_winning_canvas = in.vct_winning_canvas;
         if (cfg_.enable_stochastic_transform_inference_for_child) {
             std::uniform_int_distribution<int> dist(0, 7);
             const int transform_type = dist(rng_);
@@ -647,7 +734,8 @@ private:
         }
     }
 
-    GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations) {
+    GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations,
+                                           bool disable_root_noise = false) {
         const int action_size = Game::MAX_AREA;
         std::vector<float> logits = root.nn_logits;
         if (logits.size() != static_cast<size_t>(action_size)) {
@@ -660,7 +748,7 @@ private:
         // collapses to argmax-on-prior at the root, used by deterministic
         // evaluation paths).
         std::vector<float> g(static_cast<size_t>(action_size), 0.0f);
-        if (cfg_.gumbel_noise_enabled) {
+        if (cfg_.gumbel_noise_enabled && !disable_root_noise) {
             std::extreme_value_distribution<float> gumbel_dist(0.0f, 1.0f);
             for (int i = 0; i < action_size; ++i) {
                 g[static_cast<size_t>(i)] = gumbel_dist(rng_);
@@ -868,7 +956,14 @@ private:
     int leaf_batch_size_ = 1;
     InferenceFn infer_fn_;
     BatchInferenceFn batch_infer_fn_;
+    const PdaState* pda_state_ = nullptr;   // optional, nullptr ⇒ no PDA dims
     std::mt19937 rng_;
+
+    // KataGomo "removeRootNoise" bundle (play.cpp:1201-1202): set at search()
+    // entry from disable_root_noise, read by select() when descending root.
+    // run_puct_rollouts is single-threaded relative to select(), so no atomic
+    // needed. Reset at search() exit.
+    bool current_collapse_root_fpu_ = false;
 };
 
 }  // namespace skyzero
