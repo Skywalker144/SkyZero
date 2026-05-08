@@ -18,12 +18,12 @@ from typing import Optional
 @dataclass
 class NetConfig:
     board_size: int = 15
-    num_planes: int = 5  # mask, own, opp, forbidden_black, forbidden_white
+    num_planes: int = 6  # mask, own, opp, forbidden_black, forbidden_white, my_only_loc
     num_blocks: int = 12
     num_channels: int = 128
 
     # ----- KataGo v15 fields -----
-    num_global_features: int = 12
+    num_global_features: int = 14
     internal_length: int = 2
     has_intermediate_head: bool = True
     activation: str = "mish"
