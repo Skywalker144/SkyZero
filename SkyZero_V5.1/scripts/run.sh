@@ -129,8 +129,8 @@ while true; do
             --log "$DATA_DIR/logs/probe.tsv" \
             || echo "[run.sh] mcts_probe failed (non-fatal)"
 
-        # (6) plot loss curve
-        ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
+        # (6) plot loss curve (mark V5→V5.1 PUCT switchover at last V5 iter)
+        ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot --mark-iter 100 >/dev/null )
     fi
 
     iter=$((iter + 1))
