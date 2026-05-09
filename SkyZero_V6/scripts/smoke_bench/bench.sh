@@ -16,9 +16,19 @@ ROOT="$(cd -- "$SCRIPT_DIR/../.." &> /dev/null && pwd)"
 
 GAMES="${GAMES:-200}"
 GPU="${GPU:-0}"
+WORKERS="${WORKERS:-64}"
+SERVERS="${SERVERS:-2}"
 PY="${PY:-python}"
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
 DATA_DIR="${DATA_DIR:-$ROOT/data_smoke_bench}"
+
+# Derive a per-run cfg from bench.cfg with NUM_WORKERS / NUM_INFERENCE_SERVERS
+# overridden so we can sweep parallelism without editing bench.cfg.
+RUN_CFG="$DATA_DIR/.bench_run.cfg"
+mkdir -p "$DATA_DIR"
+sed -e "s|^NUM_WORKERS=.*|NUM_WORKERS=$WORKERS|" \
+    -e "s|^NUM_INFERENCE_SERVERS=.*|NUM_INFERENCE_SERVERS=$SERVERS|" \
+    "$SCRIPT_DIR/bench.cfg" > "$RUN_CFG"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
     echo "[bench] selfplay_main missing at $SELFPLAY_BIN — run scripts/build.sh first" >&2
@@ -34,13 +44,18 @@ if [[ ! -f "$DATA_DIR/models/latest.pt" ]]; then
     ( cd "$ROOT/python" && "$PY" init_model.py --data-dir "$DATA_DIR" )
 fi
 
-# Pin both inference servers to the chosen GPU.
-export INFERENCE_SERVER_DEVICES="$GPU,$GPU"
+# Pin all inference servers to the chosen GPU.
+DEVS=""
+for ((i=0; i<SERVERS; i++)); do
+    [[ -n "$DEVS" ]] && DEVS+=","
+    DEVS+="$GPU"
+done
+export INFERENCE_SERVER_DEVICES="$DEVS"
 
 LOG="$DATA_DIR/logs/bench.log"
 TIMEFILE="$DATA_DIR/logs/bench.time"
 
-echo "[bench] gpu=$GPU games=$GAMES sims=400 cfg=$SCRIPT_DIR/bench.cfg"
+echo "[bench] gpu=$GPU games=$GAMES sims=400 workers=$WORKERS servers=$SERVERS"
 /usr/bin/time -f "%e" -o "$TIMEFILE" "$SELFPLAY_BIN" \
     --model "$DATA_DIR/models/latest.pt" \
     --output-dir "$DATA_DIR/selfplay" \
@@ -48,7 +63,7 @@ echo "[bench] gpu=$GPU games=$GAMES sims=400 cfg=$SCRIPT_DIR/bench.cfg"
     --max-games "$GAMES" \
     --num-simulations 400 \
     --cheap-search-visits 200 \
-    --config "$SCRIPT_DIR/bench.cfg" \
+    --config "$RUN_CFG" \
     --log-dir "$DATA_DIR/logs" > "$LOG" 2>&1
 
 # Parse the just-written iter row from last_run.tsv (the run we kicked off has
