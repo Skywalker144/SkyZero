@@ -22,7 +22,17 @@ BUILD_DIR="$SRC_DIR/build"
 
 LIBTORCH="${LIBTORCH:-/home/sky/libtorch}"
 NVCC="${NVCC:-/usr/local/cuda/bin/nvcc}"
-CUDA_ARCH="${CUDA_ARCH:-89}"
+
+# CUDA_ARCH: auto-detect from nvidia-smi if unset, so the same default works on
+# every box (Ada → 89, Blackwell → 120, etc). Override via `CUDA_ARCH=NN bash
+# scripts/build.sh` if you need a specific arch (e.g. cross-compiling).
+if [[ -z "${CUDA_ARCH:-}" ]]; then
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+            | head -1 | tr -d '.')
+    fi
+    CUDA_ARCH="${CUDA_ARCH:-89}"
+fi
 
 if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
     echo "[build.sh] configure: BUILD_DIR=$BUILD_DIR LIBTORCH=$LIBTORCH NVCC=$NVCC CUDA_ARCH=$CUDA_ARCH"
