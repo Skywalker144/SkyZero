@@ -17,8 +17,18 @@ def _read_tsv(path: pathlib.Path):
     return header, rows
 
 
+def _vline(ax, x, label: str | None = None) -> None:
+    if x is None:
+        return
+    ax.axvline(x, ls="--", color="gray", alpha=0.6, lw=1.0)
+    if label:
+        ax.text(x, ax.get_ylim()[1], f" {label}", color="gray",
+                va="top", ha="left", fontsize=8, alpha=0.8)
+
+
 def _plot_selfplay_impl(data_dir: pathlib.Path, plt,
-                        prefix: str, out_name: str, title_tag: str) -> None:
+                        prefix: str, out_name: str, title_tag: str,
+                        mark_iter: int | None = None) -> None:
     """Render a 2-panel selfplay plot (gamelen + win rates).
 
     prefix=""        — full-set columns (min_len, avg_len, ...). Saved as selfplay.png.
@@ -68,25 +78,32 @@ def _plot_selfplay_impl(data_dir: pathlib.Path, plt,
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc="best")
 
+    _vline(ax1, mark_iter, label="V5→V5.1")
+    _vline(ax2, mark_iter)
+
     fig.tight_layout()
     out = data_dir / "logs" / out_name
     fig.savefig(out, dpi=200)
     print(f"saved plot to {out}")
 
 
-def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
+def _plot_selfplay(data_dir: pathlib.Path, plt,
+                   mark_iter: int | None = None) -> None:
     """Two plots: full set across all (size, rule), and MAIN_* pair only."""
     _plot_selfplay_impl(data_dir, plt,
                         prefix="", out_name="selfplay.png",
-                        title_tag="all sizes / rules")
+                        title_tag="all sizes / rules",
+                        mark_iter=mark_iter)
     main_size = os.environ.get("MAIN_BOARD_SIZE", "?")
     main_rule = os.environ.get("MAIN_RULE", "?")
     _plot_selfplay_impl(data_dir, plt,
                         prefix="main_", out_name="selfplay_main.png",
-                        title_tag=f"main pair: {main_size}×{main_rule}")
+                        title_tag=f"main pair: {main_size}×{main_rule}",
+                        mark_iter=mark_iter)
 
 
-def _plot_probe(data_dir: pathlib.Path, plt) -> None:
+def _plot_probe(data_dir: pathlib.Path, plt,
+                mark_iter: int | None = None) -> None:
     log = data_dir / "logs" / "probe.tsv"
     if not log.exists():
         print(f"no probe log at {log}", file=sys.stderr)
@@ -136,6 +153,9 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc="best")
 
+    _vline(ax1, mark_iter, label="V5→V5.1")
+    _vline(ax2, mark_iter)
+
     fig.tight_layout()
     out = data_dir / "logs" / "probe.png"
     fig.savefig(out, dpi=200)
@@ -147,6 +167,9 @@ def main() -> int:
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     parser.add_argument("--tail", type=int, default=20)
     parser.add_argument("--plot", action="store_true")
+    parser.add_argument("--mark-iter", type=int, default=None,
+                        help="Draw a dashed vertical line at this iter "
+                        "(label 'V5→V5.1') across all generated plots.")
     args = parser.parse_args()
 
     data_dir = pathlib.Path(args.data_dir)
@@ -175,6 +198,15 @@ def main() -> int:
         cols = {name: [float(r[i]) for r in rows] for i, name in enumerate(header)}
         x = cols.get("global_step_samples", cols.get("iter", list(range(len(rows)))))
         xlabel = "samples" if "global_step_samples" in cols else "iter"
+
+        # Convert mark_iter (an iter number) to the actual x-axis unit by
+        # looking up its row. None if the iter isn't in the log yet.
+        mark_x: float | None = None
+        if args.mark_iter is not None and "iter" in cols:
+            for i, it in enumerate(cols["iter"]):
+                if int(it) == args.mark_iter:
+                    mark_x = x[i]
+                    break
         keys = [k for k in ("total_loss", "policy_loss", "opp_policy_loss",
                               "intermediate_loss", "soft_policy_loss", "soft_opp_policy_loss",
                               "futurepos_loss", "value_loss", "td_value_loss") if k in cols]
@@ -202,13 +234,16 @@ def main() -> int:
         # X-label only on the bottom row of visible panes.
         for ax in flat[max(0, n - ncols):n]:
             ax.set_xlabel(xlabel)
+        # V5→V5.1 transition marker on every loss panel; label only on the first.
+        for i, ax in enumerate(flat[:n]):
+            _vline(ax, mark_x, label="V5→V5.1" if i == 0 else None)
         fig.tight_layout()
         out = data_dir / "logs" / "loss.png"
         fig.savefig(out, dpi=200)
         print(f"saved plot to {out}")
 
-        _plot_selfplay(data_dir, plt)
-        _plot_probe(data_dir, plt)
+        _plot_selfplay(data_dir, plt, mark_iter=args.mark_iter)
+        _plot_probe(data_dir, plt, mark_iter=args.mark_iter)
     return 0
 
 
