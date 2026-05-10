@@ -623,12 +623,32 @@ private:
                 }
             }
 
+            // KataGo selfplay tree-reuse alignment.
+            //   * KataGo play.cpp:1051,1175-1176: selfplay default is to
+            //     clearSearch() before every move so root Dirichlet noise is
+            //     effective on each new search (visit counts wouldn't carry
+            //     stale-noise exploration into the new PUCT scoring).
+            //   * KataGo play.cpp:1089-1091: cheap_search_target_weight ≤ 0
+            //     branch is the only reuse path — pairs with removeRootNoise.
+            //   * KataGo play.cpp:1146: PDA-active moves force clear (visit
+            //     budget no longer matches under 2f/(f+1) redistribution).
+            // Gumbel path: not gated here. Gumbel reuse is governed by
+            // σ_q = (c_visit + min(planned_max_n, max_n)) * c_scale * q
+            // clamping in gumbel_sequential_halving — bias is bounded
+            // independent of accumulated visits — so we keep cfg_.enable_tree_reuse.
+            bool disable_tree_reuse_this_move = false;
+            if (cfg_.search_algo == SearchAlgo::PUCT) {
+                const bool cheap_keep_noise =
+                    cheap_this_move && cfg_.cheap_search_target_weight <= 0.0f;
+                if (!cheap_keep_noise) {
+                    disable_tree_reuse_this_move = true;
+                }
+            }
+
             // KataGomo PDA per-move visit redistribute (program/play.cpp:1027-1051).
             // 2f/(f+1) for the favored side, 2/(f+1) for the other. KataGomo
             // forces clearBotBeforeSearchThisMove on PDA-active moves
-            // (play.cpp:1042) — old tree's visit budget no longer matches —
-            // so we drop the reused subtree on this move.
-            bool disable_tree_reuse_this_move = false;
+            // (play.cpp:1042) — old tree's visit budget no longer matches.
             if (pda.side != 0) {
                 const double f = std::pow(2.0, pda.abs_doublings);
                 const double factor = (to_play == pda.side)
@@ -642,14 +662,16 @@ private:
                 disable_tree_reuse_this_move = true;
             }
 
-            // PDA forces a fresh root tree on this move; matches KataGomo.
             if (disable_tree_reuse_this_move) {
                 root.reset(new MCTSNode{state, to_play});
             }
 
+            const int gumbel_m_override =
+                (cheap_this_move && cfg_.gumbel_cheap_m > 0) ? cfg_.gumbel_cheap_m : -1;
             auto sr = (cfg_.search_algo == SearchAlgo::PUCT)
                 ? mcts.search(state, to_play, num_simulations, root, disable_root_noise_this_move)
-                : mcts.gumbel_search(state, to_play, num_simulations, root, disable_root_noise_this_move);
+                : mcts.gumbel_search(state, to_play, num_simulations, root,
+                                     disable_root_noise_this_move, gumbel_m_override);
 
             // KataGomo nneval.cpp:706-723 root-only VCT fallback. Cheaper
             // than per-NN-forward VCT (one call per played move vs per leaf).
@@ -764,29 +786,13 @@ private:
             // gumbel_sequential_halving, so nothing on the node needs reset.
             // vloss is already 0 on retained nodes (synchronous backprop on
             // every path before search() returns).
-            std::unique_ptr<MCTSNode> next_root;
-            if (reuse_enabled) {
-                for (auto& c : root->children) {
-                    if (c && c->action_taken == action) {
-                        next_root = std::move(c);
-                        break;
-                    }
-                }
-            }
-            if (next_root) {
-                next_root->parent = nullptr;
-                // Children are constructed in expand_with() via
-                // game_.get_next_state(parent.state, action, parent.to_play),
-                // so the child's stored state must equal the just-applied state.
-                assert(next_root->state == state && next_root->to_play == to_play);
-                root = std::move(next_root);
-                // Old root + sibling subtrees freed by the unique_ptr move.
-            } else {
-                // Reuse disabled, or chosen action wasn't expanded (can happen
-                // when the improved-policy fallback at the action selection
-                // above picks an unvisited action).
-                root.reset(new MCTSNode{state, to_play});
-            }
+            //
+            // Delegates to the shared helper so root-only NN re-application
+            // (root_symmetry_pruning canonical-mask + symmetry-inference
+            // mismatch fallback + is_expanded guard) stays in one place;
+            // see alphazero.h:advance_root_to_action.
+            advance_root_to_action(root, action, state, to_play,
+                                   reuse_enabled, game_, cfg_);
         }
 
         // Section C (docs/v6_fork_pool_design.md): save one mid-game

@@ -234,6 +234,7 @@ int main(int argc, char** argv) {
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
         cfg.gumbel_noise_enabled = cfg_get_bool(cfg_map, "GUMBEL_NOISE_ENABLED", true);
+        cfg.enable_tree_reuse = cfg_get_bool(cfg_map, "ENABLE_TREE_REUSE", true);
         cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", 0);
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
@@ -637,7 +638,13 @@ int main(int argc, char** argv) {
                     last_action = action;
                     last_player = to_play;
                     to_play = -to_play;
-                    root.reset(new MCTSNode{state, to_play});
+                    // MCTSNode::action_taken is canvas-stride; translate
+                    // human's board-stride action.
+                    advance_root_to_action(
+                        root,
+                        row * Gomoku::MAX_BOARD_SIZE + col,
+                        state, to_play,
+                        cfg.enable_tree_reuse, game, cfg);
                     break;
                 }
             } else {
@@ -736,7 +743,8 @@ int main(int argc, char** argv) {
                 last_action = action;
                 last_player = to_play;
                 to_play = -to_play;
-                root.reset(new MCTSNode{state, to_play});
+                advance_root_to_action(root, canvas_action, state, to_play,
+                                       cfg.enable_tree_reuse, game, cfg);
             }
 
             print_board(state, game.board_size, last_action);

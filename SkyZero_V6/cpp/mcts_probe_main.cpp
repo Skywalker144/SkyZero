@@ -87,6 +87,7 @@ struct CliArgs {
     int num_simulations_override = -1;
     int iter = -1;            // optional; logged into probe.tsv when --log is given
     std::string log_path;     // optional; if non-empty, append a TSV row here
+    long long seed = -1;      // optional; -1 = std::random_device, otherwise fixed seed
 };
 
 static CliArgs parse_cli(int argc, char** argv) {
@@ -102,10 +103,11 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
         else if (k == "--iter") a.iter = std::stoi(need("--iter"));
         else if (k == "--log") a.log_path = need("--log");
+        else if (k == "--seed") a.seed = std::stoll(need("--seed"));
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.config.empty()) {
-        throw std::runtime_error("usage: mcts_probe --model PATH --config PATH [--num-simulations N] [--iter N] [--log PATH]");
+        throw std::runtime_error("usage: mcts_probe --model PATH --config PATH [--num-simulations N] [--iter N] [--log PATH] [--seed N]");
     }
     return a;
 }
@@ -265,7 +267,12 @@ int main(int argc, char** argv) {
             return run_forward(batch, globals_batch);
         };
 
-        std::mt19937 rng(std::random_device{}());
+        // --seed N produces reproducible output for V1-style numerical
+        // equivalence diffs against a stashed-old binary. Default -1 = OS
+        // random (preserves prior behavior).
+        std::mt19937 rng(cli.seed >= 0
+            ? static_cast<std::mt19937::result_type>(cli.seed)
+            : std::random_device{}());
         ParallelMCTS<Gomoku> mcts(game, cfg, /*leaf_batch_size=*/1, infer_fn, batch_infer_fn, rng());
 
         auto init = game.get_initial_state(rng);

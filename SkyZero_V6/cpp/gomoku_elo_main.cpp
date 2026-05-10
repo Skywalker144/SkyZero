@@ -352,6 +352,7 @@ int main(int argc, char** argv) {
         // Force Gumbel noise OFF for evaluation regardless of cfg — we want
         // deterministic-ish play so Elo reflects strength, not sampling luck.
         cfg.gumbel_noise_enabled = false;
+        cfg.enable_tree_reuse = cfg_get_bool(cfg_map, "ENABLE_TREE_REUSE", true);
         cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", 0);
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
@@ -517,13 +518,20 @@ int main(int argc, char** argv) {
                         for (int8_t v : state) if (v != 0) ++opening_plies;
                     }
 
+                    if (cfg.enable_tree_reuse) {
+                        root_a.reset(new MCTSNode{state, to_play});
+                        root_b.reset(new MCTSNode{state, to_play});
+                    }
+
                     while (!game.is_terminal(state, last_action, last_player)) {
                         const bool a_to_move = (a_is_black && to_play == 1)
                                             || (!a_is_black && to_play == -1);
                         auto& mcts = a_to_move ? mcts_a : mcts_b;
                         auto& root = a_to_move ? root_a : root_b;
 
-                        root.reset(new MCTSNode{state, to_play});
+                        if (!cfg.enable_tree_reuse) {
+                            root.reset(new MCTSNode{state, to_play});
+                        }
                         auto res = (cfg.search_algo == SearchAlgo::PUCT)
                             ? mcts.search(state, to_play, cfg.num_simulations, root)
                             : mcts.gumbel_search(state, to_play, cfg.num_simulations, root);
@@ -545,13 +553,19 @@ int main(int argc, char** argv) {
                         // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
                         // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
                         // at the boundary, mirroring gomoku_play_main.cpp:635.
-                        int action = (res.gumbel_action >= 0)
-                            ? Gomoku::canvas_pos_to_loc(res.gumbel_action, game.board_size)
+                        int canvas_action = res.gumbel_action;
+                        int action = (canvas_action >= 0)
+                            ? Gomoku::canvas_pos_to_loc(canvas_action, game.board_size)
                             : -1;
                         if (action < 0) {
                             const auto legal = game.get_is_legal_actions(state, to_play);
                             for (int i = 0; i < static_cast<int>(legal.size()); ++i) {
                                 if (legal[i]) { action = i; break; }
+                            }
+                            if (action >= 0) {
+                                const int row = action / game.board_size;
+                                const int col = action % game.board_size;
+                                canvas_action = row * Gomoku::MAX_BOARD_SIZE + col;
                             }
                         }
                         if (action < 0) break;
@@ -561,6 +575,13 @@ int main(int argc, char** argv) {
                         last_player = to_play;
                         to_play = -to_play;
                         ++plies;
+
+                        // Advance BOTH trees so each side's root tracks the
+                        // live game state regardless of who's next to move.
+                        advance_root_to_action(root_a, canvas_action, state, to_play,
+                                               cfg.enable_tree_reuse, game, cfg);
+                        advance_root_to_action(root_b, canvas_action, state, to_play,
+                                               cfg.enable_tree_reuse, game, cfg);
                     }
 
                     const int winner = game.get_winner(state, last_action, last_player);

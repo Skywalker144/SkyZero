@@ -133,6 +133,7 @@ core
 core.*
 
 scripts/DISTRIBUTED_SELFPLAY.md
+scripts/gpu_thermal_guard.sh
 .claude
 *.pdf
 IMPROVEMENTS.md

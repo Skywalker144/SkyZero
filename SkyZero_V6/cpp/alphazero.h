@@ -47,6 +47,8 @@ struct AlphaZeroConfig {
     // Gumbel MCTS
     int num_simulations = 64;
     int gumbel_m = 16;
+    // PCR cheap-search override for gumbel_m. <0 ⇒ fall back to gumbel_m.
+    int gumbel_cheap_m = -1;
     float gumbel_c_visit = 50.0f;
     float gumbel_c_scale = 1.0f;
     bool gumbel_noise_enabled = true;
@@ -122,9 +124,14 @@ struct AlphaZeroConfig {
 
     // KataGomo PUCT — root Dirichlet noise (selfplay exploration). Mirrors
     // SearchParams.{rootNoiseEnabled,rootDirichletNoiseTotalConcentration,
-    // rootDirichletNoiseWeight}. Only used when search_algo == PUCT and the
-    // node passed to search() is a fresh root (n == 0); on tree-reuse we do
-    // NOT re-noise — KataGomo's behavior is identical, see Search::search.
+    // rootDirichletNoiseWeight}. Only used when search_algo == PUCT.
+    // Re-sampled on every search() entry (whether the root is fresh or
+    // reused) — child priors are rebuilt from the un-noised root.nn_policy
+    // each time, so noise does not compound across moves. Mirrors KataGomo
+    // beginSearch's `searchNodeAge++` + maybeRecomputeExistingNNOutput →
+    // maybeAddPolicyNoiseAndTemp re-noising path. Skipped only when
+    // disable_root_noise=true (KataGomo "removeRootNoise" bundle on cheap
+    // searches with cheap_search_target_weight ≤ 0).
     // Total concentration is the sum α₁+…+α_K of the Dirichlet vector;
     // KataGomo's 10.83 ≈ 0.03·361 (AlphaZero Go default × 19² cells). With K
     // legal moves the per-move α is total / K; weight is the convex blend
@@ -217,6 +224,15 @@ struct AlphaZeroConfig {
     // root instead of rebuilding from scratch each ply. Gumbel state is
     // search-local (recomputed in gumbel_sequential_halving), so no
     // per-action noise reset is needed.
+    //
+    // PUCT selfplay path is HARD-aligned to KataGo: full search clears
+    // tree every move (selfplay_manager.h, mirroring KataGo play.cpp:1051
+    // + 1175-1176), independent of this flag — only the cheap-keep-noise
+    // step (cheap_this_move && cheap_search_target_weight ≤ 0) reuses.
+    // This flag still gates:
+    //   * Gumbel selfplay (σ_q clamping bounds the reuse bias)
+    //   * Match/elo/play binaries (KataGo defaults clearBotBeforeSearch
+    //     to false there too, so reuse is consistent)
     bool enable_tree_reuse = true;
 
     // KataGomo Playout Doubling Advantage (PDA). Per-game coin flip plays
@@ -305,6 +321,106 @@ struct MCTSNode {
         n += 1;
     }
 };
+
+// Promote root to the chosen-action child (carrying its PUCT-collected
+// stats) when reuse is enabled and the cached subtree matches the
+// just-applied state; otherwise fall back to a fresh root. Mirrors KataGomo
+// Search::makeMove (search.cpp:277-354).
+//
+// Root-only NN treatments are re-applied here so the promoted child looks
+// like a freshly-expanded root. KataGo handles this via searchNodeAge++ in
+// beginSearch (search.cpp:719) which triggers maybeRecomputeExistingNNOutput
+// (searchnnhelpers.cpp:113-145) on every new search; V6 does it at promotion
+// time because root-only knobs (canonical-mask pruning, root-vs-child
+// inference symmetry averaging) are baked into nn_logits/children at expand
+// time rather than applied at select.
+//
+// Three KataGo-aligned guards are enforced:
+//   (1) Drop child if not expanded — KataGo nnOutput == NULL ⇒ drop child
+//       (search.cpp:357-361). V6 analog: !is_expanded() means there is no
+//       NN data yet, so the promoted node would behave identically to a
+//       fresh root anyway; rebuild rather than carrying an empty shell.
+//   (2) Force fresh root when root_symmetry_pruning would actually drop a
+//       child. The cached subtree was expanded as a non-root node with the
+//       full legal mask, so children for non-canonical orbit-mates exist and
+//       carry visit / value sums. KataGomo handles this in beginSearch
+//       (search.cpp:651-690) by filtering the offending children AND calling
+//       recomputeNodeStats(node, …, true) (searchupdatehelpers.cpp:136) to
+//       re-aggregate utilityAvg / utilitySqAvg / weightSum from the
+//       surviving children. V6's MCTSNode has no analog of those weighted
+//       aggregates — root.{n, v, q_sum_sq} can't be reconstructed from
+//       child stats alone — so re-aggregation is impossible. Falling back
+//       to fresh root is the only safe option in this case. The check is a
+//       no-op once the position has trivial board symmetry (deep enough
+//       play): canonical mask equals legal mask, no child is non-canonical,
+//       reuse stays valid. Selfplay never sets root_symmetry_pruning, so
+//       this guard only fires in elo / ab evaluation binaries.
+//   (3) Force fresh root if root vs child inference settings differ —
+//       either symmetry averaging (enable_symmetry_inference_for_*) or
+//       per-call stochastic D4 transform (enable_stochastic_transform_*).
+//       KataGo's rootNumSymmetriesToSample > 1 path in
+//       maybeRecomputeExistingNNOutput (searchnnhelpers.cpp:131-134)
+//       triggers full re-inference; V6 mirrors this by clearing the
+//       reused subtree so the next search() call walks the
+//       !is_expanded() branch and re-expands under root settings.
+template<typename Game>
+inline void advance_root_to_action(
+    std::unique_ptr<MCTSNode>& root,
+    int canvas_action,
+    const std::vector<int8_t>& expected_state,
+    int expected_to_play,
+    bool reuse_enabled,
+    const Game& game,
+    const AlphaZeroConfig& cfg)
+{
+    std::unique_ptr<MCTSNode> next_root;
+    if (reuse_enabled && root) {
+        for (auto& c : root->children) {
+            if (c && c->action_taken == canvas_action) {
+                next_root = std::move(c);
+                break;
+            }
+        }
+    }
+
+    const bool inference_settings_root_only =
+        cfg.enable_symmetry_inference_for_root != cfg.enable_symmetry_inference_for_child
+        || cfg.enable_stochastic_transform_inference_for_root
+               != cfg.enable_stochastic_transform_inference_for_child;
+
+    bool valid =
+        next_root
+        && next_root->is_expanded()                              // guard (1)
+        && next_root->state == expected_state
+        && next_root->to_play == expected_to_play
+        && !inference_settings_root_only;                        // guard (3)
+
+    // guard (2): if root_symmetry_pruning would prune at least one already-
+    // expanded child, fresh-root rebuild — see header comment for rationale.
+    if (valid && cfg.root_symmetry_pruning) {
+        const auto canonical = game.get_canonical_legal_actions_canvas(
+            expected_state, expected_to_play);
+        if (!canonical.empty()) {
+            for (const auto& c : next_root->children) {
+                if (!c) continue;
+                const int a = c->action_taken;
+                if (a < 0 || static_cast<size_t>(a) >= canonical.size()
+                    || !canonical[static_cast<size_t>(a)]) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!valid) {
+        root.reset(new MCTSNode{expected_state, expected_to_play});
+        return;
+    }
+
+    next_root->parent = nullptr;
+    root = std::move(next_root);
+}
 
 // ---------------------------------------------------------------------------
 // Search output

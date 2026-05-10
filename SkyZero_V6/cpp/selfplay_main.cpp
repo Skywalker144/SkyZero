@@ -292,6 +292,7 @@ int main(int argc, char** argv) {
             cfg.num_simulations = cli.num_simulations_override;
         }
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
+        cfg.gumbel_cheap_m = cfg_get<int>(cfg_map, "GUMBEL_CHEAP_M", -1);
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
         cfg.half_life = cfg_get<int>(cfg_map, "HALF_LIFE", 0);

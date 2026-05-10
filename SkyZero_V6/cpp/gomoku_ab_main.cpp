@@ -108,6 +108,7 @@ static AlphaZeroConfig build_mcts_cfg(
     c.gumbel_c_visit = cfg_get<float>(m, "GUMBEL_C_VISIT", 50.0f);
     c.gumbel_c_scale = cfg_get<float>(m, "GUMBEL_C_SCALE", 1.0f);
     c.gumbel_noise_enabled = false;
+    c.enable_tree_reuse = cfg_get_bool(m, "ENABLE_TREE_REUSE", true);
     c.half_life = cfg_get<int>(m, "HALF_LIFE", 0);
     c.c_puct = cfg_get<float>(m, "C_PUCT", 1.1f);
     c.c_puct_log = cfg_get<float>(m, "C_PUCT_LOG", 0.45f);
@@ -500,15 +501,27 @@ int main(int argc, char** argv) {
                     int last_player = 0;
                     int plies = 0;
 
+                    // Per-side reuse — A and B may have different cfgs, so
+                    // each side decides independently whether its tree
+                    // persists across moves.
+                    if (cfg_a.enable_tree_reuse) {
+                        root_a.reset(new MCTSNode{state, to_play});
+                    }
+                    if (cfg_b.enable_tree_reuse) {
+                        root_b.reset(new MCTSNode{state, to_play});
+                    }
+
                     while (!game.is_terminal(state, last_action, last_player)) {
                         const bool a_to_move = (a_is_black && to_play == 1)
                                             || (!a_is_black && to_play == -1);
                         auto& mcts = a_to_move ? mcts_a : mcts_b;
                         auto& root = a_to_move ? root_a : root_b;
-
-                        root.reset(new MCTSNode{state, to_play});
                         const int sims = a_to_move ? cfg_a.num_simulations : cfg_b.num_simulations;
                         const auto& engine_cfg = a_to_move ? cfg_a : cfg_b;
+
+                        if (!engine_cfg.enable_tree_reuse) {
+                            root.reset(new MCTSNode{state, to_play});
+                        }
                         auto res = (engine_cfg.search_algo == SearchAlgo::PUCT)
                             ? mcts.search(state, to_play, sims, root)
                             : mcts.gumbel_search(state, to_play, sims, root);
@@ -530,13 +543,19 @@ int main(int argc, char** argv) {
                         // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
                         // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
                         // at the boundary, mirroring gomoku_elo_main.cpp.
-                        int action = (res.gumbel_action >= 0)
-                            ? Gomoku::canvas_pos_to_loc(res.gumbel_action, game.board_size)
+                        int canvas_action = res.gumbel_action;
+                        int action = (canvas_action >= 0)
+                            ? Gomoku::canvas_pos_to_loc(canvas_action, game.board_size)
                             : -1;
                         if (action < 0) {
                             const auto legal = game.get_is_legal_actions(state, to_play);
                             for (int i = 0; i < static_cast<int>(legal.size()); ++i) {
                                 if (legal[i]) { action = i; break; }
+                            }
+                            if (action >= 0) {
+                                const int row = action / game.board_size;
+                                const int col = action % game.board_size;
+                                canvas_action = row * Gomoku::MAX_BOARD_SIZE + col;
                             }
                         }
                         if (action < 0) break;
@@ -546,6 +565,14 @@ int main(int argc, char** argv) {
                         last_player = to_play;
                         to_play = -to_play;
                         ++plies;
+
+                        // Advance whichever trees persist across moves; the
+                        // other side's reset-per-search will overwrite at
+                        // next search entry.
+                        advance_root_to_action(root_a, canvas_action, state, to_play,
+                                               cfg_a.enable_tree_reuse, game, cfg_a);
+                        advance_root_to_action(root_b, canvas_action, state, to_play,
+                                               cfg_b.enable_tree_reuse, game, cfg_b);
                     }
 
                     const int winner = game.get_winner(state, last_action, last_player);

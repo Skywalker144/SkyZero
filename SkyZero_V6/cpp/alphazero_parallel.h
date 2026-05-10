@@ -81,7 +81,8 @@ public:
         int to_play,
         int num_simulations,
         std::unique_ptr<MCTSNode>& root,
-        bool disable_root_noise = false
+        bool disable_root_noise = false,
+        int gumbel_m_override = -1
     ) {
         if (!root) {
             root.reset(new MCTSNode{state, to_play});
@@ -97,7 +98,7 @@ public:
             nn_policy = root->nn_policy;
             nn_value_probs = root->nn_value_probs;
         }
-        auto gumbel = gumbel_sequential_halving(*root, num_simulations, disable_root_noise);
+        auto gumbel = gumbel_sequential_halving(*root, num_simulations, disable_root_noise, gumbel_m_override);
 
         MCTSSearchOutput out;
         out.mcts_policy = std::move(gumbel.improved_policy);
@@ -735,7 +736,8 @@ private:
     }
 
     GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations,
-                                           bool disable_root_noise = false) {
+                                           bool disable_root_noise = false,
+                                           int gumbel_m_override = -1) {
         const int action_size = Game::MAX_AREA;
         std::vector<float> logits = root.nn_logits;
         if (logits.size() != static_cast<size_t>(action_size)) {
@@ -755,7 +757,8 @@ private:
             }
         }
 
-        int m = std::min(num_simulations, cfg_.gumbel_m);
+        const int eff_gumbel_m = (gumbel_m_override > 0) ? gumbel_m_override : cfg_.gumbel_m;
+        int m = std::min(num_simulations, eff_gumbel_m);
         std::vector<int> sorted_actions(static_cast<size_t>(action_size));
         std::iota(sorted_actions.begin(), sorted_actions.end(), 0);
         std::sort(sorted_actions.begin(), sorted_actions.end(), [&](int a, int b) {
@@ -774,39 +777,85 @@ private:
         }
 
         m = static_cast<int>(surviving_actions.size());
+        // σ_q gain is calibrated to "search-effort" max_n, not the
+        // tree-cumulative max_n that grows under reuse. min(planned_max_n,
+        // max_n) caps the gain at this search's intended sharpness; on a
+        // fresh tree max_n ≤ num_simulations, so the clamp is a no-op.
+        // Mirrors Sayuri Node::TransformCompletedQ (node.cc:1483).
+        const float planned_max_n = static_cast<float>(num_simulations);
         if (m > 0) {
             const int phases = (m > 1) ? static_cast<int>(std::ceil(std::log2(static_cast<double>(m)))) : 1;
-            int sims_budget = num_simulations;
+
+            // Per-arm cumulative visit target per phase, derived from V6's
+            // prior "remaining_budget / remaining_phases / num_actions"
+            // allocation. On a fresh tree this matches the HEAD runtime
+            // schedule exactly; on a reused tree the deficit
+            // `target_after[p] - n_a` tops up only under-visited arms,
+            // restoring SH's equal-budget assumption (Sayuri
+            // ProcessGumbelLogits, node.cc:1683-1726).
+            std::vector<int> target_after(static_cast<size_t>(phases), 0);
+            {
+                int sims_remaining = num_simulations;
+                int cumulative = 0;
+                for (int p = 0; p < phases; ++p) {
+                    const int num_actions_p = std::max(1, m >> p);
+                    const int sims_this_phase = sims_remaining / std::max(1, phases - p);
+                    const int per_action = std::max(1, sims_this_phase / num_actions_p);
+                    cumulative += per_action;
+                    target_after[static_cast<size_t>(p)] = cumulative;
+                    sims_remaining -= per_action * num_actions_p;
+                }
+            }
+
+            int sims_done = 0;
 
             for (int phase = 0; phase < phases; ++phase) {
-                if (sims_budget <= 0 || surviving_actions.empty()) break;
-                const int remaining_phases = phases - phase;
-                const int sims_this_phase = sims_budget / remaining_phases;
-                const int num_actions = static_cast<int>(surviving_actions.size());
-                const int sims_per_action = std::max(1, sims_this_phase / std::max(1, num_actions));
+                if (surviving_actions.empty() || sims_done >= num_simulations) break;
+                const int target_p = target_after[static_cast<size_t>(phase)];
+
+                const size_t S = surviving_actions.size();
+                std::vector<int> deficits(S, 0);
+                int max_deficit = 0;
+                for (size_t i = 0; i < S; ++i) {
+                    const int a = surviving_actions[i];
+                    const MCTSNode* c = nullptr;
+                    for (const auto& child : root.children) {
+                        if (child && child->action_taken == a) { c = child.get(); break; }
+                    }
+                    const int n_a = c ? c->n : 0;
+                    deficits[i] = std::max(0, target_p - n_a);
+                    if (deficits[i] > max_deficit) max_deficit = deficits[i];
+                }
 
                 std::vector<int> rollout_actions;
-                rollout_actions.reserve(static_cast<size_t>(std::max(1, sims_per_action * num_actions)));
-                for (int s = 0; s < sims_per_action && sims_budget > 0; ++s) {
-                    for (int action : surviving_actions) {
-                        if (sims_budget <= 0) break;
-                        rollout_actions.push_back(action);
+                rollout_actions.reserve(static_cast<size_t>(max_deficit) * S);
+                bool stop = false;
+                for (int s = 0; s < max_deficit && !stop; ++s) {
+                    for (size_t i = 0; i < S; ++i) {
+                        if (deficits[i] > s) {
+                            if (sims_done >= num_simulations) { stop = true; break; }
+                            rollout_actions.push_back(surviving_actions[i]);
+                            ++sims_done;
+                        }
                     }
                 }
 
-                size_t offset = 0;
-                while (offset < rollout_actions.size() && sims_budget > 0) {
-                    const size_t chunk = std::min(static_cast<size_t>(leaf_batch_size_), rollout_actions.size() - offset);
-                    std::vector<int> action_batch;
-                    action_batch.reserve(chunk);
-                    for (size_t i = 0; i < chunk; ++i) {
-                        action_batch.push_back(rollout_actions[offset + i]);
+                if (!rollout_actions.empty()) {
+                    int sims_budget_phase = static_cast<int>(rollout_actions.size());
+                    size_t offset = 0;
+                    while (offset < rollout_actions.size()) {
+                        const size_t chunk = std::min(static_cast<size_t>(leaf_batch_size_),
+                                                      rollout_actions.size() - offset);
+                        std::vector<int> action_batch;
+                        action_batch.reserve(chunk);
+                        for (size_t i = 0; i < chunk; ++i) {
+                            action_batch.push_back(rollout_actions[offset + i]);
+                        }
+                        run_rollouts(root, action_batch, sims_budget_phase);
+                        offset += chunk;
                     }
-                    run_rollouts(root, action_batch, sims_budget);
-                    offset += chunk;
                 }
-
-                if (phase < phases - 1 && !surviving_actions.empty()) {
+                if (phase < phases - 1 && surviving_actions.size() > 1) {
                     const float max_n = max_child_n(root);
                     const float c_visit = cfg_.gumbel_c_visit;
                     const float c_scale = cfg_.gumbel_c_scale;
@@ -822,7 +871,8 @@ private:
                             const float cl = c->v[2] / static_cast<float>(c->n);
                             q = ((cl - cw) + 1.0f) * 0.5f;
                         }
-                        return logits[a] + g[a] + (c_visit + max_n) * c_scale * q;
+                        return logits[a] + g[a]
+                            + (c_visit + std::min(planned_max_n, max_n)) * c_scale * q;
                     };
 
                     std::sort(surviving_actions.begin(), surviving_actions.end(), [&](int a, int b) {
@@ -873,12 +923,15 @@ private:
             };
         }
 
+        // σ_q gain clamped at planned_max_n (= num_simulations) so a
+        // reuse-inflated max_n cannot drown logits in improved_policy.
+        const float clamped_gain = c_visit + std::min(planned_max_n, max_n);
         std::vector<float> sigma_q(static_cast<size_t>(action_size), 0.0f);
         for (int a = 0; a < action_size; ++a) {
             const auto& q = (n_values[a] > 0.0f) ? q_wdl[a] : v_mix;
             float s = q[0] - q[2];
             s = (s + 1.0f) * 0.5f;
-            sigma_q[a] = (c_visit + max_n) * c_scale * s;
+            sigma_q[a] = clamped_gain * c_scale * s;
         }
 
         std::vector<float> improved_logits(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
