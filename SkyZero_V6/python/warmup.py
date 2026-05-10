@@ -22,6 +22,7 @@ list has < 2 entries (warmup disabled).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import sys
@@ -87,7 +88,12 @@ PARAMS = {
 }
 
 
-def _compute(cfg: dict, data_dir: pathlib.Path) -> int:
+def _compute_value(cfg: dict, data_dir: pathlib.Path) -> tuple[int, int, str]:
+    """Returns (value, cum_rows, tag). Silent — no stdout/stderr.
+
+    cum_rows is the real selfplay-pool size (main + daemon NPZs), via
+    pool_rows.current_pool_rows — matches what shuffle/training actually see.
+    """
     import pool_rows
 
     fallback = int(float(os.environ.get(cfg["fallback_env"], cfg["fallback_default"])))
@@ -97,8 +103,14 @@ def _compute(cfg: dict, data_dir: pathlib.Path) -> int:
     cum_rows = pool_rows.current_pool_rows(data_dir)
     val = staged_value(cum_rows, warmup_samples, stages)
     out = val if val is not None else fallback
-
     tag = "warmup" if val is not None else "steady-cfg"
+    return out, cum_rows, tag
+
+
+def _compute(cfg: dict, data_dir: pathlib.Path) -> int:
+    out, cum_rows, tag = _compute_value(cfg, data_dir)
+    stages = parse_stage_list(os.environ.get(cfg["stages_env"]), cast=int)
+    warmup_samples = int(float(os.environ.get(cfg["warmup_env"], "0")))
     print(
         f"[{cfg['tag']}] cum_rows={cum_rows} "
         f"stages={stages} warmup_samples={warmup_samples} "
@@ -109,13 +121,39 @@ def _compute(cfg: dict, data_dir: pathlib.Path) -> int:
     return 0
 
 
+def _write_sidecar(data_dir: pathlib.Path, out_path: pathlib.Path) -> int:
+    nsim, cum_rows, _ = _compute_value(PARAMS["num-simulations"], data_dir)
+    cheap, _, _ = _compute_value(PARAMS["cheap-search-visits"], data_dir)
+    payload = {"num_simulations": int(nsim), "cheap_search_visits": int(cheap)}
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload) + "\n")
+    os.replace(tmp, out_path)
+
+    print(
+        f"[warmup-sidecar] wrote {out_path}: "
+        f"num_sim={nsim} cheap={cheap} cum_rows={cum_rows}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="param", required=True)
     for name in PARAMS:
         p = sub.add_parser(name)
         p.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
+    ws = sub.add_parser("write-sidecar")
+    ws.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
+    ws.add_argument("--out", default=None,
+                    help="output JSON path (default: <data-dir>/logs/warmup_current.json)")
     args = parser.parse_args()
+    if args.param == "write-sidecar":
+        data_dir = pathlib.Path(args.data_dir)
+        out_path = pathlib.Path(args.out) if args.out else data_dir / "logs" / "warmup_current.json"
+        return _write_sidecar(data_dir, out_path)
     return _compute(PARAMS[args.param], pathlib.Path(args.data_dir))
 
 

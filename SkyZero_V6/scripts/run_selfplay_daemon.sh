@@ -81,9 +81,10 @@ export NUM_WORKERS="$DWK_TOTAL"
 
 POLL_MS="${DAEMON_RELOAD_POLL_MS:-2000}"
 STATS="$DATA_DIR/logs/daemon_stats.tsv"
+SIDECAR="${WARMUP_SIDECAR:-$DATA_DIR/logs/warmup_current.json}"
 
 echo "[daemon-watchdog] gpus=$SELFPLAY_DAEMON_GPUS per_gpu(servers/workers)=$DSV_PER_GPU/$DWK_PER_GPU total=$DSV_TOTAL/$DWK_TOTAL devices=$INFERENCE_SERVER_DEVICES"
-echo "[daemon-watchdog] poll_ms=$POLL_MS stats=$STATS"
+echo "[daemon-watchdog] poll_ms=$POLL_MS stats=$STATS sidecar=$SIDECAR"
 
 while true; do
     "$SELFPLAY_BIN" --daemon \
@@ -93,12 +94,22 @@ while true; do
         --log-dir "$DATA_DIR/logs" \
         --model-watch-poll-ms "$POLL_MS" \
         --stats-file "$STATS" \
+        --warmup-sidecar "$SIDECAR" \
         || rc=$?
     rc=${rc:-0}
-    if [[ "$rc" -eq 130 ]]; then
-        # SIGINT: user-initiated shutdown.
-        echo "[daemon-watchdog] interrupted; exiting."
+    if [[ "$rc" -eq 0 || "$rc" -eq 130 ]]; then
+        # rc=0 is unexpected for daemon mode but treat as clean exit;
+        # rc=130 is SIGINT (user-initiated shutdown).
+        echo "[daemon-watchdog] exit rc=$rc; stopping."
         exit 0
+    fi
+    if [[ "$rc" -eq 99 ]]; then
+        # selfplay_main self-exited because the warmup sidecar changed.
+        # Restart immediately to pick up the new --num-simulations /
+        # --cheap-search-visits via the same sidecar path; no backoff.
+        echo "[daemon-watchdog] warmup change → restarting (no backoff)"
+        unset rc
+        continue
     fi
     echo "[daemon-watchdog] selfplay_main exited rc=$rc; restarting in 5s"
     unset rc

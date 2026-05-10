@@ -174,6 +174,12 @@ struct CliArgs {
     // Per-iter warmup override for CHEAP_SEARCH_VISITS. KataGo-paper-aligned
     // ramp shares NUM_SIM_WARMUP_SAMPLES with full visits. <= 0 = cfg value.
     int cheap_search_visits_override = -1;
+    // Daemon mode: path to a JSON sidecar written by run.sh's
+    // write_warmup_sidecar (each iter). Read at startup as as-if-CLI overrides
+    // for num_simulations / cheap_search_visits, then polled in the daemon
+    // loop. On change, daemon exits rc=99 and the watchdog respawns it with
+    // the new values picked up via the same sidecar path. Empty = disabled.
+    std::string warmup_sidecar;
 };
 
 static CliArgs parse_cli(int argc, char** argv) {
@@ -197,6 +203,7 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--stats-file") a.stats_file = need("--stats-file");
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
         else if (k == "--cheap-search-visits") a.cheap_search_visits_override = std::stoi(need("--cheap-search-visits"));
+        else if (k == "--warmup-sidecar") a.warmup_sidecar = need("--warmup-sidecar");
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.output_dir.empty() || a.config.empty()) {
@@ -254,6 +261,35 @@ static int read_meta_iter(const std::string& meta_path) {
     return ss.fail() ? -1 : v;
 }
 
+// Same hand-roll style as read_meta_iter — sidecar is written by
+// python/warmup.py write-sidecar with a known schema. Returns true on full
+// parse success (both keys present, positive ints); false on missing file or
+// any parse error.
+static bool parse_warmup_sidecar(const std::string& path, int& nsim, int& cheap) {
+    std::ifstream f(path);
+    if (!f) return false;
+    std::string s((std::istreambuf_iterator<char>(f)),
+                  std::istreambuf_iterator<char>());
+    auto find_int = [&](const char* key, int& out) -> bool {
+        const auto k = s.find(std::string("\"") + key + "\"");
+        if (k == std::string::npos) return false;
+        const auto colon = s.find(':', k);
+        if (colon == std::string::npos) return false;
+        std::istringstream ss(s.substr(colon + 1));
+        int v = -1;
+        ss >> v;
+        if (ss.fail() || v <= 0) return false;
+        out = v;
+        return true;
+    };
+    int n = -1, c = -1;
+    if (!find_int("num_simulations", n)) return false;
+    if (!find_int("cheap_search_visits", c)) return false;
+    nsim = n;
+    cheap = c;
+    return true;
+}
+
 int main(int argc, char** argv) {
     try {
         std::signal(SIGINT, signal_handler);
@@ -264,7 +300,24 @@ int main(int argc, char** argv) {
         // KataGomo VCFsolver: seed zobrist tables (process-once).
         skyzero::vct::global_init();
 
-        const auto cli = parse_cli(argc, argv);
+        auto cli = parse_cli(argc, argv);
+
+        // Daemon mode: if a sidecar was provided, promote its values to
+        // as-if-CLI overrides so the existing override path (cfg.num_simulations
+        // / cfg.cheap_search_visits below) picks them up unchanged. Explicit
+        // CLI flags still win.
+        if (!cli.warmup_sidecar.empty()) {
+            int n = -1, c = -1;
+            if (parse_warmup_sidecar(cli.warmup_sidecar, n, c)) {
+                if (cli.num_simulations_override <= 0)    cli.num_simulations_override = n;
+                if (cli.cheap_search_visits_override <= 0) cli.cheap_search_visits_override = c;
+                std::cout << "[Daemon] warmup sidecar applied: nsim=" << n
+                          << " cheap=" << c << "\n";
+            } else {
+                std::cerr << "[Daemon] warmup sidecar missing/unparseable at "
+                          << cli.warmup_sidecar << "; using cfg defaults\n";
+            }
+        }
 
         // Cold-start: in daemon mode, latest.pt may not exist yet (the train
         // loop hasn't run init_model.py + first export). Block here rather
@@ -382,6 +435,14 @@ int main(int argc, char** argv) {
         }
         cfg.cheap_search_target_weight =
             cfg_get<float>(cfg_map, "CHEAP_SEARCH_TARGET_WEIGHT", 0.0f);
+
+        // Snapshot the values the engine is about to be built with. Used by
+        // the daemon's sidecar-watch loop below to detect warmup transitions
+        // (parse_warmup_sidecar yielding ints != these triggers rc=99 restart).
+        const int initial_nsim = cfg.num_simulations;
+        const int initial_cheap = cfg.cheap_search_visits;
+        long long last_sidecar_mtime_ns =
+            cli.warmup_sidecar.empty() ? 0 : file_mtime_ns(cli.warmup_sidecar);
 
         const bool use_cuda = torch::cuda::is_available();
         cfg.device = use_cuda ? torch::Device(torch::kCUDA, 0) : torch::Device(torch::kCPU);
@@ -778,6 +839,30 @@ int main(int argc, char** argv) {
                             } catch (const std::exception& e) {
                                 std::cerr << "[Daemon] reload failed: " << e.what() << "\n";
                                 last_mtime_ns = m3;  // don't retry the same broken file
+                            }
+                        }
+                    }
+                }
+
+                // Warmup-sidecar mtime watch. cfg is held by const ref inside
+                // the engine and read by workers without sync, so we don't
+                // mutate it in-flight. Instead, on a value change we exit
+                // rc=99 — run_selfplay_daemon.sh's watchdog respawns us with
+                // fresh values via the same sidecar path.
+                if (!cli.warmup_sidecar.empty()) {
+                    const long long sm = file_mtime_ns(cli.warmup_sidecar);
+                    if (sm != 0 && sm != last_sidecar_mtime_ns) {
+                        last_sidecar_mtime_ns = sm;  // record even on parse fail to avoid spinning
+                        int n = -1, c = -1;
+                        if (parse_warmup_sidecar(cli.warmup_sidecar, n, c)) {
+                            if (n != initial_nsim || c != initial_cheap) {
+                                std::cout << "[Daemon] warmup change detected: nsim "
+                                          << initial_nsim << "->" << n << " cheap "
+                                          << initial_cheap << "->" << c
+                                          << "; exiting rc=99 for restart\n";
+                                append_stats_row(cur_version);
+                                engine.stop();
+                                return 99;
                             }
                         }
                     }
