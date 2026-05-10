@@ -88,15 +88,13 @@ PARAMS = {
 
 
 def _compute(cfg: dict, data_dir: pathlib.Path) -> int:
-    from compute_games import read_history
-
-    last_run_tsv = data_dir / "logs" / "last_run.tsv"
+    import pool_rows
 
     fallback = int(float(os.environ.get(cfg["fallback_env"], cfg["fallback_default"])))
     stages = parse_stage_list(os.environ.get(cfg["stages_env"]), cast=int)
     warmup_samples = int(float(os.environ.get(cfg["warmup_env"], "0")))
 
-    _, cum_rows = read_history(last_run_tsv)
+    cum_rows = pool_rows.current_pool_rows(data_dir)
     val = staged_value(cum_rows, warmup_samples, stages)
     out = val if val is not None else fallback
 
