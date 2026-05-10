@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 
 iter="${1:?iter required}"
+slot="${2:?slot required}"
 PY=${PY:-python}
 source "$SCRIPT_DIR/paths.cfg"
 
@@ -13,4 +14,4 @@ source "$SCRIPT_DIR/paths.cfg"
 export CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}"
 
 cd "$ROOT/python"
-"$PY" train.py --data-dir "$DATA_DIR" --iter "$iter"
+"$PY" train.py --data-dir "$DATA_DIR" --iter "$iter" --slot "$slot"

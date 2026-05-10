@@ -8,6 +8,11 @@ Defaults match a b12c128 KataGo v15 model. The KataGo v15 derived fields
 (c_mid, c_gpool, c_p1, c_g1, c_v1, c_v2, intermediate_head_blocks) auto-
 derive from num_channels / num_blocks unless explicitly overridden, so
 users can scale the model just by setting num_blocks / num_channels.
+
+Multi-slot training: num_blocks / num_channels come from the slot table
+(MODEL_BLOCKS / MODEL_CHANNELS in run.cfg, parsed by slots.py).
+net_config_for_slot(name) is the single entry point — train.py /
+init_model.py / export_model.py all go through it.
 """
 from __future__ import annotations
 
@@ -55,13 +60,12 @@ class NetConfig:
             self.intermediate_head_blocks = max(1, self.num_blocks * 2 // 3)
 
 
-def net_config_from_env() -> NetConfig:
-    """Read env vars set by scripts/run.cfg (sourced in bash then exported).
+def net_config_for_slot(slot_name: str) -> NetConfig:
+    """Build a NetConfig for the named slot.
 
-    Reads the basic dimensions (NUM_BLOCKS, NUM_CHANNELS, NUM_PLANES,
-    NUM_GLOBAL_FEATURES) plus optional explicit overrides for derived
-    fields (C_MID, C_GPOOL, INTERMEDIATE_HEAD_BLOCKS, ...).
-    Constructor's __post_init__ fills any field left as None.
+    num_blocks / num_channels come from the slot table (slots.py). All other
+    fields (board canvas, planes, optional dim overrides like C_MID) come
+    from process env — these are shared across every slot.
 
     NetConfig.board_size (model canvas) is read from env MAX_BOARD_SIZE,
     which scripts/run.cfg owns. cpp/CMakeLists.txt parses the same line and
@@ -71,15 +75,16 @@ def net_config_from_env() -> NetConfig:
     the change) and re-trace via init_model.py.
     """
     import os
-    kwargs: dict = {}
+    from slots import get_slot
+    slot = get_slot(slot_name)
+    kwargs: dict = {
+        "num_blocks": slot.num_blocks,
+        "num_channels": slot.num_channels,
+    }
     if (v := os.environ.get("MAX_BOARD_SIZE")):
         kwargs["board_size"] = int(v)
     if (v := os.environ.get("NUM_PLANES")):
         kwargs["num_planes"] = int(v)
-    if (v := os.environ.get("NUM_BLOCKS")):
-        kwargs["num_blocks"] = int(v)
-    if (v := os.environ.get("NUM_CHANNELS")):
-        kwargs["num_channels"] = int(v)
     if (v := os.environ.get("NUM_GLOBAL_FEATURES")):
         kwargs["num_global_features"] = int(v)
     if (v := os.environ.get("C_MID")):

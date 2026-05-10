@@ -141,3 +141,5 @@ docs/
 /data*/
 GetCommits.txt
 gomocup
+
+scripts/run.cfg.local

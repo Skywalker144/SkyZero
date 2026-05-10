@@ -1,9 +1,10 @@
 """Train one epoch over data/shuffled/current/.
 
 One "epoch" here = TRAIN_STEPS_PER_EPOCH mini-batch SGD steps. After training,
-saves model state_dict to data/checkpoints/model_latest.pt and appends an
-entry to data/logs/train.tsv. run.sh invokes export_model.py afterwards to
-produce a TorchScript artifact for the next selfplay round.
+saves model state_dict to data/checkpoints/<slot>/model_latest.pt and appends
+an entry to data/logs/train_<slot>.tsv. run.sh invokes export_model.py
+afterwards to produce a TorchScript artifact, then promotes the active slot's
+artifact to data/models/latest.pt for the next selfplay round.
 """
 from __future__ import annotations
 
@@ -22,8 +23,9 @@ import torch
 import torch.nn.functional as F
 from checkpoint_utils import zero_pad_for_v6
 from data_processing import load_npz, random_d4_inplace
-from model_config import net_config_from_env
+from model_config import net_config_for_slot
 from nets import build_model
+from slots import slot_ckpt_dir, slot_train_log
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +162,7 @@ def weighted_futurepos_mse(
 class TrainArgs:
     data_dir: pathlib.Path
     iter: int
+    slot: str
     batch_size: int
     train_steps: int
     lr: float
@@ -196,6 +199,8 @@ def parse_args() -> TrainArgs:
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     p.add_argument("--iter", type=int, required=True)
+    p.add_argument("--slot", required=True,
+                   help="model slot name (must be in MODEL_SLOTS)")
     # Deprecated: data loading is now a streaming generator with its own
     # single-thread prefetch (see iterate_batches). Accepted for backward
     # compatibility; value is ignored.
@@ -205,6 +210,7 @@ def parse_args() -> TrainArgs:
     return TrainArgs(
         data_dir=pathlib.Path(a.data_dir),
         iter=a.iter,
+        slot=a.slot,
         batch_size=int(os.environ.get("BATCH_SIZE", "256")),
         train_steps=int(os.environ.get("TRAIN_STEPS_PER_EPOCH", "100")),
         lr=float(os.environ.get("LR", "1e-4")),
@@ -262,9 +268,9 @@ def _load_or_init_model(args: TrainArgs) -> tuple[torch.nn.Module, int, dict | N
     """Returns (model, global_step, optim_state, scaler_state, swa_state, swa_accum_steps).
     Any of the state dicts are None if absent (fresh run or legacy ckpt).
     """
-    cfg = net_config_from_env()
+    cfg = net_config_for_slot(args.slot)
     model = build_model(cfg)
-    ckpt_dir = args.data_dir / "checkpoints"
+    ckpt_dir = slot_ckpt_dir(args.data_dir, args.slot)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     latest = ckpt_dir / "model_latest.pt"
     global_step = 0
@@ -316,7 +322,7 @@ def _write_log(log_path: pathlib.Path, row: dict) -> None:
 
 def main() -> int:
     args = parse_args()
-    cfg = net_config_from_env()
+    cfg = net_config_for_slot(args.slot)
     shard_dir = args.data_dir / "shuffled" / "current"
 
     it = iterate_batches(shard_dir, args.batch_size, args.device, infinite=True)
@@ -607,8 +613,8 @@ def main() -> int:
               "soft_opp_policy", "value", "td_value", "futurepos", "int_total"):
         print(f"[Train]   {k:<{name_w}} : {first_avg[k]:8.4f} -> {last_avg[k]:8.4f}")
 
-    # Save checkpoint
-    ckpt_dir = args.data_dir / "checkpoints"
+    # Save checkpoint (per-slot)
+    ckpt_dir = slot_ckpt_dir(args.data_dir, args.slot)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     latest = ckpt_dir / "model_latest.pt"
     tmp = latest.with_suffix(latest.suffix + ".tmp")
@@ -633,15 +639,17 @@ def main() -> int:
     else:
         torch.save(model.state_dict(), snap)
 
-    # State json
+    # Per-slot state json (consumed by run.sh's global state aggregator and
+    # by tooling that wants to know each slot's training progress without
+    # touching the optimizer-laden model_latest.pt).
     state_json = ckpt_dir / "state.json"
     state_json.write_text(json.dumps({
         "iter": args.iter,
         "global_step_samples": global_step,
     }, indent=2))
 
-    # Log
-    _write_log(args.data_dir / "logs" / "train.tsv", {
+    # Log (per-slot TSV).
+    _write_log(slot_train_log(args.data_dir, args.slot), {
         "iter": args.iter,
         "steps": step,
         "global_step_samples": global_step,

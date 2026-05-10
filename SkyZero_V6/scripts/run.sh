@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Main orchestration loop: selfplay -> shuffle -> train -> export, repeat.
+# Main orchestration loop: selfplay -> shuffle -> {train+export per slot} ->
+# promote active slot, repeat.
 #
 # Usage: bash scripts/run.sh [max_iters]
 #   If max_iters is omitted the loop runs until Ctrl+C.
@@ -30,6 +31,20 @@ mkdir -p "$DATA_DIR"/{models,selfplay,shuffled/current,checkpoints,logs}
 PY=${PY:-python}
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
 
+# Refresh sidecar JSON consumed by run_selfplay_daemon.sh / selfplay_main --daemon
+# so the multi-GPU daemon picks up per-iter NUM_SIMULATIONS / CHEAP_SEARCH_VISITS
+# warmup values. Daemon polls mtime; on change it exits rc=99 and the watchdog
+# restarts it with the new values. selfplay.sh (main GPU) reads warmup separately.
+write_warmup_sidecar(){
+    ( cd "$ROOT/python" && "$PY" warmup.py write-sidecar --data-dir "$DATA_DIR" )
+}
+
+# Validate slot config (assert first activate=0, strictly increasing, lengths
+# match across MODEL_SLOTS / MODEL_BLOCKS / MODEL_CHANNELS / MODEL_ACTIVATE_SAMPLES).
+"$PY" "$ROOT/python/slots.py" validate
+mapfile -t SLOT_NAMES < <( "$PY" "$ROOT/python/slots.py" list-slots )
+echo "[run.sh] slots: ${SLOT_NAMES[*]}"
+
 # Auto-detect GPU count. Main loop runs on GPU 0; if >1 GPUs, spare GPUs
 # (1..N-1) are owned by run_selfplay_daemon.sh, started in the background below.
 if [[ -z "${GPU_NUM:-}" ]]; then
@@ -48,6 +63,11 @@ echo "[run.sh] detected GPU_NUM=$GPU_NUM"
 # This is a no-op (~<1s) when nothing has changed.
 cmake --build "$ROOT/cpp/build" -j
 
+# Cold-start: write the warmup sidecar before launching the daemon so the
+# daemon's startup read picks up the right (resume- or first-iter-)values
+# instead of falling back to cfg defaults.
+write_warmup_sidecar
+
 # Multi-GPU: launch the selfplay daemon on GPUs 1..GPU_NUM-1 in the background.
 if [[ "$GPU_NUM" -gt 1 ]]; then
     echo "[run.sh] starting selfplay daemon on GPUs 1..$((GPU_NUM-1))"
@@ -55,7 +75,10 @@ if [[ "$GPU_NUM" -gt 1 ]]; then
     DAEMON_PID=$!
 fi
 
-# Resume iter from data/checkpoints/state.json if present
+# Resume iter from data/checkpoints/state.json if present. State is written by
+# this script at the end of each fully-completed iter (after every slot has
+# been trained, exported, and the active slot promoted), so resume always
+# picks up at a clean iter boundary.
 iter=0
 if [[ -f "$DATA_DIR/checkpoints/state.json" ]]; then
     iter=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['iter'])" \
@@ -63,9 +86,9 @@ if [[ -f "$DATA_DIR/checkpoints/state.json" ]]; then
     iter=$((iter + 1))
 fi
 
-# First-time init: need a TorchScript model for C++ to load
+# First-time init: random-init every slot and seed models/latest.pt.
 if [[ ! -f "$DATA_DIR/models/latest.pt" ]]; then
-    echo "[run.sh] bootstrapping random-init model"
+    echo "[run.sh] bootstrapping random-init models for all slots"
     ( cd "$ROOT/python" && "$PY" init_model.py --data-dir "$DATA_DIR" )
 fi
 
@@ -83,6 +106,12 @@ while true; do
     awk 'NR>1 {g+=$2; r+=$3} END {printf "[run.sh] cumulative so far: games=%d samples=%d\n", g+0, r+0}' \
         "$DATA_DIR/logs/last_run.tsv" 2>/dev/null \
         || echo "[run.sh] cumulative so far: games=0 samples=0"
+    ACTIVE_SLOT=$( "$PY" "$ROOT/python/slots.py" active --data-dir "$DATA_DIR" )
+    echo "[run.sh] active selfplay slot for iter $iter: $ACTIVE_SLOT"
+
+    # Refresh the warmup sidecar at iter start so the daemon (if running) sees
+    # the current-iter values when it next polls.
+    write_warmup_sidecar
 
     # (1) compute games for this iter
     TRAIN_STEPS_PER_EPOCH=$( cd "$ROOT/python" && "$PY" warmup.py train-steps --data-dir "$DATA_DIR" )
@@ -115,13 +144,24 @@ while true; do
         echo "[run.sh] shuffle failed with code $SHUFFLE_RC"
         exit "$SHUFFLE_RC"
     else
-        # (4) train
-        bash "$SCRIPT_DIR/train.sh" "$iter"
+        # (4) train + (5) export each slot sequentially on MAIN_GPU.
+        for slot in "${SLOT_NAMES[@]}"; do
+            echo "[run.sh] --- iter $iter slot $slot: train ---"
+            bash "$SCRIPT_DIR/train.sh" "$iter" "$slot"
+            echo "[run.sh] --- iter $iter slot $slot: export ---"
+            bash "$SCRIPT_DIR/export.sh" "$iter" "$slot"
+        done
 
-        # (5) export TorchScript
-        bash "$SCRIPT_DIR/export.sh" "$iter"
+        # (6) Promote the now-active slot to data/models/latest.pt for the next
+        # selfplay round. Active slot is recomputed against the cumulative
+        # samples observed at this iter's *start* (selfplay this iter has
+        # already finished with the previous active slot).
+        PROMOTED=$( "$PY" "$ROOT/python/slots.py" promote \
+            --data-dir "$DATA_DIR" --iter "$iter" )
+        echo "[run.sh] promoted slot for next iter: $PROMOTED"
 
-        # (5b) post-export diagnostic: empty-board MCTS rootValue probe
+        # (7) post-export diagnostic: empty-board MCTS rootValue probe on the
+        # active slot's freshly-promoted model.
         "$ROOT/cpp/build/mcts_probe" \
             --model "$DATA_DIR/models/latest.pt" \
             --config "$SCRIPT_DIR/run.cfg" \
@@ -129,8 +169,22 @@ while true; do
             --log "$DATA_DIR/logs/probe.tsv" \
             || echo "[run.sh] mcts_probe failed (non-fatal)"
 
-        # (6) plot loss curve
+        # (8) plot loss curves (overlays all slots — see view_loss.py)
         ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
+
+        # (8.5) snapshot total selfplay-pool rows for next iter's
+        # compute_games dead-reckoning (Plan C). Writes one row to
+        # data/logs/pool_rows.tsv. Kept in sync with state.json below — the
+        # two together mark a clean iter boundary on resume.
+        ( cd "$ROOT/python" && "$PY" pool_rows.py snapshot --data-dir "$DATA_DIR" --iter "$iter" )
+
+        # (9) global state.json — written only after every slot completed,
+        # so resume always picks up at a clean iter boundary.
+        "$PY" -c "
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]) / 'checkpoints' / 'state.json'
+p.write_text(json.dumps({'iter': int(sys.argv[2])}, indent=2))
+" "$DATA_DIR" "$iter"
     fi
 
     iter=$((iter + 1))

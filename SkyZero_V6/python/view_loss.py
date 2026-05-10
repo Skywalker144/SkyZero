@@ -1,4 +1,8 @@
-"""Quick text/plot view of training loss log at data/logs/train.tsv."""
+"""Text/plot view of training loss logs.
+
+Discovers data/logs/train_<slot>.tsv files and overlays one curve per slot
+in each loss-type pane of the saved plot. Tail print: per-slot section.
+"""
 from __future__ import annotations
 
 import argparse
@@ -142,45 +146,78 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
     print(f"saved plot to {out}")
 
 
+def _read_train_log(path: pathlib.Path) -> tuple[list[str], dict[str, list[float]]] | None:
+    """Read one train_<slot>.tsv. Returns (raw_lines, cols) or None if empty."""
+    if not path.exists():
+        return None
+    lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return None
+    header = lines[0].split("\t")
+    rows = [ln.split("\t") for ln in lines[1:]]
+    cols: dict[str, list[float]] = {}
+    for i, name in enumerate(header):
+        cols[name] = [float(r[i]) if i < len(r) and r[i] else float("nan") for r in rows]
+    return lines, cols
+
+
+def _slot_logs(data_dir: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
+    logs_dir = data_dir / "logs"
+    out: list[tuple[str, pathlib.Path]] = []
+    for p in sorted(logs_dir.glob("train_*.tsv")):
+        slot = p.stem[len("train_"):]
+        out.append((slot, p))
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     parser.add_argument("--tail", type=int, default=20)
     parser.add_argument("--plot", action="store_true")
+    parser.add_argument("--slot", default=None,
+                        help="restrict tail/plot to one slot (default: all)")
     args = parser.parse_args()
 
     data_dir = pathlib.Path(args.data_dir)
-    log = data_dir / "logs" / "train.tsv"
-    if not log.exists():
-        print(f"no log at {log}", file=sys.stderr)
+    slot_logs = _slot_logs(data_dir)
+    if args.slot is not None:
+        slot_logs = [sp for sp in slot_logs if sp[0] == args.slot]
+    if not slot_logs:
+        print(f"no train_<slot>.tsv files under {data_dir / 'logs'}", file=sys.stderr)
         return 1
 
-    lines = [ln for ln in log.read_text().splitlines() if ln.strip()]
-    if not lines:
-        print("empty log", file=sys.stderr)
-        return 1
+    # Tail: per-slot section.
+    parsed: list[tuple[str, list[str], dict[str, list[float]]]] = []
+    for slot, path in slot_logs:
+        loaded = _read_train_log(path)
+        if loaded is None:
+            continue
+        lines, cols = loaded
+        parsed.append((slot, lines, cols))
+        print(f"=== {slot} ({path.name}) ===")
+        print(lines[0])
+        for ln in lines[1:][-args.tail:]:
+            print(ln)
+        print()
 
-    print(lines[0])
-    for ln in lines[-args.tail:]:
-        print(ln)
+    if not args.plot:
+        return 0
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not installed; skipping plot", file=sys.stderr)
+        return 0
 
-    if args.plot:
-        try:
-            import matplotlib.pyplot as plt
-        except ImportError:
-            print("matplotlib not installed; skipping plot", file=sys.stderr)
-            return 0
-        header = lines[0].split("\t")
-        rows = [ln.split("\t") for ln in lines[1:]]
-        cols = {name: [float(r[i]) for r in rows] for i, name in enumerate(header)}
-        x = cols.get("global_step_samples", cols.get("iter", list(range(len(rows)))))
-        xlabel = "samples" if "global_step_samples" in cols else "iter"
-        keys = [k for k in ("total_loss", "policy_loss", "opp_policy_loss",
-                              "intermediate_loss", "soft_policy_loss", "soft_opp_policy_loss",
-                              "futurepos_loss", "value_loss", "td_value_loss") if k in cols]
-        # Grid layout: square-ish (ncols ≈ √n) so many losses stay readable.
-        # ≤3 panes => single column (vertical), keeping shared x-axis natural.
-        n = len(keys)
+    # Layout: one pane per loss key, one curve per slot overlaid.
+    loss_keys = ("total_loss", "policy_loss", "opp_policy_loss",
+                 "intermediate_loss", "soft_policy_loss", "soft_opp_policy_loss",
+                 "futurepos_loss", "value_loss", "td_value_loss")
+    keys = [k for k in loss_keys if any(k in cols for _, _, cols in parsed)]
+    n = len(keys)
+    if n == 0:
+        print("no recognized loss columns; skipping loss plot", file=sys.stderr)
+    else:
         if n <= 3:
             ncols, nrows = 1, n
             figsize = (8, 2.5 * n)
@@ -191,15 +228,28 @@ def main() -> int:
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharex=True,
                                  squeeze=False)
         flat = axes.flatten()
+        # Pick x-axis: prefer global_step_samples, fall back to iter.
+        # With multiple slots starting at different times, samples is the
+        # cleanest common axis (each slot's own samples-seen).
+        any_samples = any("global_step_samples" in cols for _, _, cols in parsed)
+        xlabel = "samples" if any_samples else "iter"
         for ax, key in zip(flat, keys):
-            ax.plot(x, cols[key])
+            for slot, _, cols in parsed:
+                if key not in cols:
+                    continue
+                if any_samples and "global_step_samples" in cols:
+                    x = cols["global_step_samples"]
+                elif "iter" in cols:
+                    x = cols["iter"]
+                else:
+                    x = list(range(len(cols[key])))
+                ax.plot(x, cols[key], label=slot)
             ax.set_yscale("log")
             ax.set_title(key)
             ax.grid(True, which="both", alpha=0.3)
-        # Hide unused panes (when n is not a perfect rectangle).
+            ax.legend(loc="best", fontsize=8)
         for ax in flat[n:]:
             ax.set_visible(False)
-        # X-label only on the bottom row of visible panes.
         for ax in flat[max(0, n - ncols):n]:
             ax.set_xlabel(xlabel)
         fig.tight_layout()
@@ -207,8 +257,8 @@ def main() -> int:
         fig.savefig(out, dpi=200)
         print(f"saved plot to {out}")
 
-        _plot_selfplay(data_dir, plt)
-        _plot_probe(data_dir, plt)
+    _plot_selfplay(data_dir, plt)
+    _plot_probe(data_dir, plt)
     return 0
 
 
