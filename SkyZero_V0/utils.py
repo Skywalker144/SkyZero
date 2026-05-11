@@ -21,14 +21,12 @@ def temperature_transform(probs, temp):
     exp_logits = np.exp(logits)
     return exp_logits / np.sum(exp_logits)
 
-def add_dirichlet_noise(policy, alpha=0.3, epsilon=0.25, is_root=True):
-    if not is_root:
-        return policy
+def add_dirichlet_noise(policy, alpha=0.03, epsilon=0.25):
+    # In the AlphaZero paper, alpha is set to approximately 10 divided by the board area.
     nonzero_mask = policy > 0
     nonzero_count = np.sum(nonzero_mask)
     if nonzero_count <= 1:
         return policy
-    
     noise = np.random.dirichlet([alpha] * nonzero_count)
     new_policy = policy.copy()
     new_policy[nonzero_mask] = (1 - epsilon) * policy[nonzero_mask] + epsilon * noise
