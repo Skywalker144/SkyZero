@@ -101,10 +101,14 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                 mcts_policy = mcts.search(state, to_play, args["num_simulations"])
                 memory.append({"state": state, "to_play": to_play, "mcts_policy": mcts_policy})
                 
-                temp = args.get("temperature", 1.0)
-                if len(memory) > args.get("temp_threshold", 10): temp = 0.01
+                t = args.get("move_temperature", 1.0)
+                if len(memory) > args.get("half_life", 10):
+                    t = 0.01
                 
-                action = np.random.choice(len(mcts_policy), p=temperature_transform(mcts_policy, temp))
+                action = np.random.choice(
+                    len(mcts_policy),
+                    p=temperature_transform(mcts_policy, t)
+                )
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
                 
