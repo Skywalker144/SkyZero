@@ -77,7 +77,13 @@ class MCTS:
         for action, prob in enumerate(policy):
             if prob > 0:
                 next_state = self.game.get_next_state(node.state, action, node.to_play)
-                child = Node(next_state, -node.to_play, prior=prob, parent=node, action_taken=action)
+                child = Node(
+                    state=next_state,
+                    to_play=-node.to_play,
+                    prior=prob,
+                    parent=node,
+                    action_taken=action
+                )
                 node.children.append(child)
 
     def backpropagate(self, node, value):
@@ -92,7 +98,11 @@ class MCTS:
         
         # Initial expand for root
         policy, value = self._inference(root)
-        policy = add_dirichlet_noise(policy, self.args.get("dirichlet_alpha", 0.3), self.args.get("dirichlet_epsilon", 0.25), is_root=True)
+        policy = add_dirichlet_noise(
+            policy,
+            self.args.get("dirichlet_alpha", 10 / self.game.board_size ** 2),
+            self.args.get("dirichlet_epsilon", 0.25)
+        )
         self.expand(root, policy)
         self.backpropagate(root, value)
 
@@ -104,7 +114,7 @@ class MCTS:
             
             # 2. Expand and Evaluate
             if self.game.is_terminal(node.state):
-                value = self.game.get_winner(node.state) * node.to_play
+                value = self.game.get_winner(node.state) * node.to_play  # value is the relative outcome
             else:
                 policy, value = self._inference(node)
                 self.expand(node, policy)
@@ -120,19 +130,33 @@ class MCTS:
 
 class AlphaZero:
     def __init__(self, game, model, optimizer, args):
+
+        B = args["batch_size"]
+        T = args["train_steps_per_iteration"]
+        min_buffer_size = args.get("min_buffer_size", 250000)
+        if min_buffer_size < B * T:
+            raise ValueError(
+                f"min_buffer_size must be >= batch_size * train_steps_per_iteration "
+                f"({B} * {T} = {B * T}), got {min_buffer_size}"
+            )
+
         self.game = game
         self.model = model.to(args["device"])
         self.optimizer = optimizer
         self.args = args
         self.mcts = MCTS(game, args, model)
         self.replay_buffer = ReplayBuffer(
-            max_buffer_size=args.get("max_buffer_size", 50000),
-            min_buffer_size=args.get("min_buffer_size", 1000),
+            max_buffer_size=args.get("max_buffer_size", 1e7),
+            min_buffer_size=min_buffer_size,
             window_exponent=args.get("window_exponent", 0.65),
             window_expand_per_row=args.get("window_expand_per_row", 0.4),
         )
         self.game_count = 0
-        self.losses = {"total_loss": [], "policy_loss": [], "value_loss": []}
+        self.losses_dict = {
+            "total_loss": [],
+            "policy_loss": [],
+            "value_loss": []
+        }
         # Recent per-game sample counts, used to back-compute the next
         # selfplay batch size from target_ReplayRatio.
         stats_window = args.get("len_statistics_queue_size", 300)
@@ -152,11 +176,14 @@ class AlphaZero:
             mcts_policy = self.mcts.search(state, to_play, self.args["num_simulations"])
             memory.append({"state": state, "to_play": to_play, "mcts_policy": mcts_policy})
             
-            temp = self.args.get("temperature", 1.0)
-            if len(memory) > self.args.get("temp_threshold", 10):
-                temp = 0.01
+            t = self.args.get("move_temperature", 1.0)
+            if len(memory) > self.args.get("half_life", self.game.board_size):
+                t = 0.01
             
-            action = np.random.choice(len(mcts_policy), p=temperature_transform(mcts_policy, temp))
+            action = np.random.choice(
+                len(mcts_policy),
+                p=temperature_transform(mcts_policy, t)
+            )
             state = self.game.get_next_state(state, action, to_play)
             to_play = -to_play
             
@@ -170,31 +197,24 @@ class AlphaZero:
             })
         return game_data, winner
 
-    def _train_step(self):
-        if not self.replay_buffer.is_ready():
-            return None
-        
-        batch = self.replay_buffer.sample(self.args["batch_size"])
-        if not batch:
-            return None
-        
+    def _train_step(self, batch):
         batch = random_augment_batch(batch, self.game.board_size)
-        
+
         states = torch.tensor(np.array([s["encoded_state"] for s in batch]), dtype=torch.float32, device=self.args["device"])
         policy_targets = torch.tensor(np.array([s["policy_target"] for s in batch]), dtype=torch.float32, device=self.args["device"])
         value_targets = torch.tensor(np.array([s["value_target"] for s in batch]), dtype=torch.float32, device=self.args["device"]).unsqueeze(1)
-        
+
         self.model.train()
         self.optimizer.zero_grad()
         policy_logits, value = self.model(states)
-        
+
         policy_loss = -torch.mean(torch.sum(policy_targets * F.log_softmax(policy_logits, dim=1), dim=1))
         value_loss = F.mse_loss(value, value_targets)
         total_loss = policy_loss + value_loss
-        
+
         total_loss.backward()
         self.optimizer.step()
-        
+
         return total_loss.item(), policy_loss.item(), value_loss.item()
 
     def _record_game(self, winner, game_len):
@@ -217,12 +237,10 @@ class AlphaZero:
             avg_len = float(np.mean(self.recent_sample_lengths))
         else:
             avg_len = float(self.args.get("default_avg_sample_len", 30))
-        target = (self.args["batch_size"] * self.args["train_steps_per_iteration"]
-                  / max(avg_len, 1.0) / max(self.args["target_ReplayRatio"], 1e-6))
-        return max(1, int(target))
+        target = self.args["batch_size"] * self.args["train_steps_per_iteration"] / avg_len / self.args["target_ReplayRatio"]
+        return max(1, math.ceil(target))
 
     def _print_selfplay(self, it, games_done, total_games, t0, lens, winners):
-        # V5-style one-liner. lens/winners are per-iteration accumulators.
         dt = max(1e-9, time.time() - t0)
         total_rows = sum(lens) if lens else 0
         sps = total_rows / dt
@@ -241,15 +259,6 @@ class AlphaZero:
             head += " GameLen=N/A BDW=N/A"
         print(head, flush=True)
 
-    def _print_train_summary(self, it, n_steps, dt, window,
-                             first_avg, last_avg):
-        samples_seen = n_steps * self.args["batch_size"]
-        print(f"[Train] iter={it} steps={n_steps} samples_seen={samples_seen} "
-              f"t={dt:.1f}s (first/last avg over {window} steps)", flush=True)
-        for k in ("total", "policy", "value"):
-            print(f"[Train]   {k:<6} : {first_avg[k]:8.4f} -> {last_avg[k]:8.4f}",
-                  flush=True)
-
     def learn(self):
         num_iterations = self.args.get("num_iterations", 1000)
         save_interval = self.args.get("save_interval", 10)
@@ -263,12 +272,16 @@ class AlphaZero:
         try:
             while unlimited or i < num_iterations:
                 it = i + 1
-                print(f"\n=== Iter {it}/{total_label} | "
-                      f"collect {num_next} games (RR target={self.args['target_ReplayRatio']}) ===",
-                      flush=True)
-                print(f"[Stats] total_games={self.game_count} "
-                      f"total_samples={self.replay_buffer.total_samples_added}",
-                      flush=True)
+                print(
+                    f"\n=== Iter {it}/{total_label} | "
+                    f"collect {num_next} games (RR target={self.args['target_ReplayRatio']}) ===",
+                    flush=True
+                )
+                print(
+                    f"[Stats] total_games={self.game_count} "
+                    f"total_samples={self.replay_buffer.total_samples_added}",
+                    flush=True
+                )
 
                 # Self-play phase
                 iter_lens, iter_winners = [], []
@@ -283,16 +296,20 @@ class AlphaZero:
                     iter_lens.append(len(game_data))
                     iter_winners.append(winner)
                     if (g + 1) % report_every == 0 or (g + 1) == num_next:
-                        self._print_selfplay(it, g + 1, num_next, sp_t0,
-                                             iter_lens, iter_winners)
+                        self._print_selfplay(
+                            it, g + 1, num_next, sp_t0,
+                            iter_lens, iter_winners
+                        )
 
                 # Training phase
                 if self.replay_buffer.is_ready():
                     self._train_iteration(it, train_steps_per_iteration)
                 else:
-                    print(f"[Train] iter={it} skipped (buffer not ready: "
-                          f"{self.replay_buffer.total_samples_added} < "
-                          f"{self.replay_buffer.min_buffer_size})", flush=True)
+                    print(
+                        f"[Train] iter={it} skipped (buffer not ready: "
+                        f"{self.replay_buffer.total_samples_added} < "
+                        f"{self.replay_buffer.min_buffer_size})", flush=True
+                    )
 
                 num_next = self._compute_num_next_games()
 
@@ -308,51 +325,32 @@ class AlphaZero:
                 self.save_checkpoint(f"checkpoint_{it}_interrupt.pth")
 
     def _train_iteration(self, it, total_steps):
-        window = max(1, min(10, total_steps // 4))
+        B = self.args["batch_size"]
+        pool = self.replay_buffer.sample(B * total_steps)
 
-        accum = {"total": 0.0, "policy": 0.0, "value": 0.0}
-        first_sum = {k: 0.0 for k in accum}
-        last_buf = []
-
+        losses = {"total_loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0}
         t0 = time.time()
-        n_steps = 0
-        pbar = tqdm(range(1, total_steps + 1), desc=f"Train Iter={it}")
-        for _ in pbar:
-            res = self._train_step()
-            if res is None:
-                continue
-            t, p, v = res
-            losses = {"total": t, "policy": p, "value": v}
-            for k, val in losses.items():
-                accum[k] += val
-            if n_steps < window:
-                for k, val in losses.items():
-                    first_sum[k] += val
-            last_buf.append(losses)
-            if len(last_buf) > window:
-                last_buf.pop(0)
-            n_steps += 1
-            pbar.set_postfix(loss=f"{losses['total']:.2f}",
-                             p=f"{losses['policy']:.2f}",
-                             v=f"{losses['value']:.2f}")
+        pbar = tqdm(range(total_steps), desc=f"Train Iter={it}")
+        for i in pbar:
+            batch = pool[i * B : (i + 1) * B]
+            t, p, v = self._train_step(batch)
+            losses["total_loss"] += t
+            losses["policy_loss"] += p
+            losses["value_loss"] += v
+            pbar.set_postfix(loss=f"{t:.2f}", ploss=f"{p:.2f}", vloss=f"{v:.2f}")
         pbar.close()
 
-        if n_steps == 0:
-            return
         dt = time.time() - t0
-        first_n = min(window, n_steps)
-        first_avg = {k: first_sum[k] / max(1, first_n) for k in accum}
-        last_sum = {k: 0.0 for k in accum}
-        for b in last_buf:
-            for k, v in b.items():
-                last_sum[k] += v
-        last_avg = {k: last_sum[k] / max(1, len(last_buf)) for k in accum}
 
-        self.losses["total_loss"].append(accum["total"] / n_steps)
-        self.losses["policy_loss"].append(accum["policy"] / n_steps)
-        self.losses["value_loss"].append(accum["value"] / n_steps)
+        for key in self.losses_dict:
+            self.losses_dict[key].append(losses[key] / total_steps)
 
-        self._print_train_summary(it, n_steps, dt, window, first_avg, last_avg)
+        print(
+            f"[Train] iter={it} steps={total_steps} "
+            f"t={dt:.1f}s | total={losses['total_loss']/total_steps:.4f} "
+            f"policy={losses['policy_loss']/total_steps:.4f} value={losses['value_loss']/total_steps:.4f}",
+            flush=True
+        )
 
     def save_checkpoint(self, filename):
         ckpt_dir = os.path.join(self.args.get("data_dir", "data"), "checkpoints")
@@ -362,7 +360,7 @@ class AlphaZero:
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "game_count": self.game_count,
-            "losses": self.losses,
+            "losses_dict": self.losses_dict,
             "winrate_history": self.winrate_history,
             "avg_game_len_history": self.avg_game_len_history,
             "recent_game_lengths": list(self.recent_game_lengths),
@@ -388,7 +386,7 @@ class AlphaZero:
         if self.optimizer and "optimizer_state_dict" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.game_count = checkpoint.get("game_count", 0)
-        self.losses = checkpoint.get("losses", {"total_loss": [], "policy_loss": [], "value_loss": []})
+        self.losses_dict = checkpoint.get("losses_dict", {"total_loss": [], "policy_loss": [], "value_loss": []})
         self.winrate_history = checkpoint.get("winrate_history", [])
         self.avg_game_len_history = checkpoint.get("avg_game_len_history", [])
         for key, deq in (
@@ -409,9 +407,9 @@ class AlphaZero:
             logs_dir = os.path.join(self.args.get("data_dir", "data"), "logs")
             os.makedirs(logs_dir, exist_ok=True)
 
-            if self.losses.get("total_loss"):
+            if self.losses_dict.get("total_loss"):
                 plt.figure(figsize=(10, 6))
-                plt.plot(self.losses["total_loss"], label="Total Loss")
+                plt.plot(self.losses_dict["total_loss"], label="Total Loss")
                 plt.title(f"Total Training Loss (Game {self.game_count})")
                 plt.xlabel("Training Iteration")
                 plt.ylabel("Loss")
@@ -422,7 +420,7 @@ class AlphaZero:
                 plt.close()
 
                 plt.figure(figsize=(10, 6))
-                for key, vals in self.losses.items():
+                for key, vals in self.losses_dict.items():
                     if key == "total_loss" or not vals:
                         continue
                     plt.plot(vals, label=key.replace("_", " ").title())
