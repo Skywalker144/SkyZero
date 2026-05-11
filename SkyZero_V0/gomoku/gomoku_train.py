@@ -11,9 +11,9 @@ from nets import ResNet
 train_args = {
     "num_workers": 16,
     "board_size": 15,
-    "history_step": 2,
-    "num_blocks": 4,
-    "num_channels": 128,
+    "rule": "renju",  # "freestyle" | "standard" | "renju"
+    "num_blocks": 8,
+    "num_channels": 96,
     "lr": 0.0001,
     "weight_decay": 3e-5,
 
@@ -23,14 +23,16 @@ train_args = {
 
     "batch_size": 128,
     "num_iterations": 1000,
-    "num_games_per_iter": 50,
-    "train_steps": 20,
-    
+    "train_steps_per_iteration": 100,
+    "target_ReplayRatio": 8,
+
     "temperature": 1.0,
     "temp_threshold": 30,
 
-    "min_buffer_size": 2048,
+    "min_buffer_size": 25000,
     "max_buffer_size": 500000,
+    "window_exponent": 0.65,
+    "window_expand_per_row": 0.4,
     
     "save_interval": 10,
     "data_dir": "data/gomoku",
@@ -39,7 +41,7 @@ train_args = {
 
 if __name__ == "__main__":
     np.set_printoptions(precision=2, suppress=True)
-    game = Gomoku(board_size=train_args["board_size"], history_step=train_args["history_step"])
+    game = Gomoku(board_size=train_args["board_size"], rule=train_args["rule"])
     model = ResNet(game, num_blocks=train_args["num_blocks"], num_channels=train_args["num_channels"])
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 

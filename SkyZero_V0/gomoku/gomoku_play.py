@@ -16,6 +16,6 @@ eval_args = {
 }
 
 if __name__ == "__main__":
-    game = Gomoku(board_size=train_args["board_size"], history_step=train_args["history_step"])
+    game = Gomoku(board_size=train_args["board_size"], rule=train_args["rule"])
     gp = GamePlayer(game, eval_args)
     gp.play()

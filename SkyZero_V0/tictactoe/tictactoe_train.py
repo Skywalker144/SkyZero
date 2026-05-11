@@ -11,8 +11,7 @@ import torch.optim as optim
 
 train_args = {
     "num_workers": 12,
-    "history_step": 2,
-    "num_blocks": 2,
+    "num_blocks": 3,
     "num_channels": 32,
     "lr": 0.001,
     "weight_decay": 3e-5,
@@ -23,23 +22,25 @@ train_args = {
 
     "batch_size": 128,
     "num_iterations": 100,
-    "num_games_per_iter": 20,
-    "train_steps": 10,
-    
+    "train_steps_per_iteration": 50,
+    "target_ReplayRatio": 8,
+
     "temperature": 1.0,
     "temp_threshold": 6,
 
     "min_buffer_size": 500,
     "max_buffer_size": 20000,
+    "window_exponent": 0.65,
+    "window_expand_per_row": 0.4,
     
     "save_interval": 10,
     "data_dir": "data/tictactoe",
-    "device": "cuda",
+    "device": "mps",
 }
 
 if __name__ == "__main__":
     np.set_printoptions(precision=2, suppress=True)
-    game = TicTacToe(history_step=train_args["history_step"])
+    game = TicTacToe()
     model = ResNet(game, num_blocks=train_args["num_blocks"], num_channels=train_args["num_channels"])
     optimizer = optim.AdamW(model.parameters(), lr=train_args["lr"], weight_decay=train_args["weight_decay"])
 

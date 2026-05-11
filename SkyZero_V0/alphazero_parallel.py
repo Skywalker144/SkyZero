@@ -6,7 +6,6 @@ import queue
 import traceback
 import os
 import copy
-from tqdm import tqdm
 from alphazero import AlphaZero, MCTS, temperature_transform
 
 try:
@@ -151,39 +150,68 @@ class AlphaZeroParallel(AlphaZero):
         start_barrier.wait()
 
         try:
-            for i in range(self.args.get("num_iterations", 1000)):
-                print(f"Iteration {i+1}")
-                games_needed = self.args.get("num_games_per_iter", 10)
+            num_iterations = self.args.get("num_iterations", 1000)
+            save_interval = self.args.get("save_interval", 10)
+            train_steps_per_iteration = self.args["train_steps_per_iteration"]
+            target_replay_ratio = self.args["target_ReplayRatio"]
+            unlimited = num_iterations <= 0
+            total_label = "inf" if unlimited else str(num_iterations)
+
+            num_next = self._compute_num_next_games()
+            i = 0
+            it = 0
+            while unlimited or i < num_iterations:
+                it = i + 1
+                print(f"\n=== Iter {it}/{total_label} | "
+                      f"collect {num_next} games (RR target={target_replay_ratio}) ===",
+                      flush=True)
+                print(f"[Stats] total_games={self.game_count} "
+                      f"total_samples={self.replay_buffer.total_samples_added}",
+                      flush=True)
+
+                # Self-play phase: consume num_next games off the worker queue
+                iter_lens, iter_winners = [], []
+                sp_t0 = time.time()
+                report_every = max(1, num_next // 5)
                 games_collected = 0
-                with tqdm(total=games_needed, desc="Collecting Games") as pbar:
-                    while games_collected < games_needed:
-                        try:
-                            game_data, _ = self.result_queue.get(timeout=1.0)
-                            self.replay_buffer.add_game(game_data)
-                            self.game_count += 1
-                            games_collected += 1
-                            pbar.update(1)
-                        except queue.Empty: continue
+                while games_collected < num_next:
+                    try:
+                        game_data, winner = self.result_queue.get(timeout=1.0)
+                    except queue.Empty:
+                        continue
+                    self.replay_buffer.add_game(game_data)
+                    self.recent_sample_lengths.append(len(game_data))
+                    self.game_count += 1
+                    self._record_game(winner, len(game_data))
+                    games_collected += 1
+                    iter_lens.append(len(game_data))
+                    iter_winners.append(winner)
+                    if (games_collected % report_every == 0
+                            or games_collected == num_next):
+                        self._print_selfplay(it, games_collected, num_next, sp_t0,
+                                             iter_lens, iter_winners)
 
-                t_loss, p_loss, v_loss = 0, 0, 0
-                train_steps = self.args.get("train_steps", 10)
+                # Training phase
                 if self.replay_buffer.is_ready():
-                    for _ in tqdm(range(train_steps), desc="Training"):
-                        res = self._train_step()
-                        if res:
-                            t_loss, p_loss, v_loss = t_loss + res[0], p_loss + res[1], v_loss + res[2]
-                    
-                    self.losses["total_loss"].append(t_loss / train_steps)
-                    self.losses["policy_loss"].append(p_loss / train_steps)
-                    self.losses["value_loss"].append(v_loss / train_steps)
-                    print(f"Loss: {self.losses['total_loss'][-1]:.4f} (P: {self.losses['policy_loss'][-1]:.4f}, V: {self.losses['value_loss'][-1]:.4f})")
-                    
+                    self._train_iteration(it, train_steps_per_iteration)
                     self.command_queue.put(("UPDATE", {k: v.cpu() for k, v in self.model.state_dict().items()}))
+                else:
+                    print(f"[Train] iter={it} skipped (buffer not ready: "
+                          f"{self.replay_buffer.total_samples_added} < "
+                          f"{self.replay_buffer.min_buffer_size})", flush=True)
 
-                if (i+1) % self.args.get("save_interval", 10) == 0:
-                    self.save_checkpoint(f"checkpoint_parallel_{i+1}.pth")
+                num_next = self._compute_num_next_games()
+
+                self.plot_metrics()
+
+                if it % save_interval == 0:
+                    self.save_checkpoint(f"checkpoint_parallel_{it}.pth")
+
+                i += 1
         except KeyboardInterrupt:
-            print("Stopping...")
+            print(f"\nStopping... saving checkpoint at iter={it}", flush=True)
+            if it > 0:
+                self.save_checkpoint(f"checkpoint_parallel_{it}_interrupt.pth")
         finally:
             self.command_queue.put(("STOP", None))
             gpu_process.join()

@@ -22,40 +22,36 @@ def get_expanded_region_square(state, k=3):
     return expanded
 
 def get_expanded_region_circle_slow(state, k=3.5):
-    current_board = state[-1]
-    board_size = current_board.shape[0]
-    
+    board_size = state.shape[0]
+
     expanded = np.zeros((board_size, board_size), dtype=bool)
-    
-    rows, cols = np.where(current_board != 0)
-    
+
+    rows, cols = np.where(state != 0)
+
     k_sq = k ** 2
-    
+
     k_int = math.ceil(k)
-    
+
     for r, c in zip(rows, cols):
         for dr in range(-k_int, k_int + 1):
             for dc in range(-k_int, k_int + 1):
                 dist_sq = dr**2 + dc**2
-                
+
                 if dist_sq <= k_sq:
                     nr, nc = r + dr, c + dc
                     if 0 <= nr < board_size and 0 <= nc < board_size:
                         expanded[nr, nc] = True
-    
+
     return expanded
 
 def get_expanded_region_circle(state, k=3.5):
-    current_board = state[-1]
-    board_size = current_board.shape[0]
-    
     y, x = np.ogrid[-k:k+1, -k:k+1]
     mask = x**2 + y**2 <= k**2
-    
-    binary_board = current_board != 0
-    
+
+    binary_board = state != 0
+
     expanded = ndimage.binary_dilation(binary_board, structure=mask)
-    
+
     return expanded
 
 
@@ -487,22 +483,25 @@ class GameLogic:
 
 
 class Gomoku:
-    def __init__(self, board_size=15, history_step=2, use_renju=True):
+    RULES = ("freestyle", "standard", "renju")
+
+    def __init__(self, board_size=15, rule="renju"):
+        if rule not in self.RULES:
+            raise ValueError(f"rule must be one of {self.RULES}, got {rule!r}")
         self.board_size = board_size
-        self.history_step = history_step
-        self.num_planes = 2 * history_step + 2
-        self.use_renju = use_renju
+        self.num_planes = 4
+        self.rule = rule
+        self.use_renju = (rule == "renju")
         self._fpf = ForbiddenPointFinder(board_size)
 
     def get_initial_state(self):
-        return np.zeros((self.history_step, self.board_size, self.board_size), dtype=np.int8)
+        return np.zeros((self.board_size, self.board_size), dtype=np.int8)
 
     def get_is_legal_actions(self, state, to_play):
-        current_board = state[-1]
-        legal_mask = (current_board.flatten() == 0)
+        legal_mask = (state.flatten() == 0)
 
         # Heuristic legal action limitation
-        if np.sum(current_board == 1) == 0:
+        if np.sum(state == 1) == 0:
             self.center_loc = (self.board_size // 2) * self.board_size + (self.board_size // 2)
             legal_mask[:] = False
             legal_mask[self.center_loc] = True
@@ -513,9 +512,9 @@ class Gomoku:
         if self.use_renju and to_play == 1:
             self._fpf.Clear()
             # Populate FPF board (convert 1/-1 to 1/2)
-            rows, cols = np.where(current_board != 0)
+            rows, cols = np.where(state != 0)
             for r, c in zip(rows, cols):
-                val = current_board[r, c]
+                val = state[r, c]
                 stone = C_BLACK if val == 1 else C_WHITE
                 self._fpf.SetStone(r, c, stone)
 
@@ -531,57 +530,47 @@ class Gomoku:
 
     def get_next_state(self, state, action, to_play):
         state = state.copy()
-        current_board = state[-1].copy()
-
         row = action // self.board_size
         col = action % self.board_size
-        
-        current_board[row, col] = to_play
-
-        state[:-1] = state[1:]
-        state[-1] = current_board
-
+        state[row, col] = to_play
         return state
 
     def get_winner(self, state):
-        current_board = state[-1]
+        # Run-scan winner check (aligned with V6 cpp/envs/gomoku.h:489).
+        # Per-rule overline (≥6) treatment:
+        #   freestyle: 5+ wins for both colors
+        #   standard:  exactly 5 for both (overline neither wins nor loses)
+        #   renju:     black exactly 5, white 5+ (legal mask already blocks
+        #              black from playing forbidden moves, so black overline
+        #              shouldn't arise in legal play; treat as non-win here)
+        black_six_wins = (self.rule == "freestyle")
+        white_six_wins = (self.rule != "standard")
         size = self.board_size
+        dirs = ((1, 0), (0, 1), (1, 1), (1, -1))
 
-        # Check horizontal
         for r in range(size):
-            for c in range(size - 4):
-                window = current_board[r, c:c + 5]
-                s = np.sum(window)
-                if s == 5 or s <= -5:
-                    return 1 if s > 0 else -1
-
-        # Check vertical
-        for r in range(size - 4):
             for c in range(size):
-                window = current_board[r:r + 5, c]
-                s = np.sum(window)
-                if abs(s) == 5:
-                    return 1 if s > 0 else -1
+                stone = state[r, c]
+                if stone == 0:
+                    continue
+                for dr, dc in dirs:
+                    pr, pc = r - dr, c - dc
+                    if 0 <= pr < size and 0 <= pc < size and state[pr, pc] == stone:
+                        continue  # not the start of a run in this direction
+                    length = 1
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < size and 0 <= nc < size and state[nr, nc] == stone:
+                        length += 1
+                        nr += dr
+                        nc += dc
+                    if stone == 1:
+                        if length == 5 or (length > 5 and black_six_wins):
+                            return 1
+                    else:
+                        if length == 5 or (length > 5 and white_six_wins):
+                            return -1
 
-        # Check diagonal \
-        for r in range(size - 4):
-            for c in range(size - 4):
-                s = 0
-                for k in range(5):
-                    s += current_board[r + k, c + k]
-                if abs(s) == 5:
-                    return 1 if s > 0 else -1
-
-        # Check diagonal /
-        for r in range(size - 4):
-            for c in range(4, size):
-                s = 0
-                for k in range(5):
-                    s += current_board[r + k, c - k]
-                if abs(s) == 5:
-                    return 1 if s > 0 else -1
-
-        if np.all(current_board != 0):
+        if np.all(state != 0):
             return 0
 
         return None
@@ -590,71 +579,56 @@ class Gomoku:
         return self.get_winner(state) is not None
 
     def encode_state(self, state, to_play):
-        history_len = state.shape[0]
-        board_height = state.shape[1]
-        board_width = state.shape[2]
+        board_height, board_width = state.shape
 
-        encoded_state = np.zeros((history_len * 2 + 2, board_height, board_width), dtype=np.int8)
-
-        for i in range(history_len):
-            encoded_state[2 * i] = (state[i] == to_play)
-            encoded_state[2 * i + 1] = (state[i] == -to_play)
+        encoded_state = np.zeros((4, board_height, board_width), dtype=np.int8)
+        encoded_state[0] = (state == to_play)
+        encoded_state[1] = (state == -to_play)
 
         forbidden_plane = np.zeros((board_height, board_width), dtype=np.int8)
         if self.use_renju:
             fpf = ForbiddenPointFinder(board_height)
-            current_board = state[-1]
-            rows, cols = np.where(current_board != 0)
+            rows, cols = np.where(state != 0)
             for r, c in zip(rows, cols):
-                val = current_board[r, c]
+                val = state[r, c]
                 stone = C_BLACK if val == 1 else C_WHITE
                 fpf.SetStone(r, c, stone)
 
-            empty_rows, empty_cols = np.where(current_board == 0)
+            empty_rows, empty_cols = np.where(state == 0)
             for r, c in zip(empty_rows, empty_cols):
                 if fpf.isForbidden(r, c):
                     forbidden_plane[r, c] = 1
 
-        encoded_state[-2] = forbidden_plane
-        encoded_state[-1] = (to_play > 0) * np.ones((board_height, board_width), dtype=np.int8)
+        encoded_state[2] = forbidden_plane
+        encoded_state[3] = (to_play > 0) * np.ones((board_height, board_width), dtype=np.int8)
 
         return encoded_state
 
     def get_win_pos(self, final_state):
-        current_board = final_state[-1]
+        black_six_wins = (self.rule == "freestyle")
+        white_six_wins = (self.rule != "standard")
         size = self.board_size
-        five_pos = np.zeros((size, size), dtype=np.int8)
-        
-        # Check horizontal
+        win_pos = np.zeros((size, size), dtype=np.int8)
+        dirs = ((1, 0), (0, 1), (1, 1), (1, -1))
+
         for r in range(size):
-            for c in range(size - 4):
-                window = current_board[r, c:c + 5]
-                s = np.sum(window)
-                if s == 5 or s == -5:
-                    five_pos[r, c:c + 5] = 1
-        
-        # Check vertical
-        for r in range(size - 4):
             for c in range(size):
-                window = current_board[r:r + 5, c]
-                s = np.sum(window)
-                if s == 5 or s == -5:
-                    five_pos[r:r + 5, c] = 1
-        
-        # Check diagonal \
-        for r in range(size - 4):
-            for c in range(size - 4):
-                s = current_board[r, c] + current_board[r+1, c+1] + current_board[r+2, c+2] + current_board[r+3, c+3] + current_board[r+4, c+4]
-                if s == 5 or s == -5:
-                    for k in range(5):
-                        five_pos[r+k, c+k] = 1
-        
-        # Check diagonal /
-        for r in range(size - 4):
-            for c in range(4, size):
-                s = current_board[r, c] + current_board[r+1, c-1] + current_board[r+2, c-2] + current_board[r+3, c-3] + current_board[r+4, c-4]
-                if s == 5 or s == -5:
-                    for k in range(5):
-                        five_pos[r+k, c-k] = 1
-        
-        return five_pos
+                stone = final_state[r, c]
+                if stone == 0:
+                    continue
+                for dr, dc in dirs:
+                    pr, pc = r - dr, c - dc
+                    if 0 <= pr < size and 0 <= pc < size and final_state[pr, pc] == stone:
+                        continue
+                    length = 1
+                    nr, nc = r + dr, c + dc
+                    while 0 <= nr < size and 0 <= nc < size and final_state[nr, nc] == stone:
+                        length += 1
+                        nr += dr
+                        nc += dc
+                    six_wins = black_six_wins if stone == 1 else white_six_wins
+                    if length == 5 or (length > 5 and six_wins):
+                        for k in range(length):
+                            win_pos[r + dr * k, c + dc * k] = 1
+
+        return win_pos

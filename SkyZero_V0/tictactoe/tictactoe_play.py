@@ -16,6 +16,6 @@ eval_args = {
 }
 
 if __name__ == "__main__":
-    game = TicTacToe(history_step=train_args["history_step"])
+    game = TicTacToe()
     gp = GamePlayer(game, eval_args)
     gp.play()
