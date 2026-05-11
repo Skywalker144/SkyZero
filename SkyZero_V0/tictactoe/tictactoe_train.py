@@ -10,32 +10,35 @@ import numpy as np
 import torch.optim as optim
 
 train_args = {
-    "num_workers": 12,
-    "num_blocks": 3,
-    "num_channels": 32,
-    "lr": 0.001,
-    "weight_decay": 3e-5,
 
-    "num_simulations": 50,
-    "dirichlet_alpha": 0.3,
-    "dirichlet_epsilon": 0.25,
-
-    "batch_size": 128,
-    "num_iterations": 100,
-    "train_steps_per_iteration": 50,
-    "target_ReplayRatio": 8,
-
-    "temperature": 1.0,
-    "temp_threshold": 6,
-
-    "min_buffer_size": 500,
-    "max_buffer_size": 20000,
-    "window_exponent": 0.65,
-    "window_expand_per_row": 0.4,
+    "num_iterations": 100,  # 总共训练多少个iteration。设置为0即一直跑，CtrlC停止。
     
-    "save_interval": 10,
+    "num_blocks": 3,       # 网络block数量
+    "num_channels": 32,    # 网络channels
+    "lr": 0.001,           # 学习率
+    "weight_decay": 3e-5,  # 权重衰减系数
+
+    "num_simulations": 50,      # 模拟次数
+    "dirichlet_alpha": 0.3,     # 控制Dirichlet噪声的锐度，不用动
+    "dirichlet_epsilon": 0.25,  # 控制Dirichlet噪声在根节点的占比，不用动
+
+    "batch_size": 128,                # 训练时的batch_size
+    "train_steps_per_iteration": 50,  # train阶段训多少个batch
+    "target_ReplayRatio": 4,          # 样本回放率，即每个样本会被训练的次数。
+
+    "temperature": 1.0,   # 落子温度
+    "temp_threshold": 6,  # 每一句经过这个步数之后改为argmax落子
+
+    "min_buffer_size": 500,         # 最小多少样本开始训
+    "max_buffer_size": 100000,      # 最大容纳多少样本（受内存限制）
+    "window_exponent": 0.65,        # 不用动
+    "window_expand_per_row": 0.4,   # 不用动
+    
+    "save_interval": 10,           # 隔几个iteration保存一次checkpoint
     "data_dir": "data/tictactoe",
     "device": "mps",
+
+    "num_workers": 12,     # 并行worker数量
 }
 
 if __name__ == "__main__":
