@@ -9,9 +9,11 @@ from envs.gomoku import Gomoku
 from nets import ResNet
 
 train_args = {
-    "num_workers": 16,
+    "num_iterations": 1000,
+    
     "board_size": 15,
     "rule": "renju",  # "freestyle" | "standard" | "renju"
+
     "num_blocks": 8,
     "num_channels": 96,
     "lr": 0.0001,
@@ -22,21 +24,22 @@ train_args = {
     "dirichlet_epsilon": 0.25,
 
     "batch_size": 128,
-    "num_iterations": 1000,
     "train_steps_per_iteration": 100,
-    "target_ReplayRatio": 8,
+    "target_ReplayRatio": 4,
 
     "temperature": 1.0,
-    "temp_threshold": 30,
+    "temp_threshold": 20,
 
     "min_buffer_size": 25000,
-    "max_buffer_size": 500000,
+    "max_buffer_size": 1000000,
     "window_exponent": 0.65,
     "window_expand_per_row": 0.4,
     
     "save_interval": 10,
     "data_dir": "data/gomoku",
     "device": "cuda",
+
+    "num_workers": 16,
 }
 
 if __name__ == "__main__":
