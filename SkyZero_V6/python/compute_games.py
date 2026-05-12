@@ -18,10 +18,11 @@ contribution — derived from `pool_rows.tsv` (total pool snapshot per iter) min
 this iter, and deduct it from main's quota so the *combined* production tracks
 target ratio instead of overshooting by ~3x.
 
-cum_rows for warmup staging now comes from pool_rows.current_pool_rows
-(main + daemon, real pool size), not from last_run.tsv summation. avg_game_len
-still comes from last_run.tsv's last row — that's main-GPU's empirical len/game,
-which is the right scale to convert main's row quota into a game count.
+cum_rows for warmup staging comes from pool_rows.cumulative_produced
+(main + daemon, monotonic — immune to PRUNE_OUTSIDE_WINDOW deletion), not from
+last_run.tsv summation. avg_game_len still comes from last_run.tsv's last row —
+that's main-GPU's empirical len/game, which is the right scale to convert main's
+row quota into a game count.
 
 TRAIN_STEPS_PER_EPOCH is itself staged (see warmup.py train-steps, run by
 run.sh just before this script and exported into env), so during warmup
@@ -101,9 +102,10 @@ def predict_daemon_rows(data_dir: pathlib.Path, last_run_tsv: pathlib.Path) -> i
     """Predict daemon's row contribution for the upcoming iter via dead-reckoning.
 
     Uses the last finished iter's actual daemon delta:
-        delta_total   = pool_rows[-1].total - pool_rows[-2].total
+        delta_total   = pool_rows[-1].total - pool_rows[-2].total  # cumulative-produced diff = iter K produced
         main_prev     = last_run.tsv[pool_rows[-1].iter].rows
         daemon_prev   = max(0, delta_total - main_prev)
+    Cumulative-produced semantics make the diff immune to PRUNE_OUTSIDE_WINDOW.
     Returns 0 (current behavior, main fills full quota) when there's <2 snapshots
     or last_run.tsv lacks the matching iter — both cases are early/cold-start.
     """
@@ -138,7 +140,7 @@ def main() -> int:
     stages = parse_stage_list(os.environ.get("REPLAY_RATIO_STAGES"), cast=float)
     warmup_samples = _env_int("REPLAY_RATIO_WARMUP_SAMPLES", 0)
 
-    cum_rows = pool_rows.current_pool_rows(data_dir)
+    cum_rows = pool_rows.cumulative_produced(data_dir)
     avg_game_len = read_avg_game_len(last_run_tsv)
     warmed = staged_value(cum_rows, warmup_samples, stages)
     ratio = warmed if warmed is not None else ratio_steady

@@ -91,8 +91,9 @@ PARAMS = {
 def _compute_value(cfg: dict, data_dir: pathlib.Path) -> tuple[int, int, str]:
     """Returns (value, cum_rows, tag). Silent — no stdout/stderr.
 
-    cum_rows is the real selfplay-pool size (main + daemon NPZs), via
-    pool_rows.current_pool_rows — matches what shuffle/training actually see.
+    cum_rows is the cumulative-produced selfplay-row count (main + daemon),
+    via pool_rows.cumulative_produced — monotonic, immune to PRUNE_OUTSIDE_WINDOW
+    deletion. Matches the rows-ever-generated quantity that staged warmup expects.
     """
     import pool_rows
 
@@ -100,7 +101,7 @@ def _compute_value(cfg: dict, data_dir: pathlib.Path) -> tuple[int, int, str]:
     stages = parse_stage_list(os.environ.get(cfg["stages_env"]), cast=int)
     warmup_samples = int(float(os.environ.get(cfg["warmup_env"], "0")))
 
-    cum_rows = pool_rows.current_pool_rows(data_dir)
+    cum_rows = pool_rows.cumulative_produced(data_dir)
     val = staged_value(cum_rows, warmup_samples, stages)
     out = val if val is not None else fallback
     tag = "warmup" if val is not None else "steady-cfg"

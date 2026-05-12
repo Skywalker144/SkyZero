@@ -127,7 +127,9 @@ while true; do
         # window. Selfplay's new iter-N files are written but ignored by this
         # shuffle (shuffle.py snapshots the file list once at start).
         echo "[run.sh] shuffle (bg) || selfplay (fg)"
-        bash "$SCRIPT_DIR/shuffle.sh" &
+        # OVERLAP_SHUFFLE=1: bg shuffle sees iter K-1's selfplay output (snapshot
+        # at process start), so its pruning is tagged with iter K-1.
+        bash "$SCRIPT_DIR/shuffle.sh" "$((iter - 1))" &
         SHUFFLE_PID=$!
         bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
         wait "$SHUFFLE_PID" || SHUFFLE_RC=$?
@@ -135,7 +137,7 @@ while true; do
         # (2) selfplay (C++)
         bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
         # (3) shuffle
-        bash "$SCRIPT_DIR/shuffle.sh" || SHUFFLE_RC=$?
+        bash "$SCRIPT_DIR/shuffle.sh" "$iter" || SHUFFLE_RC=$?
     fi
 
     if [[ "$SHUFFLE_RC" -eq 2 ]]; then

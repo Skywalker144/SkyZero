@@ -277,6 +277,8 @@ def main() -> int:
                         help="Target rows per shardify task.")
     parser.add_argument("--no-summary-cache", action="store_true",
                         help="Disable per-file row-count cache.")
+    parser.add_argument("--iter", type=int, default=-1,
+                        help="Current iter (only tags pruned_rows.tsv rows for audit).")
     args = parser.parse_args()
 
     data_dir = pathlib.Path(args.data_dir)
@@ -289,6 +291,8 @@ def main() -> int:
     exponent = _env_float("TAPER_WINDOW_EXPONENT", 0.65)
     expand_per_row = _env_float("EXPAND_WINDOW_PER_ROW", 0.4)
     keep_target_rows = _env_int("KEEP_TARGET_ROWS", 20_000_000)
+    prune_outside_window = _env_int("PRUNE_OUTSIDE_WINDOW", 1) != 0
+    prune_iter = args.iter  # tagging only; -1 = unknown (manual reshuffle)
 
     if not selfplay_dir.exists():
         print(f"[Shuffle] selfplay dir missing: {selfplay_dir}", file=sys.stderr)
@@ -350,11 +354,15 @@ def main() -> int:
     # retained when pool > keep_target_rows. Within-file sampling is already
     # uniform-random in `_shardify_job`.
     chosen: list[tuple[pathlib.Path, int]] = []
+    outside_window: list[tuple[pathlib.Path, int]] = []
     pool_covered = 0
     covered = 0
     for p, r in files_rows:
         if pool_covered >= pool_size:
-            break
+            # Pool quota filled by newer files; this and every older file are
+            # outside the window. Collect for optional post-pass deletion.
+            outside_window.append((p, r))
+            continue
         elig = min(r, pool_size - pool_covered)
         take = int(round(elig * ratio))
         if take > 0:
@@ -429,6 +437,37 @@ def main() -> int:
         pool.join()
 
     shutil.rmtree(scatter_dir, ignore_errors=True)
+
+    # Prune outside-window NPZs (after pass2 so readers are done).
+    # Records to pool_rows.pruned_rows.tsv on success so cumulative_produced
+    # stays monotonic.
+    if prune_outside_window and outside_window:
+        import pool_rows
+        pruned_files = 0
+        pruned_rows = 0
+        t_prune = time.perf_counter()
+        for p, r in outside_window:
+            try:
+                p.unlink()
+                pruned_files += 1
+                pruned_rows += r
+            except FileNotFoundError:
+                # Concurrent removal — count rows so cumulative_pruned matches reality.
+                pruned_files += 1
+                pruned_rows += r
+            except OSError as e:
+                print(f"[Shuffle] prune failed for {p.name}: {e}", file=sys.stderr)
+        if pruned_files > 0:
+            pool_rows.append_prune_event(
+                data_dir, prune_iter, pruned_files, pruned_rows
+            )
+        print(f"[Shuffle] pruned {pruned_files} files / {pruned_rows} rows "
+              f"outside window in {time.perf_counter() - t_prune:.2f}s "
+              f"(iter={prune_iter})")
+    elif outside_window:
+        outside_total = sum(r for _, r in outside_window)
+        print(f"[Shuffle] {len(outside_window)} files / {outside_total} rows "
+              f"outside window retained (PRUNE_OUTSIDE_WINDOW=0)")
 
     total_t = time.perf_counter() - t0
     print(f"[Shuffle] pass2 done: {num_shards_written} shards, "

@@ -87,14 +87,16 @@ def get_slot(name: str, slots: list[Slot] | None = None) -> Slot:
 
 
 def cumulative_selfplay_samples(data_dir: pathlib.Path) -> int:
-    """Total selfplay-pool size (main + daemon NPZs).
+    """Cumulative selfplay rows ever produced (main + daemon).
 
-    Used by `pick_active` against `MODEL_ACTIVATE_SAMPLES`. Multi-GPU runs see
-    cum_rows grow faster than single-GPU because daemon contributions are now
+    Used by `pick_active` against `MODEL_ACTIVATE_SAMPLES`. Routes through
+    pool_rows.cumulative_produced so PRUNE_OUTSIDE_WINDOW deletion can never
+    cause the active slot to regress to a smaller model. Multi-GPU runs see
+    cum_rows grow faster than single-GPU because daemon contributions are
     counted — `MODEL_ACTIVATE_SAMPLES` thresholds may need recalibration.
     """
     import pool_rows
-    return pool_rows.current_pool_rows(data_dir)
+    return pool_rows.cumulative_produced(data_dir)
 
 
 def pick_active(slots: list[Slot], cum_samples: int) -> Slot:

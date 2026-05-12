@@ -1,8 +1,14 @@
 """Total selfplay-pool row count (main + daemon) — single source of truth for cum_rows.
 
-Replaces the legacy `sum(last_run.tsv[*].rows)` lookups, which only accounted for
-main-GPU per-iter selfplay and missed daemon-produced NPZs entirely. All
-downstream consumers (warmup.py / compute_games.py / slots.py) now route here.
+Two layered notions:
+  - `current_pool_rows`  = rows physically present on disk under data_dir/selfplay/*.npz
+  - `cumulative_produced` = rows ever produced (monotonic) = current_pool_rows + pruned
+    Used by warmup and replay-ratio staging so window-based deletion never causes
+    a warmup regression.
+
+`pool_rows.tsv` snapshots the cumulative quantity (not the on-disk quantity), so the
+delta between consecutive rows is the actual produced-rows-this-iter, immune to any
+pruning that happened in between. predict_daemon_rows therefore Just Works.
 
 Reads shuffle.py's summary cache (`data/shuffled/summary.json`) read-only; for
 NPZs not yet in the cache (e.g. daemon files written since last shuffle), falls
@@ -10,8 +16,9 @@ back to `count_rows()` (NPZ header read, fast). Never writes the cache — that'
 shuffle.py's job, and writing here would race with OVERLAP_SHUFFLE=1's bg shuffle.
 
 CLI:
-    python pool_rows.py current  --data-dir DIR              # stdout: int total
-    python pool_rows.py snapshot --data-dir DIR --iter K     # append row to logs/pool_rows.tsv
+    python pool_rows.py current  --data-dir DIR              # stdout: current on-disk total
+    python pool_rows.py produced --data-dir DIR              # stdout: cumulative produced
+    python pool_rows.py snapshot --data-dir DIR --iter K     # append cumulative row to logs/pool_rows.tsv
 """
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ import argparse
 import os
 import pathlib
 import sys
+import time
 
 import shuffle
 from data_processing import count_rows
@@ -26,6 +34,9 @@ from data_processing import count_rows
 
 POOL_TSV_NAME = "pool_rows.tsv"
 POOL_TSV_HEADER = "iter\ttotal_pool_rows"
+
+PRUNED_TSV_NAME = "pruned_rows.tsv"
+PRUNED_TSV_HEADER = "timestamp\titer\tpruned_files\tpruned_rows"
 
 
 def current_pool_rows(data_dir: pathlib.Path) -> int:
@@ -53,8 +64,63 @@ def current_pool_rows(data_dir: pathlib.Path) -> int:
     return total
 
 
+def cumulative_pruned_rows(data_dir: pathlib.Path) -> int:
+    """Sum of every pruned-rows event ever recorded. 0 when log absent (no pruning yet)."""
+    path = data_dir / "logs" / PRUNED_TSV_NAME
+    if not path.exists():
+        return 0
+    total = 0
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("timestamp"):
+            continue
+        parts = line.split("\t")
+        # columns: timestamp, iter, pruned_files, pruned_rows
+        if len(parts) < 4:
+            continue
+        try:
+            total += int(parts[3])
+        except ValueError:
+            continue
+    return total
+
+
+def cumulative_produced(data_dir: pathlib.Path) -> int:
+    """Total rows ever produced by selfplay (main + daemon).
+
+    Monotonic: equals current on-disk pool + all rows ever pruned. Survives both
+    PRUNE_OUTSIDE_WINDOW deletions and (defensively) manual `rm` of NPZs that
+    were already accounted for in pruned_rows.tsv.
+    """
+    return current_pool_rows(data_dir) + cumulative_pruned_rows(data_dir)
+
+
+def append_prune_event(
+    data_dir: pathlib.Path,
+    iter_no: int,
+    pruned_files: int,
+    pruned_rows: int,
+) -> pathlib.Path:
+    """Append one row to data_dir/logs/pruned_rows.tsv. Caller deletes the NPZs
+    *before* calling — only successful deletes get recorded so cumulative_pruned
+    stays bounded above by actual disk activity."""
+    logs_dir = data_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    path = logs_dir / PRUNED_TSV_NAME
+    had_header = path.exists()
+    with path.open("a") as f:
+        if not had_header:
+            f.write(PRUNED_TSV_HEADER + "\n")
+        f.write(f"{int(time.time())}\t{iter_no}\t{pruned_files}\t{pruned_rows}\n")
+    return path
+
+
 def append_snapshot(data_dir: pathlib.Path, iter_no: int, total: int) -> pathlib.Path:
-    """Append `iter\ttotal` to data_dir/logs/pool_rows.tsv (header on first write)."""
+    """Append `iter\ttotal` to data_dir/logs/pool_rows.tsv (header on first write).
+
+    `total` is expected to be the cumulative-produced quantity. Stored value is
+    monotonic by construction (caller is the CLI `snapshot`, which always passes
+    cumulative_produced)."""
     logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     path = logs_dir / POOL_TSV_NAME
@@ -92,6 +158,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     cur = sub.add_parser("current")
     cur.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
+    prod = sub.add_parser("produced")
+    prod.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     snap = sub.add_parser("snapshot")
     snap.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     snap.add_argument("--iter", type=int, required=True)
@@ -101,10 +169,13 @@ def main() -> int:
     if args.cmd == "current":
         print(current_pool_rows(data_dir))
         return 0
+    if args.cmd == "produced":
+        print(cumulative_produced(data_dir))
+        return 0
     if args.cmd == "snapshot":
-        total = current_pool_rows(data_dir)
+        total = cumulative_produced(data_dir)
         path = append_snapshot(data_dir, args.iter, total)
-        print(f"[pool_rows] iter={args.iter} total={total} -> {path}", file=sys.stderr)
+        print(f"[pool_rows] iter={args.iter} cum_produced={total} -> {path}", file=sys.stderr)
         return 0
     return 1
 

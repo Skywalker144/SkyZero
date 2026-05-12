@@ -8,5 +8,9 @@ PY=${PY:-python}
 source "$SCRIPT_DIR/paths.cfg"
 SHUFFLE_SHARD_ROWS="${SHUFFLE_SHARD_ROWS:-200000}"
 
+# Optional iter arg — only used to tag pruned_rows.tsv rows for audit. Defaults
+# to -1 when called without an argument (e.g. manual reshuffle).
+ITER_ARG="${1:--1}"
+
 cd "$ROOT/python"
-"$PY" shuffle.py --data-dir "$DATA_DIR" --shard-rows "$SHUFFLE_SHARD_ROWS"
+"$PY" shuffle.py --data-dir "$DATA_DIR" --shard-rows "$SHUFFLE_SHARD_ROWS" --iter "$ITER_ARG"
