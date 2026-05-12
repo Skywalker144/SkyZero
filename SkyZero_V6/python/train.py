@@ -328,6 +328,24 @@ def _write_log(log_path: pathlib.Path, row: dict) -> None:
 def main() -> int:
     args = parse_args()
     cfg = net_config_for_slot(args.slot)
+
+    # Per-slot resume guard. checkpoints/<slot>/state.json is the "sealed"
+    # marker for a fully-completed train pass (written last in this function
+    # AFTER model files and the TSV log). If a previous run already sealed
+    # this iter for this slot, skip — prevents the duplicate-TSV-row /
+    # extra-epoch drift that happens when run.sh re-runs an iter after a
+    # multi-slot Ctrl-C.
+    sealed_state = slot_ckpt_dir(args.data_dir, args.slot) / "state.json"
+    if sealed_state.exists():
+        try:
+            done_iter = int(json.loads(sealed_state.read_text()).get("iter", -1))
+        except (ValueError, json.JSONDecodeError):
+            done_iter = -1
+        if done_iter >= args.iter:
+            print(f"[Train] {args.slot}: already sealed at iter={done_iter} "
+                  f"(>= requested {args.iter}); skipping.", flush=True)
+            return 0
+
     shard_dir = args.data_dir / "shuffled" / "current"
 
     it = iterate_batches(shard_dir, args.batch_size, args.device, infinite=True)
@@ -659,16 +677,10 @@ def main() -> int:
     else:
         torch.save(model.state_dict(), snap)
 
-    # Per-slot state json (consumed by run.sh's global state aggregator and
-    # by tooling that wants to know each slot's training progress without
-    # touching the optimizer-laden model_latest.pt).
-    state_json = ckpt_dir / "state.json"
-    state_json.write_text(json.dumps({
-        "iter": args.iter,
-        "global_step_samples": global_step,
-    }, indent=2))
-
-    # Log (per-slot TSV).
+    # Log (per-slot TSV). Written BEFORE state.json so the sealed marker
+    # implies the TSV row is already present — the resume-skip path at the
+    # top of main() can rely on state.json without risk of orphaning a
+    # silently-missing row.
     _write_log(slot_train_log(args.data_dir, args.slot), {
         "iter": args.iter,
         "steps": step,
@@ -684,6 +696,16 @@ def main() -> int:
         "total_loss": avg["total"],
         "seconds": dt,
     })
+
+    # Per-slot state json — the "sealed" marker. Written LAST so its
+    # presence guarantees model files + TSV row are all on disk. Consumed
+    # by run.sh's global state aggregator and the resume-skip check at the
+    # top of main().
+    state_json = ckpt_dir / "state.json"
+    state_json.write_text(json.dumps({
+        "iter": args.iter,
+        "global_step_samples": global_step,
+    }, indent=2))
     return 0
 
 
