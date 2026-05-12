@@ -331,9 +331,14 @@ int main(int argc, char** argv) {
         }
         auto cfg_map = parse_cfg(cli.config);
         // Allow env var to override the cfg file (used by selfplay.sh's GPU_NUM
-        // wrapper, which derives this list at run time).
+        // wrapper, which derives this list at run time). NUM_INFERENCE_SERVERS
+        // is paired so run.cfg.local can lower it for VRAM-constrained boxes
+        // and have the change reach C++, not just the shell wrapper.
         if (const char* env = std::getenv("INFERENCE_SERVER_DEVICES")) {
             cfg_map["INFERENCE_SERVER_DEVICES"] = env;
+        }
+        if (const char* env = std::getenv("NUM_INFERENCE_SERVERS")) {
+            cfg_map["NUM_INFERENCE_SERVERS"] = env;
         }
 
         // --- AlphaZeroConfig ---
