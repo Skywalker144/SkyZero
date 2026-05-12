@@ -143,3 +143,6 @@ GetCommits.txt
 gomocup
 
 scripts/run.cfg.local
+
+# Per-experiment scripts folders (Gumbel-vs-PUCT comparison etc.)
+scripts_*/
