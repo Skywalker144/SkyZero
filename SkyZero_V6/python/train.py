@@ -193,6 +193,10 @@ class TrainArgs:
     # length parametrized by lr_warmup_samples; 0 or enabled=False disables.
     lr_warmup_enabled: bool
     lr_warmup_samples: int
+    # torch.compile on the forward hot path. SWA wraps and all checkpoint
+    # state_dict paths still see the bare uncompiled module, so toggling this
+    # never changes saved-checkpoint key layout.
+    enable_torch_compile: bool
 
 
 def parse_args() -> TrainArgs:
@@ -234,6 +238,7 @@ def parse_args() -> TrainArgs:
         lookahead_alpha=float(os.environ.get("LOOKAHEAD_ALPHA", "0.5")),
         lr_warmup_enabled=int(os.environ.get("ENABLE_LR_WARMUP", "0")) != 0,
         lr_warmup_samples=int(float(os.environ.get("LR_WARMUP_SAMPLES", "6000000"))),
+        enable_torch_compile=int(os.environ.get("ENABLE_TORCH_COMPILE", "1")) != 0,
     )
 
 
@@ -333,6 +338,21 @@ def main() -> int:
     model = model.to(args.device)
     model.train()
     print(f"[Train] model on {args.device} in {time.time() - t:.1f}s", flush=True)
+    # Compile the forward hot path. Keep `model` as the bare module so SWA /
+    # state_dict / checkpoint paths stay format-stable; only `fwd` is used in
+    # the training loop. First step pays the compile cost (~tens of seconds
+    # for small nets), amortized over TRAIN_STEPS_PER_EPOCH.
+    if args.enable_torch_compile and args.device.type == "cuda":
+        try:
+            t_c = time.time()
+            fwd = torch.compile(model)
+            print(f"[Train] torch.compile enabled (compile triggered on first step; "
+                  f"setup={time.time() - t_c:.2f}s)", flush=True)
+        except Exception as e:
+            print(f"[Train] torch.compile failed ({e}); falling back to eager", flush=True)
+            fwd = model
+    else:
+        fwd = model
     # Lookahead (KataGo train.py:933-939): when enabled, divide opt's LR by
     # alpha so the slow-weight effective LR matches the user-configured LR.
     lookahead_enabled = args.lookahead_k > 0 and args.lookahead_alpha > 0.0
@@ -464,7 +484,7 @@ def main() -> int:
         soft_opp_target = soft_policy_target(opp_policy_target, on_board_flat)
         opp_weight = sample_weight * opp_mask
         with torch.amp.autocast("cuda", enabled=use_amp):
-            out = model(state, global_features)
+            out = fwd(state, global_features)
             # nets.PolicyHead (slim, 4 outputs):
             #   idx 0 = main_policy
             #   idx 1 = opp_policy        (KataGomo C1, our renamed "aux")
