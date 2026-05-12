@@ -1,0 +1,7 @@
+*.pth
+*.ckpt
+*.png
+
+**/__pycache__/
+
+.vscode/
