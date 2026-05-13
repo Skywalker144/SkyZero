@@ -7,6 +7,7 @@ from envs.tictactoe import TicTacToe
 
 
 eval_args = {
+    "algo": "gumbel",
     "num_blocks": train_args["num_blocks"],
     "num_channels": train_args["num_channels"],
     "num_simulations": 100,

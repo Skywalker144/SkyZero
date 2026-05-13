@@ -14,8 +14,8 @@ train_args = {
     "board_size": 15,
     "rule": "renju",  # "freestyle" | "standard" | "renju"
 
-    "num_blocks": 8,
-    "num_channels": 96,
+    "num_blocks": 6,
+    "num_channels": 64,
     "lr": 0.0001,
     "weight_decay": 3e-5,
 
@@ -27,8 +27,8 @@ train_args = {
     "train_steps_per_iteration": 100,
     "target_ReplayRatio": 4,
 
-    "temperature": 1.0,
-    "temp_threshold": 20,
+    "move_temperature": 1.0,
+    "half_life": 20,
 
     "min_buffer_size": 25000,
     "max_buffer_size": 1000000,
@@ -36,6 +36,7 @@ train_args = {
     "window_expand_per_row": 0.4,
     
     "save_interval": 10,
+    "print_interval": 20,
     "data_dir": "data/gomoku",
     "device": "cuda",
 

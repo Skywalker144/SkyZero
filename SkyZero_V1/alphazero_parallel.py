@@ -98,36 +98,43 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
             state = game.get_initial_state()
             to_play = 1
             while not game.is_terminal(state):
-                mcts_policy = mcts.search(state, to_play, args["num_simulations"])
+
+                if args.get("algo", "puct") == "puct":
+
+                    mcts_policy = mcts.search(state, to_play, args["num_simulations"])
+                    t = args.get("move_temperature", 1.0)
+                    if len(memory) > args.get("half_life", 10):
+                        t = 0.01
+
+                    action = np.random.choice(
+                        len(mcts_policy),
+                        p=temperature_transform(mcts_policy, t)
+                    )
+
+                elif args.get("algo", "puct") == "gumbel":
+
+                    mcts_policy, action, _ = mcts.gumbel_sequential_halving(state, to_play, args["num_simulations"])
+
+                else:
+                    raise ValueError(f"unknown algo {args.get('algo')!r}")
+
                 memory.append({"state": state, "to_play": to_play, "mcts_policy": mcts_policy})
-                
-                t = args.get("move_temperature", 1.0)
-                if len(memory) > args.get("half_life", 10):
-                    t = 0.01
-                
-                action = np.random.choice(
-                    len(mcts_policy),
-                    p=temperature_transform(mcts_policy, t)
-                )
+
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
                 
             winner = game.get_winner(state)
-            game_data = []
+            return_memory = []
             for sample in memory:
-                result = winner * sample["to_play"]
-                if result == 1:
-                    outcome = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-                elif result == -1:
-                    outcome = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-                else:
-                    outcome = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-                game_data.append({
+                relative_winner = winner * sample["to_play"]
+                value_target = np.eye(3, dtype=np.float32)[1 - relative_winner]
+                return_memory.append({
                     "encoded_state": game.encode_state(sample["state"], sample["to_play"]),
                     "policy_target": sample["mcts_policy"],
-                    "value_target": outcome,
+                    "value_target": value_target,
                 })
-            result_queue.put((game_data, winner))
+            game_length = np.count_nonzero(state)
+            result_queue.put((return_memory, winner, game_length))
     except Exception as e:
         print(f"Worker {rank} failed: {e}")
         traceback.print_exc()
@@ -160,69 +167,86 @@ class AlphaZeroParallel(AlphaZero):
         self.command_queue.put(("UPDATE", {k: v.cpu() for k, v in self.model.state_dict().items()}))
         start_barrier.wait()
 
+        needed_games_next_iter = self._compute_needed_games_next_iter()
+        self.sps_history.append((time.time(), self.total_samples_selfplay_generated))
+
         try:
-            num_iterations = self.args.get("num_iterations", 1000)
-            save_interval = self.args.get("save_interval", 10)
-            train_steps_per_iteration = self.args["train_steps_per_iteration"]
-            target_replay_ratio = self.args["target_ReplayRatio"]
-            unlimited = num_iterations <= 0
-            total_label = "inf" if unlimited else str(num_iterations)
+            while True:
+                if self.iteration > self.args.get("num_iterations", -1) > 0:
+                    print(f"Reached max iterations ({self.args.get('num_iterations', -1)}). Stopping.")
+                    break
+                if self.total_samples_selfplay_generated >= self.args.get("max_total_samples", -1) > 0:
+                    print(f"Reached max total samples ({self.args.get('max_total_samples', -1)}). Stopping.")
+                    break
 
-            num_next = self._compute_num_next_games()
-            i = 0
-            it = 0
-            while unlimited or i < num_iterations:
-                it = i + 1
-                print(f"\n=== Iter {it}/{total_label} | "
-                      f"collect {num_next} games (RR target={target_replay_ratio}) ===",
-                      flush=True)
-                print(f"[Stats] total_games={self.game_count} "
-                      f"total_samples={self.replay_buffer.total_samples_added}",
-                      flush=True)
+                print(f"\n\n ----- Iteration {self.iteration} -----")
+                print(
+                    f"TotalGames:{self.total_game_count} "
+                    f"TotalSamples:{self.total_samples_selfplay_generated} "
+                    f"Window:{self.replay_buffer.window_size()} "
+                    f"BufferLen:{len(self.replay_buffer)}"
+                )
 
-                # Self-play phase: consume num_next games off the worker queue
-                iter_lens, iter_winners = [], []
-                sp_t0 = time.time()
-                report_every = max(1, num_next // 5)
-                games_collected = 0
-                while games_collected < num_next:
+                # Selfplay
+                gw = len(str(needed_games_next_iter))
+                game_idx = 0
+                while game_idx < needed_games_next_iter:
                     try:
-                        game_data, winner = self.result_queue.get(timeout=1.0)
+                        memory, winner, game_length = self.result_queue.get(timeout=1.0)
                     except queue.Empty:
                         continue
-                    self.replay_buffer.add_game(game_data)
-                    self.recent_sample_lengths.append(len(game_data))
-                    self.game_count += 1
-                    self._record_game(winner, len(game_data))
-                    games_collected += 1
-                    iter_lens.append(len(game_data))
-                    iter_winners.append(winner)
-                    if (games_collected % report_every == 0
-                            or games_collected == num_next):
-                        self._print_selfplay(it, games_collected, num_next, sp_t0,
-                                             iter_lens, iter_winners)
+                    self.replay_buffer.add_game_memory(memory)
 
-                # Training phase
+                    self.total_samples_selfplay_generated += len(memory)
+                    self.total_game_count += 1
+                    self.recent_sample_lengths.append(len(memory))
+                    self.recent_game_lengths.append(game_length)
+                    self.winrate_history.append(winner)
+
+                    if (game_idx + 1) % self.args.get("print_interval", 20) == 0:
+                        self.sps_history.append((time.time(), self.total_samples_selfplay_generated))
+                        t0, s0 = self.sps_history[0]
+                        t1, s1 = self.sps_history[-1]
+                        sps = (s1 - s0) / max(t1 - t0, 1e-9)
+                        print(
+                            f"[SelfPlay] Games={game_idx+1:0{gw}d}/{needed_games_next_iter} "
+                            f"Sps={sps:.1f} "
+                            f"GameLen:Avg={sum(self.recent_game_lengths)/len(self.recent_game_lengths):.1f} "
+                            f"Min={int(min(self.recent_game_lengths))} "
+                            f"Max={int(max(self.recent_game_lengths))} "
+                            f"Std={int(np.std(self.recent_game_lengths))} "
+                            f"BDW={int(self.winrate_history.count(1)/len(self.winrate_history)*100)}/"
+                            f"{int(self.winrate_history.count(0)/len(self.winrate_history)*100)}/"
+                            f"{int(self.winrate_history.count(-1)/len(self.winrate_history)*100)}",
+                            flush=True
+                        )
+                    game_idx += 1
+
+                # Train
                 if self.replay_buffer.is_ready():
-                    self._train_iteration(it, train_steps_per_iteration)
+                    print()
+                    losses = self.train()
+                    print(
+                        f"[Train] TotalLoss={losses['total_loss']/self.args['train_steps_per_iteration']:.2f} "
+                        f"PLoss={losses['policy_loss']/self.args['train_steps_per_iteration']:.2f} "
+                        f"VLoss={losses['value_loss']/self.args['train_steps_per_iteration']:.2f}"
+                    )
                     self.command_queue.put(("UPDATE", {k: v.cpu() for k, v in self.model.state_dict().items()}))
-                else:
-                    print(f"[Train] iter={it} skipped (buffer not ready: "
-                          f"{self.replay_buffer.total_samples_added} < "
-                          f"{self.replay_buffer.min_buffer_size})", flush=True)
+                    self._record_iter_stats()
 
-                num_next = self._compute_num_next_games()
+                    completed_iter = self.iteration
+                    self.iteration += 1
+                    if completed_iter % self.args.get("save_interval", 10) == 0:
+                        self.save_checkpoint(f"checkpoint_parallel_{completed_iter}.pth")
 
-                self.plot_metrics()
+                needed_games_next_iter = self._compute_needed_games_next_iter()
 
-                if it % save_interval == 0:
-                    self.save_checkpoint(f"checkpoint_parallel_{it}.pth")
+                self._plot_metrics()
 
-                i += 1
         except KeyboardInterrupt:
-            print(f"\nStopping... saving checkpoint at iter={it}", flush=True)
-            if it > 0:
-                self.save_checkpoint(f"checkpoint_parallel_{it}_interrupt.pth")
+            print(f"\nStopping... saving checkpoint at iter={self.iteration}", flush=True)
+            if self.iteration > 0:
+                self.save_checkpoint(f"checkpoint_parallel_{self.iteration}_interrupt.pth")
         finally:
             self.command_queue.put(("STOP", None))
             gpu_process.join()

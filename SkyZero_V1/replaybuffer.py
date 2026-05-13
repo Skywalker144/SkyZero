@@ -3,8 +3,13 @@ import numpy as np
 
 
 class ReplayBuffer:
-    def __init__(self, max_buffer_size=50000, min_buffer_size=1000,
-                 window_exponent=0.65, window_expand_per_row=0.4):
+    def __init__(
+            self,
+            max_buffer_size=50000,
+            min_buffer_size=1000,
+            window_exponent=0.65,
+            window_expand_per_row=0.4
+        ):
         self.max_buffer_size = int(max_buffer_size)
         self.min_buffer_size = int(min_buffer_size)
         self.window_exponent = float(window_exponent)
@@ -15,7 +20,7 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-    def add_game(self, game_memory):
+    def add_game_memory(self, game_memory):
         self.buffer.extend(game_memory)
         self.total_samples_added += len(game_memory)
 
@@ -32,6 +37,9 @@ class ReplayBuffer:
         IWPR = self.window_expand_per_row
         scaled = (N ** E - M ** E) / (E * M ** (E - 1))
         return int(scaled * IWPR + M)
+
+    def window_size(self):
+        return self._window_size()
 
     def sample(self, batch_size):
         if not self.is_ready():

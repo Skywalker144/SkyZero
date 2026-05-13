@@ -18,7 +18,7 @@ class ResBlock(nn.Module):
         return F.relu(out)
 
 class ResNet(nn.Module):
-    def __init__(self, game, num_blocks=10, num_channels=128):
+    def __init__(self, game, num_blocks=10, num_channels=96):
         super().__init__()
         self.board_size = game.board_size
         input_channels = game.num_planes
