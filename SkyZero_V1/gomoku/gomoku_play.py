@@ -1,21 +1,28 @@
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from playgame_web import run_server
 from gomoku_train import train_args
-from playgame import GamePlayer
-from envs.gomoku import Gomoku
 
 
 eval_args = {
-    "num_blocks": train_args["num_blocks"],
-    "num_channels": train_args["num_channels"],
     "num_simulations": 400,
     "c_puct": 1.5,
-    "data_dir": train_args["data_dir"],
-    "device": "cuda", 
+    "algo": "puct",
+    "host": "127.0.0.1",
+    "port": 8765,
+    "device": "cuda",
 }
 
+
 if __name__ == "__main__":
-    game = Gomoku(board_size=train_args["board_size"], rule=train_args["rule"])
-    gp = GamePlayer(game, eval_args)
-    gp.play()
+    run_server(
+        "gomoku",
+        host=eval_args["host"],
+        port=eval_args["port"],
+        device=eval_args["device"],
+        algo=eval_args["algo"],
+        sims=eval_args["num_simulations"],
+        train_args_override=train_args,
+    )

@@ -1,22 +1,28 @@
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from playgame_web import run_server
 from tictactoe_train import train_args
-from playgame import GamePlayer
-from envs.tictactoe import TicTacToe
 
 
 eval_args = {
-    "algo": "gumbel",
-    "num_blocks": train_args["num_blocks"],
-    "num_channels": train_args["num_channels"],
     "num_simulations": 100,
     "c_puct": 1.5,
-    "data_dir": train_args["data_dir"],
+    "algo": "puct",
+    "host": "127.0.0.1",
+    "port": 8765,
     "device": "cuda",
 }
 
+
 if __name__ == "__main__":
-    game = TicTacToe()
-    gp = GamePlayer(game, eval_args)
-    gp.play()
+    run_server(
+        "tictactoe",
+        host=eval_args["host"],
+        port=eval_args["port"],
+        device=eval_args["device"],
+        algo=eval_args["algo"],
+        sims=eval_args["num_simulations"],
+        train_args_override=train_args,
+    )

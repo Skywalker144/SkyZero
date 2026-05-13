@@ -93,25 +93,28 @@ class MCTS:
             node = node.parent
 
     @torch.inference_mode()
-    def search(self, state, to_play, num_simulations):
+    def search(self, state, to_play, num_simulations, add_noise=True):
         root = Node(state, to_play)
-        
+
         # Initial expand for root
-        policy, value = self._inference(root)
-        policy = add_dirichlet_noise(
-            policy,
-            self.args.get("dirichlet_alpha", 10 / self.game.board_size ** 2),
-            self.args.get("dirichlet_epsilon", 0.25)
-        )
+        nn_policy, nn_value = self._inference(root)
+        if add_noise:
+            policy = add_dirichlet_noise(
+                nn_policy,
+                self.args.get("dirichlet_alpha", 10 / self.game.board_size ** 2),
+                self.args.get("dirichlet_epsilon", 0.25)
+            )
+        else:
+            policy = nn_policy
         self.expand(root, policy)
-        self.backpropagate(root, value)
+        self.backpropagate(root, nn_value)
 
         for _ in range(num_simulations - 1):
             node = root
             # 1. Select
             while node.is_expanded():
                 node = self.select(node)
-            
+
             # 2. Expand and Evaluate
             if self.game.is_terminal(node.state):
                 relative_winner = self.game.get_winner(node.state) * node.to_play
@@ -120,7 +123,7 @@ class MCTS:
             else:
                 policy, value = self._inference(node)
                 self.expand(node, policy)
-            
+
             # 3. Backpropagate
             self.backpropagate(node, value)
 
@@ -128,7 +131,14 @@ class MCTS:
         for child in root.children:
             mcts_policy[child.action_taken] = child.n
         mcts_policy /= np.sum(mcts_policy)
-        return mcts_policy
+
+        root_wdl = (root.wdl / root.n).astype(np.float32) if root.n > 0 else nn_value
+        info = {
+            "nn_policy": nn_policy.astype(np.float32),
+            "nn_value": nn_value.astype(np.float32),
+            "root_wdl": root_wdl,
+        }
+        return mcts_policy, info
     
     @torch.inference_mode()
     def gumbel_sequential_halving(self, state, to_play, num_simulations):
@@ -252,7 +262,12 @@ class MCTS:
         else:
             gumbel_action = int(np.argmax(improved_policy))
 
-        return improved_policy, gumbel_action, v_mix_wdl
+        info = {
+            "nn_policy": nn_policy.astype(np.float32),
+            "nn_value": nn_value_probs.astype(np.float32),
+            "root_wdl": v_mix_wdl.astype(np.float32),
+        }
+        return improved_policy, gumbel_action, v_mix_wdl, info
 
 
 class AlphaZero:
@@ -306,7 +321,7 @@ class AlphaZero:
 
             if self.args.get("algo", "puct") == "puct":
 
-                mcts_policy = self.mcts.search(state, to_play, self.args["num_simulations"])
+                mcts_policy, _ = self.mcts.search(state, to_play, self.args["num_simulations"])
                 t = self.args.get("move_temperature", 1.0)
                 if len(memory) > self.args.get("half_life", self.game.board_size):
                     t = 0.01
@@ -318,7 +333,7 @@ class AlphaZero:
 
             elif self.args.get("algo", "puct") == "gumbel":
 
-                mcts_policy, action, _ = self.mcts.gumbel_sequential_halving(state, to_play, self.args["num_simulations"])
+                mcts_policy, action, _, _ = self.mcts.gumbel_sequential_halving(state, to_play, self.args["num_simulations"])
             
             memory.append({"state": state, "to_play": to_play, "mcts_policy": mcts_policy})
             

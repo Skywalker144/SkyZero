@@ -101,7 +101,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 if args.get("algo", "puct") == "puct":
 
-                    mcts_policy = mcts.search(state, to_play, args["num_simulations"])
+                    mcts_policy, _ = mcts.search(state, to_play, args["num_simulations"])
                     t = args.get("move_temperature", 1.0)
                     if len(memory) > args.get("half_life", 10):
                         t = 0.01
@@ -113,7 +113,7 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 elif args.get("algo", "puct") == "gumbel":
 
-                    mcts_policy, action, _ = mcts.gumbel_sequential_halving(state, to_play, args["num_simulations"])
+                    mcts_policy, action, _, _ = mcts.gumbel_sequential_halving(state, to_play, args["num_simulations"])
 
                 else:
                     raise ValueError(f"unknown algo {args.get('algo')!r}")

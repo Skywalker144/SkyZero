@@ -47,7 +47,7 @@ class GamePlayer:
                     continue
             else:
                 print("AlphaZero is thinking...")
-                mcts_policy = alphazero.mcts.search(state, to_play, self.args["num_simulations"])
+                mcts_policy, _ = alphazero.mcts.search(state, to_play, self.args["num_simulations"])
                 # In eval, we usually take the most visited move
                 action = np.argmax(mcts_policy)
                 r, c = action // self.game.board_size, action % self.game.board_size
