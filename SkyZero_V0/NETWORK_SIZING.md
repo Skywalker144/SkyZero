@@ -1,3 +1,3 @@
 
 
-Num Channels ≈ Num Block * 3
+Num Channels ≈ Num Block * 10
