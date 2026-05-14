@@ -325,11 +325,18 @@ def main() -> int:
 
     total = sum(r for _, r in files_rows)
 
+    # Window N must be cumulative-produced (on-disk + ever-pruned), not on-disk.
+    # Otherwise W(N) < N (for N > M) drags on-disk monotonically toward MIN_ROWS
+    # each iter and defeats KataGomo's "window grows with cumulative data".
+    # Local import: pool_rows imports shuffle, so top-level import would cycle.
+    import pool_rows
+    cum_produced = total + pool_rows.cumulative_pruned_rows(data_dir)
+
     # KataGomo-aligned gate: refuse to produce training shards below MIN_ROWS.
     # run.sh treats exit-code 2 as "skipped, not an error" and continues the
     # loop without calling train.py / export.py.
-    if total < min_rows:
-        print(f"[Shuffle] total_rows={total} < MIN_ROWS={min_rows} "
+    if cum_produced < min_rows:
+        print(f"[Shuffle] cum_produced={cum_produced} < MIN_ROWS={min_rows} "
               f"-- skipping training this iter", file=sys.stderr)
         if shuffled_dir.exists():
             shutil.rmtree(shuffled_dir)
@@ -338,12 +345,13 @@ def main() -> int:
             pool.join()
         return 2
 
-    pool_size = compute_window_size(total, min_rows, exponent, expand_per_row)
+    pool_size = compute_window_size(cum_produced, min_rows, exponent, expand_per_row)
     keep = min(pool_size, keep_target_rows)
     ratio = keep / pool_size if pool_size > 0 else 1.0
 
-    print(f"[Shuffle] total_rows={total} pool={pool_size} keep={keep} "
-          f"ratio={ratio:.4f} (min_rows={min_rows}, exponent={exponent}, "
+    print(f"[Shuffle] cum_produced={cum_produced} on_disk={total} "
+          f"pool={pool_size} keep={keep} ratio={ratio:.4f} "
+          f"(min_rows={min_rows}, exponent={exponent}, "
           f"expand_per_row={expand_per_row}, keep_target={keep_target_rows}) "
           f"discover={t_discover:.2f}s")
 
