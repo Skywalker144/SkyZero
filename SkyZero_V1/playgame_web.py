@@ -102,6 +102,7 @@ class GameSession:
         self.last_nn_value_black = None
         self.last_root_wdl_black = None
         self.value_history = []
+        self._move_history = []
         self.game_over = False
         self.winner = None
         self.status = "Your turn." if self.human_side == 1 else "AlphaZero is thinking..."
@@ -147,6 +148,23 @@ class GameSession:
         self._apply_action(action)
 
     def _apply_action(self, action):
+        # Save pre-move snapshot for undo
+        self._move_history.append({
+            'state': self.state.copy(),
+            'to_play': self.to_play,
+            'last_move': self.last_move,
+            'last_ai_move': self.last_ai_move,
+            'last_nn_policy': self.last_nn_policy,
+            'last_mcts_policy': self.last_mcts_policy,
+            'last_nn_value': self.last_nn_value,
+            'last_root_wdl': self.last_root_wdl,
+            'last_nn_value_black': self.last_nn_value_black,
+            'last_root_wdl_black': self.last_root_wdl_black,
+            'game_over': self.game_over,
+            'winner': self.winner,
+            'status': self.status,
+            'value_history': list(self.value_history),
+        })
         self.state = self.game.get_next_state(self.state, action, self.to_play)
         r, c = action // self.board_size, action % self.board_size
         self.last_move = (int(r), int(c))
@@ -165,6 +183,37 @@ class GameSession:
         self.status = "Your turn." if self.to_play == self.human_side else "AlphaZero is thinking..."
 
     # ----- public API -----
+
+    def undo_move(self):
+        with self.lock:
+            if not self._move_history:
+                return {'ok': False, 'err': 'no moves to undo'}
+            while self._move_history:
+                entry = self._move_history.pop()
+                self.state = entry['state']
+                self.to_play = entry['to_play']
+                self.last_move = entry['last_move']
+                self.last_ai_move = entry['last_ai_move']
+                self.last_nn_policy = entry['last_nn_policy']
+                self.last_mcts_policy = entry['last_mcts_policy']
+                self.last_nn_value = entry['last_nn_value']
+                self.last_root_wdl = entry['last_root_wdl']
+                self.last_nn_value_black = entry['last_nn_value_black']
+                self.last_root_wdl_black = entry['last_root_wdl_black']
+                self.game_over = entry['game_over']
+                self.winner = entry['winner']
+                self.status = entry['status']
+                self.value_history = entry['value_history']
+                if self.to_play == self.human_side and not self.game_over:
+                    break
+            self.last_nn_policy = None
+            self.last_mcts_policy = None
+            self.last_nn_value = None
+            self.last_root_wdl = None
+            self.last_nn_value_black = None
+            self.last_root_wdl_black = None
+            self.status = 'Your turn (undid last move).'
+            return {'ok': True}
 
     def new_game(self, human_side, algo, num_simulations):
         with self.lock:
@@ -284,6 +333,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not result["ok"]:
                     self._send_json(409, {"ok": False, "err": result.get("err"),
                                           "state": Handler.session.snapshot()})
+                    return
+                self._send_json(200, Handler.session.snapshot())
+                return
+            if self.path == '/undo':
+                result = Handler.session.undo_move()
+                if not result['ok']:
+                    self._send_json(409, {'ok': False, 'err': result.get('err'),
+                                          'state': Handler.session.snapshot()})
                     return
                 self._send_json(200, Handler.session.snapshot())
                 return
@@ -535,6 +592,9 @@ HTML_PAGE = r"""<!doctype html>
   .btn:hover { background: var(--surface-2); border-color: var(--border-strong); }
   .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
   .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn.undo-btn { color: var(--fg-muted); }
+  .btn.undo-btn:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+  .btn.undo-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* field-row + number input */
   .field-row {
@@ -800,6 +860,7 @@ HTML_PAGE = r"""<!doctype html>
       </div>
       <div class="board-actions">
         <button class="btn primary" onclick="newGame()">New game</button>
+        <button class="btn undo-btn" id="undo_btn" onclick="undoMove()" disabled>Undo</button>
       </div>
     </section>
 
@@ -923,7 +984,7 @@ function fitHeatCanvas(canvasId) {
   const cardCS = getComputedStyle(card);
   const padX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
   const availW = card.clientWidth - padX;
-  const size = Math.max(160, Math.min(380, Math.floor(availW)));
+  const size = Math.max(160, Math.min(BOARD_LOGICAL, Math.min(380, Math.floor(availW))));
   c.style.width = size + 'px';
   c.style.height = size + 'px';
   if (heatCtxs[canvasId]._logicalW === size) return false;
@@ -976,7 +1037,7 @@ function draw() {
   }
   if (!state) return;
 
-  const stoneR    = Math.max(8, Math.round(CELL * 0.42));
+  const stoneR    = Math.max(8, Math.round(CELL * (N <= 5 ? 0.35 : 0.42)));
   const lastDotR  = Math.max(3, Math.round(CELL * 0.11));
   const shadowDx  = Math.max(0, Math.round(CELL * 0.015));
   const shadowDy  = Math.max(1, Math.round(CELL * 0.045));
@@ -1276,6 +1337,9 @@ function refresh(s) {
   drawHeat('h_mcts', state.mcts_policy);
   drawValueChart();
   paintHeatModal();
+  // Enable undo button only when it's human's turn, game isn't over, and board has moves
+  const hasMoves = state.board.some(row => row.some(v => v !== 0));
+  $('undo_btn').disabled = !(state.to_play === state.human_side && !state.game_over && hasMoves);
 }
 
 function setBusy(b) {
@@ -1302,6 +1366,21 @@ async function submitMove(r, c) {
       $('status').textContent = resp.err || 'Move rejected.';
       $('status_pill').dataset.variant = 'error';
       if (resp.state) refresh(resp.state);
+      return;
+    }
+    refresh(resp);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function undoMove() {
+  setBusy(true);
+  try {
+    const resp = await fetchJSON('/undo', {});
+    if (resp && resp.ok === false) {
+      $('status').textContent = resp.err || 'Cannot undo.';
+      $('status_pill').dataset.variant = 'error';
       return;
     }
     refresh(resp);

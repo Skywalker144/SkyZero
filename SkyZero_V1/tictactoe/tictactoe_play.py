@@ -11,8 +11,8 @@ eval_args = {
     "c_puct": 1.5,
     "algo": "puct",
     "host": "127.0.0.1",
-    "port": 8765,
-    "device": "cuda",
+    "port": 8777,
+    "device": "mps",
 }
 
 

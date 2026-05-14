@@ -7,6 +7,7 @@ import traceback
 import os
 import copy
 from alphazero import AlphaZero, MCTS, temperature_transform
+from policy_surprise_weighting import compute_policy_surprise_weights, apply_surprise_weighting
 
 try:
     mp.set_start_method("spawn", force=True)
@@ -101,7 +102,17 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 if args.get("algo", "puct") == "puct":
 
-                    mcts_policy, _ = mcts.search(state, to_play, args["num_simulations"])
+                    # Playout Cap Radomization
+                    if not args.get("enable_pcr", 0):
+                        mcts_policy, info = mcts.search(state, to_play, args["num_simulations"])
+                        for_train = 1
+                    else:
+                        if np.random.rand() < args.get("full_search_prob", 0.25):
+                            mcts_policy, info = mcts.search(state, to_play, args.get("num_simulations", 400))
+                            for_train = 1
+                        else:
+                            mcts_policy, info = mcts.search(state, to_play, args.get("fast_search_num_simulations", 80), add_noise=False)
+                            for_train = 0
                     t = args.get("move_temperature", 1.0)
                     if len(memory) > args.get("half_life", 10):
                         t = 0.01
@@ -113,12 +124,22 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
 
                 elif args.get("algo", "puct") == "gumbel":
 
-                    mcts_policy, action, _, _ = mcts.gumbel_sequential_halving(state, to_play, args["num_simulations"])
+                    mcts_policy, action, _, info = mcts.gumbel_sequential_halving(state, to_play, args["num_simulations"])
+                    for_train = 1
 
                 else:
                     raise ValueError(f"unknown algo {args.get('algo')!r}")
 
-                memory.append({"state": state, "to_play": to_play, "mcts_policy": mcts_policy})
+                if for_train:
+                    if args.get("enable_psw", 0):
+                        memory.append({
+                            "state": state, "to_play": to_play,
+                            "mcts_policy": mcts_policy,
+                            "nn_policy": info["nn_policy"],
+                            "nn_value_probs": info["nn_value"],
+                        })
+                    else:
+                        memory.append({"state": state, "to_play": to_play, "mcts_policy": mcts_policy})
 
                 state = game.get_next_state(state, action, to_play)
                 to_play = -to_play
@@ -133,6 +154,27 @@ def selfplay_worker(rank, game, args, request_queue, response_pipe, result_queue
                     "policy_target": sample["mcts_policy"],
                     "value_target": value_target,
                 })
+
+            # Policy Surprise Weighting
+            if args.get("enable_psw", 0):
+                game_data = []
+                for sample in memory:
+                    relative_winner = winner * sample["to_play"]
+                    value_target = np.eye(3, dtype=np.float32)[1 - relative_winner]
+                    game_data.append({
+                        "policy_target": sample["mcts_policy"],
+                        "nn_policy": sample["nn_policy"],
+                        "value_target": value_target,
+                        "nn_value_probs": sample["nn_value_probs"],
+                        "sample_weight": 1.0,
+                    })
+                psw_weights = compute_policy_surprise_weights(
+                    game_data,
+                    args.get("policy_surprise_data_weight", 0.5),
+                    args.get("value_surprise_data_weight", 0.1),
+                )
+                return_memory = apply_surprise_weighting(return_memory, psw_weights)
+
             game_length = np.count_nonzero(state)
             result_queue.put((return_memory, winner, game_length))
     except Exception as e:
@@ -169,6 +211,7 @@ class AlphaZeroParallel(AlphaZero):
 
         needed_games_next_iter = self._compute_needed_games_next_iter()
         self.sps_history.append((time.time(), self.total_samples_selfplay_generated))
+        self._learn_start_wall = time.time()
 
         try:
             while True:
@@ -178,6 +221,11 @@ class AlphaZeroParallel(AlphaZero):
                 if self.total_samples_selfplay_generated >= self.args.get("max_total_samples", -1) > 0:
                     print(f"Reached max total samples ({self.args.get('max_total_samples', -1)}). Stopping.")
                     break
+                if self.args.get("max_runtime_seconds", -1) > 0:
+                    elapsed_total = self.cumulative_runtime + (time.time() - self._learn_start_wall)
+                    if elapsed_total >= self.args["max_runtime_seconds"]:
+                        print(f"Reached max runtime ({self.args["max_runtime_seconds"]}s). Stopping.")
+                        break
 
                 print(f"\n\n ----- Iteration {self.iteration} -----")
                 print(

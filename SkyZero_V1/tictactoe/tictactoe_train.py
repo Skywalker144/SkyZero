@@ -6,41 +6,12 @@ from nets import ResNet
 from envs.tictactoe import TicTacToe
 from alphazero import AlphaZero
 from alphazero_parallel import AlphaZeroParallel
+from config import load_config
 import numpy as np
 import torch.optim as optim
 
-train_args = {
-    
-    "algo": "gumbel",
-
-    "num_blocks": 2,       # 网络block数量
-    "num_channels": 24,    # 网络channels
-    "lr": 1e-4,           # 学习率
-    "weight_decay": 3e-5,  # 权重衰减系数
-
-    "num_simulations": 50,      # 模拟次数
-    "dirichlet_alpha": 1,       # 控制Dirichlet噪声的锐度，不用动
-    "dirichlet_epsilon": 0.25,  # 控制Dirichlet噪声在根节点的占比，不用动
-
-    "batch_size": 128,                # 训练时的batch_size
-    "train_steps_per_iteration": 50,  # train阶段训多少个batch
-    "target_ReplayRatio": 4,          # 样本回放率，即每个样本会被训练的次数。
-
-    "move_temperature": 1.0,   # 落子温度
-    "half_life": 3,            # 每一局经过这个步数之后改为argmax落子
-
-    "min_buffer_size": 6400,        # 最小多少样本开始训（需 >= batch_size * train_steps_per_iteration）
-    "max_buffer_size": 1e7,         # 最大容纳多少样本（受内存限制）
-    "window_exponent": 0.65,        # 不用动
-    "window_expand_per_row": 0.4,   # 不用动
-    
-    "save_interval": 20,           # 隔几个iteration保存一次checkpoint
-    "print_interval": 20,          # 每多少局selfplay打印一次log
-    "data_dir": "data/tictactoe_gumbel_50",
-    "device": "cuda",
-
-    "num_workers": 12,     # 并行worker数量
-}
+_CFG_PATH = os.path.join(os.path.dirname(__file__), "tictactoe.cfg")
+train_args = load_config(_CFG_PATH)
 
 if __name__ == "__main__":
     np.set_printoptions(precision=2, suppress=True)

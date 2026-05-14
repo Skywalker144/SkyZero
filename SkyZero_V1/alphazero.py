@@ -11,6 +11,7 @@ matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 
 from replaybuffer import ReplayBuffer
+from policy_surprise_weighting import compute_policy_surprise_weights, apply_surprise_weighting
 from utils import (
     temperature_transform,
     random_augment_batch,
@@ -292,6 +293,7 @@ class AlphaZero:
         self.iteration = 1
         self.total_samples_selfplay_generated = 0
         self.total_game_count = 0
+        self.cumulative_runtime = 0.0
 
         self.losses_dict = {
             "total_loss": [],
@@ -320,8 +322,17 @@ class AlphaZero:
         while not self.game.is_terminal(state):
 
             if self.args.get("algo", "puct") == "puct":
-
-                mcts_policy, _ = self.mcts.search(state, to_play, self.args["num_simulations"])
+                
+                # Playout Cap Radomization
+                if not self.args.get("enable_pcr", 0):
+                    mcts_policy, info = self.mcts.search(state, to_play, self.args["num_simulations"])
+                else:
+                    if np.random.rand() < self.args.get("full_search_prob", 0.25):
+                        mcts_policy, info = self.mcts.search(state, to_play, self.args.get("num_simulations", 400))
+                        for_train = 1
+                    else:
+                        mcts_policy, info = self.mcts.search(state, to_play, self.args.get("fast_search_num_simulations", 80), add_noise=False)
+                        for_train = 0                
                 t = self.args.get("move_temperature", 1.0)
                 if len(memory) > self.args.get("half_life", self.game.board_size):
                     t = 0.01
@@ -333,10 +344,20 @@ class AlphaZero:
 
             elif self.args.get("algo", "puct") == "gumbel":
 
-                mcts_policy, action, _, _ = self.mcts.gumbel_sequential_halving(state, to_play, self.args["num_simulations"])
+                mcts_policy, action, _, info = self.mcts.gumbel_sequential_halving(state, to_play, self.args["num_simulations"])
+                for_train = 1
             
-            memory.append({"state": state, "to_play": to_play, "mcts_policy": mcts_policy})
-            
+            if for_train:
+                if self.args.get("enable_psw", 0):
+                    memory.append({
+                        "state": state, "to_play": to_play,
+                        "mcts_policy": mcts_policy,
+                        "nn_policy": info["nn_policy"],
+                        "nn_value_probs": info["nn_value"],
+                    })
+                else:
+                    memory.append({"state": state, "to_play": to_play, "mcts_policy": mcts_policy})
+
             state = self.game.get_next_state(state, action, to_play)
             to_play = -to_play
         
@@ -350,6 +371,27 @@ class AlphaZero:
                 "policy_target": sample["mcts_policy"],
                 "value_target": value_target,
             })
+
+        # Policy Surprise Weighting
+        if self.args.get("enable_psw", 0):
+            game_data = []
+            for sample in memory:
+                relative_winner = winner * sample["to_play"]
+                value_target = np.eye(3, dtype=np.float32)[1 - relative_winner]
+                game_data.append({
+                    "policy_target": sample["mcts_policy"],
+                    "nn_policy": sample["nn_policy"],
+                    "value_target": value_target,
+                    "nn_value_probs": sample["nn_value_probs"],
+                    "sample_weight": 1.0,
+                })
+            psw_weights = compute_policy_surprise_weights(
+                game_data,
+                self.args.get("policy_surprise_data_weight", 0.5),
+                self.args.get("value_surprise_data_weight", 0.1),
+            )
+            return_memory = apply_surprise_weighting(return_memory, psw_weights)
+
         game_length = np.count_nonzero(state)
         return return_memory, winner, game_length
 
@@ -387,6 +429,7 @@ class AlphaZero:
     def learn(self):
         needed_games_next_iter = self._compute_needed_games_next_iter()
         self.sps_history.append((time.time(), self.total_samples_selfplay_generated))
+        self._learn_start_wall = time.time()
 
         try:
             while True:
@@ -396,6 +439,11 @@ class AlphaZero:
                 if self.total_samples_selfplay_generated >= self.args.get("max_total_samples", -1) > 0:
                     print(f"Reached max total samples ({self.args.get('max_total_samples', -1)}). Stopping.")
                     break
+                if self.args.get("max_runtime_seconds", -1) > 0:
+                    elapsed_total = self.cumulative_runtime + (time.time() - self._learn_start_wall)
+                    if elapsed_total >= self.args["max_runtime_seconds"]:
+                        print(f"Reached max runtime ({self.args["max_runtime_seconds"]}s). Stopping.")
+                        break
 
                 print(f"\n\n ----- Iteration {self.iteration} -----")
                 print(
@@ -508,6 +556,7 @@ class AlphaZero:
             "iteration": self.iteration,
             "total_game_count": self.total_game_count,
             "total_samples_selfplay_generated": self.total_samples_selfplay_generated,
+            "cumulative_runtime": self.cumulative_runtime + (time.time() - self._learn_start_wall),
             "losses_dict": self.losses_dict,
             "stats_history": self.stats_history,
             "winrate_history": list(self.winrate_history),
@@ -554,6 +603,7 @@ class AlphaZero:
             setattr(self, attr, deq)
         if "replay_buffer" in checkpoint:
             self.replay_buffer.load_state(checkpoint["replay_buffer"])
+        self.cumulative_runtime = checkpoint.get("cumulative_runtime", 0.0)
         print(
             f"Checkpoint loaded. iter={self.iteration} "
             f"games={self.total_game_count} samples={self.total_samples_selfplay_generated}"
@@ -564,6 +614,17 @@ class AlphaZero:
         try:
             logs_dir = os.path.join(self.args.get("data_dir", "data"), "logs")
             os.makedirs(logs_dir, exist_ok=True)
+            runtime_sec = int(self.cumulative_runtime + (time.time() - self._learn_start_wall))
+            d, r = divmod(runtime_sec, 86400)
+            h, r = divmod(r, 3600)
+            m, s = divmod(r, 60)
+            parts = []
+            if d: parts.append(f"{d}d")
+            if h: parts.append(f"{h}h")
+            if m: parts.append(f"{m}m")
+            parts.append(f"{s}s")
+            runtime_str = " ".join(parts)
+
 
             x_samples = self.stats_history.get("total_samples", [])
             xlabel = "Total Self-Play Samples"
@@ -572,6 +633,7 @@ class AlphaZero:
             n_loss = min(len(x_samples), len(total_losses))
             if n_loss > 0:
                 plt.figure(figsize=(10, 6))
+                plt.suptitle(f"Runtime: {runtime_str}", fontsize=10, y=0.98)
                 plt.plot(x_samples[:n_loss], total_losses[:n_loss], label="Total Loss")
                 plt.title(f"Total Training Loss (Games={self.total_game_count})")
                 plt.xlabel(xlabel)
@@ -583,6 +645,7 @@ class AlphaZero:
                 plt.close()
 
                 plt.figure(figsize=(10, 6))
+                plt.suptitle(f"Runtime: {runtime_str}", fontsize=10, y=0.98)
                 for key, vals in self.losses_dict.items():
                     if key == "total_loss" or not vals:
                         continue
@@ -604,6 +667,7 @@ class AlphaZero:
             if n_rate > 0:
                 xs = x_samples[:n_rate]
                 plt.figure(figsize=(10, 6))
+                plt.suptitle(f"Runtime: {runtime_str}", fontsize=10, y=0.98)
                 plt.plot(xs, self.stats_history["black_rate"][:n_rate], label="Black Win Rate", color="black")
                 plt.plot(xs, self.stats_history["white_rate"][:n_rate], label="White Win Rate", color="red")
                 plt.plot(xs, self.stats_history["draw_rate"][:n_rate], label="Draw Rate", color="gray")
