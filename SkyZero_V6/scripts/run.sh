@@ -102,10 +102,12 @@ while true; do
     echo "[run.sh] === iter $iter ==="
     date
 
-    # Cumulative selfplay totals so far (through previous iter)
-    awk 'NR>1 {g+=$2; r+=$3} END {printf "[run.sh] cumulative so far: games=%d samples=%d\n", g+0, r+0}' \
-        "$DATA_DIR/logs/last_run.tsv" 2>/dev/null \
-        || echo "[run.sh] cumulative so far: games=0 samples=0"
+    # Cumulative selfplay samples so far (main + daemon, includes pruned history).
+    # Read via pool_rows.cumulative_produced — canonical, matches the values
+    # warmup / compute_games / shuffle all see. (awk-summing last_run.tsv would
+    # be main-GPU-only and miss the pruned history.)
+    CUM_SAMPLES=$( cd "$ROOT/python" && "$PY" pool_rows.py produced --data-dir "$DATA_DIR" 2>/dev/null || echo 0 )
+    echo "[run.sh] cumulative samples so far: ${CUM_SAMPLES} (main + daemon, includes pruned history)"
     ACTIVE_SLOT=$( "$PY" "$ROOT/python/slots.py" active --data-dir "$DATA_DIR" )
     echo "[run.sh] active selfplay slot for iter $iter: $ACTIVE_SLOT"
 
