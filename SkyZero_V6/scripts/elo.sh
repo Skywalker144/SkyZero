@@ -224,9 +224,39 @@ count_existing() {
     echo "$(( ${n1:-0} + ${n2:-0} ))"
 }
 
-# Run gomoku_elo for one (a, b) pair, topping up to target_games. Skips if
-# already filled. label is just for the log line ("anchor" or "neighbor").
-run_pair_match() {
+# --- Multi-GPU dispatch setup -------------------------------------------
+# Detect GPUs to fan pair-matches across. ELO_DEVICES (comma- or space-
+# separated GPU indices) overrides auto-detect. If neither yields a list,
+# fall back to a single worker with CUDA_VISIBLE_DEVICES untouched — same
+# behavior as before the multi-GPU patch.
+detect_gpus() {
+    if [[ -n "${ELO_DEVICES:-}" ]]; then
+        echo "$ELO_DEVICES" | tr ',' ' '
+    elif command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi -L 2>/dev/null | awk -F: '/^GPU /{gsub(/^GPU /,"",$1); print $1}'
+    fi
+}
+read -r -a GPUS <<< "$(detect_gpus | xargs)"
+(( ${#GPUS[@]} == 0 )) && GPUS=("")  # single worker, no env pinning
+
+# Each worker writes to a per-GPU temp file so concurrent appends never
+# collide. Merge into OUT_FILE on any exit (success, error, Ctrl-C) so
+# partial progress survives interruption.
+TMP_TAG="$$"
+merge_tmps() {
+    local f
+    for f in "$OUT_FILE.gpu"*".tmp.$TMP_TAG"; do
+        [[ -e "$f" ]] || continue
+        cat "$f" >> "$OUT_FILE" && rm -f "$f"
+    done
+}
+trap merge_tmps EXIT
+
+# Push a pair onto the JOBS queue iff there are games still to play.
+# Up-front count_existing means each dispatched worker carries its own
+# pre-computed `remaining`, so two workers can't race on the same pair.
+JOBS=()
+enqueue_pair() {
     local a="$1" b="$2" target_games="$3" label="$4"
     local existing remaining
     existing="$(count_existing "$a" "$b")"
@@ -235,17 +265,34 @@ run_pair_match() {
         return 0
     fi
     remaining=$(( target_games - existing ))
-    echo "[elo.sh] === $(basename "$a") vs $(basename "$b") ($label, $remaining games) ==="
-    "$ELO_BIN" \
-        --model-a "$a" \
-        --model-b "$b" \
-        --config "$ELO_CFG" \
-        --output "$OUT_FILE" \
-        --num-games "$remaining" \
-        "${sim_flag[@]}"
+    JOBS+=("$a|$b|$remaining|$label")
 }
 
-# --- Run matches --------------------------------------------------------
+# Run one gomoku_elo invocation pinned to a single physical GPU. The
+# binary itself still uses cuda:0; CUDA_VISIBLE_DEVICES remaps which
+# card that is. Stderr is prefixed so interleaved logs from parallel
+# workers stay attributable.
+run_pair_on_gpu() {
+    local a="$1" b="$2" remaining="$3" label="$4" gpu="$5"
+    local tag="gpu${gpu:-cpu}"
+    local out_tmp="$OUT_FILE.${tag}.tmp.$TMP_TAG"
+    echo "[$tag] === $(basename "$a") vs $(basename "$b") ($label, $remaining games) ==="
+    if [[ -n "$gpu" ]]; then
+        CUDA_VISIBLE_DEVICES="$gpu" "$ELO_BIN" \
+            --model-a "$a" --model-b "$b" \
+            --config "$ELO_CFG" --output "$out_tmp" \
+            --num-games "$remaining" "${sim_flag[@]}" \
+            2> >(sed -u "s|^|[$tag] |" >&2)
+    else
+        "$ELO_BIN" \
+            --model-a "$a" --model-b "$b" \
+            --config "$ELO_CFG" --output "$out_tmp" \
+            --num-games "$remaining" "${sim_flag[@]}" \
+            2> >(sed -u "s|^|[$tag] |" >&2)
+    fi
+}
+
+# --- Schedule -----------------------------------------------------------
 if (( ${#anchor_list[@]} == 0 )); then
     echo "[elo.sh] anchors: none (neighbor-only mode)"
 else
@@ -254,22 +301,44 @@ fi
 echo "[elo.sh] output=$OUT_FILE  anchor_games/pair=$NUM_GAMES  neighbor_games/pair=$NEIGHBOR_GAMES  K=$NEIGHBOR_K"
 echo "[elo.sh] schedule: ${#TARGETS[@]} target(s) x ${#anchor_list[@]} anchor(s) + ${#NEIGHBOR_PAIRS[@]} neighbor pair(s)"
 
-# Anchor matches
 for target in "${TARGETS[@]}"; do
     target_abs="$(readlink -f "$target")"
     for anchor in "${anchor_list[@]}"; do
         anchor_abs="$(readlink -f "$anchor")"
         [[ "$anchor_abs" == "$target_abs" ]] && continue
-        run_pair_match "$target" "$anchor" "$NUM_GAMES" "anchor"
+        enqueue_pair "$target" "$anchor" "$NUM_GAMES" "anchor"
     done
 done
-
-# Neighbor matches
 for pair in "${NEIGHBOR_PAIRS[@]}"; do
     a="${pair%|*}"
     b="${pair#*|}"
-    run_pair_match "$a" "$b" "$NEIGHBOR_GAMES" "neighbor"
+    enqueue_pair "$a" "$b" "$NEIGHBOR_GAMES" "neighbor"
 done
+
+echo "[elo.sh] dispatch: ${#JOBS[@]} pair(s) across ${#GPUS[@]} worker(s) [${GPUS[*]}]"
+
+# --- Dispatch -----------------------------------------------------------
+# Chunk JOBS into groups of N=#GPUs, fire all in parallel, barrier between
+# chunks. Pair runtimes are roughly uniform (same game count, batched
+# inference saturates the card), so chunking is within a few percent of an
+# ideal work-stealing queue and much simpler.
+FAILED=0
+num_gpus=${#GPUS[@]}
+for ((i = 0; i < ${#JOBS[@]}; i += num_gpus)); do
+    pids=()
+    for ((s = 0; s < num_gpus && i + s < ${#JOBS[@]}; s++)); do
+        IFS='|' read -r ja jb jrem jlabel <<< "${JOBS[i + s]}"
+        run_pair_on_gpu "$ja" "$jb" "$jrem" "$jlabel" "${GPUS[s]}" &
+        pids+=("$!")
+    done
+    for pid in "${pids[@]}"; do
+        if wait "$pid"; then :; else FAILED=1; fi
+    done
+done
+
+if (( FAILED != 0 )); then
+    echo "[elo.sh] WARNING: one or more workers failed; partial games still merged into $OUT_FILE"
+fi
 
 # --- Regenerate Elo table + curve ---------------------------------------
 echo "[elo.sh] updating Elo: $PLOT_FILE"
