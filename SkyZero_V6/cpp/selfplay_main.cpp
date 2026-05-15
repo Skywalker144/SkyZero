@@ -591,19 +591,15 @@ int main(int argc, char** argv) {
         fs::create_directories(cli.output_dir);
         fs::create_directories(cli.log_dir);
 
-        // Aggregate cumulative games/rows from last_run.tsv (history up to this iter).
-        // Daemon mode skips this — last_run.tsv is per-iter, the daemon has no iter
-        // boundary, and the readout is purely cosmetic anyway (shuffle.py recomputes
-        // the window from live NPZ row counts).
-        //
         // Resume hygiene: if a prior run finished selfplay (so it appended a
         // last_run.tsv row) but train/export got interrupted, state.json still
         // points at the previous iter; resume reruns this same iter, the
         // orphan NPZ parts are cleaned below, but the tsv row would otherwise
-        // double-count. Drop any rows with iter >= cli.iter before aggregating.
-        int64_t cum_games = 0;
-        int64_t cum_rows = 0;
-        int64_t window_size = 0;
+        // double-count. Drop any rows with iter >= cli.iter.
+        //
+        // Daemon mode skips this — last_run.tsv is per-iter, the daemon has
+        // no iter boundary, and the startup readout below is purely cosmetic
+        // anyway (shuffle.py is the source of truth for window/pruning).
         if (!cli.daemon) {
             const fs::path last_run_path = fs::path(cli.log_dir) / "last_run.tsv";
             std::vector<std::string> kept_lines;
@@ -627,8 +623,6 @@ int main(int argc, char** argv) {
                     int it; int64_t g, r;
                     if (!(ls >> it >> g >> r)) { kept_lines.push_back(line); continue; }
                     if (it >= cli.iter) { ++dropped; continue; }
-                    cum_games += g;
-                    cum_rows += r;
                     kept_lines.push_back(line);
                 }
             }
@@ -640,11 +634,33 @@ int main(int argc, char** argv) {
                           << " stale last_run.tsv row(s) with iter >= "
                           << cli.iter << " (resume after interrupted train)\n";
             }
-            if (cum_rows <= min_rows) {
-                window_size = cum_rows;
+        }
+
+        // Read cumulative-produced from pool_rows.tsv (snapshot written by
+        // python/pool_rows.py at end of each successful iter). Matches what
+        // shuffle.py / warmup.py see — was previously summed from last_run.tsv,
+        // which is main-GPU-only and excluded pruned history, giving a
+        // misleading WindowSize roughly 15× too small once pruning kicked in.
+        int64_t cum_produced = 0;
+        int64_t window_size = 0;
+        if (!cli.daemon) {
+            const fs::path pool_rows_path = fs::path(cli.log_dir) / "pool_rows.tsv";
+            std::ifstream f(pool_rows_path);
+            std::string line, last_data;
+            while (std::getline(f, line)) {
+                if (line.empty() || line.rfind("iter", 0) == 0) continue;
+                last_data = line;
+            }
+            if (!last_data.empty()) {
+                std::istringstream ls(last_data);
+                int it; int64_t total;
+                if (ls >> it >> total) cum_produced = total;
+            }
+            if (cum_produced <= min_rows) {
+                window_size = cum_produced;
             } else {
                 const double M = static_cast<double>(min_rows);
-                const double N = static_cast<double>(cum_rows);
+                const double N = static_cast<double>(cum_produced);
                 const double scaled = (std::pow(N, exponent) - std::pow(M, exponent))
                                     / (exponent * std::pow(M, exponent - 1));
                 window_size = static_cast<int64_t>(scaled * expand_per_row + min_rows);
@@ -670,7 +686,7 @@ int main(int argc, char** argv) {
         // Clean any leftover parts from a previously interrupted run of this
         // same iter, so NpzWriter's part counter re-aligns with disk state.
         // last_run.tsv is only appended on clean finish, so these orphans are
-        // not yet accounted for in cum_rows/cum_games and must be discarded.
+        // not yet accounted for in any cumulative log and must be discarded.
         // Daemon mode skips this (its files include pid + monotonic version
         // and stay valid across restarts).
         if (!cli.daemon) {
@@ -713,9 +729,9 @@ int main(int argc, char** argv) {
         }
         std::cout << "]\n";
         if (!cli.daemon) {
-            std::cout << "[SelfPlay] TotalGames=" << cum_games
-                      << " TotalSamples=" << cum_rows
-                      << " WindowSize=" << window_size << "\n";
+            std::cout << "[SelfPlay] cum_produced=" << cum_produced
+                      << " window_size=" << window_size
+                      << " (from pool_rows.tsv snapshot; shuffle.py is the source of truth)\n";
         }
 
         SelfplayEngine<Gomoku> engine(game_init, cfg, pcfg, cli.model, server_devices);
