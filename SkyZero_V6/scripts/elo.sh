@@ -23,7 +23,7 @@
 #   scripts/elo.sh /abs/path/to/model.pt    # single: absolute path
 #
 # Env overrides (all optional): NUM_GAMES, NEIGHBOR_K, NEIGHBOR_GAMES,
-# STRIDE, NUM_SIMULATIONS, ANCHOR_DIR, ANCHORS, ELO_BIN, ELO_CFG,
+# STRIDE, NUM_SIMULATIONS, ANCHOR_DIR, ANCHORS, SLOT_DIR, ELO_BIN, ELO_CFG,
 # DATA_DIR, OUT_FILE, PLOT_FILE.
 set -euo pipefail
 
@@ -82,6 +82,10 @@ NEIGHBOR_GAMES="${NEIGHBOR_GAMES:-$(cfg_get NEIGHBOR_GAMES 30)}"
 # Existing games.jsonl entries below this stay (python/elo.py reads them all);
 # only NEW match scheduling is filtered.
 START_ITER="${START_ITER:-$(cfg_get START_ITER 0)}"
+# Multi-slot layout: per-iter checkpoints sit under data/models/<SLOT_DIR>/.
+# Empty falls back to data/models/ top level (single-slot legacy).
+SLOT_DIR="${SLOT_DIR:-$(cfg_get SLOT_DIR '')}"
+MODELS_DIR="$DATA_DIR/models${SLOT_DIR:+/$SLOT_DIR}"
 
 # Returns sorted list of model_iter_*.pt paths with iter >= START_ITER.
 list_models() {
@@ -92,7 +96,7 @@ list_models() {
         if (( f_iter >= START_ITER )); then
             echo "$f"
         fi
-    done < <(ls "$DATA_DIR"/models/model_iter_*.pt 2>/dev/null | sort)
+    done < <(ls "$MODELS_DIR"/model_iter_*.pt 2>/dev/null | sort)
 }
 
 mkdir -p "$(dirname "$OUT_FILE")"
@@ -122,7 +126,7 @@ NEIGHBOR_PAIRS=()
 if [[ $# -eq 0 ]]; then
     mapfile -t ALL < <(list_models)
     if [[ ${#ALL[@]} -eq 0 ]]; then
-        echo "[elo.sh] no checkpoints in $DATA_DIR/models/ (START_ITER=$START_ITER)"
+        echo "[elo.sh] no checkpoints in $MODELS_DIR/ (SLOT_DIR='${SLOT_DIR:-}', START_ITER=$START_ITER)"
         exit 1
     fi
     i=0
@@ -136,7 +140,7 @@ if [[ $# -eq 0 ]]; then
     if [[ "${TARGETS[-1]}" != "$last" ]]; then
         TARGETS+=("$last")
     fi
-    echo "[elo.sh] batch mode: ${#TARGETS[@]} checkpoints (stride=$STRIDE of ${#ALL[@]}, start_iter=$START_ITER)"
+    echo "[elo.sh] batch mode: ${#TARGETS[@]} checkpoints (slot='${SLOT_DIR:-<top>}', stride=$STRIDE of ${#ALL[@]}, start_iter=$START_ITER)"
 
     # Chain pairs: every checkpoint plays its NEIGHBOR_K nearest forward
     # successors. Filenames are zero-padded so string-sort = iter-sort.
@@ -153,9 +157,9 @@ else
     if [[ "$target_arg" = /* ]]; then
         t="$target_arg"
     elif [[ "$target_arg" = *.pt ]]; then
-        t="$DATA_DIR/models/$target_arg"
+        t="$MODELS_DIR/$target_arg"
     else
-        t="$DATA_DIR/models/${target_arg}.pt"
+        t="$MODELS_DIR/${target_arg}.pt"
     fi
     [[ -f "$t" ]] || { echo "no target model at $t"; exit 1; }
     TARGETS=("$t")
