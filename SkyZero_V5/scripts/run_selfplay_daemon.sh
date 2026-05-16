@@ -55,8 +55,19 @@ if [[ -z "${SELFPLAY_DAEMON_GPUS:-}" ]]; then
     SELFPLAY_DAEMON_GPUS="$gpus"
 fi
 
-# Daemon's server / worker counts default to the main keys.
-DSV="${DAEMON_NUM_INFERENCE_SERVERS:-${NUM_INFERENCE_SERVERS:-2}}"
+# Daemon's server count defaults to NUM_INFERENCE_SERVERS per selfplay GPU.
+# DAEMON_TOTAL_INFERENCE_SERVERS can be used to pin the absolute total.
+GPU_COUNT=$("$PY" -c "
+gpus = '$SELFPLAY_DAEMON_GPUS'.split(',')
+gpus = [g for g in gpus if g.strip() != '']
+print(len(gpus))
+")
+if [[ "$GPU_COUNT" -le 0 ]]; then
+    echo "[daemon] no GPUs selected for SELFPLAY_DAEMON_GPUS='$SELFPLAY_DAEMON_GPUS'" >&2
+    exit 1
+fi
+DSV_PER_GPU="${DAEMON_NUM_INFERENCE_SERVERS:-${NUM_INFERENCE_SERVERS:-2}}"
+DSV="${DAEMON_TOTAL_INFERENCE_SERVERS:-$((DSV_PER_GPU * GPU_COUNT))}"
 DWK="${DAEMON_NUM_WORKERS:-${NUM_WORKERS:-32}}"
 
 # Round-robin INFERENCE_SERVER_DEVICES across SELFPLAY_DAEMON_GPUS.
@@ -73,7 +84,7 @@ export NUM_WORKERS="$DWK"
 POLL_MS="${DAEMON_RELOAD_POLL_MS:-2000}"
 STATS="$DATA_DIR/logs/daemon_stats.tsv"
 
-echo "[daemon-watchdog] gpus=$SELFPLAY_DAEMON_GPUS servers=$DSV workers=$DWK devices=$INFERENCE_SERVER_DEVICES"
+echo "[daemon-watchdog] gpus=$SELFPLAY_DAEMON_GPUS servers=$DSV per_gpu=$DSV_PER_GPU workers=$DWK devices=$INFERENCE_SERVER_DEVICES"
 echo "[daemon-watchdog] poll_ms=$POLL_MS stats=$STATS"
 
 while true; do

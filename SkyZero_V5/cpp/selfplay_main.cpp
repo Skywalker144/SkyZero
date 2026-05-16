@@ -273,6 +273,9 @@ int main(int argc, char** argv) {
         if (const char* env = std::getenv("INFERENCE_SERVER_DEVICES")) {
             cfg_map["INFERENCE_SERVER_DEVICES"] = env;
         }
+        if (const char* env = std::getenv("NUM_INFERENCE_SERVERS")) {
+            cfg_map["NUM_INFERENCE_SERVERS"] = env;
+        }
 
         // --- AlphaZeroConfig ---
         AlphaZeroConfig cfg;
