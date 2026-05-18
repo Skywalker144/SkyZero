@@ -2,7 +2,7 @@ import os
 import sys
 import numpy as np
 import torch
-from alphazero import AlphaZero, Node, temperature_transform
+from skyzero import AlphaZero, Node, temperature_transform
 from nets import ResNet
 from utils import print_board
 

@@ -33,24 +33,33 @@ def add_dirichlet_noise(policy, alpha=0.03, epsilon=0.25):
     return new_policy
 
 def random_augment_batch(batch, board_size):
+    """D4 augmentation: per-sample random rotation (0/90/180/270) + optional flip.
+
+    Transforms `encoded_state` (C, H, W) and any spatially-laid-out policy
+    target (H*W) consistently. Value targets are D4-invariant so untouched.
+    """
+    spatial_policy_keys = ("policy_target", "opp_policy_target")
+
     augmented_batch = []
     for sample in batch:
         k = np.random.randint(0, 4)
-        flip = np.random.choice([True, False])
-        
+        flip = bool(np.random.choice([True, False]))
+
         state = sample["encoded_state"]
-        policy = sample["policy_target"].reshape(board_size, board_size)
-        
         aug_state = np.rot90(state, k, axes=(1, 2))
-        aug_policy = np.rot90(policy, k)
-        
         if flip:
             aug_state = np.flip(aug_state, axis=2)
-            aug_policy = np.flip(aug_policy, axis=1)
-            
+
         new_sample = sample.copy()
         new_sample["encoded_state"] = aug_state.copy()
-        new_sample["policy_target"] = aug_policy.flatten().copy()
+        for key in spatial_policy_keys:
+            if key not in sample:
+                continue
+            policy = sample[key].reshape(board_size, board_size)
+            aug_policy = np.rot90(policy, k)
+            if flip:
+                aug_policy = np.flip(aug_policy, axis=1)
+            new_sample[key] = aug_policy.flatten().copy()
         augmented_batch.append(new_sample)
     return augmented_batch
 
