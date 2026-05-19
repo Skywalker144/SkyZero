@@ -165,11 +165,6 @@ class Config:
     cpuct_utility_stdev_prior_weight: float = 2.0
     cpuct_utility_stdev_scale: float = 0.85
 
-    # Opening sampling window: first `half_life` moves sample ∝ visit_counts^(1/T).
-    # 0 = always greedy.
-    half_life: int = 0
-    move_temperature: float = 1.0
-
     # Tree reuse across plies (root ← child after action).
     enable_tree_reuse: bool = True
 
@@ -825,10 +820,10 @@ def build_futurepos_targets(states_per_step: list, to_play_per_step: list[int],
 
 
 # ---------------------------------------------------------------------------
-# AlphaZero — selfplay + training loop.
+# SkyZero — selfplay + training loop.
 # ---------------------------------------------------------------------------
 
-class AlphaZero:
+class SkyZero:
     def __init__(self, game: Game, model: Model, optimizer, cfg: Config,
                  replay_buffer: ReplayBuffer):
         self.game = game
@@ -884,15 +879,9 @@ class AlphaZero:
             })
             all_mcts_policies.append(sr["improved_policy"])
 
-            # --- Action selection: opening-window samples by visit_counts^(1/T),
-            #     thereafter greedy gumbel_action. ---
-            move_count = len(memory)
-            if move_count <= cfg.half_life and sr["visit_counts"].sum() > 0:
-                w = sr["visit_counts"] ** (1.0 / max(cfg.move_temperature, 1e-6))
-                w = w / w.sum()
-                action = int(np.random.choice(len(w), p=w))
-            else:
-                action = sr["gumbel_action"]
+            # Root action comes directly from Gumbel SH — no temperature
+            # sampling. SH already injects exploration via root Gumbel noise.
+            action = sr["gumbel_action"]
 
             state = self.game.get_next_state(state, action, to_play)
             to_play = -to_play

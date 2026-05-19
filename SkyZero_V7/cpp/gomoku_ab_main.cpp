@@ -37,8 +37,8 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
-#include "alphazero.h"
-#include "alphazero_tree_parallel.h"
+#include "skyzero.h"
+#include "skyzero_tree_parallel.h"
 #include "envs/gomoku.h"
 
 using namespace skyzero;
@@ -90,15 +90,15 @@ static bool cfg_get_bool(const std::unordered_map<std::string, std::string>& c,
     return fallback;
 }
 
-// Populate an AlphaZeroConfig from a parsed cfg map. Used twice in main()
+// Populate an SkyZeroConfig from a parsed cfg map. Used twice in main()
 // (once for A side, once for B side). gumbel_noise_enabled is forced false
 // because evaluation must be deterministic-ish — we want Elo to reflect
 // strength, not sampling luck.
-static AlphaZeroConfig build_mcts_cfg(
+static SkyZeroConfig build_mcts_cfg(
         const std::unordered_map<std::string, std::string>& m,
         int board_size,
         const torch::Device& device) {
-    AlphaZeroConfig c;
+    SkyZeroConfig c;
     c.board_size = board_size;
     c.num_simulations = cfg_get<int>(m, "NUM_SIMULATIONS", 800);
     c.gumbel_m = cfg_get<int>(m, "GUMBEL_M", 16);
@@ -396,8 +396,8 @@ int main(int argc, char** argv) {
         const torch::Device device = use_cuda ? torch::Device(torch::kCUDA, 0)
                                               : torch::Device(torch::kCPU);
 
-        AlphaZeroConfig cfg_a = build_mcts_cfg(cfg_a_map, board_size, device);
-        AlphaZeroConfig cfg_b = build_mcts_cfg(cfg_b_map, board_size, device);
+        SkyZeroConfig cfg_a = build_mcts_cfg(cfg_a_map, board_size, device);
+        SkyZeroConfig cfg_b = build_mcts_cfg(cfg_b_map, board_size, device);
 
         // Single shared model + inference server. Both sides use the same
         // weights, so loading twice would just waste GPU memory and split

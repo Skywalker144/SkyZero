@@ -30,8 +30,8 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
-#include "alphazero.h"
-#include "alphazero_parallel.h"
+#include "skyzero.h"
+#include "skyzero_parallel.h"
 #include "envs/gomoku.h"
 #include "game_initializer.h"
 #include "npz_writer.h"
@@ -277,8 +277,8 @@ int main(int argc, char** argv) {
             cfg_map["NUM_INFERENCE_SERVERS"] = env;
         }
 
-        // --- AlphaZeroConfig ---
-        AlphaZeroConfig cfg;
+        // --- SkyZeroConfig ---
+        SkyZeroConfig cfg;
         // canvas size is the compile-time constant in cpp/envs/gomoku.h:65.
         cfg.board_size = Gomoku::MAX_BOARD_SIZE;
         cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 64);

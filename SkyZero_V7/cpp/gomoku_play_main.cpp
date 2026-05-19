@@ -28,7 +28,7 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
-#include "alphazero_tree_parallel.h"  // transitively provides alphazero.h
+#include "skyzero_tree_parallel.h"  // transitively provides skyzero.h
 #include "envs/gomoku.h"
 
 using namespace skyzero;
@@ -221,7 +221,7 @@ int main(int argc, char** argv) {
         const auto cli = parse_cli(argc, argv);
         const auto cfg_map = parse_cfg(cli.config);
 
-        AlphaZeroConfig cfg;
+        SkyZeroConfig cfg;
         cfg.board_size = cfg_get<int>(cfg_map, "BOARD_SIZE", 15);
         cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 800);
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
@@ -617,7 +617,7 @@ int main(int argc, char** argv) {
                 }
             } else {
                 push_history();
-                std::cout << "AlphaZero thinking...\n";
+                std::cout << "SkyZero thinking...\n";
 
                 const auto out = mcts.search(state, to_play, cfg.num_simulations, root);
                 // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed

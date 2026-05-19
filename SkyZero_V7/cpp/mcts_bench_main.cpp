@@ -1,11 +1,31 @@
-// mcts_probe — loads a TorchScript model, runs one MCTS search on an empty
-// Gomoku board, and prints the root value (v_mix). Used as a post-export
-// diagnostic in the training loop.
+// mcts_bench — head-to-head wall-clock comparison of root-parallel
+// (ParallelMCTS, leaf batching) vs tree-parallel (TreeParallelMCTS, shared
+// tree with virtual loss) on a SINGLE MCTS instance.
+//
+// What "parallel" means here:
+//   * Root-parallel  = single thread, Gumbel SH picks K leaves per halving
+//                      round; all K leaves go in one NN batch.
+//                      Knob: --root-batch (= leaf_batch_size).
+//   * Tree-parallel  = N worker threads descend a shared tree using virtual
+//                      loss; each thread queries the NN on its own.
+//                      Knob: --tree-threads.
+//
+// Each (knob, value) sweep runs --searches fresh searches of --sims
+// simulations from an empty board. The model is JIT-warmed up first so the
+// first measured iteration doesn't pay CUDA init.
+//
+// Output (TSV to stdout):
+//   variant    knob    value   mean_ms total_sims  sims_per_sec
+//
+// Usage:
+//   mcts_bench --model models/latest.pt --config scripts/run.cfg \
+//              [--sims 400] [--searches 16] [--warmup 2] \
+//              [--root-batch 1,4,8,16,32] [--tree-threads 1,2,4,8,16,32]
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -24,11 +44,12 @@
 
 #include "skyzero.h"
 #include "skyzero_parallel.h"
+#include "skyzero_tree_parallel.h"
 #include "envs/gomoku.h"
 
 using namespace skyzero;
 
-// ---- Config parsing (copied from selfplay_main.cpp) -----------------------
+// ---- Config parsing (subset of selfplay_main.cpp) -------------------------
 static std::unordered_map<std::string, std::string> parse_cfg(const std::string& path) {
     std::unordered_map<std::string, std::string> out;
     std::ifstream f(path);
@@ -80,32 +101,53 @@ static bool cfg_get_bool(const std::unordered_map<std::string, std::string>& c,
 struct CliArgs {
     std::string model;
     std::string config;
-    int num_simulations_override = -1;
-    int iter = -1;            // optional; logged into probe.tsv when --log is given
-    std::string log_path;     // optional; if non-empty, append a TSV row here
+    int sims = 400;
+    int searches = 16;
+    int warmup = 2;
+    std::vector<int> root_batches;
+    std::vector<int> tree_threads;
 };
+
+static std::vector<int> parse_csv_ints(const std::string& s) {
+    std::vector<int> out;
+    std::stringstream ss(s);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+        if (tok.empty()) continue;
+        out.push_back(std::stoi(tok));
+    }
+    return out;
+}
 
 static CliArgs parse_cli(int argc, char** argv) {
     CliArgs a;
+    a.root_batches = {1, 4, 8, 16, 32};
+    a.tree_threads = {1, 2, 4, 8, 16, 32};
     for (int i = 1; i < argc; ++i) {
         std::string k = argv[i];
         auto need = [&](const char* name) {
             if (i + 1 >= argc) throw std::runtime_error(std::string("missing value for ") + name);
             return std::string(argv[++i]);
         };
-        if (k == "--model") a.model = need("--model");
-        else if (k == "--config") a.config = need("--config");
-        else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
-        else if (k == "--iter") a.iter = std::stoi(need("--iter"));
-        else if (k == "--log") a.log_path = need("--log");
+        if      (k == "--model")        a.model = need("--model");
+        else if (k == "--config")       a.config = need("--config");
+        else if (k == "--sims")         a.sims = std::stoi(need("--sims"));
+        else if (k == "--searches")     a.searches = std::stoi(need("--searches"));
+        else if (k == "--warmup")       a.warmup = std::stoi(need("--warmup"));
+        else if (k == "--root-batch")   a.root_batches = parse_csv_ints(need("--root-batch"));
+        else if (k == "--tree-threads") a.tree_threads = parse_csv_ints(need("--tree-threads"));
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.config.empty()) {
-        throw std::runtime_error("usage: mcts_probe --model PATH --config PATH [--num-simulations N] [--iter N] [--log PATH]");
+        throw std::runtime_error(
+            "usage: mcts_bench --model PATH --config PATH "
+            "[--sims N] [--searches N] [--warmup N] "
+            "[--root-batch 1,4,8,16,32] [--tree-threads 1,2,4,8,16,32]");
     }
     return a;
 }
 
+// ---- Main -----------------------------------------------------------------
 int main(int argc, char** argv) {
     try {
         torch::NoGradGuard no_grad;
@@ -114,43 +156,39 @@ int main(int argc, char** argv) {
         const auto cli = parse_cli(argc, argv);
         const auto cfg_map = parse_cfg(cli.config);
 
-        // MAIN_BOARD_SIZE / MAIN_RULE in run.cfg are required; the probe runs
-        // a single empty-board MCTS at that headline (size, rule).
         auto require_str = [&](const std::string& k) -> std::string {
             auto it = cfg_map.find(k);
             if (it == cfg_map.end() || it->second.empty()) {
-                throw std::runtime_error("missing required key in run.cfg: " + k);
+                throw std::runtime_error("missing required key in config: " + k);
             }
             return it->second;
         };
+
+        // --- Build SkyZeroConfig (mirrors mcts_probe; non-relevant knobs at defaults) ---
         SkyZeroConfig cfg;
         cfg.board_size = std::stoi(require_str("MAIN_BOARD_SIZE"));
-        cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 64);
+        cfg.num_simulations = cli.sims;
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
+        cfg.gumbel_noise_enabled = false;   // bench → deterministic
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
         cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
         cfg.fpu_pow = cfg_get<float>(cfg_map, "FPU_POW", 1.0f);
         cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.08f);
         cfg.fpu_loss_prop = cfg_get<float>(cfg_map, "FPU_LOSS_PROP", 0.0f);
+        cfg.cpuct_utility_stdev_prior =
+            cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR", 0.40f);
+        cfg.cpuct_utility_stdev_prior_weight =
+            cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 2.0f);
+        cfg.cpuct_utility_stdev_scale =
+            cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_SCALE", 0.85f);
         cfg.enable_stochastic_transform_inference_for_root =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", true);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", true);
-        cfg.enable_symmetry_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
-        cfg.enable_symmetry_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
 
-        // Probe-specific simulation budget: PROBE_NUM_SIMULATIONS in run.cfg
-        // (falls back to NUM_SIMULATIONS). CLI --num-simulations still wins.
-        cfg.num_simulations = cfg_get<int>(cfg_map, "PROBE_NUM_SIMULATIONS", cfg.num_simulations);
-        if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
-
-        // V5: 5-plane padded encoding + 12-dim global features
-        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
         const std::string rule_str = require_str("MAIN_RULE");
         const RuleType rule = rule_from_string(rule_str);
         Gomoku game(cfg.board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
@@ -163,16 +201,13 @@ int main(int argc, char** argv) {
         auto model = torch::jit::load(cli.model, device);
         model.eval();
         if (use_cuda) model.to(torch::kHalf);
-        std::mutex model_mu;
+        std::mutex model_mu;   // serialize NN forward — both variants call into the same module
 
-        // V5: NUM_SPATIAL_PLANES_V5 planes on a MAX_BOARD_SIZE canvas,
-        // regardless of game.board_size (padded).
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
         const int board = Gomoku::MAX_BOARD_SIZE;
         const int area = board * board;
         constexpr int g_dim = 12;
 
-        // V5: derive globals from encoded for forward
         auto derive_globals = [&](const std::vector<int8_t>& encoded) -> std::array<float, 12> {
             int ply = 0;
             for (size_t i = area; i < 3 * static_cast<size_t>(area); ++i) ply += encoded[i];
@@ -208,16 +243,14 @@ int main(int argc, char** argv) {
                 input = input.to(torch::kHalf);
                 global_t = global_t.to(torch::kHalf);
             }
-
             torch::jit::IValue out_iv;
             {
                 std::lock_guard<std::mutex> lk(model_mu);
-                out_iv = model.forward({input, global_t});   // V5 double input
+                out_iv = model.forward({input, global_t});
             }
-            // V5: dict output
             auto out_dict = out_iv.toGenericDict();
             auto policy_all = out_dict.at("policy").toTensor();
-            auto policy_logits = policy_all.select(1, 0).contiguous();   // main head
+            auto policy_logits = policy_all.select(1, 0).contiguous();
             auto value_logits = out_dict.at("value_wdl").toTensor();
             auto policy = policy_logits.reshape({bsz, area}).to(torch::kFloat32).to(torch::kCPU).contiguous();
             auto value = torch::softmax(value_logits.to(torch::kFloat32), 1).to(torch::kCPU).contiguous();
@@ -244,62 +277,68 @@ int main(int argc, char** argv) {
             return run_forward(batch);
         };
 
-        std::mt19937 rng(std::random_device{}());
-        ParallelMCTS<Gomoku> mcts(game, cfg, /*leaf_batch_size=*/1, infer_fn, batch_infer_fn, rng());
-
-        auto init = game.get_initial_state(rng);
-        std::unique_ptr<MCTSNode> root(new MCTSNode{init.board, init.to_play});
-        const auto sr = mcts.search(init.board, init.to_play, cfg.num_simulations, root);
-
-        std::cout << "[mcts_probe] simulations=" << cfg.num_simulations
-                  << " device=" << (use_cuda ? "cuda" : "cpu") << "\n";
-        std::cout << std::fixed << std::setprecision(4);
-        std::cout << "[mcts_probe] v_mix W=" << sr.v_mix[0]
-                  << " D=" << sr.v_mix[1]
-                  << " L=" << sr.v_mix[2]
-                  << " scalar=" << (sr.v_mix[0] - sr.v_mix[2]) << "\n";
-        std::cout << "[mcts_probe] nn_value W=" << sr.nn_value_probs[0]
-                  << " D=" << sr.nn_value_probs[1]
-                  << " L=" << sr.nn_value_probs[2] << "\n";
-        if (!cli.log_path.empty()) {
-            const int board_size = cfg.board_size;
-            const int c0 = board_size / 2;
-            // sr.gumbel_action is canvas-stride (r*MAX_BOARD_SIZE + c); for
-            // in-board canvas cells canvas (r, c) coincides with board (r, c).
-            auto euclid_dist = [&](int canvas_action) -> float {
-                if (canvas_action < 0) return -1.0f;
-                const int row = canvas_action / Gomoku::MAX_BOARD_SIZE;
-                const int col = canvas_action % Gomoku::MAX_BOARD_SIZE;
-                const int dr = row - c0;
-                const int dc = col - c0;
-                return std::sqrt(static_cast<float>(dr * dr + dc * dc));
-            };
-            const float gumbel_dist = euclid_dist(sr.gumbel_action);
-
-            const bool need_header = !std::filesystem::exists(cli.log_path);
-            std::ofstream out(cli.log_path, std::ios::app);
-            if (!out) {
-                throw std::runtime_error("cannot open log: " + cli.log_path);
-            }
-            if (need_header) {
-                out << "iter\tgumbel_action\tgumbel_dist"
-                    << "\tvmix_W\tvmix_D\tvmix_L\tnn_W\tnn_D\tnn_L\n";
-            }
-            out << std::fixed << std::setprecision(4);
-            out << cli.iter
-                << "\t" << sr.gumbel_action
-                << "\t" << gumbel_dist
-                << "\t" << sr.v_mix[0]
-                << "\t" << sr.v_mix[1]
-                << "\t" << sr.v_mix[2]
-                << "\t" << sr.nn_value_probs[0]
-                << "\t" << sr.nn_value_probs[1]
-                << "\t" << sr.nn_value_probs[2]
-                << "\n";
+        // --- Warm up the model: first inference on CUDA pays kernel-init cost ---
+        std::cerr << "[mcts_bench] warming up model...\n";
+        {
+            auto init = game.get_initial_state(std::mt19937(0));
+            std::vector<std::vector<int8_t>> dummy(8, init.board);
+            for (int i = 0; i < cli.warmup; ++i) run_forward(dummy);
         }
+
+        const auto initial = game.get_initial_state(std::mt19937(0));
+        std::cout << "[mcts_bench] device=" << (use_cuda ? "cuda" : "cpu")
+                  << " sims=" << cli.sims
+                  << " searches=" << cli.searches
+                  << " warmup=" << cli.warmup
+                  << " board=" << cfg.board_size
+                  << " rule=" << rule_str << "\n";
+        std::cout << "variant\tknob\tvalue\tmean_ms\ttotal_sims\tsims_per_sec\n";
+        std::cout << std::fixed << std::setprecision(2);
+
+        auto bench_one = [&](const std::string& variant, const std::string& knob, int value,
+                             const std::function<void()>& run_searches) {
+            const auto t0 = std::chrono::steady_clock::now();
+            run_searches();
+            if (use_cuda) torch::cuda::synchronize();
+            const auto t1 = std::chrono::steady_clock::now();
+            const double total_ms =
+                std::chrono::duration<double, std::milli>(t1 - t0).count();
+            const double mean_ms = total_ms / std::max(1, cli.searches);
+            const long long total_sims = static_cast<long long>(cli.searches) * cli.sims;
+            const double sims_per_sec = total_sims / (total_ms / 1000.0);
+            std::cout << variant << "\t" << knob << "\t" << value
+                      << "\t" << mean_ms
+                      << "\t" << total_sims
+                      << "\t" << sims_per_sec << "\n" << std::flush;
+        };
+
+        // ---- Root-parallel sweep (ParallelMCTS, leaf batching) ----
+        for (int batch_size : cli.root_batches) {
+            std::mt19937 rng(12345);
+            ParallelMCTS<Gomoku> mcts(game, cfg, batch_size, infer_fn, batch_infer_fn, rng());
+            bench_one("root_parallel", "leaf_batch", batch_size, [&]() {
+                for (int i = 0; i < cli.searches; ++i) {
+                    std::unique_ptr<MCTSNode> root(new MCTSNode{initial.board, initial.to_play});
+                    (void)mcts.search(initial.board, initial.to_play, cli.sims, root);
+                }
+            });
+        }
+
+        // ---- Tree-parallel sweep (TreeParallelMCTS, shared tree + vloss) ----
+        for (int n_threads : cli.tree_threads) {
+            std::mt19937 rng(12345);
+            TreeParallelMCTS<Gomoku> mcts(game, cfg, n_threads, infer_fn, rng());
+            bench_one("tree_parallel", "threads", n_threads, [&]() {
+                for (int i = 0; i < cli.searches; ++i) {
+                    std::unique_ptr<MCTSNode> root(new MCTSNode{initial.board, initial.to_play});
+                    (void)mcts.search(initial.board, initial.to_play, cli.sims, root);
+                }
+            });
+        }
+
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[mcts_probe] fatal: " << e.what() << "\n";
-        return 2;
+        std::cerr << "[mcts_bench] error: " << e.what() << "\n";
+        return 1;
     }
 }

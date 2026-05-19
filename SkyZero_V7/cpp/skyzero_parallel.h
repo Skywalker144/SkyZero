@@ -6,7 +6,7 @@
 // Ported from CSkyZero_V3/alphazero_parallel.h. Compared to V3:
 //   * Subtree Value Bias (SVB) removed — all bind/update/remove/apply
 //     helpers and `svb_table_` are gone. Dynamic variance-scaled cPUCT is
-//     also handled by the shared helper in alphazero.h (stdev factor == 1).
+//     also handled by the shared helper in skyzero.h (stdev factor == 1).
 //   * The in-C++ `AlphaZeroParallel` training-loop class is removed:
 //     Python owns training, replay buffer, and checkpointing.
 //   * Inference runs against a caller-supplied callback pair (single-state
@@ -25,12 +25,12 @@
 #include <stdexcept>
 #include <vector>
 
-#include "alphazero.h"
+#include "skyzero.h"
 #include "utils.h"
 
 namespace skyzero {
 
-// SelfplayParallelConfig moved to alphazero.h so TreeParallelMCTS can reuse it
+// SelfplayParallelConfig moved to skyzero.h so TreeParallelMCTS can reuse it
 // without forcing a dependency on this header.
 
 template <typename Game>
@@ -44,7 +44,7 @@ public:
 
     ParallelMCTS(
         Game& game,
-        const AlphaZeroConfig& cfg,
+        const SkyZeroConfig& cfg,
         int leaf_batch_size,
         InferenceFn infer_fn,
         BatchInferenceFn batch_infer_fn,
@@ -658,7 +658,7 @@ private:
     }
 
     Game& game_;
-    const AlphaZeroConfig& cfg_;
+    const SkyZeroConfig& cfg_;
     int leaf_batch_size_ = 1;
     InferenceFn infer_fn_;
     BatchInferenceFn batch_infer_fn_;

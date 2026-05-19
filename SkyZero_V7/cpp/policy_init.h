@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-#include "alphazero.h"
+#include "skyzero.h"
 #include "utils.h"
 
 namespace skyzero {
@@ -33,7 +33,7 @@ public:
     using InferenceFn = std::function<
         std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
 
-    PolicyInit(const Game& game, InferenceFn infer_fn, const AlphaZeroConfig& cfg, uint64_t seed)
+    PolicyInit(const Game& game, InferenceFn infer_fn, const SkyZeroConfig& cfg, uint64_t seed)
         : game_(game), infer_fn_(std::move(infer_fn)), cfg_(cfg), rng_(seed) {}
 
     // Plays ~Exp(1)*avg_move_num policy-sampled moves on `state`/`to_play`,
@@ -119,7 +119,7 @@ private:
 
     const Game& game_;
     InferenceFn infer_fn_;
-    const AlphaZeroConfig& cfg_;
+    const SkyZeroConfig& cfg_;
     std::mt19937 rng_;
 };
 

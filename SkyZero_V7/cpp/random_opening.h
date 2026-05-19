@@ -7,7 +7,7 @@
 // See /home/sky/.claude/plans/katagomo-bright-teapot.md for the algorithm.
 //
 // Usage: construct with a Game reference, a single-state inference callback
-// (same signature as ParallelMCTS::InferenceFn), an AlphaZeroConfig, and an
+// (same signature as ParallelMCTS::InferenceFn), an SkyZeroConfig, and an
 // RNG seed. Call initialize(state, to_play) to overwrite the starting
 // position with a NN-fair random opening. initialize() always returns; on
 // repeated failure it drops rejectProb and retries.
@@ -21,7 +21,7 @@
 #include <utility>
 #include <vector>
 
-#include "alphazero.h"
+#include "skyzero.h"
 
 namespace skyzero {
 
@@ -32,7 +32,7 @@ public:
         std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
 
     // Single-judge constructor (selfplay): one network evaluates everything.
-    RandomOpening(const Game& game, InferenceFn infer_fn, const AlphaZeroConfig& cfg, uint64_t seed)
+    RandomOpening(const Game& game, InferenceFn infer_fn, const SkyZeroConfig& cfg, uint64_t seed)
         : game_(game),
           infer_fn_(std::move(infer_fn)),
           infer_fn_b_(),
@@ -45,7 +45,7 @@ public:
     // same chosen network). Coin-flipping symmetrizes any "judge favors its
     // own definition of balanced" bias across the two models in a matchup.
     RandomOpening(const Game& game, InferenceFn infer_a, InferenceFn infer_b,
-                  const AlphaZeroConfig& cfg, uint64_t seed)
+                  const SkyZeroConfig& cfg, uint64_t seed)
         : game_(game),
           infer_fn_(std::move(infer_a)),
           infer_fn_b_(std::move(infer_b)),
@@ -292,7 +292,7 @@ private:
     InferenceFn infer_fn_b_;
     bool have_two_judges_;
     bool current_is_b_ = false;
-    const AlphaZeroConfig& cfg_;
+    const SkyZeroConfig& cfg_;
     std::mt19937 rng_;
 };
 

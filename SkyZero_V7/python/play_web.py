@@ -213,7 +213,7 @@ class EngineSession:
             if not self.game_over:
                 self.status = "Your turn"
             return
-        if "AlphaZero thinking" in line:
+        if "SkyZero thinking" in line:
             self.status = "AI thinking..."
             self.gumbel_phases = None
             return
@@ -852,7 +852,7 @@ HTML_PAGE = r"""<!doctype html>
   <header class="topbar">
     <div class="brand">
       <div class="brand-title">SkyZero Gomoku</div>
-      <div class="brand-sub">AlphaZero-style self-play · local inspector</div>
+      <div class="brand-sub">SkyZero self-play · local inspector</div>
     </div>
     <button class="icon-btn" id="theme_toggle" aria-label="Toggle color theme" title="Toggle theme">
       <svg class="sun-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

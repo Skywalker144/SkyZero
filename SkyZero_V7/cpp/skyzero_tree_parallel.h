@@ -8,7 +8,7 @@
 // search() signature) so selfplay_manager can swap backends via std::variant.
 //
 // Constraints:
-//   * Reuses MCTSNode from alphazero.h as-is (no atomic fields added).
+//   * Reuses MCTSNode from skyzero.h as-is (no atomic fields added).
 //   * Protects each node via a striped mutex pool (256 stripes) keyed by
 //     node pointer hash.
 //   * Avoids duplicate NN calls on the same leaf via an in-flight expansion
@@ -32,7 +32,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "alphazero.h"
+#include "skyzero.h"
 #include "utils.h"
 
 namespace skyzero {
@@ -44,7 +44,7 @@ public:
 
     TreeParallelMCTS(
         Game& game,
-        const AlphaZeroConfig& cfg,
+        const SkyZeroConfig& cfg,
         int search_threads_per_tree,
         InferenceFn infer_fn,
         uint64_t seed
@@ -751,7 +751,7 @@ private:
     // Members
     // ------------------------------------------------------------------
     Game& game_;
-    const AlphaZeroConfig& cfg_;
+    const SkyZeroConfig& cfg_;
     int num_threads_;
     InferenceFn infer_fn_;
     std::mt19937 rng_;

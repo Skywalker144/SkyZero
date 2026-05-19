@@ -26,7 +26,7 @@ namespace skyzero {
 // Config — only the fields the C++ selfplay path needs.
 // Python side owns everything training-related.
 // ---------------------------------------------------------------------------
-struct AlphaZeroConfig {
+struct SkyZeroConfig {
     int board_size = 15;
 
     // Gumbel MCTS
@@ -194,7 +194,7 @@ inline SelectParams compute_select_params(
     const MCTSNode& node,
     int effective_parent_n,
     float visited_policy_mass,
-    const AlphaZeroConfig& cfg
+    const SkyZeroConfig& cfg
 ) {
     const float total_child_weight = static_cast<float>(std::max(0, effective_parent_n - 1));
 

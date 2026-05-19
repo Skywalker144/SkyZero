@@ -27,8 +27,8 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
-#include "alphazero.h"
-#include "alphazero_parallel.h"
+#include "skyzero.h"
+#include "skyzero_parallel.h"
 #include "game_initializer.h"
 #include "policy_init.h"
 #include "policy_surprise_weighting.h"
@@ -54,7 +54,7 @@ public:
 
     SelfplayEngine(
         GameInitializer& game_init,
-        const AlphaZeroConfig& cfg,
+        const SkyZeroConfig& cfg,
         const SelfplayParallelConfig& pcfg,
         const std::string& model_path,
         std::vector<torch::Device> devices
@@ -734,7 +734,7 @@ private:
     }
 
     GameInitializer& game_init_;
-    const AlphaZeroConfig& cfg_;
+    const SkyZeroConfig& cfg_;
     SelfplayParallelConfig pcfg_;
     std::vector<torch::Device> devices_;
 

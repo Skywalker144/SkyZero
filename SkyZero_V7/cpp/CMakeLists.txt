@@ -76,7 +76,7 @@ set_property(TARGET selfplay_main PROPERTY CXX_EXTENSIONS OFF)
 
 # --- mcts_probe binary ---------------------------------------------------
 # Post-export diagnostic: runs one MCTS search on an empty board and prints
-# the root value. Shares AlphaZeroConfig parsing conventions with selfplay.
+# the root value. Shares SkyZeroConfig parsing conventions with selfplay.
 add_executable(mcts_probe mcts_probe_main.cpp)
 target_include_directories(mcts_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(mcts_probe PRIVATE
@@ -122,3 +122,16 @@ target_link_libraries(gomoku_ab PRIVATE
 )
 target_compile_options(gomoku_ab PRIVATE -Wall -Wextra -Wno-unused-parameter)
 set_property(TARGET gomoku_ab PROPERTY CXX_EXTENSIONS OFF)
+
+# --- mcts_bench binary ---------------------------------------------------
+# Wall-clock head-to-head: root-parallel (ParallelMCTS) vs tree-parallel
+# (TreeParallelMCTS). Sweeps leaf_batch_size and search_threads, prints a
+# TSV report. See scripts/bench.sh.
+add_executable(mcts_bench mcts_bench_main.cpp)
+target_include_directories(mcts_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(mcts_bench PRIVATE
+    ${TORCH_LIBRARIES}
+    Threads::Threads
+)
+target_compile_options(mcts_bench PRIVATE -Wall -Wextra -Wno-unused-parameter)
+set_property(TARGET mcts_bench PROPERTY CXX_EXTENSIONS OFF)

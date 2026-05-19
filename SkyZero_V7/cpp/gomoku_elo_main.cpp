@@ -33,8 +33,8 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
-#include "alphazero.h"
-#include "alphazero_tree_parallel.h"
+#include "skyzero.h"
+#include "skyzero_tree_parallel.h"
 #include "envs/gomoku.h"
 #include "random_opening.h"
 
@@ -337,7 +337,7 @@ int main(int argc, char** argv) {
         const auto cli = parse_cli(argc, argv);
         const auto cfg_map = parse_cfg(cli.config);
 
-        AlphaZeroConfig cfg;
+        SkyZeroConfig cfg;
         cfg.board_size = cfg_get<int>(cfg_map, "BOARD_SIZE", 15);
         cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 800);
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
