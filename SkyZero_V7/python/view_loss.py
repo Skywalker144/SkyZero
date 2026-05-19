@@ -17,14 +17,14 @@ def _read_tsv(path: pathlib.Path):
     return header, rows
 
 
-def _plot_selfplay_impl(data_dir: pathlib.Path, plt,
-                        prefix: str, out_name: str, title_tag: str) -> None:
-    """Render a 2-panel selfplay plot (gamelen + win rates).
+def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
+    """3-panel selfplay plot from selfplay.tsv (main + daemon rows interleaved).
 
-    prefix=""        — full-set columns (min_len, avg_len, ...). Saved as selfplay.png.
-    prefix="main_"   — main-pair columns. Saved as selfplay_main.png.
+    Top:    cumulative rows by producer (stacked).
+    Middle: main-pair avg game length per write event, colored by producer.
+    Bottom: main-pair win rates per write event, colored by producer.
     """
-    log = data_dir / "logs" / "last_run.tsv"
+    log = data_dir / "logs" / "selfplay.tsv"
     if not log.exists():
         print(f"no selfplay log at {log}", file=sys.stderr)
         return
@@ -33,57 +33,80 @@ def _plot_selfplay_impl(data_dir: pathlib.Path, plt,
         print("empty selfplay log", file=sys.stderr)
         return
     idx = {name: i for i, name in enumerate(header)}
-    needed = ("iter",
-              f"{prefix}min_len", f"{prefix}max_len", f"{prefix}avg_len",
-              f"{prefix}black_win_rate", f"{prefix}white_win_rate", f"{prefix}draw_rate")
-    if not all(k in idx for k in needed):
-        print(f"last_run.tsv missing columns for {out_name}; skipping", file=sys.stderr)
+    required = ("producer", "rows", "main_avg_len",
+                "main_bwr", "main_wwr", "main_dwr")
+    if not all(k in idx for k in required):
+        print("selfplay.tsv missing expected columns; skipping selfplay plot",
+              file=sys.stderr)
         return
 
-    def col(name):
+    def col(name, cast=float):
         out = []
         for r in rows:
             v = r[idx[name]] if idx[name] < len(r) else ""
-            out.append(float(v) if v else float("nan"))
+            if not v:
+                out.append(float("nan") if cast is float else "")
+                continue
+            try:
+                out.append(cast(v))
+            except (ValueError, TypeError):
+                out.append(float("nan") if cast is float else "")
         return out
 
-    x = col("iter")
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
-    ax1.plot(x, col(f"{prefix}min_len"), label="min")
-    ax1.plot(x, col(f"{prefix}avg_len"), label="avg")
-    ax1.plot(x, col(f"{prefix}max_len"), label="max")
-    ax1.set_ylabel("game length")
-    ax1.set_yscale("symlog", linthresh=1)
-    ax1.set_title(f"selfplay game length ({title_tag})")
-    ax1.grid(True, alpha=0.3, which="both")
-    ax1.legend(loc="best")
+    producer = col("producer", cast=str)
+    rows_arr = col("rows")
+    x = list(range(len(rows)))
 
-    ax2.plot(x, col(f"{prefix}black_win_rate"), label="black")
-    ax2.plot(x, col(f"{prefix}white_win_rate"), label="white")
-    ax2.plot(x, col(f"{prefix}draw_rate"), label="draw")
-    ax2.set_ylim(0.0, 1.0)
-    ax2.set_ylabel("rate")
-    ax2.set_xlabel("iter")
-    ax2.set_title(f"selfplay win rates ({title_tag})")
-    ax2.grid(True, alpha=0.3)
-    ax2.legend(loc="best")
+    # Cumulative rows by producer over write index.
+    cum_main, cum_daemon = [], []
+    m_acc = d_acc = 0.0
+    for p, r in zip(producer, rows_arr):
+        rv = 0.0 if math.isnan(r) else r
+        if p == "main":
+            m_acc += rv
+        elif p == "daemon":
+            d_acc += rv
+        cum_main.append(m_acc)
+        cum_daemon.append(d_acc)
 
-    fig.tight_layout()
-    out = data_dir / "logs" / out_name
-    fig.savefig(out, dpi=200)
-    print(f"saved plot to {out}")
-
-
-def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
-    """Two plots: full set across all (size, rule), and MAIN_* pair only."""
-    _plot_selfplay_impl(data_dir, plt,
-                        prefix="", out_name="selfplay.png",
-                        title_tag="all sizes / rules")
     main_size = os.environ.get("MAIN_BOARD_SIZE", "?")
     main_rule = os.environ.get("MAIN_RULE", "?")
-    _plot_selfplay_impl(data_dir, plt,
-                        prefix="main_", out_name="selfplay_main.png",
-                        title_tag=f"main pair: {main_size}×{main_rule}")
+
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 9), sharex=True)
+    ax1.stackplot(x, cum_main, cum_daemon,
+                  labels=["main", "daemon"], alpha=0.7,
+                  colors=["C0", "C1"])
+    ax1.set_ylabel("cumulative rows")
+    ax1.set_title("selfplay production")
+    ax1.legend(loc="upper left")
+    ax1.grid(True, alpha=0.3)
+
+    main_avg = col("main_avg_len")
+    for p, c in (("main", "C0"), ("daemon", "C1")):
+        xs = [x[i] for i in range(len(x)) if producer[i] == p]
+        ys = [main_avg[i] for i in range(len(x)) if producer[i] == p]
+        if xs:
+            ax2.plot(xs, ys, "o-", label=p, color=c, alpha=0.7, markersize=3)
+    ax2.set_ylabel("avg game length")
+    ax2.set_title(f"main pair ({main_size}×{main_rule}) game length")
+    ax2.legend(loc="best")
+    ax2.grid(True, alpha=0.3)
+
+    bwr, wwr, dwr = col("main_bwr"), col("main_wwr"), col("main_dwr")
+    ax3.plot(x, bwr, "o-", label="black", color="C2", markersize=3, alpha=0.7)
+    ax3.plot(x, wwr, "o-", label="white", color="C3", markersize=3, alpha=0.7)
+    ax3.plot(x, dwr, "o-", label="draw", color="C7", markersize=3, alpha=0.7)
+    ax3.set_ylim(0.0, 1.0)
+    ax3.set_ylabel("rate")
+    ax3.set_xlabel("tsv row index")
+    ax3.set_title(f"main pair ({main_size}×{main_rule}) win rates")
+    ax3.legend(loc="best")
+    ax3.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    out = data_dir / "logs" / "selfplay.png"
+    fig.savefig(out, dpi=200)
+    print(f"saved plot to {out}")
 
 
 def _plot_probe(data_dir: pathlib.Path, plt) -> None:

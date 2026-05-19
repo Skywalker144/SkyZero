@@ -80,15 +80,13 @@ while true; do
     date
 
     # Cumulative selfplay totals so far (through previous iter)
-    awk 'NR>1 {g+=$2; r+=$3} END {printf "[run.sh] cumulative so far: games=%d samples=%d\n", g+0, r+0}' \
-        "$DATA_DIR/logs/last_run.tsv" 2>/dev/null \
+    # selfplay.tsv schema: producer iter_or_version games rows ...
+    awk 'NR>1 {g+=$3; r+=$4} END {printf "[run.sh] cumulative so far: games=%d samples=%d (main+daemon)\n", g+0, r+0}' \
+        "$DATA_DIR/logs/selfplay.tsv" 2>/dev/null \
         || echo "[run.sh] cumulative so far: games=0 samples=0"
 
-    # (1) compute games for this iter
-    TRAIN_STEPS_PER_EPOCH=$( cd "$ROOT/python" && "$PY" warmup.py train-steps --data-dir "$DATA_DIR" )
-    export TRAIN_STEPS_PER_EPOCH
-    GAMES=$( cd "$ROOT/python" && "$PY" compute_games.py --data-dir "$DATA_DIR" )
-
+    # (1) selfplay [+ overlapped shuffle] — GAMES_PER_ITER is fixed in run.cfg
+    GAMES="${GAMES_PER_ITER:-2000}"
     # SHUFFLE_RC=0 success, =2 skipped (N < MIN_ROWS), other = failure.
     SHUFFLE_RC=0
     if [[ "$OVERLAP_SHUFFLE" == "1" && "$iter" -gt 0 ]]; then
@@ -103,9 +101,7 @@ while true; do
         bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
         wait "$SHUFFLE_PID" || SHUFFLE_RC=$?
     else
-        # (2) selfplay (C++)
         bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
-        # (3) shuffle
         bash "$SCRIPT_DIR/shuffle.sh" || SHUFFLE_RC=$?
     fi
 
@@ -115,22 +111,28 @@ while true; do
         echo "[run.sh] shuffle failed with code $SHUFFLE_RC"
         exit "$SHUFFLE_RC"
     else
-        # (4) train
-        bash "$SCRIPT_DIR/train.sh" "$iter"
+        # (2) Token bucket: fill from disk row delta, decide train_steps.
+        TRAIN_STEPS=$( cd "$ROOT/python" && "$PY" bucket.py --data-dir "$DATA_DIR" )
+        if [[ "$TRAIN_STEPS" -le 0 ]]; then
+            echo "[run.sh] bucket below epoch threshold; skipping train+export this iter"
+        else
+            # (3) train
+            TRAIN_STEPS_PER_EPOCH="$TRAIN_STEPS" bash "$SCRIPT_DIR/train.sh" "$iter"
 
-        # (5) export TorchScript
-        bash "$SCRIPT_DIR/export.sh" "$iter"
+            # (4) export TorchScript
+            bash "$SCRIPT_DIR/export.sh" "$iter"
 
-        # (5b) post-export diagnostic: empty-board MCTS rootValue probe
-        "$ROOT/cpp/build/mcts_probe" \
-            --model "$DATA_DIR/models/latest.pt" \
-            --config "$SCRIPT_DIR/run.cfg" \
-            --iter "$iter" \
-            --log "$DATA_DIR/logs/probe.tsv" \
-            || echo "[run.sh] mcts_probe failed (non-fatal)"
+            # (4b) post-export diagnostic: empty-board MCTS rootValue probe
+            CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}" "$ROOT/cpp/build/mcts_probe" \
+                --model "$DATA_DIR/models/latest.pt" \
+                --config "$SCRIPT_DIR/run.cfg" \
+                --iter "$iter" \
+                --log "$DATA_DIR/logs/probe.tsv" \
+                || echo "[run.sh] mcts_probe failed (non-fatal)"
 
-        # (6) plot loss curve
-        ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
+            # (5) plot loss curve
+            ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
+        fi
     fi
 
     iter=$((iter + 1))

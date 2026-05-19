@@ -349,18 +349,36 @@ def main() -> int:
     # rows, then per-file sub-sample at uniform `ratio` so old rows are partially
     # retained when pool > keep_target_rows. Within-file sampling is already
     # uniform-random in `_shardify_job`.
+    #
+    # User explicitly asked for default-on out-of-window cleanup (see PR
+    # discussion): files past the pool boundary are deleted unless
+    # ENABLE_OOW_CLEANUP=0 is set in env.
     chosen: list[tuple[pathlib.Path, int]] = []
     pool_covered = 0
     covered = 0
+    oow_paths: list[pathlib.Path] = []
     for p, r in files_rows:
         if pool_covered >= pool_size:
-            break
+            oow_paths.append(p)
+            continue
         elig = min(r, pool_size - pool_covered)
         take = int(round(elig * ratio))
         if take > 0:
             chosen.append((p, take))
             covered += take
         pool_covered += elig
+
+    if _env_int("ENABLE_OOW_CLEANUP", 1) != 0 and oow_paths:
+        removed = 0
+        for op in oow_paths:
+            try:
+                op.unlink()
+                removed += 1
+            except OSError as e:
+                print(f"[Shuffle] OOW cleanup could not remove {op}: {e}",
+                      file=sys.stderr)
+        if removed > 0:
+            print(f"[Shuffle] OOW cleanup: deleted {removed} files past pool boundary")
 
     shard_rows = args.shard_rows
     K = max(1, math.ceil(covered / shard_rows))

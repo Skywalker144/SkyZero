@@ -23,10 +23,14 @@ fi
 # (e.g. test harness override), respect it.
 MAIN_GPU="${MAIN_GPU:-0}"
 GPU_NUM="${GPU_NUM:-1}"
+
+# Resolve per-GPU → absolute counts. The main loop owns exactly one GPU.
+export NUM_INFERENCE_SERVERS="${INFERENCE_SERVERS_PER_GPU:-2}"
+export NUM_WORKERS="${WORKERS_PER_GPU:-32}"
+
 if [[ -z "${INFERENCE_SERVER_DEVICES:-}" ]]; then
-    n="${NUM_INFERENCE_SERVERS:-2}"
     devices=""
-    for ((i=0; i<n; i++)); do
+    for ((i=0; i<NUM_INFERENCE_SERVERS; i++)); do
         [[ -n "$devices" ]] && devices+=","
         devices+="$MAIN_GPU"
     done

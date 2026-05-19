@@ -8,6 +8,8 @@ iter="${1:?iter required}"
 PY=${PY:-python}
 source "$SCRIPT_DIR/paths.cfg"
 
+export CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}"
+
 cd "$ROOT/python"
 "$PY" export_model.py \
     --data-dir "$DATA_DIR" \

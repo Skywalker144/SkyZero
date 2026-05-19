@@ -55,8 +55,7 @@ if [[ -z "${SELFPLAY_DAEMON_GPUS:-}" ]]; then
     SELFPLAY_DAEMON_GPUS="$gpus"
 fi
 
-# Daemon's server count defaults to NUM_INFERENCE_SERVERS per selfplay GPU.
-# DAEMON_TOTAL_INFERENCE_SERVERS can be used to pin the absolute total.
+# Resolve per-GPU → absolute counts using SELFPLAY_DAEMON_GPUS as the GPU set.
 GPU_COUNT=$("$PY" -c "
 gpus = '$SELFPLAY_DAEMON_GPUS'.split(',')
 gpus = [g for g in gpus if g.strip() != '']
@@ -66,9 +65,10 @@ if [[ "$GPU_COUNT" -le 0 ]]; then
     echo "[daemon] no GPUs selected for SELFPLAY_DAEMON_GPUS='$SELFPLAY_DAEMON_GPUS'" >&2
     exit 1
 fi
-DSV_PER_GPU="${DAEMON_NUM_INFERENCE_SERVERS:-${NUM_INFERENCE_SERVERS:-2}}"
-DSV="${DAEMON_TOTAL_INFERENCE_SERVERS:-$((DSV_PER_GPU * GPU_COUNT))}"
-DWK="${DAEMON_NUM_WORKERS:-${NUM_WORKERS:-32}}"
+SV_PER_GPU="${INFERENCE_SERVERS_PER_GPU:-2}"
+WK_PER_GPU="${WORKERS_PER_GPU:-32}"
+DSV=$((SV_PER_GPU * GPU_COUNT))
+DWK=$((WK_PER_GPU * GPU_COUNT))
 
 # Round-robin INFERENCE_SERVER_DEVICES across SELFPLAY_DAEMON_GPUS.
 INFERENCE_SERVER_DEVICES=$("$PY" -c "
@@ -82,10 +82,14 @@ export NUM_INFERENCE_SERVERS="$DSV"
 export NUM_WORKERS="$DWK"
 
 POLL_MS="${DAEMON_RELOAD_POLL_MS:-2000}"
-STATS="$DATA_DIR/logs/daemon_stats.tsv"
 
-echo "[daemon-watchdog] gpus=$SELFPLAY_DAEMON_GPUS servers=$DSV per_gpu=$DSV_PER_GPU workers=$DWK devices=$INFERENCE_SERVER_DEVICES"
-echo "[daemon-watchdog] poll_ms=$POLL_MS stats=$STATS"
+# Daemon consults this on startup and on every model reload to pick up the
+# current NUM_SIMULATIONS_STAGES warmup value. Mirrors selfplay.sh's
+# resolution for the main loop. Empty string disables (cfg fallback wins).
+SIMS_WARMUP_CMD="cd $ROOT/python && $PY warmup.py num-simulations --data-dir $DATA_DIR"
+
+echo "[daemon-watchdog] gpus=$SELFPLAY_DAEMON_GPUS servers=$DSV per_gpu=$SV_PER_GPU workers=$DWK devices=$INFERENCE_SERVER_DEVICES"
+echo "[daemon-watchdog] poll_ms=$POLL_MS"
 
 while true; do
     "$SELFPLAY_BIN" --daemon \
@@ -94,7 +98,7 @@ while true; do
         --config "$SCRIPT_DIR/run.cfg" \
         --log-dir "$DATA_DIR/logs" \
         --model-watch-poll-ms "$POLL_MS" \
-        --stats-file "$STATS" \
+        --sims-warmup-cmd "$SIMS_WARMUP_CMD" \
         || rc=$?
     rc=${rc:-0}
     if [[ "$rc" -eq 130 ]]; then

@@ -630,12 +630,17 @@ def main() -> int:
     else:
         torch.save(model.state_dict(), snap)
 
-    # State json
+    # State json — read-merge-write so we don't clobber bucket.py's fields.
     state_json = ckpt_dir / "state.json"
-    state_json.write_text(json.dumps({
-        "iter": args.iter,
-        "global_step_samples": global_step,
-    }, indent=2))
+    try:
+        state_obj = json.loads(state_json.read_text()) if state_json.exists() else {}
+    except json.JSONDecodeError:
+        state_obj = {}
+    state_obj["iter"] = args.iter
+    state_obj["global_step_samples"] = global_step
+    tmp = state_json.with_suffix(state_json.suffix + ".tmp")
+    tmp.write_text(json.dumps(state_obj, indent=2))
+    os.replace(tmp, state_json)
 
     # Log
     _write_log(args.data_dir / "logs" / "train.tsv", {

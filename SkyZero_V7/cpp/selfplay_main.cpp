@@ -26,6 +26,7 @@
 
 #include <sys/stat.h>
 #include <unistd.h>
+#include <cstdio>
 
 #include <torch/script.h>
 #include <torch/torch.h>
@@ -161,7 +162,6 @@ struct CliArgs {
     std::string output_dir;
     std::string log_dir;
     std::string config;
-    std::string stats_file;       // daemon mode: per-version stats append target
     int iter = 0;
     int max_games = 0;
     bool daemon = false;
@@ -169,6 +169,10 @@ struct CliArgs {
     // Per-iter warmup override for NUM_SIMULATIONS (computed by
     // python/compute_num_simulations.py). <= 0 means "use cfg value".
     int num_simulations_override = -1;
+    // Daemon-only: shell command (e.g. "python warmup.py num-simulations
+    // --data-dir DIR") executed at startup and on every model reload, whose
+    // stdout integer overrides cfg.num_simulations. Empty disables.
+    std::string sims_warmup_cmd;
 };
 
 static CliArgs parse_cli(int argc, char** argv) {
@@ -189,14 +193,14 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--max-games") a.max_games = std::stoi(need("--max-games"));
         else if (k == "--daemon") a.daemon = true;
         else if (k == "--model-watch-poll-ms") a.model_watch_poll_ms = std::stoi(need("--model-watch-poll-ms"));
-        else if (k == "--stats-file") a.stats_file = need("--stats-file");
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
+        else if (k == "--sims-warmup-cmd") a.sims_warmup_cmd = need("--sims-warmup-cmd");
         else throw std::runtime_error("unknown arg: " + k);
     }
     if (a.model.empty() || a.output_dir.empty() || a.config.empty()) {
         throw std::runtime_error(
             "usage: selfplay_main --model PATH --output-dir DIR --config PATH "
-            "(--iter N --max-games N | --daemon [--model-watch-poll-ms MS] [--stats-file PATH]) "
+            "(--iter N --max-games N | --daemon [--model-watch-poll-ms MS]) "
             "[--log-dir DIR]"
         );
     }
@@ -204,9 +208,6 @@ static CliArgs parse_cli(int argc, char** argv) {
         throw std::runtime_error("--max-games required in non-daemon mode");
     }
     if (a.log_dir.empty()) a.log_dir = a.output_dir + "/../logs";
-    if (a.daemon && a.stats_file.empty()) {
-        a.stats_file = a.log_dir + "/daemon_stats.tsv";
-    }
     return a;
 }
 
@@ -222,6 +223,26 @@ static long long file_mtime_ns(const std::string& path) {
 #else
     return static_cast<long long>(st.st_mtime) * 1000000000LL;
 #endif
+}
+
+// Run a shell command and parse its first stdout line as an int. Returns
+// -1 on any failure (empty cmd, popen error, non-zero exit, non-numeric
+// stdout). Used by the daemon to consult python/warmup.py for staged
+// hyperparameters (currently only num_simulations).
+static int popen_int(const std::string& cmd) {
+    if (cmd.empty()) return -1;
+    FILE* pipe = ::popen(cmd.c_str(), "r");
+    if (!pipe) return -1;
+    char buf[256];
+    std::string out;
+    while (std::fgets(buf, sizeof(buf), pipe)) out += buf;
+    const int rc = ::pclose(pipe);
+    if (rc != 0) return -1;
+    try {
+        return std::stoi(out);
+    } catch (...) {
+        return -1;
+    }
 }
 
 static long long file_size(const std::string& path) {
@@ -268,13 +289,15 @@ int main(int argc, char** argv) {
             if (stop_requested.load()) return 0;
         }
         auto cfg_map = parse_cfg(cli.config);
-        // Allow env var to override the cfg file (used by selfplay.sh's GPU_NUM
-        // wrapper, which derives this list at run time).
-        if (const char* env = std::getenv("INFERENCE_SERVER_DEVICES")) {
-            cfg_map["INFERENCE_SERVER_DEVICES"] = env;
-        }
-        if (const char* env = std::getenv("NUM_INFERENCE_SERVERS")) {
-            cfg_map["NUM_INFERENCE_SERVERS"] = env;
+        // Allow env var to override the cfg file. selfplay.sh and
+        // run_selfplay_daemon.sh resolve per-GPU counts to absolute values
+        // here and export them via env.
+        for (const char* k : {"INFERENCE_SERVER_DEVICES",
+                              "NUM_INFERENCE_SERVERS",
+                              "NUM_WORKERS"}) {
+            if (const char* env = std::getenv(k)) {
+                cfg_map[k] = env;
+            }
         }
 
         // --- SkyZeroConfig ---
@@ -284,6 +307,20 @@ int main(int argc, char** argv) {
         cfg.num_simulations = cfg_get<int>(cfg_map, "NUM_SIMULATIONS", 64);
         if (cli.num_simulations_override > 0) {
             cfg.num_simulations = cli.num_simulations_override;
+        }
+        // Daemon-only: consult warmup script for staged sims on startup.
+        // engine_'s cfg_ is a const reference into this very cfg, so we
+        // also re-poll on every model reload (see daemon main loop below).
+        if (cli.daemon && !cli.sims_warmup_cmd.empty()) {
+            const int v = popen_int(cli.sims_warmup_cmd);
+            if (v > 0) {
+                cfg.num_simulations = v;
+                std::cout << "[Daemon] startup num_simulations=" << v
+                          << " (from warmup cmd)\n";
+            } else {
+                std::cerr << "[Daemon] warmup cmd failed; keeping num_simulations="
+                          << cfg.num_simulations << "\n";
+            }
         }
         cfg.gumbel_m = cfg_get<int>(cfg_map, "GUMBEL_M", 16);
         cfg.gumbel_c_visit = cfg_get<float>(cfg_map, "GUMBEL_C_VISIT", 50.0f);
@@ -451,75 +488,65 @@ int main(int argc, char** argv) {
         game_init.log_distribution(std::cout);
 
         const int max_rows_per_npz = cfg_get<int>(cfg_map, "MAX_ROWS_PER_NPZ", 25000);
-        // KataGomo-aligned three-parameter power-law window. Mirrors
-        // python/shuffle.py:compute_window_size; this value is logged below
-        // (not consumed by selfplay logic — actual window selection happens
-        // in shuffle.py).
-        const int64_t min_rows       = cfg_get<int64_t>(cfg_map, "MIN_ROWS", 250000);
-        const double  exponent       = cfg_get<double>(cfg_map, "TAPER_WINDOW_EXPONENT", 0.65);
-        const double  expand_per_row = cfg_get<double>(cfg_map, "EXPAND_WINDOW_PER_ROW", 0.4);
 
         // --- Writers & engine ---
         fs::create_directories(cli.output_dir);
         fs::create_directories(cli.log_dir);
 
-        // Aggregate cumulative games/rows from last_run.tsv (history up to this iter).
-        // Daemon mode skips this — last_run.tsv is per-iter, the daemon has no iter
-        // boundary, and the readout is purely cosmetic anyway (shuffle.py recomputes
-        // the window from live NPZ row counts).
+        // Aggregate cumulative games/rows from selfplay.tsv. Counts BOTH
+        // producers (main + daemon) — see python/selfplay_log.py for the
+        // same logic. Used only for the diagnostic print below.
         //
         // Resume hygiene: if a prior run finished selfplay (so it appended a
-        // last_run.tsv row) but train/export got interrupted, state.json still
-        // points at the previous iter; resume reruns this same iter, the
-        // orphan NPZ parts are cleaned below, but the tsv row would otherwise
-        // double-count. Drop any rows with iter >= cli.iter before aggregating.
+        // producer=main row) but train/export got interrupted, state.json
+        // still points at the previous iter; resume reruns this same iter,
+        // and the previously-written main row would otherwise double-count.
+        // Drop any main rows with iter >= cli.iter. Daemon rows are not
+        // dropped — they have no iter/resume boundary.
         int64_t cum_games = 0;
         int64_t cum_rows = 0;
-        int64_t window_size = 0;
         if (!cli.daemon) {
-            const fs::path last_run_path = fs::path(cli.log_dir) / "last_run.tsv";
+            const fs::path tsv_path = fs::path(cli.log_dir) / "selfplay.tsv";
             std::vector<std::string> kept_lines;
             std::string header_line;
             bool had_header = false;
             int dropped = 0;
             {
-                std::ifstream hf(last_run_path);
+                std::ifstream hf(tsv_path);
                 std::string line;
                 bool first = true;
                 while (std::getline(hf, line)) {
                     if (first) {
                         first = false;
-                        if (line.rfind("iter", 0) == 0) {
+                        if (line.rfind("producer", 0) == 0) {
                             header_line = line;
                             had_header = true;
                             continue;
                         }
                     }
                     std::istringstream ls(line);
+                    std::string producer;
                     int it; int64_t g, r;
-                    if (!(ls >> it >> g >> r)) { kept_lines.push_back(line); continue; }
-                    if (it >= cli.iter) { ++dropped; continue; }
+                    if (!(ls >> producer >> it >> g >> r)) {
+                        kept_lines.push_back(line);
+                        continue;
+                    }
+                    if (producer == "main" && it >= cli.iter) {
+                        ++dropped;
+                        continue;
+                    }
                     cum_games += g;
                     cum_rows += r;
                     kept_lines.push_back(line);
                 }
             }
             if (dropped > 0) {
-                std::ofstream of(last_run_path, std::ios::trunc);
+                std::ofstream of(tsv_path, std::ios::trunc);
                 if (had_header) of << header_line << "\n";
                 for (const auto& l : kept_lines) of << l << "\n";
                 std::cout << "[SelfPlay] dropped " << dropped
-                          << " stale last_run.tsv row(s) with iter >= "
+                          << " stale main row(s) with iter >= "
                           << cli.iter << " (resume after interrupted train)\n";
-            }
-            if (cum_rows <= min_rows) {
-                window_size = cum_rows;
-            } else {
-                const double M = static_cast<double>(min_rows);
-                const double N = static_cast<double>(cum_rows);
-                const double scaled = (std::pow(N, exponent) - std::pow(M, exponent))
-                                    / (exponent * std::pow(M, exponent - 1));
-                window_size = static_cast<int64_t>(scaled * expand_per_row + min_rows);
             }
         }
 
@@ -539,18 +566,24 @@ int main(int argc, char** argv) {
             npz_prefix = prefix_os.str();
         }
 
-        // Clean any leftover parts from a previously interrupted run of this
-        // same iter, so NpzWriter's part counter re-aligns with disk state.
-        // last_run.tsv is only appended on clean finish, so these orphans are
-        // not yet accounted for in cum_rows/cum_games and must be discarded.
-        // Daemon mode skips this (its files include pid + monotonic version
-        // and stay valid across restarts).
-        if (!cli.daemon) {
-            const std::string part_prefix = npz_prefix + "_part_";
+        // Clean leftover part files from a previously interrupted run.
+        //
+        // Main loop: orphans of *this same* iter, so NpzWriter's part counter
+        // re-aligns. selfplay.tsv (producer="main") is only appended on clean
+        // finish, so these orphans are not yet accounted for in cum_rows.
+        //
+        // Daemon: orphans named daemon_pending_pid*_part_*.npz from prior
+        // daemon crashes that died before rotating to a real version prefix.
+        // Real daemon files (daemon_v<NNNNNN>_pid<pid>_part_*.npz) are
+        // intentionally kept across restarts.
+        {
+            const std::string sweep_prefix = cli.daemon
+                ? std::string("daemon_pending_pid")
+                : (npz_prefix + "_part_");
             int removed = 0;
             for (const auto& p : fs::directory_iterator(cli.output_dir)) {
                 const auto name = p.path().filename().string();
-                if (name.rfind(part_prefix, 0) == 0) {
+                if (name.rfind(sweep_prefix, 0) == 0) {
                     std::error_code ec;
                     fs::remove(p.path(), ec);
                     if (!ec) ++removed;
@@ -558,8 +591,8 @@ int main(int argc, char** argv) {
             }
             if (removed > 0) {
                 std::cout << "[SelfPlay] removed " << removed
-                          << " leftover part file(s) from prior run of iter "
-                          << cli.iter << "\n";
+                          << " leftover " << (cli.daemon ? "daemon_pending" : "iter part")
+                          << " file(s)\n";
             }
         }
 
@@ -585,15 +618,61 @@ int main(int argc, char** argv) {
         }
         std::cout << "]\n";
         if (!cli.daemon) {
+            // Cumulative across both producers (main + daemon). Shuffle.py
+            // computes the real window from disk-scanned row counts.
             std::cout << "[SelfPlay] TotalGames=" << cum_games
-                      << " TotalSamples=" << cum_rows
-                      << " WindowSize=" << window_size << "\n";
+                      << " TotalSamples=" << cum_rows << "\n";
         }
 
         SelfplayEngine<Gomoku> engine(game_init, cfg, pcfg, cli.model, server_devices);
         engine.start();
 
         std::mt19937 rng(std::random_device{}());
+
+        // Unified selfplay.tsv writer. Both the main loop (one row per iter,
+        // producer="main") and the daemon (one row per model version,
+        // producer="daemon") append through here, so consumers
+        // (bucket.py, view_loss.py) have a single source of truth.
+        auto write_selfplay_row = [&](
+            const std::string& producer, int iter_or_version,
+            int games, int64_t rows, double seconds,
+            int min_len, int max_len, double sum_len,
+            int black, int white, int draw,
+            int main_games, int main_min, int main_max, double main_sum_len,
+            int main_black, int main_white, int main_draw,
+            long long start_unix, long long end_unix)
+        {
+            const fs::path tsv = fs::path(cli.log_dir) / "selfplay.tsv";
+            const bool had_header = fs::exists(tsv);
+            std::ofstream of(tsv, std::ios::app);
+            if (!of) return;
+            if (!had_header) {
+                of << "producer\titer_or_version\tgames\trows\tseconds"
+                      "\tmin_len\tmax_len\tavg_len\tbwr\twwr\tdwr"
+                      "\tmain_games\tmain_min_len\tmain_max_len\tmain_avg_len"
+                      "\tmain_bwr\tmain_wwr\tmain_dwr"
+                      "\tstart_unix\tend_unix\n";
+            }
+            auto rate = [](int n, int d) { return d > 0 ? static_cast<double>(n) / d : 0.0; };
+            auto avg = [](double s, int n) { return n > 0 ? s / n : 0.0; };
+            of << producer << "\t" << iter_or_version
+               << "\t" << games << "\t" << rows
+               << "\t" << std::fixed << std::setprecision(2) << seconds
+               << "\t" << (games > 0 ? min_len : 0)
+               << "\t" << (games > 0 ? max_len : 0)
+               << "\t" << std::fixed << std::setprecision(3) << avg(sum_len, games)
+               << "\t" << std::fixed << std::setprecision(4) << rate(black, games)
+               << "\t" << std::fixed << std::setprecision(4) << rate(white, games)
+               << "\t" << std::fixed << std::setprecision(4) << rate(draw, games)
+               << "\t" << main_games
+               << "\t" << (main_games > 0 ? main_min : 0)
+               << "\t" << (main_games > 0 ? main_max : 0)
+               << "\t" << std::fixed << std::setprecision(3) << avg(main_sum_len, main_games)
+               << "\t" << std::fixed << std::setprecision(4) << rate(main_black, main_games)
+               << "\t" << std::fixed << std::setprecision(4) << rate(main_white, main_games)
+               << "\t" << std::fixed << std::setprecision(4) << rate(main_draw, main_games)
+               << "\t" << start_unix << "\t" << end_unix << "\n";
+        };
 
         if (cli.daemon) {
             // --- Daemon main loop ---
@@ -623,53 +702,37 @@ int main(int argc, char** argv) {
             int v_games = 0;
             int64_t v_rows = 0;
             int v_black = 0, v_white = 0, v_draw = 0;
+            int v_min_len = std::numeric_limits<int>::max();
+            int v_max_len = 0;
             double v_sum_len = 0.0;
             int v_main_games = 0;
             int v_main_black = 0, v_main_white = 0, v_main_draw = 0;
+            int v_main_min_len = std::numeric_limits<int>::max();
+            int v_main_max_len = 0;
             double v_main_sum_len = 0.0;
 
             auto append_stats_row = [&](int version) {
-                if (cli.stats_file.empty()) return;
-                const bool had_header = fs::exists(cli.stats_file);
-                std::ofstream sf(cli.stats_file, std::ios::app);
-                if (!sf) return;
-                if (!had_header) {
-                    sf << "model_version\tgames\trows\tseconds"
-                          "\tavg_len\tbwr\twwr\tdwr"
-                          "\tmain_games\tmain_avg_len\tmain_bwr\tmain_wwr\tmain_dwr"
-                          "\tstart_unix\tend_unix\n";
-                }
                 const auto t1 = std::chrono::steady_clock::now();
                 const double dt = std::chrono::duration<double>(t1 - version_t0).count();
-                const double avg_len = v_games > 0 ? v_sum_len / v_games : 0.0;
-                const double bwr = v_games > 0 ? static_cast<double>(v_black) / v_games : 0.0;
-                const double wwr = v_games > 0 ? static_cast<double>(v_white) / v_games : 0.0;
-                const double dwr = v_games > 0 ? static_cast<double>(v_draw) / v_games : 0.0;
-                const double m_avg_len = v_main_games > 0 ? v_main_sum_len / v_main_games : 0.0;
-                const double m_bwr = v_main_games > 0 ? static_cast<double>(v_main_black) / v_main_games : 0.0;
-                const double m_wwr = v_main_games > 0 ? static_cast<double>(v_main_white) / v_main_games : 0.0;
-                const double m_dwr = v_main_games > 0 ? static_cast<double>(v_main_draw) / v_main_games : 0.0;
                 const auto end_unix = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count();
                 const auto start_unix = end_unix - static_cast<long long>(dt);
-                sf << version << "\t" << v_games << "\t" << v_rows
-                   << "\t" << std::fixed << std::setprecision(2) << dt
-                   << "\t" << std::fixed << std::setprecision(2) << avg_len
-                   << "\t" << std::fixed << std::setprecision(4) << bwr
-                   << "\t" << std::fixed << std::setprecision(4) << wwr
-                   << "\t" << std::fixed << std::setprecision(4) << dwr
-                   << "\t" << v_main_games
-                   << "\t" << std::fixed << std::setprecision(2) << m_avg_len
-                   << "\t" << std::fixed << std::setprecision(4) << m_bwr
-                   << "\t" << std::fixed << std::setprecision(4) << m_wwr
-                   << "\t" << std::fixed << std::setprecision(4) << m_dwr
-                   << "\t" << start_unix << "\t" << end_unix << "\n";
+                write_selfplay_row(
+                    "daemon", version,
+                    v_games, v_rows, dt,
+                    v_min_len, v_max_len, v_sum_len,
+                    v_black, v_white, v_draw,
+                    v_main_games, v_main_min_len, v_main_max_len, v_main_sum_len,
+                    v_main_black, v_main_white, v_main_draw,
+                    start_unix, end_unix);
             };
             auto reset_version_counters = [&]() {
                 version_t0 = std::chrono::steady_clock::now();
                 v_games = 0; v_rows = 0; v_black = 0; v_white = 0; v_draw = 0;
+                v_min_len = std::numeric_limits<int>::max(); v_max_len = 0;
                 v_sum_len = 0.0;
                 v_main_games = 0; v_main_black = 0; v_main_white = 0; v_main_draw = 0;
+                v_main_min_len = std::numeric_limits<int>::max(); v_main_max_len = 0;
                 v_main_sum_len = 0.0;
             };
 
@@ -708,6 +771,18 @@ int main(int argc, char** argv) {
                                 last_mtime_ns = m3;
                                 std::cout << "[Daemon] reload_model: v=" << cur_version
                                           << " prefix=" << make_prefix(cur_version) << "\n";
+                                // Re-poll warmup. Engine's cfg_ is a ref to
+                                // this cfg, so workers pick up the new value
+                                // on their next selfplay_once iteration.
+                                if (!cli.sims_warmup_cmd.empty()) {
+                                    const int v = popen_int(cli.sims_warmup_cmd);
+                                    if (v > 0 && v != cfg.num_simulations) {
+                                        std::cout << "[Daemon] num_simulations "
+                                                  << cfg.num_simulations
+                                                  << " -> " << v << " (warmup)\n";
+                                        cfg.num_simulations = v;
+                                    }
+                                }
                             } catch (const std::exception& e) {
                                 std::cerr << "[Daemon] reload failed: " << e.what() << "\n";
                                 last_mtime_ns = m3;  // don't retry the same broken file
@@ -732,6 +807,8 @@ int main(int argc, char** argv) {
                     total_rows += 1;
                 }
                 v_sum_len += r.game_len;
+                v_min_len = std::min(v_min_len, r.game_len);
+                v_max_len = std::max(v_max_len, r.game_len);
                 v_games += 1;
                 total_games += 1;
                 if (r.winner == 1) ++v_black;
@@ -739,6 +816,8 @@ int main(int argc, char** argv) {
                 else ++v_draw;
                 if (r.board_size == main_board_size && r.rule == main_rule) {
                     v_main_sum_len += r.game_len;
+                    v_main_min_len = std::min(v_main_min_len, r.game_len);
+                    v_main_max_len = std::max(v_main_max_len, r.game_len);
                     v_main_games += 1;
                     if (r.winner == 1) ++v_main_black;
                     else if (r.winner == -1) ++v_main_white;
@@ -766,10 +845,11 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        // --- Legacy main collection loop (one-shot, --max-games) ---
-        // Two parallel stat sets:
-        //   full set (all games)        — Games/Sps + selfplay.png + last_run.tsv full cols
-        //   main pair (MAIN_* filtered) — main(...) GameLen/BWD print + selfplay_main.png + main_* cols
+        // --- Main collection loop (one-shot, --max-games) ---
+        // Two parallel stat sets, both emitted as one selfplay.tsv row at end:
+        //   full set (all games)        — fills the unprefixed cols (games/avg_len/...).
+        //   main pair (MAIN_* filtered) — fills the main_* cols. Also drives
+        //                                 the per-100-games progress print below.
         int games_done = 0;
         int64_t total_rows = 0;
         int black_wins = 0, white_wins = 0, draws = 0;
@@ -867,49 +947,19 @@ int main(int argc, char** argv) {
         engine.stop();
         writer.flush();
 
-        // Append last_run.tsv. First 10 cols (full set) preserve the legacy
-        // schema; new 7 cols hold the main-pair filtered version, used by
-        // selfplay_main.png. view_loss.py looks up by name, so old rows
-        // with only 10 cols still parse cleanly.
-        const fs::path last_run = fs::path(cli.log_dir) / "last_run.tsv";
-        const bool had_header = fs::exists(last_run);
-        std::ofstream lf(last_run, std::ios::app);
-        if (!had_header) lf << "iter\tgames\trows\tseconds"
-                               "\tmin_len\tmax_len\tavg_len"
-                               "\tblack_win_rate\twhite_win_rate\tdraw_rate"
-                               "\tmain_games\tmain_min_len\tmain_max_len\tmain_avg_len"
-                               "\tmain_black_win_rate\tmain_white_win_rate\tmain_draw_rate\n";
         const auto dt = std::chrono::duration_cast<std::chrono::duration<double>>(
             std::chrono::steady_clock::now() - t0).count();
-        lf << cli.iter << "\t" << games_done << "\t" << total_rows << "\t" << dt;
-        if (games_done > 0) {
-            const double avg_len = sum_len / games_done;
-            const double bwr = static_cast<double>(black_wins) / games_done;
-            const double wwr = static_cast<double>(white_wins) / games_done;
-            const double dwr = static_cast<double>(draws) / games_done;
-            lf << "\t" << min_len << "\t" << max_len
-               << "\t" << std::fixed << std::setprecision(3) << avg_len
-               << "\t" << std::fixed << std::setprecision(4) << bwr
-               << "\t" << std::fixed << std::setprecision(4) << wwr
-               << "\t" << std::fixed << std::setprecision(4) << dwr;
-        } else {
-            lf << "\t\t\t\t\t\t";
-        }
-        lf << "\t" << main_games;
-        if (main_games > 0) {
-            const double m_avg = main_sum_len / main_games;
-            const double m_bwr = static_cast<double>(main_black) / main_games;
-            const double m_wwr = static_cast<double>(main_white) / main_games;
-            const double m_dwr = static_cast<double>(main_draw) / main_games;
-            lf << "\t" << main_min_len << "\t" << main_max_len
-               << "\t" << std::fixed << std::setprecision(3) << m_avg
-               << "\t" << std::fixed << std::setprecision(4) << m_bwr
-               << "\t" << std::fixed << std::setprecision(4) << m_wwr
-               << "\t" << std::fixed << std::setprecision(4) << m_dwr;
-        } else {
-            lf << "\t\t\t\t\t\t";
-        }
-        lf << "\n";
+        const auto end_unix = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        const auto start_unix = end_unix - static_cast<long long>(dt);
+        write_selfplay_row(
+            "main", cli.iter,
+            games_done, total_rows, dt,
+            min_len, max_len, sum_len,
+            black_wins, white_wins, draws,
+            main_games, main_min_len, main_max_len, main_sum_len,
+            main_black, main_white, main_draw,
+            start_unix, end_unix);
 
         std::cout << "[SelfPlay] done. games=" << games_done
                   << " rows=" << total_rows
