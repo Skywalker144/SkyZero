@@ -6,25 +6,26 @@
 # time the main train loop (run.sh) exports a new model. Runs forever; restart
 # behavior is delegated to the inner watchdog loop.
 #
-# Usage: GPU_NUM=4 bash scripts/run_selfplay_daemon.sh
+# Usage: GPU_NUM=4 bash scripts/internal/selfplay_daemon.sh
 #   GPU_NUM<=1 -> exits with a hint (daemon not needed in single-GPU mode).
 set -euo pipefail
 
 trap 'trap - INT TERM; echo "[daemon-watchdog] stopping."; kill 0 2>/dev/null; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
+SCRIPTS_DIR="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
+ROOT="$(cd -- "$SCRIPTS_DIR/.." &> /dev/null && pwd)"
 cd "$ROOT"
 
 set -a
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/run.cfg"
-if [[ -f "$SCRIPT_DIR/run.cfg.local" ]]; then
-    source "$SCRIPT_DIR/run.cfg.local"
+source "$SCRIPTS_DIR/run.cfg"
+if [[ -f "$SCRIPTS_DIR/run.cfg.local" ]]; then
+    source "$SCRIPTS_DIR/run.cfg.local"
 fi
 set +a
 
-source "$SCRIPT_DIR/paths.cfg"
+source "$SCRIPTS_DIR/paths.cfg"
 export DATA_DIR
 mkdir -p "$DATA_DIR"/{models,selfplay,logs}
 
@@ -95,7 +96,7 @@ while true; do
     "$SELFPLAY_BIN" --daemon \
         --model "$DATA_DIR/models/latest.pt" \
         --output-dir "$DATA_DIR/selfplay" \
-        --config "$SCRIPT_DIR/run.cfg" \
+        --config "$SCRIPTS_DIR/run.cfg" \
         --log-dir "$DATA_DIR/logs" \
         --model-watch-poll-ms "$POLL_MS" \
         --sims-warmup-cmd "$SIMS_WARMUP_CMD" \

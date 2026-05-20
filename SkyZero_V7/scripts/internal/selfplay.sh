@@ -2,13 +2,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
+SCRIPTS_DIR="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
+ROOT="$(cd -- "$SCRIPTS_DIR/.." &> /dev/null && pwd)"
 
 iter="${1:?iter required}"
 games="${2:?games required}"
 
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
-source "$SCRIPT_DIR/paths.cfg"
+source "$SCRIPTS_DIR/paths.cfg"
 PY="${PY:-python}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
@@ -18,7 +19,7 @@ if [[ ! -x "$SELFPLAY_BIN" ]]; then
 fi
 
 # Main-loop selfplay always runs on MAIN_GPU only. Multi-GPU spread is the
-# job of run_selfplay_daemon.sh (it owns the spare GPUs and has its own
+# job of selfplay_daemon.sh (it owns the spare GPUs and has its own
 # INFERENCE_SERVER_DEVICES). When INFERENCE_SERVER_DEVICES is already set
 # (e.g. test harness override), respect it.
 MAIN_GPU="${MAIN_GPU:-0}"
@@ -48,5 +49,5 @@ echo "[selfplay.sh] iter=$iter games=$games num_simulations=$NSIM main_gpu=$MAIN
     --iter "$iter" \
     --max-games "$games" \
     --num-simulations "$NSIM" \
-    --config "$SCRIPT_DIR/run.cfg" \
+    --config "$SCRIPTS_DIR/run.cfg" \
     --log-dir "$DATA_DIR/logs"

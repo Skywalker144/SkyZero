@@ -31,7 +31,7 @@ PY=${PY:-python}
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
 
 # Auto-detect GPU count. Main loop runs on GPU 0; if >1 GPUs, spare GPUs
-# (1..N-1) are owned by run_selfplay_daemon.sh, started in the background below.
+# (1..N-1) are owned by internal/selfplay_daemon.sh, started in the background below.
 if [[ -z "${GPU_NUM:-}" ]]; then
     if command -v nvidia-smi >/dev/null 2>&1; then
         GPU_NUM=$(nvidia-smi -L 2>/dev/null | wc -l)
@@ -51,7 +51,7 @@ cmake --build "$ROOT/cpp/build" -j
 # Multi-GPU: launch the selfplay daemon on GPUs 1..GPU_NUM-1 in the background.
 if [[ "$GPU_NUM" -gt 1 ]]; then
     echo "[run.sh] starting selfplay daemon on GPUs 1..$((GPU_NUM-1))"
-    bash "$SCRIPT_DIR/run_selfplay_daemon.sh" &
+    bash "$SCRIPT_DIR/internal/selfplay_daemon.sh" &
     DAEMON_PID=$!
 fi
 
@@ -96,13 +96,13 @@ while true; do
         # window. Selfplay's new iter-N files are written but ignored by this
         # shuffle (shuffle.py snapshots the file list once at start).
         echo "[run.sh] shuffle (bg) || selfplay (fg)"
-        bash "$SCRIPT_DIR/shuffle.sh" &
+        bash "$SCRIPT_DIR/internal/shuffle.sh" &
         SHUFFLE_PID=$!
-        bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
+        bash "$SCRIPT_DIR/internal/selfplay.sh" "$iter" "$GAMES"
         wait "$SHUFFLE_PID" || SHUFFLE_RC=$?
     else
-        bash "$SCRIPT_DIR/selfplay.sh" "$iter" "$GAMES"
-        bash "$SCRIPT_DIR/shuffle.sh" || SHUFFLE_RC=$?
+        bash "$SCRIPT_DIR/internal/selfplay.sh" "$iter" "$GAMES"
+        bash "$SCRIPT_DIR/internal/shuffle.sh" || SHUFFLE_RC=$?
     fi
 
     if [[ "$SHUFFLE_RC" -eq 2 ]]; then
@@ -117,10 +117,10 @@ while true; do
             echo "[run.sh] bucket below epoch threshold; skipping train+export this iter"
         else
             # (3) train
-            TRAIN_STEPS_PER_EPOCH="$TRAIN_STEPS" bash "$SCRIPT_DIR/train.sh" "$iter"
+            TRAIN_STEPS_PER_EPOCH="$TRAIN_STEPS" bash "$SCRIPT_DIR/internal/train.sh" "$iter"
 
             # (4) export TorchScript
-            bash "$SCRIPT_DIR/export.sh" "$iter"
+            bash "$SCRIPT_DIR/internal/export.sh" "$iter"
 
             # (4b) post-export diagnostic: empty-board MCTS rootValue probe
             CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}" "$ROOT/cpp/build/mcts_probe" \

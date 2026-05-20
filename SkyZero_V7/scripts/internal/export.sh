@@ -2,11 +2,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
+SCRIPTS_DIR="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
+ROOT="$(cd -- "$SCRIPTS_DIR/.." &> /dev/null && pwd)"
 
 iter="${1:?iter required}"
 PY=${PY:-python}
-source "$SCRIPT_DIR/paths.cfg"
+source "$SCRIPTS_DIR/paths.cfg"
 
 export CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}"
 

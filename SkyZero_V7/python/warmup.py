@@ -7,8 +7,8 @@ cumulative selfplay rows: the i-th value applies for progress in
 Disabled when len(stages) < 2 or warmup_samples <= 0 — falls back to the
 NUM_SIMULATIONS env var.
 
-CLI for shell scripts (selfplay.sh main loop; run_selfplay_daemon.sh as
---sims-warmup-cmd for daemon's reload-time re-poll):
+CLI for shell scripts (internal/selfplay.sh main loop; internal/selfplay_daemon.sh
+as --sims-warmup-cmd for daemon's reload-time re-poll):
 
     python warmup.py num-simulations --data-dir DATA_DIR
 
