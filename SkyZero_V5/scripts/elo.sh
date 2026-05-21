@@ -13,6 +13,12 @@
 # target game count, so cron'ing this after each new checkpoint just
 # evaluates the new model against its neighbors.
 #
+# Multi-GPU: pairs are dispatched across all visible GPUs via a work-stealing
+# queue, one worker process per GPU (each pinned via CUDA_VISIBLE_DEVICES).
+# Pool source: existing CUDA_VISIBLE_DEVICES if set, else auto-detected via
+# nvidia-smi -L. Cap the pool with NUM_GPUS=N. CPU hosts and single-GPU hosts
+# keep the original serial behavior.
+#
 # All parameters live in scripts/elo.cfg. Env vars of the same name
 # override the cfg value for quick one-off tweaks.
 #
@@ -23,7 +29,7 @@
 #   scripts/elo.sh /abs/path/to/model.pt    # single: absolute path
 #
 # Env overrides (all optional): NUM_GAMES, NEIGHBOR_K, NEIGHBOR_GAMES,
-# STRIDE, NUM_SIMULATIONS, ANCHOR_DIR, ANCHORS, ELO_BIN, ELO_CFG,
+# STRIDE, NUM_SIMULATIONS, NUM_GPUS, ANCHOR_DIR, ANCHORS, ELO_BIN, ELO_CFG,
 # DATA_DIR, OUT_FILE, PLOT_FILE.
 set -euo pipefail
 
@@ -245,31 +251,118 @@ run_pair_match() {
         "${sim_flag[@]}"
 }
 
-# --- Run matches --------------------------------------------------------
+# --- Build unified task list --------------------------------------------
+# Each task: tab-separated "a<TAB>b<TAB>target_games<TAB>label". Anchor and
+# neighbor pairs share a single queue so workers steal work uniformly.
+TASKS=()
+for target in "${TARGETS[@]}"; do
+    target_abs="$(readlink -f "$target")"
+    for anchor in "${anchor_list[@]}"; do
+        anchor_abs="$(readlink -f "$anchor")"
+        [[ "$anchor_abs" == "$target_abs" ]] && continue
+        TASKS+=("$(printf '%s\t%s\t%s\t%s' "$target" "$anchor" "$NUM_GAMES" "anchor")")
+    done
+done
+for pair in "${NEIGHBOR_PAIRS[@]}"; do
+    a="${pair%|*}"
+    b="${pair#*|}"
+    TASKS+=("$(printf '%s\t%s\t%s\t%s' "$a" "$b" "$NEIGHBOR_GAMES" "neighbor")")
+done
+
+# --- Resolve GPU pool ---------------------------------------------------
+# Priority: existing CUDA_VISIBLE_DEVICES > nvidia-smi auto-detect > none.
+# NUM_GPUS (env or cfg, >0) caps the pool from the top.
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    read -ra GPU_IDS <<< "${CUDA_VISIBLE_DEVICES//,/ }"
+elif command -v nvidia-smi >/dev/null 2>&1; then
+    n_detected="$(nvidia-smi -L 2>/dev/null | wc -l | tr -d ' ')"
+    [[ "$n_detected" =~ ^[0-9]+$ ]] || n_detected=0
+    GPU_IDS=()
+    for ((g = 0; g < n_detected; g++)); do GPU_IDS+=("$g"); done
+else
+    GPU_IDS=()
+fi
+NUM_GPUS_CAP="${NUM_GPUS:-$(cfg_get NUM_GPUS 0)}"
+if [[ "$NUM_GPUS_CAP" =~ ^[0-9]+$ ]] && (( NUM_GPUS_CAP > 0 )) \
+        && (( ${#GPU_IDS[@]} > NUM_GPUS_CAP )); then
+    GPU_IDS=("${GPU_IDS[@]:0:$NUM_GPUS_CAP}")
+fi
+NUM_GPUS=${#GPU_IDS[@]}
+
+# --- Summary ------------------------------------------------------------
 if (( ${#anchor_list[@]} == 0 )); then
     echo "[elo.sh] anchors: none (neighbor-only mode)"
 else
     echo "[elo.sh] anchors: $(printf '%s\n' "${anchor_list[@]}" | xargs -n1 basename | paste -sd, -)"
 fi
 echo "[elo.sh] output=$OUT_FILE  anchor_games/pair=$NUM_GAMES  neighbor_games/pair=$NEIGHBOR_GAMES  K=$NEIGHBOR_K"
-echo "[elo.sh] schedule: ${#TARGETS[@]} target(s) x ${#anchor_list[@]} anchor(s) + ${#NEIGHBOR_PAIRS[@]} neighbor pair(s)"
+if (( NUM_GPUS == 0 )); then
+    echo "[elo.sh] schedule: ${#TASKS[@]} task(s) on CPU (no GPUs detected)"
+else
+    echo "[elo.sh] schedule: ${#TASKS[@]} task(s) across ${NUM_GPUS} GPU(s) [${GPU_IDS[*]}]"
+fi
 
-# Anchor matches
-for target in "${TARGETS[@]}"; do
-    target_abs="$(readlink -f "$target")"
-    for anchor in "${anchor_list[@]}"; do
-        anchor_abs="$(readlink -f "$anchor")"
-        [[ "$anchor_abs" == "$target_abs" ]] && continue
-        run_pair_match "$target" "$anchor" "$NUM_GAMES" "anchor"
+# --- Dispatch -----------------------------------------------------------
+if (( ${#TASKS[@]} == 0 )); then
+    :
+elif (( NUM_GPUS <= 1 )); then
+    # Serial path: CPU host (NUM_GPUS=0) or a single GPU. Matches the
+    # pre-multi-GPU behavior exactly when no CUDA_VISIBLE_DEVICES override is
+    # in play.
+    if (( NUM_GPUS == 1 )); then
+        export CUDA_VISIBLE_DEVICES="${GPU_IDS[0]}"
+    fi
+    for task in "${TASKS[@]}"; do
+        IFS=$'\t' read -r a b games label <<< "$task"
+        run_pair_match "$a" "$b" "$games" "$label"
     done
-done
+else
+    # Parallel path: work-stealing queue file guarded by an mkdir-based lock
+    # (portable across Linux/macOS, no flock dep). Each GPU runs one worker
+    # subshell that pops a task, runs it to completion, then loops.
+    QUEUE="$(mktemp "${TMPDIR:-/tmp}/elo_queue.XXXXXX")"
+    LOCK="${QUEUE}.lock.d"
+    trap 'pids=$(jobs -p); [[ -n "$pids" ]] && kill $pids 2>/dev/null; rm -rf "$QUEUE" "$LOCK" "${QUEUE}.tmp"' EXIT INT TERM
+    for task in "${TASKS[@]}"; do
+        printf '%s\n' "$task" >> "$QUEUE"
+    done
 
-# Neighbor matches
-for pair in "${NEIGHBOR_PAIRS[@]}"; do
-    a="${pair%|*}"
-    b="${pair#*|}"
-    run_pair_match "$a" "$b" "$NEIGHBOR_GAMES" "neighbor"
-done
+    pop_task() {
+        while ! mkdir "$LOCK" 2>/dev/null; do sleep 0.05; done
+        local line=""
+        if [[ -s "$QUEUE" ]]; then
+            line="$(head -n 1 "$QUEUE")"
+            tail -n +2 "$QUEUE" > "${QUEUE}.tmp" 2>/dev/null && mv "${QUEUE}.tmp" "$QUEUE"
+        fi
+        rmdir "$LOCK"
+        printf '%s' "$line"
+    }
+
+    run_gpu_worker() {
+        local gpu_id="$1"
+        export CUDA_VISIBLE_DEVICES="$gpu_id"
+        while :; do
+            local task
+            task="$(pop_task)"
+            [[ -z "$task" ]] && break
+            IFS=$'\t' read -r a b games label <<< "$task"
+            echo "[elo.sh] [gpu $gpu_id] picking up: $(basename "$a") vs $(basename "$b") ($label)"
+            run_pair_match "$a" "$b" "$games" "$label"
+        done
+    }
+
+    pids=()
+    for gpu_id in "${GPU_IDS[@]}"; do
+        run_gpu_worker "$gpu_id" &
+        pids+=("$!")
+    done
+
+    fail=0
+    for pid in "${pids[@]}"; do
+        if ! wait "$pid"; then fail=1; fi
+    done
+    (( fail == 0 )) || { echo "[elo.sh] one or more GPU workers failed"; exit 1; }
+fi
 
 # --- Regenerate Elo table + curve ---------------------------------------
 echo "[elo.sh] updating Elo: $PLOT_FILE"
