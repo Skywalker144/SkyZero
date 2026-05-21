@@ -86,16 +86,16 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
         xs = [x[i] for i in range(len(x)) if producer[i] == p]
         ys = [main_avg[i] for i in range(len(x)) if producer[i] == p]
         if xs:
-            ax2.plot(xs, ys, "o-", label=p, color=c, alpha=0.7, markersize=3)
+            ax2.plot(xs, ys, "-", label=p, color=c, alpha=0.7)
     ax2.set_ylabel("avg game length")
     ax2.set_title(f"main pair ({main_size}×{main_rule}) game length")
     ax2.legend(loc="best")
     ax2.grid(True, alpha=0.3)
 
     bwr, wwr, dwr = col("main_bwr"), col("main_wwr"), col("main_dwr")
-    ax3.plot(x, bwr, "o-", label="black", color="C2", markersize=3, alpha=0.7)
-    ax3.plot(x, wwr, "o-", label="white", color="C3", markersize=3, alpha=0.7)
-    ax3.plot(x, dwr, "o-", label="draw", color="C7", markersize=3, alpha=0.7)
+    ax3.plot(x, bwr, "-", label="black", color="C2", alpha=0.7)
+    ax3.plot(x, wwr, "-", label="white", color="C3", alpha=0.7)
+    ax3.plot(x, dwr, "-", label="draw", color="C7", alpha=0.7)
     ax3.set_ylim(0.0, 1.0)
     ax3.set_ylabel("rate")
     ax3.set_xlabel("tsv row index")

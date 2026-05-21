@@ -52,26 +52,32 @@ using namespace skyzero;
 // ---- Config parsing (subset of selfplay_main.cpp) -------------------------
 static std::unordered_map<std::string, std::string> parse_cfg(const std::string& path) {
     std::unordered_map<std::string, std::string> out;
+    auto load = [&out](std::istream& f) {
+        std::string line;
+        while (std::getline(f, line)) {
+            const auto hash = line.find('#');
+            if (hash != std::string::npos) line.erase(hash);
+            const auto a = line.find_first_not_of(" \t\r");
+            if (a == std::string::npos) continue;
+            const auto b = line.find_last_not_of(" \t\r");
+            line = line.substr(a, b - a + 1);
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = line.substr(0, eq);
+            std::string val = line.substr(eq + 1);
+            if (!val.empty() && (val.front() == '"' || val.front() == '\'')) {
+                const char q = val.front();
+                if (val.size() >= 2 && val.back() == q) val = val.substr(1, val.size() - 2);
+            }
+            out[std::move(key)] = std::move(val);
+        }
+    };
     std::ifstream f(path);
     if (!f) throw std::runtime_error("cannot open config: " + path);
-    std::string line;
-    while (std::getline(f, line)) {
-        const auto hash = line.find('#');
-        if (hash != std::string::npos) line.erase(hash);
-        const auto a = line.find_first_not_of(" \t\r");
-        if (a == std::string::npos) continue;
-        const auto b = line.find_last_not_of(" \t\r");
-        line = line.substr(a, b - a + 1);
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = line.substr(0, eq);
-        std::string val = line.substr(eq + 1);
-        if (!val.empty() && (val.front() == '"' || val.front() == '\'')) {
-            const char q = val.front();
-            if (val.size() >= 2 && val.back() == q) val = val.substr(1, val.size() - 2);
-        }
-        out[std::move(key)] = std::move(val);
-    }
+    load(f);
+    // Server-local override (matches scripts/run.sh's run.cfg.local handling).
+    std::ifstream lf(path + ".local");
+    if (lf) load(lf);
     return out;
 }
 

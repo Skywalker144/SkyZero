@@ -2094,20 +2094,38 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(404); self.end_headers()
 
 
+def _read_cfg_map(path):
+    """Parse path then path+'.local' (later wins) → dict[str, str].
+
+    Mirrors scripts/run.sh's run.cfg.local handling: base values first, then
+    server-local overrides. Values are stripped of inline #comments and
+    surrounding quotes; CSV-style values are returned verbatim for callers
+    to split.
+    """
+    out = {}
+    for p in (str(path), str(path) + ".local"):
+        try:
+            text = Path(p).read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            s = line.split("#", 1)[0].strip()
+            if "=" not in s:
+                continue
+            k, _, v = s.partition("=")
+            v = v.strip().strip('"').strip("'")
+            out[k.strip()] = v
+    return out
+
+
 def parse_board_sizes(run_cfg_path):
     """Read BOARD_SIZES="17, 16, ..." from run.cfg → sorted list[int] (desc)."""
+    v = _read_cfg_map(run_cfg_path).get("BOARD_SIZES", "")
     try:
-        for line in Path(run_cfg_path).read_text().splitlines():
-            s = line.strip()
-            if not s.startswith("BOARD_SIZES"):
-                continue
-            _, _, val = s.partition("=")
-            val = val.strip().strip('"').strip("'").split("#", 1)[0]
-            sizes = [int(x.strip()) for x in val.split(",") if x.strip()]
-            return sorted(set(sizes), reverse=True)
-    except (OSError, ValueError):
-        pass
-    return []
+        sizes = [int(x.strip()) for x in v.split(",") if x.strip()]
+    except ValueError:
+        return []
+    return sorted(set(sizes), reverse=True)
 
 
 SUPPORTED_RULES = ("renju", "standard", "freestyle")
@@ -2115,46 +2133,27 @@ SUPPORTED_RULES = ("renju", "standard", "freestyle")
 
 def parse_rules(run_cfg_path):
     """Read RULES="renju, standard, ..." from run.cfg → list[str] preserving cfg order."""
-    try:
-        for line in Path(run_cfg_path).read_text().splitlines():
-            s = line.strip()
-            if not s.startswith("RULES"):
-                continue
-            _, _, val = s.partition("=")
-            val = val.strip().strip('"').strip("'").split("#", 1)[0]
-            seen = []
-            for tok in val.split(","):
-                r = tok.strip().lower()
-                if r in SUPPORTED_RULES and r not in seen:
-                    seen.append(r)
-            return seen
-    except OSError:
-        pass
-    return []
+    v = _read_cfg_map(run_cfg_path).get("RULES", "")
+    seen = []
+    for tok in v.split(","):
+        r = tok.strip().lower()
+        if r in SUPPORTED_RULES and r not in seen:
+            seen.append(r)
+    return seen
 
 
 def read_cfg_int(path, key, default):
+    v = _read_cfg_map(path).get(key)
+    if v is None:
+        return default
     try:
-        for line in Path(path).read_text().splitlines():
-            s = line.strip()
-            if s.startswith(f"{key}=") or s.startswith(f"{key} ="):
-                _, _, val = s.partition("=")
-                return int(val.strip().split("#", 1)[0])
-    except (OSError, ValueError):
-        pass
-    return default
+        return int(v)
+    except ValueError:
+        return default
 
 
 def read_cfg_str(path, key, default):
-    try:
-        for line in Path(path).read_text().splitlines():
-            s = line.strip()
-            if s.startswith(f"{key}=") or s.startswith(f"{key} ="):
-                _, _, val = s.partition("=")
-                return val.strip().strip('"').strip("'").split("#", 1)[0].strip()
-    except OSError:
-        pass
-    return default
+    return _read_cfg_map(path).get(key, default)
 
 
 def discover_models(root_dir):
