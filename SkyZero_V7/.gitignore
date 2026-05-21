@@ -2,6 +2,11 @@
 # SkyZero_V4 Project .gitignore
 # ============================================
 
+# -------------------- Server-local cfg overrides --------------------
+# scripts/{paths,run}.cfg both source <name>.cfg.local if present.
+# Lets each training server pin its own DATA_DIR / GPU count / etc.
+scripts/*.local
+
 # -------------------- C++ Build Files --------------------
 # CMake build directory and all generated files
 cpp/build/

@@ -19,16 +19,23 @@ endif()
 # CMAKE_CONFIGURE_DEPENDS makes cmake re-run when run.cfg changes; if the value
 # changed, gomoku.h's effective MAX_BOARD_SIZE changes, and ninja/make rebuilds
 # every .cpp that includes it.
-set(_run_cfg "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/run.cfg")
+set(_run_cfg       "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/run.cfg")
+set(_run_cfg_local "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/run.cfg.local")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_run_cfg}")
-if(EXISTS "${_run_cfg}")
-    file(STRINGS "${_run_cfg}" _max_lines REGEX "^[ \t]*MAX_BOARD_SIZE[ \t]*=")
-    if(_max_lines)
-        list(GET _max_lines 0 _max_line)
-        string(REGEX REPLACE "^[ \t]*MAX_BOARD_SIZE[ \t]*=[ \t]*([0-9]+).*" "\\1"
-               SKYZERO_MAX_BOARD_SIZE "${_max_line}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_run_cfg_local}")
+# Read run.cfg first, then let run.cfg.local override (last match wins) —
+# mirrors the C++ parse_cfg() override semantics so a per-server
+# MAX_BOARD_SIZE override doesn't desync compile-time vs runtime.
+foreach(_cfg IN ITEMS "${_run_cfg}" "${_run_cfg_local}")
+    if(EXISTS "${_cfg}")
+        file(STRINGS "${_cfg}" _max_lines REGEX "^[ \t]*MAX_BOARD_SIZE[ \t]*=")
+        if(_max_lines)
+            list(GET _max_lines -1 _max_line)
+            string(REGEX REPLACE "^[ \t]*MAX_BOARD_SIZE[ \t]*=[ \t]*([0-9]+).*" "\\1"
+                   SKYZERO_MAX_BOARD_SIZE "${_max_line}")
+        endif()
     endif()
-endif()
+endforeach()
 if(NOT SKYZERO_MAX_BOARD_SIZE)
     set(SKYZERO_MAX_BOARD_SIZE 15)
     message(STATUS "SKYZERO_MAX_BOARD_SIZE = ${SKYZERO_MAX_BOARD_SIZE} (default; run.cfg has no MAX_BOARD_SIZE=)")
