@@ -2202,6 +2202,9 @@ def main():
         models = {init_id: init_path, **models}
 
     board_sizes = parse_board_sizes(args.run_config) or [BOARD_SIZE]
+    max_board_size = read_cfg_int(args.run_config, "MAX_BOARD_SIZE", 0)
+    if max_board_size > 0:
+        board_sizes = [s for s in board_sizes if s <= max_board_size]
     default_board_size = read_cfg_int(args.config, "BOARD_SIZE", BOARD_SIZE)
     if default_board_size not in board_sizes:
         board_sizes = [default_board_size] + board_sizes
