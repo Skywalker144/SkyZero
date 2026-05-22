@@ -285,13 +285,14 @@ int main(int argc, char** argv) {
 
         // --- Warm up the model: first inference on CUDA pays kernel-init cost ---
         std::cerr << "[mcts_bench] warming up model...\n";
+        std::mt19937 rng0(0);
         {
-            auto init = game.get_initial_state(std::mt19937(0));
+            auto init = game.get_initial_state(rng0);
             std::vector<std::vector<int8_t>> dummy(8, init.board);
             for (int i = 0; i < cli.warmup; ++i) run_forward(dummy);
         }
 
-        const auto initial = game.get_initial_state(std::mt19937(0));
+        const auto initial = game.get_initial_state(rng0);
         std::cout << "[mcts_bench] device=" << (use_cuda ? "cuda" : "cpu")
                   << " sims=" << cli.sims
                   << " searches=" << cli.searches
