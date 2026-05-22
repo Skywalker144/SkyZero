@@ -7,12 +7,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
-source "$SCRIPT_DIR/paths.cfg"
+
+CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
+[[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
+[[ -d "$CONFIG_DIR" ]] || { echo "[play.sh] no config dir at $CONFIG_DIR" >&2; exit 1; }
+
+source "$CONFIG_DIR/paths.cfg"
+source "$SCRIPT_DIR/env_paths.cfg"
 
 MODEL="${MODEL:-$DATA_DIR/models/latest.pt}"
 PLAY_BIN="${PLAY_BIN:-$ROOT/cpp/build/gomoku_play}"
-PLAY_CFG="${PLAY_CFG:-$SCRIPT_DIR/play.cfg}"
-RUN_CFG="${RUN_CFG:-$SCRIPT_DIR/run.cfg}"
+PLAY_CFG="${PLAY_CFG:-$CONFIG_DIR/play.cfg}"
+RUN_CFG="${RUN_CFG:-$CONFIG_DIR/run.cfg}"
 
 [[ -f "$MODEL" ]]    || { echo "no model at $MODEL"; exit 1; }
 [[ -f "$PLAY_CFG" ]] || { echo "no config at $PLAY_CFG"; exit 1; }

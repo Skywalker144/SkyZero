@@ -4,8 +4,8 @@
 # CUDA 13 + CMake 3.28 quirks on this box:
 #   * nvcc isn't on PATH (it's at /usr/local/cuda/bin/nvcc)
 #   * CUDA architecture auto-detection fails
-# So we pass both explicitly. LIBTORCH and NVCC live in scripts/paths.cfg
-# (with paths.cfg.local overrides) — fill them in once per server.
+# So we pass both explicitly. LIBTORCH and NVCC live in scripts/env_paths.cfg
+# (with env_paths.cfg.local overrides) — fill them in once per server.
 #
 # Usage:
 #   bash scripts/build.sh                     # configure (if needed) + build all
@@ -23,20 +23,21 @@ ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 SRC_DIR="$ROOT/cpp"
 BUILD_DIR="$SRC_DIR/build"
 
-# Pull LIBTORCH / NVCC (and any .local overrides) from paths.cfg. Env vars set
-# before invocation still win — paths.cfg uses ${VAR:-default} for each.
+# Pull LIBTORCH / NVCC (and any .local overrides) from env_paths.cfg. Env vars
+# set before invocation still win — env_paths.cfg uses ${VAR:-default} for each.
+# Build is independent of experiment config (no CONFIG_DIR needed here).
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/paths.cfg"
+source "$SCRIPT_DIR/env_paths.cfg"
 
 if [[ ! -d "$LIBTORCH" ]]; then
     echo "[build.sh] ERROR: LIBTORCH=$LIBTORCH does not exist." >&2
-    echo "[build.sh] Set it in scripts/paths.cfg.local, e.g.:" >&2
+    echo "[build.sh] Set it in scripts/env_paths.cfg.local, e.g.:" >&2
     echo "[build.sh]   LIBTORCH=\"\$(python -c 'import torch, os; print(os.path.dirname(torch.__file__))')\"" >&2
     exit 1
 fi
 if [[ ! -x "$NVCC" ]]; then
     echo "[build.sh] ERROR: NVCC=$NVCC not found or not executable." >&2
-    echo "[build.sh] Install CUDA toolkit and set NVCC in scripts/paths.cfg.local." >&2
+    echo "[build.sh] Install CUDA toolkit and set NVCC in scripts/env_paths.cfg.local." >&2
     exit 1
 fi
 

@@ -17,15 +17,17 @@ SCRIPTS_DIR="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPTS_DIR/.." &> /dev/null && pwd)"
 cd "$ROOT"
 
+CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
+[[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
+
 set -a
 # shellcheck disable=SC1091
-source "$SCRIPTS_DIR/run.cfg"
-if [[ -f "$SCRIPTS_DIR/run.cfg.local" ]]; then
-    source "$SCRIPTS_DIR/run.cfg.local"
-fi
+source "$CONFIG_DIR/run.cfg"
+[[ -f "$CONFIG_DIR/run.cfg.local" ]] && source "$CONFIG_DIR/run.cfg.local"
+source "$CONFIG_DIR/paths.cfg"
+source "$SCRIPTS_DIR/env_paths.cfg"
 set +a
 
-source "$SCRIPTS_DIR/paths.cfg"
 export DATA_DIR
 mkdir -p "$DATA_DIR"/{models,selfplay,logs}
 
@@ -96,7 +98,7 @@ while true; do
     "$SELFPLAY_BIN" --daemon \
         --model "$DATA_DIR/models/latest.pt" \
         --output-dir "$DATA_DIR/selfplay" \
-        --config "$SCRIPTS_DIR/run.cfg" \
+        --config "$CONFIG_DIR/run.cfg" \
         --log-dir "$DATA_DIR/logs" \
         --model-watch-poll-ms "$POLL_MS" \
         --sims-warmup-cmd "$SIMS_WARMUP_CMD" \

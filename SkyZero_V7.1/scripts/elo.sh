@@ -29,11 +29,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
-source "$SCRIPT_DIR/paths.cfg"
+
+CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
+[[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
+[[ -d "$CONFIG_DIR" ]] || { echo "[elo.sh] no config dir at $CONFIG_DIR" >&2; exit 1; }
+
+source "$CONFIG_DIR/paths.cfg"
+source "$SCRIPT_DIR/env_paths.cfg"
 OUT_FILE="${OUT_FILE:-$DATA_DIR/elo/games.jsonl}"
 PLOT_FILE="${PLOT_FILE:-$DATA_DIR/elo/elo.png}"
 ELO_BIN="${ELO_BIN:-$ROOT/cpp/build/gomoku_elo}"
-ELO_CFG="${ELO_CFG:-$SCRIPT_DIR/elo.cfg}"
+ELO_CFG="${ELO_CFG:-$CONFIG_DIR/elo.cfg}"
 
 [[ -x "$ELO_BIN" ]] || { echo "build first: cmake --build $ROOT/cpp/build --target gomoku_elo"; exit 1; }
 [[ -f "$ELO_CFG" ]] || { echo "no config at $ELO_CFG"; exit 1; }

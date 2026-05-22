@@ -12,7 +12,9 @@
 #   6. mcts_probe + view_loss + log a row to data/logs/schedule.tsv.
 #
 # Usage: bash scripts/run.sh [max_iters]
-#   If max_iters is omitted the loop runs until Ctrl+C.
+#   max_iters (CLI arg): stop after this many iters.
+#   MAX_TIME_SECONDS (run.cfg): stop after this many seconds of loop time.
+#   If neither is set, runs until Ctrl+C.
 set -euo pipefail
 
 DAEMON_PID=""
@@ -22,17 +24,25 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 cd "$ROOT"
 
-# Load config: export every assigned variable
+# Pick experiment config. Default = configs/baseline; override with:
+#   CONFIG_DIR=configs/nsim_64 bash scripts/run.sh
+CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
+[[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
+[[ -d "$CONFIG_DIR" ]] || { echo "[run.sh] no config dir at $CONFIG_DIR" >&2; exit 1; }
+export CONFIG_DIR  # children (internal/*.sh) read this
+
+# Load experiment config: run.cfg + paths.cfg (set -a exports to subprocesses).
 set -a
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/run.cfg"
-# Server-local overrides (not in git — survives pull)
-if [[ -f "$SCRIPT_DIR/run.cfg.local" ]]; then
-    source "$SCRIPT_DIR/run.cfg.local"
-fi
+source "$CONFIG_DIR/run.cfg"
+[[ -f "$CONFIG_DIR/run.cfg.local" ]] && source "$CONFIG_DIR/run.cfg.local"
+source "$CONFIG_DIR/paths.cfg"
 set +a
 
-source "$SCRIPT_DIR/paths.cfg"
+# Load machine env (LIBTORCH/NVCC/PY). env_paths.cfg has its own .local hook.
+set -a
+source "$SCRIPT_DIR/env_paths.cfg"
+set +a
 export DATA_DIR
 
 if [[ -z "${NETWORKS:-}" || -z "${SELFPLAY_SCHEDULE:-}" ]]; then
@@ -121,12 +131,17 @@ fi
 
 max_iters="${1:-}"
 OVERLAP_SHUFFLE="${OVERLAP_SHUFFLE:-0}"
+MAX_TIME_SECONDS="${MAX_TIME_SECONDS:-0}"
 
 # Initialize schedule log header once.
 SCHEDULE_LOG="$DATA_DIR/logs/schedule.tsv"
 if [[ ! -f "$SCHEDULE_LOG" ]]; then
     printf "iter\tcum_samples\tactive_network\n" > "$SCHEDULE_LOG"
 fi
+
+# Wall-clock budget: capture start right before entering the loop so cmake
+# rebuild and model bootstrap above are excluded.
+LOOP_START_SECONDS=$SECONDS
 
 while true; do
     echo ""
@@ -202,7 +217,7 @@ while true; do
             # on the currently-active network (read via the canonical mirror).
             CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}" "$ROOT/cpp/build/mcts_probe" \
                 --model "$DATA_DIR/models/latest.pt" \
-                --config "$SCRIPT_DIR/run.cfg" \
+                --config "$CONFIG_DIR/run.cfg" \
                 --iter "$iter" \
                 --log "$DATA_DIR/logs/probe.tsv" \
                 || echo "[run.sh] mcts_probe failed (non-fatal)"
@@ -216,6 +231,13 @@ while true; do
     if [[ -n "$max_iters" && "$iter" -ge "$max_iters" ]]; then
         echo "[run.sh] reached max_iters=$max_iters; stopping."
         break
+    fi
+    if [[ "$MAX_TIME_SECONDS" -gt 0 ]]; then
+        elapsed=$((SECONDS - LOOP_START_SECONDS))
+        if [[ "$elapsed" -ge "$MAX_TIME_SECONDS" ]]; then
+            echo "[run.sh] reached MAX_TIME_SECONDS=$MAX_TIME_SECONDS (elapsed=${elapsed}s); stopping."
+            break
+        fi
     fi
 done
 

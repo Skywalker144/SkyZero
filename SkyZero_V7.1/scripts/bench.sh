@@ -17,11 +17,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
-source "$SCRIPT_DIR/paths.cfg"
+
+CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
+[[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
+[[ -d "$CONFIG_DIR" ]] || { echo "[bench.sh] no config dir at $CONFIG_DIR" >&2; exit 1; }
+
+source "$CONFIG_DIR/paths.cfg"
+source "$SCRIPT_DIR/env_paths.cfg"
 
 MODEL="${MODEL:-$DATA_DIR/models/latest.pt}"
 BENCH_BIN="${BENCH_BIN:-$ROOT/cpp/build/mcts_bench}"
-BENCH_CFG="${BENCH_CFG:-$SCRIPT_DIR/run.cfg}"
+BENCH_CFG="${BENCH_CFG:-$CONFIG_DIR/run.cfg}"
 SIMS="${SIMS:-400}"
 SEARCHES="${SEARCHES:-16}"
 WARMUP="${WARMUP:-2}"

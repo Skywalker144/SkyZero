@@ -8,8 +8,12 @@ ROOT="$(cd -- "$SCRIPTS_DIR/.." &> /dev/null && pwd)"
 iter="${1:?iter required}"
 games="${2:?games required}"
 
+CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
+[[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
+
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
-source "$SCRIPTS_DIR/paths.cfg"
+source "$SCRIPTS_DIR/env_paths.cfg"
+source "$CONFIG_DIR/paths.cfg"
 PY="${PY:-python}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
@@ -49,5 +53,5 @@ echo "[selfplay.sh] iter=$iter games=$games num_simulations=$NSIM main_gpu=$MAIN
     --iter "$iter" \
     --max-games "$games" \
     --num-simulations "$NSIM" \
-    --config "$SCRIPTS_DIR/run.cfg" \
+    --config "$CONFIG_DIR/run.cfg" \
     --log-dir "$DATA_DIR/logs"

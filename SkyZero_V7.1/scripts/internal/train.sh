@@ -7,8 +7,13 @@ ROOT="$(cd -- "$SCRIPTS_DIR/.." &> /dev/null && pwd)"
 
 iter="${1:?iter required}"
 network="${2:?network required (e.g. b5c128)}"
+
+CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
+[[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
+
+source "$SCRIPTS_DIR/env_paths.cfg"
+source "$CONFIG_DIR/paths.cfg"
 PY=${PY:-python}
-source "$SCRIPTS_DIR/paths.cfg"
 
 # Train runs on MAIN_GPU. The daemon owns the other GPUs (see
 # selfplay_daemon.sh) — without this pin, train.py defaults to cuda:0
