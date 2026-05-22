@@ -9,18 +9,21 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# --- MAX_BOARD_SIZE from scripts/run.cfg ---------------------------------
-# Auto-pull MAX_BOARD_SIZE=<n> from run.cfg and pass as -DSKYZERO_MAX_BOARD_SIZE=<n>
-# to all targets (consumed by cpp/envs/gomoku.h). Pattern follows KataGomo's
-# COMPILE_MAX_BOARD_LEN, but the value comes from the project's single config
-# file instead of a separate CMake option, so editing run.cfg is enough — no
-# need to touch gomoku.h or pass -D manually.
+# --- MAX_BOARD_SIZE from ${SKYZERO_CONFIG_DIR}/run.cfg -------------------
+# Auto-pull MAX_BOARD_SIZE=<n> from the experiment's run.cfg and pass as
+# -DSKYZERO_MAX_BOARD_SIZE=<n> to all targets (consumed by cpp/envs/gomoku.h).
+# SKYZERO_CONFIG_DIR matches scripts/run.sh's CONFIG_DIR (default
+# configs/baseline); scripts/build.sh forwards whatever CONFIG_DIR is set at
+# invocation, keeping compile-time and runtime MAX_BOARD_SIZE locked to the
+# same file.
 #
 # CMAKE_CONFIGURE_DEPENDS makes cmake re-run when run.cfg changes; if the value
 # changed, gomoku.h's effective MAX_BOARD_SIZE changes, and ninja/make rebuilds
 # every .cpp that includes it.
-set(_run_cfg       "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/run.cfg")
-set(_run_cfg_local "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/run.cfg.local")
+set(SKYZERO_CONFIG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../configs/baseline"
+    CACHE PATH "Experiment config directory containing run.cfg")
+set(_run_cfg       "${SKYZERO_CONFIG_DIR}/run.cfg")
+set(_run_cfg_local "${SKYZERO_CONFIG_DIR}/run.cfg.local")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_run_cfg}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_run_cfg_local}")
 # Read run.cfg first, then let run.cfg.local override (last match wins) —
@@ -38,9 +41,9 @@ foreach(_cfg IN ITEMS "${_run_cfg}" "${_run_cfg_local}")
 endforeach()
 if(NOT SKYZERO_MAX_BOARD_SIZE)
     set(SKYZERO_MAX_BOARD_SIZE 15)
-    message(STATUS "SKYZERO_MAX_BOARD_SIZE = ${SKYZERO_MAX_BOARD_SIZE} (default; run.cfg has no MAX_BOARD_SIZE=)")
+    message(STATUS "SKYZERO_MAX_BOARD_SIZE = ${SKYZERO_MAX_BOARD_SIZE} (default; ${_run_cfg} has no MAX_BOARD_SIZE=)")
 else()
-    message(STATUS "SKYZERO_MAX_BOARD_SIZE = ${SKYZERO_MAX_BOARD_SIZE} (from scripts/run.cfg)")
+    message(STATUS "SKYZERO_MAX_BOARD_SIZE = ${SKYZERO_MAX_BOARD_SIZE} (from ${_run_cfg})")
 endif()
 add_compile_definitions(SKYZERO_MAX_BOARD_SIZE=${SKYZERO_MAX_BOARD_SIZE})
 

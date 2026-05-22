@@ -25,9 +25,15 @@ BUILD_DIR="$SRC_DIR/build"
 
 # Pull LIBTORCH / NVCC (and any .local overrides) from env_paths.cfg. Env vars
 # set before invocation still win — env_paths.cfg uses ${VAR:-default} for each.
-# Build is independent of experiment config (no CONFIG_DIR needed here).
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/env_paths.cfg"
+
+# CONFIG_DIR: experiment config dir, mirrors scripts/run.sh's default so
+# compile-time MAX_BOARD_SIZE (baked into the binary via SKYZERO_MAX_BOARD_SIZE)
+# matches whatever run.sh will source at runtime. Override per-invocation:
+#   CONFIG_DIR=configs/nsim_64 bash scripts/build.sh
+CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
+[[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
 
 if [[ ! -d "$LIBTORCH" ]]; then
     echo "[build.sh] ERROR: LIBTORCH=$LIBTORCH does not exist." >&2
@@ -53,11 +59,12 @@ if [[ -z "${CUDA_ARCH:-}" ]]; then
 fi
 
 if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
-    echo "[build.sh] configure: BUILD_DIR=$BUILD_DIR LIBTORCH=$LIBTORCH NVCC=$NVCC CUDA_ARCH=$CUDA_ARCH"
+    echo "[build.sh] configure: BUILD_DIR=$BUILD_DIR LIBTORCH=$LIBTORCH NVCC=$NVCC CUDA_ARCH=$CUDA_ARCH CONFIG_DIR=$CONFIG_DIR"
     cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
         -DCMAKE_PREFIX_PATH="$LIBTORCH" \
         -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
-        -DCMAKE_CUDA_COMPILER="$NVCC"
+        -DCMAKE_CUDA_COMPILER="$NVCC" \
+        -DSKYZERO_CONFIG_DIR="$CONFIG_DIR"
 fi
 
 echo "[build.sh] build"
