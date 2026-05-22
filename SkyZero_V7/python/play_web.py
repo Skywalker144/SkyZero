@@ -2204,12 +2204,12 @@ def main():
     max_board_size = read_cfg_int(args.run_config, "MAX_BOARD_SIZE", 0)
     if max_board_size > 0:
         board_sizes = [s for s in board_sizes if s <= max_board_size]
-    default_board_size = read_cfg_int(args.config, "BOARD_SIZE", BOARD_SIZE)
+    default_board_size = read_cfg_int(args.run_config, "MAIN_BOARD_SIZE", BOARD_SIZE)
     if default_board_size not in board_sizes:
         board_sizes = [default_board_size] + board_sizes
 
     rules = parse_rules(args.run_config) or list(SUPPORTED_RULES)
-    default_rule = read_cfg_str(args.config, "RULE", rules[0]).lower()
+    default_rule = read_cfg_str(args.run_config, "MAIN_RULE", rules[0]).lower()
     if default_rule not in rules:
         rules = [default_rule] + rules
 
