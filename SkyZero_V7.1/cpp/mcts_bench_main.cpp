@@ -18,8 +18,8 @@
 //   variant    knob    value   mean_ms total_sims  sims_per_sec
 //
 // Usage:
-//   mcts_bench --model models/latest.pt --config scripts/run.cfg \
-//              [--sims 400] [--searches 16] [--warmup 2] \
+//   mcts_bench --model models/latest.pt --config scripts/run.cfg
+//              [--sims 400] [--searches 16] [--warmup 2]
 //              [--root-batch 1,4,8,16,32] [--tree-threads 1,2,4,8,16,32]
 
 #include <array>
@@ -325,7 +325,7 @@ int main(int argc, char** argv) {
             ParallelMCTS<Gomoku> mcts(game, cfg, batch_size, infer_fn, batch_infer_fn, rng());
             bench_one("root_parallel", "leaf_batch", batch_size, [&]() {
                 for (int i = 0; i < cli.searches; ++i) {
-                    std::unique_ptr<MCTSNode> root(new MCTSNode{initial.board, initial.to_play});
+                    std::unique_ptr<MCTSNode> root(new MCTSNode(initial.board, initial.to_play));
                     (void)mcts.search(initial.board, initial.to_play, cli.sims, root);
                 }
             });
@@ -337,7 +337,7 @@ int main(int argc, char** argv) {
             TreeParallelMCTS<Gomoku> mcts(game, cfg, n_threads, infer_fn, rng());
             bench_one("tree_parallel", "threads", n_threads, [&]() {
                 for (int i = 0; i < cli.searches; ++i) {
-                    std::unique_ptr<MCTSNode> root(new MCTSNode{initial.board, initial.to_play});
+                    std::unique_ptr<MCTSNode> root(new MCTSNode(initial.board, initial.to_play));
                     (void)mcts.search(initial.board, initial.to_play, cli.sims, root);
                 }
             });

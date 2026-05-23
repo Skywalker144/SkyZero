@@ -256,8 +256,6 @@ int main(int argc, char** argv) {
             cfg.board_size = cli.board_size_override;
         }
 
-        // V5: 5-plane padded encoding + 12-dim global features
-        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
         const std::string rule_str = ([&]() -> std::string {
             if (!cli.rule_override.empty()) return cli.rule_override;
             auto it = cfg_map.find("RULE");
@@ -487,7 +485,7 @@ int main(int argc, char** argv) {
             to_play = init.to_play;
             last_action = -1;
             last_player = 0;
-            root.reset(new MCTSNode{state, to_play});
+            root.reset(new MCTSNode(state, to_play));
             history.clear();
         };
 
@@ -555,7 +553,7 @@ int main(int argc, char** argv) {
             to_play = restore.to_play;
             last_action = restore.last_action;
             last_player = restore.last_player;
-            root.reset(new MCTSNode{state, to_play});
+            root.reset(new MCTSNode(state, to_play));
             return true;
         };
 
@@ -676,7 +674,7 @@ int main(int argc, char** argv) {
                     last_action = action;
                     last_player = to_play;
                     to_play = -to_play;
-                    root.reset(new MCTSNode{state, to_play});
+                    root.reset(new MCTSNode(state, to_play));
                     break;
                 }
             } else {
@@ -758,7 +756,7 @@ int main(int argc, char** argv) {
                 last_action = action;
                 last_player = to_play;
                 to_play = -to_play;
-                root.reset(new MCTSNode{state, to_play});
+                root.reset(new MCTSNode(state, to_play));
             }
 
             print_board(state, game.board_size, last_action);

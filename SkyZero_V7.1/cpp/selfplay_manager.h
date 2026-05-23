@@ -476,7 +476,7 @@ private:
         std::vector<float> historical_v_mix;
         int last_action = -1;
         int last_player = 0;
-        std::unique_ptr<MCTSNode> root(new MCTSNode{state, to_play});
+        std::unique_ptr<MCTSNode> root(new MCTSNode(state, to_play));
 
         while (!game_.is_terminal_canvas(state, last_action, last_player)) {
             if (stop_workers_.load()) {
@@ -587,7 +587,7 @@ private:
                 // Reuse disabled, or chosen action wasn't expanded (can happen
                 // when the improved-policy fallback at the action selection
                 // above picks an unvisited action).
-                root.reset(new MCTSNode{state, to_play});
+                root.reset(new MCTSNode(state, to_play));
             }
         }
 

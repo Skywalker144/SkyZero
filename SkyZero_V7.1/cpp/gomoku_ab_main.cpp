@@ -473,7 +473,7 @@ int main(int argc, char** argv) {
                         auto& mcts = a_to_move ? mcts_a : mcts_b;
                         auto& root = a_to_move ? root_a : root_b;
 
-                        root.reset(new MCTSNode{state, to_play});
+                        root.reset(new MCTSNode(state, to_play));
                         const int sims = a_to_move ? cfg_a.num_simulations : cfg_b.num_simulations;
                         const auto res = mcts.search(state, to_play, sims, root);
                         // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed

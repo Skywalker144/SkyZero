@@ -155,8 +155,6 @@ int main(int argc, char** argv) {
         cfg.num_simulations = cfg_get<int>(cfg_map, "PROBE_NUM_SIMULATIONS", cfg.num_simulations);
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
 
-        // V5: 5-plane padded encoding + 12-dim global features
-        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
         const std::string rule_str = require_str("MAIN_RULE");
         const RuleType rule = rule_from_string(rule_str);
         Gomoku game(cfg.board_size, rule, /*forbidden_plane=*/rule != RuleType::FREESTYLE);
@@ -254,7 +252,7 @@ int main(int argc, char** argv) {
         ParallelMCTS<Gomoku> mcts(game, cfg, /*leaf_batch_size=*/1, infer_fn, batch_infer_fn, rng());
 
         auto init = game.get_initial_state(rng);
-        std::unique_ptr<MCTSNode> root(new MCTSNode{init.board, init.to_play});
+        std::unique_ptr<MCTSNode> root(new MCTSNode(init.board, init.to_play));
         const auto sr = mcts.search(init.board, init.to_play, cfg.num_simulations, root);
 
         std::cout << "[mcts_probe] simulations=" << cfg.num_simulations

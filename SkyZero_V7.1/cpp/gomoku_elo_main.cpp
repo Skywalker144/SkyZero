@@ -384,8 +384,6 @@ int main(int argc, char** argv) {
 
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
 
-        // V5: 5-plane padded encoding + 12-dim global features
-        const int num_planes = cfg_get<int>(cfg_map, "NUM_PLANES", 5);
         const std::string rule_str = ([&]() -> std::string {
             auto it = cfg_map.find("RULE");
             return (it != cfg_map.end()) ? it->second : "renju";
@@ -488,7 +486,7 @@ int main(int argc, char** argv) {
                         auto& mcts = a_to_move ? mcts_a : mcts_b;
                         auto& root = a_to_move ? root_a : root_b;
 
-                        root.reset(new MCTSNode{state, to_play});
+                        root.reset(new MCTSNode(state, to_play));
                         const auto res = mcts.search(state, to_play, cfg.num_simulations, root);
                         // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
                         // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate

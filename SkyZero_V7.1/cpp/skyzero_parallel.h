@@ -64,7 +64,7 @@ public:
         std::unique_ptr<MCTSNode>& root
     ) {
         if (!root) {
-            root.reset(new MCTSNode{state, to_play});
+            root.reset(new MCTSNode(state, to_play));
         }
         std::vector<float> nn_policy;
         std::array<float, 3> nn_value_probs{0.0f, 0.0f, 0.0f};
@@ -237,13 +237,13 @@ private:
         for (int a = 0; a < static_cast<int>(ir.policy.size()); ++a) {
             const float p = ir.policy[a];
             if (p <= 0.0f) continue;
-            auto child = std::unique_ptr<MCTSNode>(new MCTSNode{
+            auto child = std::unique_ptr<MCTSNode>(new MCTSNode(
                 game_.get_next_state_canvas(node.state, a, node.to_play),
                 -node.to_play,
                 p,
                 &node,
                 a
-            });
+            ));
             node.children.push_back(std::move(child));
         }
     }

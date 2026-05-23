@@ -143,6 +143,11 @@ struct MCTSNode {
     float q_sum_sq = 0.0f;   // Σ u_i² where u_i = value[2]-value[0] per backup; feeds variance-scaled cpuct in compute_select_params.
     int vloss = 0;
 
+    MCTSNode() = default;
+    MCTSNode(std::vector<int8_t> s, int p,
+             float pr = 0.0f, MCTSNode* par = nullptr, int act = -1)
+        : state(std::move(s)), to_play(p), prior(pr), parent(par), action_taken(act) {}
+
     bool is_expanded() const { return !children.empty(); }
 
     void update(const std::array<float, 3>& value) {
