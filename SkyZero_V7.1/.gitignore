@@ -145,3 +145,8 @@ docs/
 /data*/
 GetCommits.txt
 gomocup
+
+# -------------------- Configs --------------------
+# Ignore all configs except baseline
+configs/*
+!configs/baseline/
