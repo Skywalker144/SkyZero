@@ -147,6 +147,7 @@ GetCommits.txt
 gomocup
 
 # -------------------- Configs --------------------
-# Ignore all configs except baseline
+# Ignore all configs except baseline and minimal_test
 configs/*
 !configs/baseline/
+!configs/minimal_test/

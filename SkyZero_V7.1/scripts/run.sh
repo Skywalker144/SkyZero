@@ -82,6 +82,18 @@ echo "[run.sh] detected GPU_NUM=$GPU_NUM"
 # Keep C++ binaries in sync with run.cfg / sources. cmake parses MAX_BOARD_SIZE
 # from run.cfg via CONFIGURE_DEPENDS and bakes it in as -DSKYZERO_MAX_BOARD_SIZE.
 # This is a no-op (~<1s) when nothing has changed.
+#
+# SKYZERO_CONFIG_DIR is a cmake cache var: only refreshed when we pass -D, not
+# when CONFIG_DIR changes between invocations. Detect a switched experiment
+# and update the cache so MAX_BOARD_SIZE is re-read from the new run.cfg.
+_cache="$ROOT/cpp/build/CMakeCache.txt"
+if [[ -f "$_cache" ]]; then
+    _cached_cfg=$(sed -n 's|^SKYZERO_CONFIG_DIR:PATH=||p' "$_cache")
+    if [[ -n "$_cached_cfg" && "$_cached_cfg" != "$CONFIG_DIR" ]]; then
+        echo "[run.sh] CONFIG_DIR changed ($_cached_cfg -> $CONFIG_DIR); reconfiguring cmake"
+        cmake -S "$ROOT/cpp" -B "$ROOT/cpp/build" -DSKYZERO_CONFIG_DIR="$CONFIG_DIR"
+    fi
+fi
 cmake --build "$ROOT/cpp/build" -j
 
 # Resume iter — read EVERY network's state.json. Training within an iter is

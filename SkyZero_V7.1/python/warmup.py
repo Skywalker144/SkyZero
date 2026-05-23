@@ -8,8 +8,8 @@ that has been crossed. Mirrors python/schedule.py's network scheduler.
   NUM_SIMULATIONS_STAGES="32, 64, 128, 400, 1000"
   NUM_SIMULATIONS_SCHEDULE="0, 5e6, 1.5e7, 3e7, 5e7"
 
-Disabled when stages is empty or lengths mismatch — falls back to the
-NUM_SIMULATIONS env var.
+Both env vars are required and must be the same length; otherwise this
+script exits 1 (no fallback).
 
 CLI for shell scripts (internal/selfplay.sh main loop; internal/selfplay_daemon.sh
 as --sims-warmup-cmd for daemon's reload-time re-poll):
@@ -36,9 +36,7 @@ def parse_stage_list(s: str | None, cast: Callable = float) -> list:
 
 
 def staged_value(samples_seen: int, thresholds: list, stages: list):
-    """Active stage value, or None if warmup disabled (empty / length mismatch)."""
-    if not stages or len(thresholds) != len(stages):
-        return None
+    """Active stage value. Caller must validate stages/thresholds beforehand."""
     pairs = sorted(zip(thresholds, stages))
     chosen = pairs[0][1]
     for thr, val in pairs:
@@ -80,19 +78,33 @@ def main() -> int:
     data_dir = pathlib.Path(args.data_dir)
     selfplay_tsv = data_dir / "logs" / "selfplay.tsv"
 
-    fallback = int(float(os.environ.get("NUM_SIMULATIONS", "400")))
     stages = parse_stage_list(os.environ.get("NUM_SIMULATIONS_STAGES"), cast=int)
     thresholds = parse_stage_list(os.environ.get("NUM_SIMULATIONS_SCHEDULE"), cast=float)
 
-    cum_rows = _read_cum_rows(selfplay_tsv)
-    val = staged_value(cum_rows, thresholds, stages)
-    out = val if val is not None else fallback
+    if not stages or not thresholds:
+        print(
+            "[compute_num_simulations] ERROR: NUM_SIMULATIONS_STAGES and "
+            "NUM_SIMULATIONS_SCHEDULE must both be set "
+            f"(stages={stages}, schedule={thresholds})",
+            file=sys.stderr,
+        )
+        return 1
+    if len(stages) != len(thresholds):
+        print(
+            "[compute_num_simulations] ERROR: NUM_SIMULATIONS_STAGES and "
+            "NUM_SIMULATIONS_SCHEDULE length mismatch "
+            f"({len(stages)} vs {len(thresholds)})",
+            file=sys.stderr,
+        )
+        return 1
 
-    tag = "warmup" if val is not None else "steady-cfg"
+    cum_rows = _read_cum_rows(selfplay_tsv)
+    out = staged_value(cum_rows, thresholds, stages)
+
     print(
         f"[compute_num_simulations] cum_rows={cum_rows} "
         f"stages={stages} schedule={thresholds} "
-        f"-> NUM_SIMULATIONS={out}({tag})",
+        f"-> NUM_SIMULATIONS={out}",
         file=sys.stderr,
     )
     print(out)

@@ -1,0 +1,2 @@
+producer	iter_or_version	games	rows	seconds	min_len	max_len	avg_len	bwr	wwr	dwr	main_games	main_min_len	main_max_len	main_avg_len	main_bwr	main_wwr	main_dwr	start_unix	end_unix
+main	0	155	4960	5.59	12	75	43.813	0.5355	0.4645	0.0000	119	15	75	44.454	0.5378	0.4622	0.0000	1779519441	1779519446
