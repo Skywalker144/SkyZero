@@ -218,8 +218,19 @@ while true; do
 
     # Cumulative selfplay totals so far (through previous iter).
     # selfplay.tsv schema: producer iter_or_version games rows ...
-    awk 'NR>1 {g+=$3; r+=$4} END {printf "[run.sh] cumulative so far: games=%d samples=%d (main+daemon)\n", g+0, r+0}' \
-        "$DATA_DIR/logs/selfplay.tsv" 2>/dev/null \
+    awk '
+        function fmt_sci(x,   s, n, m, e) {
+            if (x+0 == 0) return "0"
+            s = sprintf("%.1e", x)
+            n = index(s, "e")
+            m = substr(s, 1, n-1)
+            e = substr(s, n+1) + 0
+            if (substr(m, length(m)-1) == ".0") m = substr(m, 1, length(m)-2)
+            return m "e" e
+        }
+        NR>1 {g+=$3; r+=$4}
+        END {printf "[run.sh] cumulative so far: games=%s samples=%s (main+daemon)\n", fmt_sci(g+0), fmt_sci(r+0)}
+    ' "$DATA_DIR/logs/selfplay.tsv" 2>/dev/null \
         || echo "[run.sh] cumulative so far: games=0 samples=0"
 
     # Decide active network for this iter and refresh the mirror.

@@ -47,6 +47,16 @@ def staged_value(samples_seen: int, thresholds: list, stages: list):
     return chosen
 
 
+def _fmt_sci(x: float) -> str:
+    """Scientific notation, one decimal, with trailing '.0' stripped (e.g. 0, 3e6, 1.5e5)."""
+    if x == 0:
+        return "0"
+    mantissa, exp = f"{x:.1e}".split("e")
+    if mantissa.endswith(".0"):
+        mantissa = mantissa[:-2]
+    return f"{mantissa}e{int(exp)}"
+
+
 def _read_cum_rows(selfplay_tsv: pathlib.Path) -> int:
     """Sum the rows column (col 3) across all producers in selfplay.tsv."""
     if not selfplay_tsv.exists():
@@ -101,9 +111,10 @@ def main() -> int:
     cum_rows = _read_cum_rows(selfplay_tsv)
     out = staged_value(cum_rows, thresholds, stages)
 
+    schedule_str = "[" + ", ".join(_fmt_sci(t) for t in thresholds) + "]"
     print(
-        f"[compute_num_simulations] cum_rows={cum_rows} "
-        f"stages={stages} schedule={thresholds} "
+        f"[compute_num_simulations] cum_rows={_fmt_sci(cum_rows)} "
+        f"stages={stages} schedule={schedule_str} "
         f"-> NUM_SIMULATIONS={out}",
         file=sys.stderr,
     )
