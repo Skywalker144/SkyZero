@@ -84,14 +84,26 @@ echo "[run.sh] detected GPU_NUM=$GPU_NUM"
 # This is a no-op (~<1s) when nothing has changed.
 cmake --build "$ROOT/cpp/build" -j
 
-# Resume iter from the first network's state.json (all networks advance
-# in lockstep so any one is fine).
-iter=0
-if [[ -f "$DATA_DIR/nets/$FIRST_NET/state.json" ]]; then
-    iter=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1])).get('iter', -1))" \
-        "$DATA_DIR/nets/$FIRST_NET/state.json")
-    iter=$((iter + 1))
-fi
+# Resume iter — read EVERY network's state.json. Training within an iter is
+# serial in NET_ARR order, so a mid-iter Ctrl+C can leave nets earlier in
+# NET_ARR at iter=N while later ones are still at N-1. Reading only FIRST_NET
+# would set resume = N+1 and permanently skip iter N for the lagging nets
+# (their train.tsv gets a gap and the bucket consumption for that iter is
+# wasted). Take max(per-net iter); the catch-up block below trains any
+# lagging nets at iter=max_iter before the main loop resumes.
+NET_ITERS=()
+max_iter=-1
+for net in "${NET_ARR[@]}"; do
+    v=-1
+    if [[ -f "$DATA_DIR/nets/$net/state.json" ]]; then
+        v=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1])).get('iter', -1))" \
+            "$DATA_DIR/nets/$net/state.json")
+    fi
+    NET_ITERS+=("$v")
+    [[ "$v" -gt "$max_iter" ]] && max_iter="$v"
+done
+iter=$((max_iter + 1))
+[[ "$iter" -lt 0 ]] && iter=0
 
 # Bootstrap any missing per-network random-init artifacts.
 for net in "${NET_ARR[@]}"; do
@@ -119,6 +131,49 @@ mirror_active_to_models() {
 INITIAL_ACTIVE=$( cd "$ROOT/python" && "$PY" schedule.py active --data-dir "$DATA_DIR" 2>/dev/null )
 INITIAL_ACTIVE="${INITIAL_ACTIVE:-$FIRST_NET}"
 mirror_active_to_models "$INITIAL_ACTIVE"
+
+# --- Catch-up for mid-iter Ctrl+C ---
+# Any net with iter < max_iter was interrupted before training that iter.
+# Train + export it at iter=max_iter on the still-intact shuffled/current/
+# data (the bucket consumption for that iter was already deducted in
+# bucket.json, so do NOT re-run bucket.py / selfplay / shuffle here).
+# Steps come from a lead net's train.tsv row at iter=max_iter (matches what
+# the interrupted iter actually trained), with a 1-epoch fallback.
+if [[ "$max_iter" -ge 0 ]]; then
+    LAGGING=()
+    LEAD_NET=""
+    for i in "${!NET_ARR[@]}"; do
+        if [[ "${NET_ITERS[$i]}" -lt "$max_iter" ]]; then
+            LAGGING+=("${NET_ARR[$i]}")
+        elif [[ -z "$LEAD_NET" ]]; then
+            LEAD_NET="${NET_ARR[$i]}"
+        fi
+    done
+    if [[ "${#LAGGING[@]}" -gt 0 ]]; then
+        if compgen -G "$DATA_DIR/shuffled/current/*" > /dev/null; then
+            CATCHUP_STEPS=""
+            if [[ -n "$LEAD_NET" && -f "$DATA_DIR/nets/$LEAD_NET/train.tsv" ]]; then
+                CATCHUP_STEPS=$(awk -v it="$max_iter" 'BEGIN{FS="\t"} NR>1 && $1==it {print $2; exit}' \
+                    "$DATA_DIR/nets/$LEAD_NET/train.tsv")
+            fi
+            if [[ -z "$CATCHUP_STEPS" || "$CATCHUP_STEPS" -le 0 ]]; then
+                CATCHUP_STEPS=$(( ${TRAIN_SAMPLES_PER_EPOCH:-100000} / ${BATCH_SIZE:-128} ))
+                echo "[run.sh] catch-up: lead steps unavailable, falling back to 1 epoch ($CATCHUP_STEPS steps)"
+            fi
+            echo "[run.sh] resume catch-up: lagging=(${LAGGING[*]}) at iter=$max_iter steps=$CATCHUP_STEPS (using existing shuffled/current/)"
+            for net in "${LAGGING[@]}"; do
+                echo "[run.sh] catch-up: training $net at iter=$max_iter"
+                TRAIN_STEPS_PER_EPOCH="$CATCHUP_STEPS" \
+                    bash "$SCRIPT_DIR/internal/train.sh" "$max_iter" "$net"
+                bash "$SCRIPT_DIR/internal/export.sh" "$max_iter" "$net"
+            done
+            # Re-mirror in case the active network was among the lagging.
+            mirror_active_to_models "$INITIAL_ACTIVE"
+        else
+            echo "[run.sh] WARNING: lagging networks (${LAGGING[*]}) behind max_iter=$max_iter but shuffled/current/ is empty; cannot catch up — those iters stay as gaps in train.tsv"
+        fi
+    fi
+fi
 
 # Multi-GPU: launch the selfplay daemon on GPUs 1..GPU_NUM-1 in the background.
 # Daemon hot-reloads $DATA_DIR/models/latest.pt — the mirror above keeps that
