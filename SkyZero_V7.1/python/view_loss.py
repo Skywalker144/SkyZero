@@ -13,6 +13,52 @@ import pathlib
 import sys
 
 
+def _load_schedule(data_dir: pathlib.Path):
+    """Return (iters, cum_samples) parallel lists from logs/schedule.tsv.
+
+    Returns None when the file is missing/empty or lacks required columns.
+    Used to translate between iter and cumulative selfplay samples on plot axes.
+    """
+    log = data_dir / "logs" / "schedule.tsv"
+    if not log.exists():
+        return None
+    header, rows = _read_tsv(log)
+    if not header or not rows:
+        return None
+    idx = {name: i for i, name in enumerate(header)}
+    if "iter" not in idx or "cum_samples" not in idx:
+        return None
+    pairs = []
+    for r in rows:
+        try:
+            it = float(r[idx["iter"]])
+            cs = float(r[idx["cum_samples"]])
+        except (ValueError, IndexError):
+            continue
+        pairs.append((it, cs))
+    if len(pairs) < 2:
+        return None
+    pairs.sort()
+    return [p[0] for p in pairs], [p[1] for p in pairs]
+
+
+def _add_iter_axis(ax, sched) -> None:
+    """Add a top secondary x-axis showing iter, given primary x = cum samples."""
+    if sched is None:
+        return
+    import numpy as np
+    iters_a = np.asarray(sched[0], dtype=float)
+    samples_a = np.asarray(sched[1], dtype=float)
+    secax = ax.secondary_xaxis(
+        "top",
+        functions=(lambda s: np.interp(s, samples_a, iters_a),
+                   lambda i: np.interp(i, iters_a, samples_a)),
+    )
+    import matplotlib.ticker as mticker
+    secax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True, prune="both"))
+    secax.set_xlabel("iter")
+
+
 def _read_tsv(path: pathlib.Path):
     lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
     if not lines:
@@ -73,7 +119,6 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
 
     producer = col("producer", cast=str)
     rows_arr = col("rows")
-    x = list(range(len(rows)))
 
     # Cumulative rows by producer over write index.
     cum_main, cum_daemon = [], []
@@ -86,6 +131,10 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
             d_acc += rv
         cum_main.append(m_acc)
         cum_daemon.append(d_acc)
+
+    # Primary x = cumulative selfplay samples after this write event.
+    x = [m + d for m, d in zip(cum_main, cum_daemon)]
+    sched = _load_schedule(data_dir)
 
     main_size = os.environ.get("MAIN_BOARD_SIZE", "?")
     main_rule = os.environ.get("MAIN_RULE", "?")
@@ -116,10 +165,12 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
     ax3.plot(x, dwr, "-", label="draw", color="C7", alpha=0.7)
     ax3.set_ylim(0.0, 1.0)
     ax3.set_ylabel("rate")
-    ax3.set_xlabel("tsv row index")
+    ax3.set_xlabel("cumulative selfplay samples")
     ax3.set_title(f"main pair ({main_size}×{main_rule}) win rates")
     ax3.legend(loc="best")
     ax3.grid(True, alpha=0.3)
+
+    _add_iter_axis(ax1, sched)
 
     fig.tight_layout()
     out = data_dir / "logs" / "selfplay.png"
@@ -151,10 +202,19 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
             out.append(float(v) if v else float("nan"))
         return out
 
-    x = col("iter")
+    iter_vals = col("iter")
     gumbel_dist = col("gumbel_dist")
     vmix_wl = [w - l for w, l in zip(col("vmix_W"), col("vmix_L"))]
     nn_wl = [w - l for w, l in zip(col("nn_W"), col("nn_L"))]
+
+    sched = _load_schedule(data_dir)
+    if sched is not None:
+        import numpy as np
+        x = list(np.interp(iter_vals, sched[0], sched[1]))
+        xlabel = "cumulative selfplay samples"
+    else:
+        x = iter_vals
+        xlabel = "iter"
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
 
@@ -173,9 +233,11 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
         pad = (hi - lo) * 0.1 if hi > lo else 0.05
         ax2.set_ylim(lo - pad, hi + pad)
     ax2.set_ylabel("root value (W-L)")
-    ax2.set_xlabel("iter")
+    ax2.set_xlabel(xlabel)
     ax2.grid(True, alpha=0.3)
     ax2.legend(loc="best")
+
+    _add_iter_axis(ax1, sched)
 
     fig.tight_layout()
     out = data_dir / "logs" / "probe.png"
