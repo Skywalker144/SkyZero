@@ -87,7 +87,7 @@ export NUM_WORKERS="$DWK"
 POLL_MS="${DAEMON_RELOAD_POLL_MS:-2000}"
 
 # Daemon consults this on startup and on every model reload to pick up the
-# current NUM_SIMULATIONS_STAGES warmup value. Mirrors selfplay.sh's
+# current NUM_SIMULATIONS_STAGES/SCHEDULE warmup value. Mirrors selfplay.sh's
 # resolution for the main loop. Empty string disables (cfg fallback wins).
 SIMS_WARMUP_CMD="cd $ROOT/python && $PY warmup.py num-simulations --data-dir $DATA_DIR"
 

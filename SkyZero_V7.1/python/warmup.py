@@ -1,10 +1,14 @@
 """Staged warmup for NUM_SIMULATIONS (sole remaining consumer).
 
-A stage list of N values is evenly spaced across NUM_SIM_WARMUP_SAMPLES of
-cumulative selfplay rows: the i-th value applies for progress in
-[i/N, (i+1)/N), the last value sticks once progress >= 1.0.
+NUM_SIMULATIONS_STAGES (values) is positionally matched with
+NUM_SIMULATIONS_SCHEDULE (cumulative-selfplay-row thresholds). At any
+cum_rows, the active stage is the one whose threshold is the largest
+that has been crossed. Mirrors python/schedule.py's network scheduler.
 
-Disabled when len(stages) < 2 or warmup_samples <= 0 — falls back to the
+  NUM_SIMULATIONS_STAGES="32, 64, 128, 400, 1000"
+  NUM_SIMULATIONS_SCHEDULE="0, 5e6, 1.5e7, 3e7, 5e7"
+
+Disabled when stages is empty or lengths mismatch — falls back to the
 NUM_SIMULATIONS env var.
 
 CLI for shell scripts (internal/selfplay.sh main loop; internal/selfplay_daemon.sh
@@ -31,18 +35,18 @@ def parse_stage_list(s: str | None, cast: Callable = float) -> list:
     return [cast(p.strip()) for p in s.split(",") if p.strip()]
 
 
-def staged_value(samples_seen: int, warmup_samples: int, stages: list):
-    """Returns the stage value, or None if warmup disabled."""
-    n = len(stages)
-    if n < 2 or warmup_samples <= 0:
+def staged_value(samples_seen: int, thresholds: list, stages: list):
+    """Active stage value, or None if warmup disabled (empty / length mismatch)."""
+    if not stages or len(thresholds) != len(stages):
         return None
-    progress = samples_seen / warmup_samples
-    if progress >= 1.0:
-        return stages[-1]
-    if progress < 0.0:
-        return stages[0]
-    idx = min(n - 1, int(progress * n))
-    return stages[idx]
+    pairs = sorted(zip(thresholds, stages))
+    chosen = pairs[0][1]
+    for thr, val in pairs:
+        if samples_seen >= thr:
+            chosen = val
+        else:
+            break
+    return chosen
 
 
 def _read_cum_rows(selfplay_tsv: pathlib.Path) -> int:
@@ -78,16 +82,16 @@ def main() -> int:
 
     fallback = int(float(os.environ.get("NUM_SIMULATIONS", "400")))
     stages = parse_stage_list(os.environ.get("NUM_SIMULATIONS_STAGES"), cast=int)
-    warmup_samples = int(float(os.environ.get("NUM_SIM_WARMUP_SAMPLES", "0")))
+    thresholds = parse_stage_list(os.environ.get("NUM_SIMULATIONS_SCHEDULE"), cast=float)
 
     cum_rows = _read_cum_rows(selfplay_tsv)
-    val = staged_value(cum_rows, warmup_samples, stages)
+    val = staged_value(cum_rows, thresholds, stages)
     out = val if val is not None else fallback
 
     tag = "warmup" if val is not None else "steady-cfg"
     print(
         f"[compute_num_simulations] cum_rows={cum_rows} "
-        f"stages={stages} warmup_samples={warmup_samples} "
+        f"stages={stages} schedule={thresholds} "
         f"-> NUM_SIMULATIONS={out}({tag})",
         file=sys.stderr,
     )
