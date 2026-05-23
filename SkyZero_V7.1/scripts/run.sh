@@ -241,7 +241,6 @@ while true; do
     # Log schedule decision (one row per iter, including no-train iters).
     CUM_SAMPLES=$(awk 'NR>1 {r+=$4} END {printf "%d", r+0}' "$DATA_DIR/logs/selfplay.tsv" 2>/dev/null || echo 0)
     printf "%d\t%d\t%s\n" "$iter" "$CUM_SAMPLES" "$ACTIVE_NETWORK" >> "$SCHEDULE_LOG"
-    echo "[run.sh] iter $iter active=$ACTIVE_NETWORK cum_samples=$CUM_SAMPLES"
 
     # (1) selfplay [+ overlapped shuffle] — GAMES_PER_ITER is fixed in run.cfg
     GAMES="${GAMES_PER_ITER:-2000}"
