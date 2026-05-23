@@ -17,6 +17,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
@@ -41,7 +43,15 @@ template <typename Game>
 class TreeParallelMCTS {
 public:
     using InferenceFn = std::function<std::pair<std::vector<float>, std::array<float, 3>>(const std::vector<int8_t>&)>;
+    using BatchInferenceFn = std::function<
+        std::vector<std::pair<std::vector<float>, std::array<float, 3>>>(
+            const std::vector<std::vector<int8_t>>&
+        )>;
 
+    // Legacy constructor: per-leaf inference via single-state callback. Used by
+    // gomoku_elo / gomoku_ab / mcts_bench. NN forward is whatever the callback
+    // does (typically batch=1 under a mutex), so throughput caps at one forward
+    // at a time.
     TreeParallelMCTS(
         Game& game,
         const SkyZeroConfig& cfg,
@@ -57,8 +67,33 @@ public:
         start_workers();
     }
 
+    // Batched constructor: workers submit encoded states to a queue, a single
+    // batcher thread accumulates up to `leaf_batch_size` requests (with a
+    // `batch_timeout_us` cap) and runs them through `batch_infer_fn` in one
+    // forward call. Lets a single GPU saturate.
+    TreeParallelMCTS(
+        Game& game,
+        const SkyZeroConfig& cfg,
+        int search_threads_per_tree,
+        int leaf_batch_size,
+        int batch_timeout_us,
+        BatchInferenceFn batch_infer_fn,
+        uint64_t seed
+    )
+        : game_(game),
+          cfg_(cfg),
+          num_threads_(std::max(1, search_threads_per_tree)),
+          batch_infer_fn_(std::move(batch_infer_fn)),
+          leaf_batch_size_(std::max(1, leaf_batch_size)),
+          batch_timeout_us_(std::max(0, batch_timeout_us)),
+          rng_(seed) {
+        start_batcher();
+        start_workers();
+    }
+
     ~TreeParallelMCTS() {
         stop_workers();
+        stop_batcher();
     }
 
     TreeParallelMCTS(const TreeParallelMCTS&) = delete;
@@ -234,13 +269,29 @@ private:
     }
 
     // ------------------------------------------------------------------
-    // Inference path (per leaf, no batching — the external inference
-    // server already batches across all concurrent threads).
+    // Inference path.
+    //   * Batched mode (batch_infer_fn_ set): worker submits the encoded
+    //     state to infer_queue_ and blocks on a per-request cv. A single
+    //     batcher thread accumulates up to leaf_batch_size_ requests with
+    //     batch_timeout_us_ slack, runs one batched forward, and notifies
+    //     all waiters. This is what saturates the GPU.
+    //   * Legacy mode (infer_fn_ set): worker calls infer_fn_ directly,
+    //     batch=1 forward serialized by whatever mutex the callback owns.
     // ------------------------------------------------------------------
     struct InferenceResult {
         std::vector<float> policy;
         std::array<float, 3> value{0.0f, 1.0f, 0.0f};
         std::vector<float> masked_logits;
+    };
+
+    struct InferRequest {
+        std::vector<int8_t> encoded;
+        std::vector<float> policy;
+        std::array<float, 3> value{0.0f, 1.0f, 0.0f};
+        bool done = false;
+        bool failed = false;
+        std::mutex m;
+        std::condition_variable cv;
     };
 
     InferenceResult inference(
@@ -261,8 +312,30 @@ private:
             encoded = transform_encoded_state(encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip);
         }
 
-        auto pair = infer_fn_(encoded);
-        std::vector<float> logits = std::move(pair.first);
+        std::vector<float> logits;
+        std::array<float, 3> value{0.0f, 1.0f, 0.0f};
+
+        if (batch_infer_fn_) {
+            auto req = std::make_shared<InferRequest>();
+            req->encoded = std::move(encoded);
+            {
+                std::lock_guard<std::mutex> lk(queue_mu_);
+                infer_queue_.push_back(req);
+            }
+            queue_cv_.notify_one();
+            {
+                std::unique_lock<std::mutex> lk(req->m);
+                req->cv.wait(lk, [&]() { return req->done; });
+            }
+            if (req->failed) throw std::runtime_error("batched inference failed");
+            logits = std::move(req->policy);
+            value = req->value;
+        } else {
+            auto pair = infer_fn_(encoded);
+            logits = std::move(pair.first);
+            value = pair.second;
+        }
+
         if (use_stochastic_transform) {
             logits = undo_transform_flat(logits, Game::MAX_BOARD_SIZE, k, do_flip);
         }
@@ -275,7 +348,90 @@ private:
                 logits[i] = -std::numeric_limits<float>::infinity();
             }
         }
-        return {softmax(logits), pair.second, logits};
+        return {softmax(logits), value, logits};
+    }
+
+    // ------------------------------------------------------------------
+    // Batcher thread: accumulates requests up to leaf_batch_size_ or
+    // batch_timeout_us_ and runs one batched NN forward.
+    // ------------------------------------------------------------------
+    void start_batcher() {
+        if (!batch_infer_fn_) return;
+        batcher_thread_ = std::thread([this]() { batcher_loop(); });
+    }
+
+    void stop_batcher() {
+        if (!batcher_thread_.joinable()) return;
+        {
+            std::lock_guard<std::mutex> lk(queue_mu_);
+            batcher_stop_.store(true);
+        }
+        queue_cv_.notify_all();
+        batcher_thread_.join();
+    }
+
+    void batcher_loop() {
+        while (true) {
+            std::vector<std::shared_ptr<InferRequest>> batch;
+            {
+                std::unique_lock<std::mutex> lk(queue_mu_);
+                queue_cv_.wait(lk, [&]() {
+                    return batcher_stop_.load() || !infer_queue_.empty();
+                });
+                if (batcher_stop_.load() && infer_queue_.empty()) return;
+
+                // Try to accumulate up to leaf_batch_size_ within the timeout.
+                if (batch_timeout_us_ > 0 &&
+                    static_cast<int>(infer_queue_.size()) < leaf_batch_size_) {
+                    queue_cv_.wait_for(
+                        lk, std::chrono::microseconds(batch_timeout_us_),
+                        [&]() {
+                            return batcher_stop_.load() ||
+                                static_cast<int>(infer_queue_.size()) >= leaf_batch_size_;
+                        });
+                }
+
+                const int take = std::min(
+                    static_cast<int>(infer_queue_.size()), leaf_batch_size_);
+                for (int i = 0; i < take; ++i) {
+                    batch.push_back(std::move(infer_queue_.front()));
+                    infer_queue_.pop_front();
+                }
+            }
+
+            if (batch.empty()) continue;
+
+            std::vector<std::vector<int8_t>> encoded_batch;
+            encoded_batch.reserve(batch.size());
+            for (auto& req : batch) {
+                encoded_batch.push_back(std::move(req->encoded));
+            }
+
+            try {
+                auto results = batch_infer_fn_(encoded_batch);
+                if (results.size() != batch.size()) {
+                    throw std::runtime_error("batch_infer_fn size mismatch");
+                }
+                for (size_t i = 0; i < batch.size(); ++i) {
+                    {
+                        std::lock_guard<std::mutex> lk(batch[i]->m);
+                        batch[i]->policy = std::move(results[i].first);
+                        batch[i]->value = results[i].second;
+                        batch[i]->done = true;
+                    }
+                    batch[i]->cv.notify_one();
+                }
+            } catch (...) {
+                for (auto& req : batch) {
+                    {
+                        std::lock_guard<std::mutex> lk(req->m);
+                        req->failed = true;
+                        req->done = true;
+                    }
+                    req->cv.notify_one();
+                }
+            }
+        }
     }
 
     static std::vector<float> undo_transform_flat(
@@ -754,7 +910,17 @@ private:
     const SkyZeroConfig& cfg_;
     int num_threads_;
     InferenceFn infer_fn_;
+    BatchInferenceFn batch_infer_fn_;
+    int leaf_batch_size_ = 1;
+    int batch_timeout_us_ = 0;
     std::mt19937 rng_;
+
+    // Batcher: queue + cv + thread. Only populated when batch_infer_fn_ is set.
+    std::mutex queue_mu_;
+    std::condition_variable queue_cv_;
+    std::deque<std::shared_ptr<InferRequest>> infer_queue_;
+    std::atomic<bool> batcher_stop_{false};
+    std::thread batcher_thread_;
 
     std::array<std::mutex, kNumStripes> stripe_mutexes_;
 
