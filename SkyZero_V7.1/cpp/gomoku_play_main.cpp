@@ -430,12 +430,30 @@ int main(int argc, char** argv) {
 
         std::mt19937 rng(std::random_device{}());
         const int search_threads = cfg_get<int>(cfg_map, "SEARCH_THREADS_PER_TREE", 8);
-        TreeParallelMCTS<Gomoku> mcts(game, cfg, search_threads, infer_fn, rng());
+        const int leaf_batch_size = cfg_get<int>(cfg_map, "LEAF_BATCH_SIZE", 1);
+        const int batch_timeout_us = cfg_get<int>(cfg_map, "BATCH_TIMEOUT_US", 0);
+
+        // run_forward already takes a batched encoded list and returns N
+        // (policy, value) pairs — its signature matches BatchInferenceFn
+        // exactly, so we can hand it to the batched MCTS constructor as-is.
+        TreeParallelMCTS<Gomoku>::BatchInferenceFn batch_infer_fn = run_forward;
+        std::unique_ptr<TreeParallelMCTS<Gomoku>> mcts_ptr;
+        if (leaf_batch_size > 1) {
+            mcts_ptr.reset(new TreeParallelMCTS<Gomoku>(
+                game, cfg, search_threads, leaf_batch_size, batch_timeout_us,
+                batch_infer_fn, rng()));
+        } else {
+            mcts_ptr.reset(new TreeParallelMCTS<Gomoku>(
+                game, cfg, search_threads, infer_fn, rng()));
+        }
+        TreeParallelMCTS<Gomoku>& mcts = *mcts_ptr;
 
         std::cout << "[gomoku_play] model=" << cli.model
                   << " device=" << (use_cuda ? "cuda" : "cpu")
                   << " simulations=" << cfg.num_simulations
                   << " search_threads=" << search_threads
+                  << " leaf_batch_size=" << leaf_batch_size
+                  << " batch_timeout_us=" << batch_timeout_us
                   << " symmetry_root=" << cfg.enable_symmetry_inference_for_root
                   << " symmetry_child=" << cfg.enable_symmetry_inference_for_child
                   << "\n";
@@ -454,15 +472,26 @@ int main(int argc, char** argv) {
             }
         }
 
-        // --- Game state ------------------------------------------------------
-        auto init = game.get_initial_state(rng);
-        std::vector<int8_t> state = std::move(init.board);
-        int to_play = init.to_play;
+        // --- Game state (persists across `newgame` so the MCTS engine,
+        //     model, and batcher threads survive between rounds) -------------
+        std::vector<int8_t> state;
+        int to_play = 1;
         int last_action = -1;
         int last_player = 0;
-
-        std::unique_ptr<MCTSNode> root(new MCTSNode{state, to_play});
+        std::unique_ptr<MCTSNode> root;
         std::vector<Snapshot> history;
+
+        auto reset_game = [&]() {
+            auto init = game.get_initial_state(rng);
+            state = std::move(init.board);
+            to_play = init.to_play;
+            last_action = -1;
+            last_player = 0;
+            root.reset(new MCTSNode{state, to_play});
+            history.clear();
+        };
+
+        reset_game();
         print_board(state, game.board_size, last_action);
 
         auto push_history = [&]() {
@@ -530,6 +559,27 @@ int main(int argc, char** argv) {
             return true;
         };
 
+        // `newgame [1|-1]` — reset the board (optionally swapping human side)
+        // without tearing down the process. Lets play_web start a fresh game
+        // for ~150ms instead of paying ~2.5s to respawn gomoku_play.
+        auto try_handle_newgame = [&](const std::string& input) -> bool {
+            std::istringstream iss(input);
+            std::string kw;
+            if (!(iss >> kw) || kw != "newgame") return false;
+            int s = human_side;
+            if (iss >> s) {
+                if (s != 1 && s != -1) {
+                    std::cout << "Invalid newgame: side must be 1 or -1.\n";
+                    return true;
+                }
+                human_side = s;
+            }
+            reset_game();
+            std::cout << "[setting] newgame human_side=" << human_side << "\n";
+            print_board(state, game.board_size, last_action);
+            return true;
+        };
+
         while (true) {
             if (game.is_terminal(state, last_action, last_player)) {
                 const int winner = game.get_winner(state, last_action, last_player);
@@ -537,18 +587,29 @@ int main(int argc, char** argv) {
                 else if (winner == -1) std::cout << "White wins!\n";
                 else std::cout << "Draw!\n";
 
-                std::cout << "Game Over. 'u' to undo, 'q' to quit: ";
-                std::string resp;
-                if (!std::getline(std::cin, resp)) return 0;
-                if (resp == "u" || resp == "U") {
-                    if (undo_two_moves()) {
-                        std::cout << "Undo successful.\n";
-                        print_board(state, game.board_size, last_action);
+                bool resume = false;
+                while (!resume) {
+                    std::cout << "Game Over. 'u' to undo, 'newgame [1|-1]' for new game, 'q' to quit: ";
+                    std::string resp;
+                    if (!std::getline(std::cin, resp)) return 0;
+                    if (resp == "u" || resp == "U") {
+                        if (undo_two_moves()) {
+                            std::cout << "Undo successful.\n";
+                            print_board(state, game.board_size, last_action);
+                            resume = true;
+                            break;
+                        }
+                        std::cout << "Nothing to undo.\n";
                         continue;
                     }
-                    std::cout << "Nothing to undo.\n";
+                    if (try_handle_newgame(resp)) {
+                        resume = true;
+                        break;
+                    }
+                    if (resp == "q" || resp == "Q") return 0;
+                    std::cout << "Unrecognized command.\n";
                 }
-                break;
+                continue;
             }
 
             if (to_play == human_side) {
@@ -573,6 +634,9 @@ int main(int argc, char** argv) {
                     }
                     if (try_handle_setting(input)) {
                         continue;
+                    }
+                    if (try_handle_newgame(input)) {
+                        break;  // back to top of play loop, re-check whose turn
                     }
                     {
                         std::istringstream iss(input);

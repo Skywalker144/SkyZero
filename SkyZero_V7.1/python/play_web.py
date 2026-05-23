@@ -260,6 +260,35 @@ class EngineSession:
                 except Exception:
                     pass
 
+    def reset(self, human_side):
+        """Start a fresh game in the same engine process. Saves the ~2.5s
+        respawn cost; the engine's loaded model + MCTS threads stay alive.
+        Returns False if the process is no longer running."""
+        if self.proc.poll() is not None:
+            return False
+        bs = self.board_size
+        with self.lock:
+            self.human_side = human_side
+            self.board = [[0] * bs for _ in range(bs)]
+            self.last_move = None
+            self.status = "New game starting..."
+            self.root_value = None
+            self.nn_value = None
+            self.game_over = False
+            self.mcts_policy = None
+            self.mcts_visits = None
+            self.nn_policy = None
+            self.nn_opp_policy = None
+            self.nn_futurepos_8 = None
+            self.nn_futurepos_32 = None
+            self.gumbel_phases = None
+            self._pending_rows = None
+            self._pending_grid_key = None
+            self._pending_grid_rows = None
+            self._bump()
+        self.send(f"newgame {human_side}")
+        return True
+
     def snapshot(self):
         with self.lock:
             return {
@@ -309,7 +338,17 @@ class App:
                 self.current_board_size = board_size
             if rule is not None and rule in self.rules:
                 self.current_rule = rule
+            # Reuse the running engine when model/board/rule are unchanged —
+            # avoids the ~2.5s gomoku_play respawn for each new game.
             if self.session is not None:
+                same_engine = (
+                    self.session.model == self.model
+                    and self.session.board_size == self.current_board_size
+                    and self.session.rule == self.current_rule
+                    and self.session.proc.poll() is None
+                )
+                if same_engine and self.session.reset(human_side):
+                    return
                 self.session.stop()
             self.session = EngineSession(self.play_bin, self.model, self.config,
                                          human_side, self.current_board_size,
