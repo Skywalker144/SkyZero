@@ -2156,16 +2156,37 @@ def read_cfg_str(path, key, default):
     return _read_cfg_map(path).get(key, default)
 
 
-def discover_models(root_dir):
-    """Scan data/models/*.pt and anchors/*.pt; returns ordered dict id -> abs Path."""
+def discover_models(root_dir, data_dir):
+    """Scan <data>/models, <data>/nets/<arch>/, and <root>/anchors for TorchScript .pt files.
+
+    gomoku_play loads via torch::jit::load, so only TorchScript files work:
+    latest.pt and scripted_iter_*.pt (per export_model.py). State-dict files
+    (model_latest.pt, model_iter_*.pt) are excluded.
+    """
     out = {}
-    models_dir = root_dir / "data" / "models"
+    models_dir = data_dir / "models"
     if models_dir.is_dir():
         files = sorted(models_dir.glob("*.pt"), key=lambda p: p.name, reverse=True)
-        # surface latest.pt first if present
         files.sort(key=lambda p: 0 if p.name == "latest.pt" else 1)
         for p in files:
             out[f"models/{p.name}"] = p.resolve()
+    nets_dir = data_dir / "nets"
+    if nets_dir.is_dir():
+        def _net_key(p):
+            # bNcM convention: sort small→large by (blocks, channels). Non-matching
+            # names fall back to alphabetical, after the bNcM ones.
+            m = re.match(r"b(\d+)c(\d+)", p.name)
+            return (0, int(m.group(1)), int(m.group(2))) if m else (1, 0, 0, p.name)
+        for net in sorted((p for p in nets_dir.iterdir() if p.is_dir()), key=_net_key):
+            cands = [p for p in net.glob("*.pt")
+                     if p.name == "latest.pt" or p.name.startswith("scripted_")]
+            cands.sort(key=lambda p: (0 if p.name == "latest.pt" else 1, p.name), reverse=False)
+            # latest.pt first, then scripted_iter_NNNNNN.pt newest-first.
+            scripted = sorted([p for p in cands if p.name.startswith("scripted_")],
+                              key=lambda p: p.name, reverse=True)
+            ordered = [p for p in cands if p.name == "latest.pt"] + scripted
+            for p in ordered:
+                out[f"{net.name}/{p.name}"] = p.resolve()
     anchors_dir = root_dir / "anchors"
     if anchors_dir.is_dir():
         for p in sorted(anchors_dir.glob("*.pt"), key=lambda p: p.name):
@@ -2179,7 +2200,8 @@ def main():
     ap.add_argument("--model", default=str(root_dir / "data" / "models" / "latest.pt"))
     ap.add_argument("--bin", default=str(root_dir / "cpp" / "build" / "gomoku_play"))
     ap.add_argument("--config", default=str(root_dir / "scripts" / "play.cfg"))
-    ap.add_argument("--run-config", default=str(root_dir / "scripts" / "run.cfg"))
+    ap.add_argument("--run-config", default=str(root_dir / "configs" / "baseline" / "run.cfg"))
+    ap.add_argument("--data-dir", default=str(root_dir / "data"))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--human-side", type=int, default=1, choices=(1, -1))
@@ -2189,7 +2211,7 @@ def main():
         if not Path(p).exists():
             raise SystemExit(f"{name} not found: {p}")
 
-    models = discover_models(root_dir)
+    models = discover_models(root_dir, Path(args.data_dir))
     init_path = Path(args.model).resolve()
     init_id = None
     for mid, p in models.items():

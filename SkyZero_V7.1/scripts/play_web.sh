@@ -27,4 +27,5 @@ PORT="${PORT:-8765}"
 
 exec "$PYTHON" "$ROOT/python/play_web.py" \
     --model "$MODEL" --bin "$PLAY_BIN" --config "$PLAY_CFG" \
+    --run-config "$CONFIG_DIR/run.cfg" --data-dir "$DATA_DIR" \
     --host "$HOST" --port "$PORT" "$@"
