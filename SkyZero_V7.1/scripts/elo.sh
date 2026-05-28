@@ -83,12 +83,20 @@ parse_iter() {
 # NET picks a multi-network subdir under $DATA_DIR/nets/. Empty = legacy
 # single-network mode (read $DATA_DIR/models/). When NET is set, output also
 # moves to $DATA_DIR/elo/<NET>/ so different nets don't share games.jsonl.
+#
+# File naming differs between the two dirs: $DATA_DIR/nets/<net>/ holds BOTH
+# train.py's raw state_dict (model_iter_*.pt — not loadable by C++) AND
+# export_model.py's TorchScript (scripted_iter_*.pt). C++ gomoku_elo uses
+# torch::jit::load, so we must point it at scripted_iter_*. Legacy
+# $DATA_DIR/models/ uses model_iter_*.pt (those were already TorchScript).
 NET="${NET:-$(cfg_get NET '')}"
 if [[ -n "$NET" ]]; then
     MODELS_DIR="${MODELS_DIR:-$DATA_DIR/nets/$NET}"
+    MODEL_GLOB="scripted_iter_*.pt"
     ELO_OUT_DIR="$DATA_DIR/elo/$NET"
 else
     MODELS_DIR="${MODELS_DIR:-$DATA_DIR/models}"
+    MODEL_GLOB="model_iter_*.pt"
     ELO_OUT_DIR="$DATA_DIR/elo"
 fi
 [[ -d "$MODELS_DIR" ]] || { echo "[elo.sh] no models dir at $MODELS_DIR" >&2; exit 1; }
@@ -107,7 +115,7 @@ NEIGHBOR_GAMES="${NEIGHBOR_GAMES:-$(cfg_get NEIGHBOR_GAMES 30)}"
 # only NEW match scheduling is filtered.
 START_ITER="${START_ITER:-$(cfg_get START_ITER 0)}"
 
-# Returns sorted list of model_iter_*.pt paths with iter >= START_ITER.
+# Returns sorted list of $MODEL_GLOB paths with iter >= START_ITER.
 list_models() {
     while read -r f; do
         [[ -z "$f" ]] && continue
@@ -116,7 +124,7 @@ list_models() {
         if (( f_iter >= START_ITER )); then
             echo "$f"
         fi
-    done < <(ls "$MODELS_DIR"/model_iter_*.pt 2>/dev/null | sort)
+    done < <(ls "$MODELS_DIR"/$MODEL_GLOB 2>/dev/null | sort)
 }
 
 mkdir -p "$(dirname "$OUT_FILE")"
