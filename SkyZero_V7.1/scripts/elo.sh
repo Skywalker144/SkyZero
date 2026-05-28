@@ -27,9 +27,13 @@
 # Output then lands in $DATA_DIR/elo/<name>/ so different networks don't
 # share games.jsonl.
 #
+# Multi-GPU: by default every visible GPU runs one worker in parallel
+# (round-robin pair assignment, sharded output merged at the end). Use
+# ELO_GPUS=0,2,5 to pick a subset of physical GPU IDs.
+#
 # Env overrides (all optional): NUM_GAMES, NEIGHBOR_K, NEIGHBOR_GAMES,
 # STRIDE, NUM_SIMULATIONS, ANCHOR_DIR, ANCHORS, ELO_BIN, ELO_CFG,
-# DATA_DIR, MODELS_DIR, NET, OUT_FILE, PLOT_FILE.
+# DATA_DIR, MODELS_DIR, NET, OUT_FILE, PLOT_FILE, ELO_GPUS.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
@@ -256,52 +260,116 @@ count_existing() {
     echo "$(( ${n1:-0} + ${n2:-0} ))"
 }
 
-# Run gomoku_elo for one (a, b) pair, topping up to target_games. Skips if
-# already filled. label is just for the log line ("anchor" or "neighbor").
-run_pair_match() {
-    local a="$1" b="$2" target_games="$3" label="$4"
-    local existing remaining
+# --- GPU pool -----------------------------------------------------------
+# Default: every visible GPU runs one worker in parallel. Override with
+# ELO_GPUS=0,2,5 (comma-separated physical IDs) to use a subset. Each worker
+# is launched under CUDA_VISIBLE_DEVICES=<id>, so the C++ binary's hardcoded
+# kCUDA:0 maps to that physical card.
+if [[ -n "${ELO_GPUS:-}" ]]; then
+    IFS=', ' read -r -a GPU_IDS <<< "$ELO_GPUS"
+elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    IFS=', ' read -r -a GPU_IDS <<< "$CUDA_VISIBLE_DEVICES"
+elif command -v nvidia-smi &> /dev/null; then
+    mapfile -t GPU_IDS < <(nvidia-smi -L | awk -F'[ :]' '/^GPU/ {print $2}')
+fi
+(( ${#GPU_IDS[@]} == 0 )) && GPU_IDS=(0)
+NUM_GPUS=${#GPU_IDS[@]}
+
+# --- Build full work list (a, b, target_games, label) ------------------
+WORK=()
+for target in "${TARGETS[@]}"; do
+    target_abs="$(readlink -f "$target")"
+    for anchor in "${anchor_list[@]}"; do
+        anchor_abs="$(readlink -f "$anchor")"
+        [[ "$anchor_abs" == "$target_abs" ]] && continue
+        WORK+=("$target|$anchor|$NUM_GAMES|anchor")
+    done
+done
+for pair in "${NEIGHBOR_PAIRS[@]}"; do
+    WORK+=("${pair%|*}|${pair#*|}|$NEIGHBOR_GAMES|neighbor")
+done
+
+# Filter to pairs that still need games; record remaining count per pair.
+PENDING=()
+for w in "${WORK[@]}"; do
+    IFS='|' read -r a b target_games label <<< "$w"
     existing="$(count_existing "$a" "$b")"
     if (( existing >= target_games )); then
         echo "[elo.sh] skip $(basename "$a") vs $(basename "$b") ($label): already $existing games"
-        return 0
+    else
+        PENDING+=("$a|$b|$(( target_games - existing ))|$label")
     fi
-    remaining=$(( target_games - existing ))
-    echo "[elo.sh] === $(basename "$a") vs $(basename "$b") ($label, $remaining games) ==="
-    "$ELO_BIN" \
-        --model-a "$a" \
-        --model-b "$b" \
-        --config "$ELO_CFG" \
-        --output "$OUT_FILE" \
-        --num-games "$remaining" \
-        "${sim_flag[@]}"
-}
+done
 
-# --- Run matches --------------------------------------------------------
+# --- Schedule summary ---------------------------------------------------
 if (( ${#anchor_list[@]} == 0 )); then
     echo "[elo.sh] anchors: none (neighbor-only mode)"
 else
     echo "[elo.sh] anchors: $(printf '%s\n' "${anchor_list[@]}" | xargs -n1 basename | paste -sd, -)"
 fi
 echo "[elo.sh] output=$OUT_FILE  anchor_games/pair=$NUM_GAMES  neighbor_games/pair=$NEIGHBOR_GAMES  K=$NEIGHBOR_K"
-echo "[elo.sh] schedule: ${#TARGETS[@]} target(s) x ${#anchor_list[@]} anchor(s) + ${#NEIGHBOR_PAIRS[@]} neighbor pair(s)"
+echo "[elo.sh] schedule: ${#TARGETS[@]} target(s) x ${#anchor_list[@]} anchor(s) + ${#NEIGHBOR_PAIRS[@]} neighbor pair(s); ${#PENDING[@]} pending across ${NUM_GPUS} GPU(s): ${GPU_IDS[*]}"
 
-# Anchor matches
-for target in "${TARGETS[@]}"; do
-    target_abs="$(readlink -f "$target")"
-    for anchor in "${anchor_list[@]}"; do
-        anchor_abs="$(readlink -f "$anchor")"
-        [[ "$anchor_abs" == "$target_abs" ]] && continue
-        run_pair_match "$target" "$anchor" "$NUM_GAMES" "anchor"
+# --- Run sharded workers ------------------------------------------------
+SHARDS=()
+# Trap merges any partial shards back into OUT_FILE on exit (Ctrl+C safe).
+# gomoku_elo flushes after each game under a mutex, so a worker killed mid-
+# game leaves at most one incomplete trailing line; grep filters to lines
+# that look like complete JSON objects.
+cleanup_shards() {
+    for shard in "${SHARDS[@]:-}"; do
+        [[ -f "$shard" ]] || continue
+        if [[ -s "$shard" ]]; then
+            grep -E '^\{.*\}$' "$shard" >> "$OUT_FILE" 2> /dev/null || true
+        fi
+        rm -f "$shard"
     done
-done
+}
+trap cleanup_shards EXIT
 
-# Neighbor matches
-for pair in "${NEIGHBOR_PAIRS[@]}"; do
-    a="${pair%|*}"
-    b="${pair#*|}"
-    run_pair_match "$a" "$b" "$NEIGHBOR_GAMES" "neighbor"
-done
+if (( ${#PENDING[@]} > 0 )); then
+    # Round-robin distribute pairs across GPUs. Pairs differ wildly in cost
+    # (neighbor vs anchor, different NUM_SIMULATIONS doesn't change here but
+    # board fill varies), so round-robin gives a roughly even mix.
+    declare -a BUCKETS
+    for ((g = 0; g < NUM_GPUS; g++)); do BUCKETS[g]=""; done
+    i=0
+    for w in "${PENDING[@]}"; do
+        BUCKETS[i % NUM_GPUS]+="$w"$'\n'
+        i=$((i + 1))
+    done
+
+    PIDS=()
+    for ((g = 0; g < NUM_GPUS; g++)); do
+        work_list="${BUCKETS[g]}"
+        [[ -z "$work_list" ]] && continue
+        gpu="${GPU_IDS[g]}"
+        shard="$OUT_FILE.shard.gpu${gpu}.jsonl"
+        : > "$shard"
+        SHARDS+=("$shard")
+        (
+            export CUDA_VISIBLE_DEVICES="$gpu"
+            while IFS='|' read -r a b remaining label; do
+                [[ -z "$a" ]] && continue
+                echo "=== $(basename "$a") vs $(basename "$b") ($label, $remaining games) ==="
+                "$ELO_BIN" \
+                    --model-a "$a" \
+                    --model-b "$b" \
+                    --config "$ELO_CFG" \
+                    --output "$shard" \
+                    --num-games "$remaining" \
+                    "${sim_flag[@]}"
+            done <<< "$work_list"
+        ) 2>&1 | sed -u "s/^/[gpu $gpu] /" &
+        PIDS+=($!)
+    done
+
+    fail=0
+    for pid in "${PIDS[@]}"; do
+        wait "$pid" || fail=1
+    done
+    (( fail )) && echo "[elo.sh] WARNING: one or more workers exited non-zero"
+fi
 
 # --- Regenerate Elo table + curve ---------------------------------------
 echo "[elo.sh] updating Elo: $PLOT_FILE"
