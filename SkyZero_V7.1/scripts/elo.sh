@@ -18,13 +18,18 @@
 #
 # Usage:
 #   scripts/elo.sh                          # BATCH: all model_iter_*.pt at STRIDE
-#   scripts/elo.sh latest                   # single: data/models/latest.pt
-#   scripts/elo.sh model_iter_000300.pt     # single: data/models/<arg>
+#   scripts/elo.sh latest                   # single: $MODELS_DIR/latest.pt
+#   scripts/elo.sh model_iter_000300.pt     # single: $MODELS_DIR/<arg>
 #   scripts/elo.sh /abs/path/to/model.pt    # single: absolute path
+#
+# Multi-network training: set NET=<name> in elo.cfg (e.g. NET=b5c128) to
+# evaluate models under $DATA_DIR/nets/<name>/ instead of $DATA_DIR/models/.
+# Output then lands in $DATA_DIR/elo/<name>/ so different networks don't
+# share games.jsonl.
 #
 # Env overrides (all optional): NUM_GAMES, NEIGHBOR_K, NEIGHBOR_GAMES,
 # STRIDE, NUM_SIMULATIONS, ANCHOR_DIR, ANCHORS, ELO_BIN, ELO_CFG,
-# DATA_DIR, OUT_FILE, PLOT_FILE.
+# DATA_DIR, MODELS_DIR, NET, OUT_FILE, PLOT_FILE.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
@@ -36,8 +41,6 @@ CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
 
 source "$CONFIG_DIR/paths.cfg"
 source "$SCRIPT_DIR/env_paths.cfg"
-OUT_FILE="${OUT_FILE:-$DATA_DIR/elo/games.jsonl}"
-PLOT_FILE="${PLOT_FILE:-$DATA_DIR/elo/elo.png}"
 ELO_BIN="${ELO_BIN:-$ROOT/cpp/build/gomoku_elo}"
 ELO_CFG="${ELO_CFG:-$CONFIG_DIR/elo.cfg}"
 
@@ -77,6 +80,21 @@ parse_iter() {
     if [[ -z "$n" ]]; then echo 999999999; else echo "$((10#$n))"; fi
 }
 
+# NET picks a multi-network subdir under $DATA_DIR/nets/. Empty = legacy
+# single-network mode (read $DATA_DIR/models/). When NET is set, output also
+# moves to $DATA_DIR/elo/<NET>/ so different nets don't share games.jsonl.
+NET="${NET:-$(cfg_get NET '')}"
+if [[ -n "$NET" ]]; then
+    MODELS_DIR="${MODELS_DIR:-$DATA_DIR/nets/$NET}"
+    ELO_OUT_DIR="$DATA_DIR/elo/$NET"
+else
+    MODELS_DIR="${MODELS_DIR:-$DATA_DIR/models}"
+    ELO_OUT_DIR="$DATA_DIR/elo"
+fi
+[[ -d "$MODELS_DIR" ]] || { echo "[elo.sh] no models dir at $MODELS_DIR" >&2; exit 1; }
+OUT_FILE="${OUT_FILE:-$ELO_OUT_DIR/games.jsonl}"
+PLOT_FILE="${PLOT_FILE:-$ELO_OUT_DIR/elo.png}"
+
 ANCHOR_DIR="${ANCHOR_DIR:-$(cfg_get ANCHOR_DIR anchors)}"
 [[ "$ANCHOR_DIR" = /* ]] || ANCHOR_DIR="$ROOT/$ANCHOR_DIR"
 STRIDE="${STRIDE:-$(cfg_get STRIDE 20)}"
@@ -98,7 +116,7 @@ list_models() {
         if (( f_iter >= START_ITER )); then
             echo "$f"
         fi
-    done < <(ls "$DATA_DIR"/models/model_iter_*.pt 2>/dev/null | sort)
+    done < <(ls "$MODELS_DIR"/model_iter_*.pt 2>/dev/null | sort)
 }
 
 mkdir -p "$(dirname "$OUT_FILE")"
@@ -128,7 +146,7 @@ NEIGHBOR_PAIRS=()
 if [[ $# -eq 0 ]]; then
     mapfile -t ALL < <(list_models)
     if [[ ${#ALL[@]} -eq 0 ]]; then
-        echo "[elo.sh] no checkpoints in $DATA_DIR/models/ (START_ITER=$START_ITER)"
+        echo "[elo.sh] no checkpoints in $MODELS_DIR/ (START_ITER=$START_ITER)"
         exit 1
     fi
     i=0
@@ -159,9 +177,9 @@ else
     if [[ "$target_arg" = /* ]]; then
         t="$target_arg"
     elif [[ "$target_arg" = *.pt ]]; then
-        t="$DATA_DIR/models/$target_arg"
+        t="$MODELS_DIR/$target_arg"
     else
-        t="$DATA_DIR/models/${target_arg}.pt"
+        t="$MODELS_DIR/${target_arg}.pt"
     fi
     [[ -f "$t" ]] || { echo "no target model at $t"; exit 1; }
     TARGETS=("$t")
