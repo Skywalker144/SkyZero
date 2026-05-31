@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Export SkyZero V5 checkpoints to ONNX for browser inference.
+"""Export SkyZero V7.1 checkpoints to ONNX for browser inference.
 
-Wraps SkyZero_V5's nets.KataGoNet, drops the value_td and intermediate_*
+Wraps SkyZero's KataGoNet, drops the value_td and intermediate_*
 outputs (UI doesn't display them), and reorders to a (1, 5, 19, 19) +
 (1, 12) → (policy_logits, value_wdl_logits, value_futurepos_pretanh)
 signature. Spatial dims fixed at MAX_BOARD_SIZE so the same .onnx serves
@@ -11,18 +11,15 @@ Two usage modes:
 
     # Single file (explicit):
     python tools/export_onnx.py \\
-        --ckpt /path/to/model.pt --out models/level3.onnx \\
-        --num-blocks 10 --num-channels 128
+        --ckpt /path/to/scripted_iter_001272.pt --out models/level5.onnx \\
+        --num-blocks 5 --num-channels 128
 
-    # Batch (--src defaults to SkyZeroWeb/origin_models/):
+    # Batch (point --src at a nets/<arch>/ dir, list filenames + lv slots):
     python tools/export_onnx.py \\
-        b4c64iter180.pt b10c128iter80.pt b10c128b15iter234.pt
-        # → models/level1.onnx, models/level2.onnx, models/level3.onnx
-
-    # Batch with explicit slot mapping:
-    python tools/export_onnx.py \\
-        b4c64iter180.pt:lv1 b10c128iter80.pt:lv3 b10c128b15iter234.pt:lv5
-        # → models/level1.onnx, models/level3.onnx, models/level5.onnx
+        --src /path/to/nets/b5c128 --num-blocks 5 --num-channels 128 \\
+        scripted_iter_000050.pt:lv1 \\
+        scripted_iter_001272.pt:lv5
+        # → models/level1.onnx, models/level5.onnx
 """
 from __future__ import annotations
 
@@ -35,11 +32,11 @@ import torch
 import onnx
 
 
-# Make SkyZero_V5/python importable regardless of CWD.
-SKYZERO_V5_PY = Path(__file__).resolve().parents[2] / "SkyZero_V5" / "python"
-if not SKYZERO_V5_PY.is_dir():
-    raise SystemExit(f"Expected V5 python at {SKYZERO_V5_PY}")
-sys.path.insert(0, str(SKYZERO_V5_PY))
+# V7.1 SDK is the only supported source.
+SKYZERO_PY = Path(__file__).resolve().parents[2] / "SkyZero_V7.1" / "python"
+if not SKYZERO_PY.is_dir():
+    raise SystemExit(f"Expected SkyZero_V7.1 python at {SKYZERO_PY}")
+sys.path.insert(0, str(SKYZERO_PY))
 
 from nets import build_model               # noqa: E402
 from model_config import NetConfig         # noqa: E402
@@ -48,33 +45,9 @@ from model_config import NetConfig         # noqa: E402
 # Default output dir for batch mode (SkyZeroWeb/models/).
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
-DEFAULT_SRC_DIR = PROJECT_ROOT / "origin_models"
 
 # Filename arch regex: matches "b10c128", "b4c64", etc.
 ARCH_RE = re.compile(r"b(\d+)c(\d+)")
-# Filename iter regex: matches "iter_000044", "iter44", "iter80" etc.
-ITER_RE = re.compile(r"iter_?(\d+)")
-
-
-def scan_and_rank(src: Path, top_n: int = 5) -> list[tuple[str, str]]:
-    """Pick top-N .pt files in `src` by iter number (desc), map to lv{N}..lv1.
-
-    Highest iter → lv{N}, second-highest → lv{N-1}, etc. Files without an
-    iter token in the name are skipped.
-    """
-    candidates = []
-    for p in sorted(src.glob("*.pt")):
-        m = ITER_RE.search(p.name)
-        if not m:
-            continue
-        candidates.append((int(m.group(1)), p.name))
-    if not candidates:
-        return []
-    candidates.sort(key=lambda x: -x[0])
-    chosen = candidates[:top_n]
-    # Highest iter → highest tier. With 5 files, lv5 is best.
-    n = len(chosen)
-    return [(name, f"lv{n - i}") for i, (_, name) in enumerate(chosen)]
 
 
 class ExportWrapper(torch.nn.Module):
@@ -95,18 +68,16 @@ class ExportWrapper(torch.nn.Module):
 
 
 def load_state(ckpt_path: Path) -> dict:
-    """Extract a state_dict from a V5 .pt file.
+    """Extract a state_dict from a V7.1 .pt file.
 
-    Handles four V5 .pt flavors:
-      - Bare state_dict (OrderedDict of name → Tensor)   → use directly
-        (V5 selfplay daemon writes data/.../checkpoints/model_iter_NNNNNN.pt this way)
-      - Wrapped checkpoint with `swa_model_state_dict`   → strip 'module.' prefix
-      - Wrapped checkpoint with `model_state_dict`       → return inner dict
-      - TorchScript module (anchors/, models/latest.pt)  → call .state_dict()
+    Handles four flavors:
+      - TorchScript module (export_model.py → scripted_iter_*.pt)  → .state_dict()
+      - Wrapped checkpoint with `swa_model_state_dict`             → strip 'module.' prefix
+      - Wrapped checkpoint with `model_state_dict`                 → return inner dict
+      - Bare state_dict (OrderedDict of name → Tensor)             → use directly
     """
     state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
-    # TorchScript module case (V5 anchors/ and data/.../models/latest.pt are scripted)
     if isinstance(state, torch.jit.ScriptModule):
         print(f"[export_onnx] loading from TorchScript module at {ckpt_path}")
         return state.state_dict()
@@ -120,9 +91,6 @@ def load_state(ckpt_path: Path) -> dict:
         print(f"[export_onnx] using regular model_state_dict from {ckpt_path}")
         return state["model_state_dict"]
 
-    # Bare state_dict: every value is a Tensor and at least one key looks like a
-    # KataGoNet param name. This is what V5's selfplay daemon writes for
-    # data/.../checkpoints/model_iter_NNNNNN.pt — the raw model.state_dict().
     if isinstance(state, dict) and state and all(isinstance(v, torch.Tensor) for v in state.values()):
         print(f"[export_onnx] loading bare state_dict from {ckpt_path}")
         return state
@@ -151,7 +119,7 @@ def export_one(
     num_global_features: int = 12,
     opset: int = 18,
 ) -> None:
-    """Export one V5 checkpoint to ONNX. Used by both single and batch modes."""
+    """Export one V7.1 checkpoint to ONNX. Used by both single and batch modes."""
     cfg = NetConfig(
         board_size=max_board_size,
         num_planes=num_planes,
@@ -168,8 +136,8 @@ def export_one(
     if unexpected:
         print(f"[export_onnx] unexpected keys: {unexpected}")
 
-    # V5 trap 3: NormMask scales not in state_dict → re-derive from arch.
-    model.set_norm_scales()
+    if hasattr(model, "set_norm_scales"):
+        model.set_norm_scales()
     model.eval()
 
     wrapper = ExportWrapper(model).eval()
@@ -236,26 +204,27 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=__doc__,
     )
-    # Single-file mode (legacy, still supported)
+    # Single-file mode
     ap.add_argument("--ckpt", type=Path, help="single-file mode: source checkpoint")
     ap.add_argument("--out",  type=Path, help="single-file mode: output .onnx path")
 
     # Batch mode
-    ap.add_argument("--src", type=Path, default=DEFAULT_SRC_DIR,
-                    help=f"batch mode: source dir containing .pt files (default: {DEFAULT_SRC_DIR})")
+    ap.add_argument("--src", type=Path,
+                    help="batch mode: source dir containing .pt files (required for batch)")
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_MODELS_DIR,
                     help=f"batch mode: output dir (default: {DEFAULT_MODELS_DIR})")
     ap.add_argument("files", nargs="*",
-                    help="batch mode: filenames (e.g., 'b10c128iter80.pt' or "
-                         "'b10c128iter80.pt:lv3')")
+                    help="batch mode: filenames (e.g., 'scripted_iter_001272.pt:lv5')")
 
-    # Architecture overrides (single-file mode; batch auto-detects)
+    # Architecture overrides. Batch mode auto-detects from filename
+    # ('b5c128' in the name), but V7.1's `scripted_iter_*.pt` files don't
+    # carry an arch token, so pass --num-blocks / --num-channels explicitly.
     ap.add_argument("--num-blocks",   type=int, default=None)
     ap.add_argument("--num-channels", type=int, default=None)
     ap.add_argument("--max-board-size", type=int, default=19)
     ap.add_argument("--num-planes", type=int, default=5)
     ap.add_argument("--num-global-features", type=int, default=12)
-    # opset 18 is the minimum that supports Mish (V5's default activation).
+    # opset 18 is the minimum that supports Mish (default activation).
     # ORT 1.16+ supports it; jsdelivr's onnxruntime-web 1.17 does too.
     ap.add_argument("--opset", type=int, default=18)
     args = ap.parse_args()
@@ -264,11 +233,11 @@ def main() -> int:
     if args.ckpt is not None:
         if args.out is None:
             ap.error("--ckpt requires --out")
-        nb = args.num_blocks   if args.num_blocks   is not None else 10
-        nc = args.num_channels if args.num_channels is not None else 128
+        if args.num_blocks is None or args.num_channels is None:
+            ap.error("--ckpt requires --num-blocks and --num-channels")
         export_one(
             ckpt=args.ckpt, out=args.out,
-            num_blocks=nb, num_channels=nc,
+            num_blocks=args.num_blocks, num_channels=args.num_channels,
             max_board_size=args.max_board_size,
             num_planes=args.num_planes,
             num_global_features=args.num_global_features,
@@ -277,18 +246,13 @@ def main() -> int:
         return 0
 
     # ----- Batch mode -----
+    if args.src is None:
+        ap.error("batch mode requires --src")
     if not args.src.is_dir():
         ap.error(f"--src dir not found: {args.src}")
-
-    # Auto-rank: if no positional filenames, scan src dir, rank by iter desc,
-    # map highest → lv5, next → lv4, ..., lowest → lv1 (or lv{N} where N = file count).
     if not args.files:
-        ranked = scan_and_rank(args.src, top_n=5)
-        if not ranked:
-            ap.error(f"no *.pt files with 'iter_NNN' in name found under {args.src} — "
-                     "pass filenames explicitly or use --ckpt + --out")
-        args.files = [f"{name}:{tier}" for name, tier in ranked]
-        print(f"[export_onnx] auto-rank: {len(args.files)} file(s) by iter desc")
+        ap.error("batch mode requires one or more filenames "
+                 "(e.g., 'scripted_iter_001272.pt:lv5')")
 
     # Resolve each spec
     plan = []
@@ -303,7 +267,10 @@ def main() -> int:
             nb, nc = args.num_blocks, args.num_channels
         else:
             arch = detect_arch(filename)
-            nb, nc = arch if arch is not None else (10, 128)
+            if arch is None:
+                ap.error(f"cannot detect arch from '{filename}' — "
+                         "pass --num-blocks and --num-channels explicitly")
+            nb, nc = arch
         plan.append((ckpt, out, nb, nc, tier))
 
     def _short(p: Path) -> str:
