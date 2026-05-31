@@ -93,40 +93,49 @@
       position: absolute; inset: 10px;
       pointer-events: none;
     }
+    /* Two-element tile: outer owns translate + slide transition; inner owns
+       scale + pop/merge keyframes. Splitting them means the merge/appear
+       animations never touch translate, so a fast slide that's interrupted
+       by another slide blends smoothly instead of snapping to its final
+       position via an overriding keyframe. */
     .g2048-tile {
       position: absolute;
+      transition: transform 120ms cubic-bezier(0.22, 0.5, 0.28, 1);
+      will-change: transform;
+    }
+    .g2048-tile-inner {
+      width: 100%; height: 100%;
       display: flex; align-items: center; justify-content: center;
       font-family: var(--font-sans);
       font-weight: 700;
       border-radius: var(--radius-md);
-      transition: transform 130ms cubic-bezier(0.22, 0.5, 0.28, 1);
       will-change: transform;
     }
-    .g2048-tile.appear { animation: g2048-pop 140ms ease-out; }
-    .g2048-tile.merged { animation: g2048-merge 160ms ease-out; z-index: 2; }
+    .g2048-tile.appear .g2048-tile-inner { animation: g2048-pop 150ms ease-out; }
+    .g2048-tile.merged .g2048-tile-inner { animation: g2048-merge 160ms ease-out; }
+    .g2048-tile.merged { z-index: 2; }
     @keyframes g2048-pop {
-      from { transform: var(--pos) scale(0.0); }
-      60%  { transform: var(--pos) scale(1.08); }
-      to   { transform: var(--pos) scale(1); }
+      from { transform: scale(0); }
+      60%  { transform: scale(1.10); }
+      to   { transform: scale(1); }
     }
     @keyframes g2048-merge {
-      0%   { transform: var(--pos) scale(1); }
-      50%  { transform: var(--pos) scale(1.18); }
-      100% { transform: var(--pos) scale(1); }
+      0%, 100% { transform: scale(1); }
+      50%      { transform: scale(1.20); }
     }
     /* Tile palette — classic 2048 colors, tuned to look OK in dark mode too. */
-    .g2048-tile[data-v="2"]    { background:#eee4da; color:#776e65; }
-    .g2048-tile[data-v="4"]    { background:#ede0c8; color:#776e65; }
-    .g2048-tile[data-v="8"]    { background:#f2b179; color:#f9f6f2; }
-    .g2048-tile[data-v="16"]   { background:#f59563; color:#f9f6f2; }
-    .g2048-tile[data-v="32"]   { background:#f67c5f; color:#f9f6f2; }
-    .g2048-tile[data-v="64"]   { background:#f65e3b; color:#f9f6f2; }
-    .g2048-tile[data-v="128"]  { background:#edcf72; color:#f9f6f2; }
-    .g2048-tile[data-v="256"]  { background:#edcc61; color:#f9f6f2; }
-    .g2048-tile[data-v="512"]  { background:#edc850; color:#f9f6f2; }
-    .g2048-tile[data-v="1024"] { background:#edc53f; color:#f9f6f2; }
-    .g2048-tile[data-v="2048"] { background:#edc22e; color:#f9f6f2; }
-    .g2048-tile[data-v-big]    { background:#3c3a32; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="2"]    { background:#eee4da; color:#776e65; }
+    .g2048-tile-inner[data-v="4"]    { background:#ede0c8; color:#776e65; }
+    .g2048-tile-inner[data-v="8"]    { background:#f2b179; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="16"]   { background:#f59563; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="32"]   { background:#f67c5f; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="64"]   { background:#f65e3b; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="128"]  { background:#edcf72; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="256"]  { background:#edcc61; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="512"]  { background:#edc850; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="1024"] { background:#edc53f; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="2048"] { background:#edc22e; color:#f9f6f2; }
+    .g2048-tile-inner[data-v-big]    { background:#3c3a32; color:#f9f6f2; }
     .g2048-overlay {
       position: absolute; inset: 0;
       display: none; flex-direction: column; align-items: center; justify-content: center;
@@ -308,8 +317,8 @@
     // Must stay aligned with the CSS `.g2048-tile { transition: transform <X>ms }`
     // duration. Finalize fires a tick after the slide completes so the merge pop
     // doesn't visibly trail behind sliding tiles.
-    const SLIDE_MS = 130;
-    const FINALIZE_MS = 140;
+    const SLIDE_MS = 120;
+    const FINALIZE_MS = 130;
 
     /** @type {number[][]} */
     let grid;
@@ -432,35 +441,40 @@
     }
 
     // ---------- Tile DOM ----------
+    // Outer node owns position (translate + slide transition). Inner node owns
+    // appearance and pop/merge keyframes (scale only). They never fight each
+    // other for the `transform` property.
     function setTileVisuals(el, v, r, c) {
       const size = cellSizePx();
       const x = c * (size + GAP_PX);
       const y = r * (size + GAP_PX);
       el.style.width  = size + 'px';
       el.style.height = size + 'px';
-      el.style.setProperty('--pos', `translate(${x}px, ${y}px)`);
       el.style.transform = `translate(${x}px, ${y}px)`;
+      const inner = el.firstChild;
       const digits = String(v).length;
       const base = size * (digits <= 2 ? 0.45 : digits === 3 ? 0.36 : digits === 4 ? 0.30 : 0.24);
-      el.style.fontSize = Math.max(14, Math.round(base)) + 'px';
-      el.textContent = String(v);
-      el.setAttribute('data-v', String(v));
-      if (v > 2048) el.setAttribute('data-v-big', '');
-      else el.removeAttribute('data-v-big');
+      inner.style.fontSize = Math.max(14, Math.round(base)) + 'px';
+      inner.textContent = String(v);
+      inner.setAttribute('data-v', String(v));
+      if (v > 2048) inner.setAttribute('data-v-big', '');
+      else inner.removeAttribute('data-v-big');
     }
 
-    // Update only the transform (lets the CSS transition animate the slide).
+    // Update only the outer transform (lets the CSS transition own the slide).
     function setTilePos(el, r, c) {
       const size = cellSizePx();
       const x = c * (size + GAP_PX);
       const y = r * (size + GAP_PX);
-      el.style.setProperty('--pos', `translate(${x}px, ${y}px)`);
       el.style.transform = `translate(${x}px, ${y}px)`;
     }
 
     function createTileEl(v, r, c, popClass) {
       const el = document.createElement('div');
       el.className = 'g2048-tile' + (popClass ? ' ' + popClass : '');
+      const inner = document.createElement('div');
+      inner.className = 'g2048-tile-inner';
+      el.appendChild(inner);
       tilesEl.appendChild(el);
       setTileVisuals(el, v, r, c);
       return el;
