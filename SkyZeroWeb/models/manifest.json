@@ -1,10 +1,10 @@
 {
   "default": "lv3",
   "models": [
-    { "id": "lv1", "label": "入门", "elo": 3900, "file": "level1.onnx", "params": "b10c128 iter34" },
-    { "id": "lv2", "label": "进阶", "elo": 4100, "file": "level2.onnx", "params": "b10c128 iter36" },
-    { "id": "lv3", "label": "高手", "elo": 4300, "file": "level3.onnx", "params": "b10c128 iter40" },
-    { "id": "lv4", "label": "大师", "elo": 4474, "file": "level4.onnx", "params": "b10c128 iter42" },
-    { "id": "lv5", "label": "终极", "elo": 4830, "file": "level5.onnx", "params": "b10c128 iter44" }
+    { "id": "lv1", "label": "入门", "elo": 3900, "file": "level1.onnx", "params": "b5c128 iter50 (V7.1)" },
+    { "id": "lv2", "label": "进阶", "elo": 4100, "file": "level2.onnx", "params": "b5c128 iter150 (V7.1)" },
+    { "id": "lv3", "label": "高手", "elo": 4300, "file": "level3.onnx", "params": "b5c128 iter400 (V7.1)" },
+    { "id": "lv4", "label": "大师", "elo": 4474, "file": "level4.onnx", "params": "b5c128 iter800 (V7.1)" },
+    { "id": "lv5", "label": "终极", "elo": 4830, "file": "level5.onnx", "params": "b5c128 iter1272 (V7.1)" }
   ]
 }
