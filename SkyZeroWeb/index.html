@@ -155,6 +155,26 @@
           <div class="game-name" id="card_2048_name">2048</div>
           <div class="game-desc" id="card_2048_desc">经典数字合并益智游戏</div>
         </a>
+
+        <a class="game-card" href="/channel-dodge">
+          <div class="game-icon">
+            <svg viewBox="0 0 100 100" width="88" height="88" aria-hidden="true">
+              <rect x="6" y="6" width="88" height="88" rx="10" fill="#0d1117"/>
+              <!-- laser beam -->
+              <line x1="8" y1="20" x2="92" y2="64" stroke="#f43f5e" stroke-width="4" opacity="0.85"/>
+              <!-- bullets -->
+              <circle cx="24" cy="74" r="6" fill="#38bdf8"/>
+              <circle cx="78" cy="26" r="5" fill="#38bdf8"/>
+              <circle cx="70" cy="76" r="9" fill="#a78bfa"/>
+              <circle cx="30" cy="34" r="6" fill="#fb923c"/>
+              <!-- player -->
+              <circle cx="50" cy="54" r="10" fill="#4493f8"/>
+              <circle cx="50" cy="54" r="4" fill="#ffffff"/>
+            </svg>
+          </div>
+          <div class="game-name" id="card_dodge_name">躲避</div>
+          <div class="game-desc" id="card_dodge_desc">操控人物躲避四面弹幕</div>
+        </a>
       </div>
     </div>
 
@@ -174,6 +194,8 @@
         gomoku_desc: '对弈 AlphaZero 风格神经网络',
         g2048_name: '2048',
         g2048_desc: '经典数字合并益智游戏',
+        dodge_name: '躲避',
+        dodge_desc: '操控人物躲避四面弹幕',
         footer: 'SkyZero · 全部在浏览器本地运行，无服务器',
         aria_lang: '切换语言', aria_theme: '切换配色主题',
         th_auto: '自动', th_light: '明亮', th_dark: '暗黑',
@@ -186,6 +208,8 @@
         gomoku_desc: 'Play an AlphaZero-style neural network',
         g2048_name: '2048',
         g2048_desc: 'The classic tile-merging puzzle',
+        dodge_name: 'Dodge',
+        dodge_desc: 'Steer a character through bullet hell',
         footer: 'SkyZero · Runs entirely in your browser, no server',
         aria_lang: 'Switch language', aria_theme: 'Toggle theme',
         th_auto: 'Auto', th_light: 'Light', th_dark: 'Dark',
@@ -205,6 +229,8 @@
       document.getElementById('card_gomoku_desc').textContent = s.gomoku_desc;
       document.getElementById('card_2048_name').textContent = s.g2048_name;
       document.getElementById('card_2048_desc').textContent = s.g2048_desc;
+      document.getElementById('card_dodge_name').textContent = s.dodge_name;
+      document.getElementById('card_dodge_desc').textContent = s.dodge_desc;
       document.getElementById('footer_text').textContent = s.footer;
       var langSeg = document.getElementById('lang_seg');
       langSeg.setAttribute('aria-label', s.aria_lang);
