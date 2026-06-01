@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SkyZero 五子棋 · ONNX Web</title>
+  <title>SkyZero · Web</title>
   <link rel="preload" href="fonts/Inter-Regular.woff2"  as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <script>
@@ -34,79 +34,76 @@
     })();
   </script>
   <link rel="stylesheet" href="style.css">
+  <style>
+    .landing-main {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 28px; padding: 40px 20px 64px;
+      text-align: center;
+    }
+    .landing-hero h1 {
+      margin: 0; font-size: clamp(28px, 6vw, 44px); font-weight: 600;
+      letter-spacing: -0.02em; color: var(--fg);
+    }
+    .landing-hero p {
+      margin: 10px 0 0; font-size: 15px; color: var(--fg-muted);
+    }
+    .landing-grid {
+      display: grid; gap: 18px; width: 100%; max-width: 720px;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+    .game-card {
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+      padding: 32px 24px; text-decoration: none;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); color: var(--fg);
+      transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+    }
+    .game-card:hover {
+      border-color: var(--border-strong); transform: translateY(-3px);
+      box-shadow: 0 8px 24px rgba(27,31,36,0.10);
+    }
+    .game-card .game-icon {
+      width: 88px; height: 88px; display: grid; place-items: center;
+    }
+    .game-card .game-name {
+      font-size: 20px; font-weight: 600; letter-spacing: -0.01em;
+    }
+    .game-card .game-desc {
+      font-size: 13px; color: var(--fg-muted); line-height: 1.5;
+    }
+    /* Gomoku icon board */
+    .ico-board { background: var(--board-bg); border-radius: 8px; padding: 10px; }
+    .landing-footer {
+      font-size: 11px; color: var(--fg-subtle); padding: 0 20px 28px;
+      text-align: center;
+    }
+  </style>
 </head>
 <body>
-  <script>
-    // Set show-analysis class before first paint so analysis surfaces don't
-    // flash when the user has them turned off.
-    (function(){
-      try {
-        var v = localStorage.getItem('skz_show_analysis');
-        if (v === '1') document.body.classList.add('show-analysis');
-      } catch(e) {}
-    })();
-    // Apply search-disabled before first paint to avoid the sims input
-    // flashing on then collapsing when the toggle was previously off.
-    (function(){
-      try {
-        var v = localStorage.getItem('skz_search_enabled');
-        if (v === '0') document.body.classList.add('search-disabled');
-      } catch(e) {}
-    })();
-  </script>
-
-  <!-- Loading overlay shown while downloading the first ONNX model -->
-  <div id="loading_overlay">
-    <div class="loader-card">
-      <div class="loader-spin"></div>
-      <div class="loader-text" id="loading_text">正在加载模型…</div>
-      <div class="loader-bar"><div class="loader-fill" id="loading_fill"></div></div>
-      <div class="loader-pct" id="loading_pct">0%</div>
-    </div>
-  </div>
-
   <div class="app">
-    <!-- Header -->
     <header class="topbar">
       <div class="brand">
-        <div class="brand-title" data-i18n="brand_title">SkyZero 五子棋引擎</div>
-        <label class="toggle brand-toggle" data-i18n-title="analysis_mode_label" data-i18n-aria="analysis_mode_label"
-               aria-label="Analysis mode" title="Analysis mode">
-          <span class="toggle-text" data-i18n="analysis_mode_label">分析模式</span>
-          <input type="checkbox" id="show_analysis_input">
-          <span class="track"></span>
-        </label>
-        <script>
-          // Sync checkbox state with persisted preference before first paint
-          // so the switch doesn't briefly render unchecked when analysis was on.
-          try {
-            if (localStorage.getItem('skz_show_analysis') === '1') {
-              document.getElementById('show_analysis_input').checked = true;
-            }
-          } catch (_) {}
-        </script>
+        <div class="brand-title">SkyZero</div>
       </div>
       <div class="topbar-actions">
-        <a class="seg-row compact" id="game_link_2048" href="2048.html" aria-label="2048" title="2048"
-           style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:48px;height:32px;padding:0 12px;font-size:12px;font-weight:600;color:var(--fg-muted);letter-spacing:0.02em;">2048</a>
-        <div class="seg-row compact" id="lang_seg" role="group" data-i18n-aria-group="aria_lang" aria-label="切换语言">
+        <div class="seg-row compact" id="lang_seg" role="group" aria-label="切换语言">
           <button class="seg-btn" data-lang="zh" aria-pressed="true">中</button>
           <button class="seg-btn" data-lang="en" aria-pressed="false">EN</button>
         </div>
-        <div class="seg-row compact" id="theme_seg" role="group" data-i18n-aria-group="aria_theme" aria-label="切换配色主题">
-          <button class="seg-btn" data-theme="auto" aria-pressed="true" data-i18n-title="theme_label_auto" data-i18n-aria="theme_label_auto" aria-label="自动" title="自动">
+        <div class="seg-row compact" id="theme_seg" role="group" aria-label="切换配色主题">
+          <button class="seg-btn" data-theme="auto" aria-pressed="true" aria-label="自动" title="自动">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
               <circle cx="8" cy="8" r="6"></circle>
               <path d="M8 2 a6 6 0 0 1 0 12 z" fill="currentColor" stroke="none"></path>
             </svg>
           </button>
-          <button class="seg-btn" data-theme="light" aria-pressed="false" data-i18n-title="theme_label_light" data-i18n-aria="theme_label_light" aria-label="明亮" title="明亮">
+          <button class="seg-btn" data-theme="light" aria-pressed="false" aria-label="明亮" title="明亮">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <circle cx="8" cy="8" r="3"></circle>
               <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"></path>
             </svg>
           </button>
-          <button class="seg-btn" data-theme="dark" aria-pressed="false" data-i18n-title="theme_label_dark" data-i18n-aria="theme_label_dark" aria-label="暗黑" title="暗黑">
+          <button class="seg-btn" data-theme="dark" aria-pressed="false" aria-label="暗黑" title="暗黑">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
             </svg>
@@ -115,240 +112,162 @@
       </div>
     </header>
 
-    <div class="main">
-      <!-- Left column: status pill + unified settings card -->
-      <aside class="side-col" id="left_col">
-        <div class="card status-card">
-          <div class="status-pill" id="status_pill" data-variant="idle">
-            <span class="dot"></span>
-            <span id="status">空闲</span>
-          </div>
-        </div>
+    <div class="landing-main">
+      <div class="landing-hero">
+        <h1 id="hero_title">选择一个游戏</h1>
+        <p id="hero_sub">浏览器端运行的 SkyZero 强化学习引擎</p>
+      </div>
 
-        <div class="card settings-card">
-          <div class="card-body">
-            <div class="settings-group">
-              <div class="settings-group-title">
-                <span data-i18n="settings_group_game">对局</span>
-                <button class="btn btn--mini" id="edit_btn">
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 1.5l3 3-9 9H2.5v-3z"/></svg>
-                  <span data-i18n="btn_edit_position">编辑棋形</span>
-                </button>
-              </div>
-
-              <div class="settings-row">
-                <span class="settings-label" data-i18n="label_model">模型</span>
-                <select id="model_select" class="settings-control settings-control--select"></select>
-              </div>
-
-              <div class="settings-row">
-                <span class="settings-label" data-i18n="label_human_side">我方执子</span>
-                <div class="seg-row settings-control">
-                  <button class="seg-btn" id="side_black" aria-pressed="true">
-                    <span class="seg-stone black"></span><span data-i18n="side_black">黑棋</span>
-                  </button>
-                  <button class="seg-btn" id="side_white" aria-pressed="false">
-                    <span class="seg-stone white"></span><span data-i18n="side_white">白棋</span>
-                  </button>
-                </div>
-              </div>
-
-              <div class="settings-row">
-                <span class="settings-label" data-i18n="label_rule">规则</span>
-                <div class="seg-row settings-control">
-                  <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="true"  data-i18n="rule_freestyle">无禁手</button>
-                  <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="false" data-i18n="rule_renju">连珠</button>
-                </div>
-              </div>
-
-              <div class="settings-row">
-                <span class="settings-label" data-i18n="label_board_size">棋盘大小</span>
-                <div class="size-control settings-control">
-                  <input type="range" id="size_input" min="9" max="19" step="1" value="15" data-i18n-aria="label_board_size" aria-label="棋盘大小">
-                  <span class="size-value" id="size_value">15</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="settings-group">
-              <div class="settings-group-title">
-                <span data-i18n="settings_group_search">搜索</span>
-                <span class="settings-group-hint" data-i18n="label_search_hint">(关闭则 AI 直接凭直觉落子)</span>
-                <label class="toggle" data-i18n-aria="aria_search_toggle" aria-label="切换搜索">
-                  <input type="checkbox" id="search_enable_input" checked aria-controls="sims_wrapper">
-                  <span class="track"></span>
-                </label>
-              </div>
-
-              <div class="settings-row" id="sims_wrapper">
-                <span class="settings-label">
-                  <span class="label-sims-simple"   data-i18n="label_sims_depth">思考深度</span>
-                  <span class="label-sims-analysis" data-i18n="label_sims_count">模拟次数</span>
-                </span>
-                <input class="num settings-control settings-control--num" type="number" id="sims_input" min="0" step="1" value="32">
-              </div>
-            </div>
+      <div class="landing-grid">
+        <a class="game-card" href="/gomoku">
+          <div class="game-icon">
+            <svg class="ico-board" viewBox="0 0 100 100" width="88" height="88" aria-hidden="true">
+              <g stroke="var(--board-line)" stroke-width="1.5">
+                <line x1="10" y1="10" x2="10" y2="90"/><line x1="33.3" y1="10" x2="33.3" y2="90"/>
+                <line x1="56.6" y1="10" x2="56.6" y2="90"/><line x1="80" y1="10" x2="80" y2="90"/>
+                <line x1="10" y1="10" x2="80" y2="10"/><line x1="10" y1="33.3" x2="80" y2="33.3"/>
+                <line x1="10" y1="56.6" x2="80" y2="56.6"/><line x1="10" y1="80" x2="80" y2="80"/>
+              </g>
+              <circle cx="33.3" cy="33.3" r="8" fill="#111" stroke="#000"/>
+              <circle cx="56.6" cy="56.6" r="8" fill="#fff" stroke="#1a1a1a"/>
+              <circle cx="56.6" cy="33.3" r="8" fill="#111" stroke="#000"/>
+              <circle cx="33.3" cy="56.6" r="8" fill="#fff" stroke="#1a1a1a"/>
+            </svg>
           </div>
-        </div>
-      </aside>
+          <div class="game-name" id="card_gomoku_name">五子棋</div>
+          <div class="game-desc" id="card_gomoku_desc">对弈 AlphaZero 风格神经网络</div>
+        </a>
 
-      <!-- Center column: board -->
-      <section class="board-col">
-        <div class="card board-card">
-          <canvas id="board"></canvas>
-        </div>
-        <div class="board-actions" id="play_actions">
-          <button class="btn primary" id="new_btn" data-i18n="btn_new_game">新对局</button>
-          <button class="btn danger-ghost" id="undo_btn" data-i18n="btn_undo">悔棋</button>
-        </div>
-        <div class="board-actions edit-toolbar" id="edit_toolbar">
-          <div class="seg-row edit-tools" id="edit_tool_seg" role="group" data-i18n-aria="aria_edit_tool" aria-label="编辑工具">
-            <button class="seg-btn" data-edit-tool="alternate" aria-pressed="true">
-              <span class="seg-stone alt"></span><span data-i18n="edit_tool_alternate">轮流</span>
-            </button>
-            <button class="seg-btn" data-edit-tool="black" aria-pressed="false">
-              <span class="seg-stone black"></span><span data-i18n="edit_tool_black">放黑</span>
-            </button>
-            <button class="seg-btn" data-edit-tool="white" aria-pressed="false">
-              <span class="seg-stone white"></span><span data-i18n="edit_tool_white">放白</span>
-            </button>
-            <button class="seg-btn" data-edit-tool="erase" aria-pressed="false">
-              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12.5l9-9 1 1-9 9zM2 14h12"/></svg>
-              <span data-i18n="edit_tool_erase">擦除</span>
-            </button>
+        <a class="game-card" href="/2048">
+          <div class="game-icon">
+            <svg viewBox="0 0 100 100" width="88" height="88" aria-hidden="true">
+              <rect x="6" y="6" width="88" height="88" rx="10" fill="#bbada0"/>
+              <rect x="13" y="13" width="34" height="34" rx="5" fill="#eee4da"/>
+              <rect x="53" y="13" width="34" height="34" rx="5" fill="#ede0c8"/>
+              <rect x="13" y="53" width="34" height="34" rx="5" fill="#f2b179"/>
+              <rect x="53" y="53" width="34" height="34" rx="5" fill="#f59563"/>
+              <text x="30" y="36" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="#776e65" text-anchor="middle">2</text>
+              <text x="70" y="36" font-family="Inter, sans-serif" font-size="15" font-weight="700" fill="#776e65" text-anchor="middle">4</text>
+              <text x="30" y="76" font-family="Inter, sans-serif" font-size="14" font-weight="700" fill="#f9f6f2" text-anchor="middle">8</text>
+              <text x="70" y="76" font-family="Inter, sans-serif" font-size="11" font-weight="700" fill="#f9f6f2" text-anchor="middle">16</text>
+            </svg>
           </div>
-          <button class="btn" id="edit_undo_btn" data-i18n="btn_edit_undo" disabled>撤回</button>
-          <button class="btn primary" id="edit_done_btn" data-i18n="btn_edit_done">完成</button>
-          <button class="btn" id="edit_cancel_btn" data-i18n="btn_cancel">取消</button>
-        </div>
-      </section>
-
-      <!-- Right column: value estimates + (in analysis mode) 6 heatmaps -->
-      <aside class="side-col" id="right_col">
-        <div class="card">
-          <div class="card-body">
-            <div class="card-title-row">
-              <div class="card-title" data-i18n="label_value_estimates">胜率估计</div>
-              <span class="wdl-wl wdl-wl--header" id="wdl_root_wl">—</span>
-            </div>
-            <div class="wdl-row">
-              <span class="wdl-label" data-i18n="legend_root">根</span>
-              <div class="wdl-bar" id="wdl_root_bar">
-                <span class="seg w" style="width:0"></span>
-                <span class="seg d" style="width:0"></span>
-                <span class="seg l" style="width:0"></span>
-              </div>
-              <div class="wdl-detail" id="wdl_root_detail"></div>
-            </div>
-            <div class="wdl-row wdl-row--nn">
-              <span class="wdl-label" data-i18n="legend_nn">网络</span>
-              <div class="wdl-bar" id="wdl_nn_bar">
-                <span class="seg w" style="width:0"></span>
-                <span class="seg d" style="width:0"></span>
-                <span class="seg l" style="width:0"></span>
-              </div>
-              <div class="wdl-detail" id="wdl_nn_detail">
-                <span class="wdl-wl" id="wdl_nn_wl">—</span>
-              </div>
-            </div>
-            <div class="value-chart-wrap">
-              <div class="value-chart-legend">
-                <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span><span data-i18n="legend_root">根</span></span>
-                <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span><span data-i18n="legend_nn">网络</span></span>
-                <span class="vc-axis" data-i18n="legend_axis">胜率 · 0…100%</span>
-              </div>
-              <canvas id="value_chart"></canvas>
-            </div>
-          </div>
-        </div>
-        <div class="grids">
-          <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_improved_policy">改进策略</span>
-              <span class="grid-title-actions">
-                <button class="pin-btn" data-target="h_mcts_policy" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
-                <button class="expand-btn" data-target="h_mcts_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
-              </span>
-            </div>
-            <canvas class="heat" id="h_mcts_policy"></canvas>
-          </div>
-          <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_visits_dist">访问分布</span>
-              <span class="grid-title-actions">
-                <button class="pin-btn" data-target="h_mcts_visits" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
-                <button class="expand-btn" data-target="h_mcts_visits" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
-              </span>
-            </div>
-            <canvas class="heat" id="h_mcts_visits"></canvas>
-          </div>
-          <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_policy">网络策略</span>
-              <span class="grid-title-actions">
-                <button class="pin-btn" data-target="h_nn_policy" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
-                <button class="expand-btn" data-target="h_nn_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
-              </span>
-            </div>
-            <canvas class="heat" id="h_nn_policy"></canvas>
-          </div>
-          <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_opp_policy">对手策略</span>
-              <span class="grid-title-actions">
-                <button class="pin-btn" data-target="h_nn_opp_policy" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
-                <button class="expand-btn" data-target="h_nn_opp_policy" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
-              </span>
-            </div>
-            <canvas class="heat" id="h_nn_opp_policy"></canvas>
-          </div>
-          <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_futurepos_8">未来落点 +8</span>
-              <span class="grid-title-actions">
-                <button class="pin-btn" data-target="h_nn_futurepos_8" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
-                <button class="expand-btn" data-target="h_nn_futurepos_8" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
-              </span>
-            </div>
-            <canvas class="heat" id="h_nn_futurepos_8"></canvas>
-          </div>
-          <div class="card grid-card">
-            <div class="grid-title"><span class="grid-title-text" data-i18n="heat_nn_futurepos_32">未来落点 +32</span>
-              <span class="grid-title-actions">
-                <button class="pin-btn" data-target="h_nn_futurepos_32" data-i18n-aria="aria_pin_heat" aria-label="固定到棋盘" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="3"/><line x1="8" y1="9" x2="8" y2="13.5"/></svg></button>
-                <button class="expand-btn" data-target="h_nn_futurepos_32" data-i18n-aria="aria_expand" aria-label="展开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6V2.5h3.5M13.5 6V2.5H10M2.5 10v3.5h3.5M13.5 10v3.5H10"/></svg></button>
-              </span>
-            </div>
-            <canvas class="heat" id="h_nn_futurepos_32"></canvas>
-          </div>
-        </div>
-      </aside>
-    </div>
-
-    <!-- Board-size confirm modal -->
-    <div class="confirm-modal hidden" id="size_confirm_modal" role="dialog" aria-modal="true" aria-labelledby="size_confirm_title">
-      <div class="confirm-modal-card">
-        <div class="confirm-modal-title" id="size_confirm_title" data-i18n="size_confirm_title">切换棋盘大小?</div>
-        <div class="confirm-modal-body" id="size_confirm_body"></div>
-        <div class="confirm-modal-actions">
-          <button class="btn" id="size_confirm_cancel" data-i18n="btn_cancel">取消</button>
-          <button class="btn primary" id="size_confirm_ok" data-i18n="btn_confirm_reset">重置</button>
-        </div>
+          <div class="game-name" id="card_2048_name">2048</div>
+          <div class="game-desc" id="card_2048_desc">经典数字合并益智游戏</div>
+        </a>
       </div>
     </div>
 
-    <!-- Heat modal (fullscreen single heatmap) -->
-    <div class="heat-modal hidden" id="heat_modal" role="dialog" aria-modal="true">
-      <div class="heat-modal-card">
-        <div class="heat-modal-header">
-          <span class="heat-modal-title" id="heat_modal_title">热力图</span>
-          <button class="heat-modal-close" id="heat_modal_close" data-i18n-aria="aria_close" aria-label="关闭">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l10 10M13 3L3 13"/></svg>
-          </button>
-        </div>
-        <canvas id="heat_modal_canvas"></canvas>
-      </div>
-    </div>
+    <footer class="landing-footer">
+      <span id="footer_text">SkyZero · 全部在浏览器本地运行，无服务器</span>
+    </footer>
   </div>
 
-  <script src="i18n.js"></script>
-  <script src="gomoku.js"></script>
-  <script src="mcts.js"></script>
-  <script src="main.js"></script>
+  <script>
+    // ---------- i18n (self-contained for the landing page) ----------
+    var STRINGS = {
+      zh: {
+        title: 'SkyZero · Web',
+        hero_title: '选择一个游戏',
+        hero_sub: '浏览器端运行的 SkyZero 强化学习引擎',
+        gomoku_name: '五子棋',
+        gomoku_desc: '对弈 AlphaZero 风格神经网络',
+        g2048_name: '2048',
+        g2048_desc: '经典数字合并益智游戏',
+        footer: 'SkyZero · 全部在浏览器本地运行，无服务器',
+        aria_lang: '切换语言', aria_theme: '切换配色主题',
+        th_auto: '自动', th_light: '明亮', th_dark: '暗黑',
+      },
+      en: {
+        title: 'SkyZero · Web',
+        hero_title: 'Choose a game',
+        hero_sub: 'SkyZero reinforcement-learning engines, running in your browser',
+        gomoku_name: 'Gomoku',
+        gomoku_desc: 'Play an AlphaZero-style neural network',
+        g2048_name: '2048',
+        g2048_desc: 'The classic tile-merging puzzle',
+        footer: 'SkyZero · Runs entirely in your browser, no server',
+        aria_lang: 'Switch language', aria_theme: 'Toggle theme',
+        th_auto: 'Auto', th_light: 'Light', th_dark: 'Dark',
+      },
+    };
+    function getLang() {
+      try { var l = localStorage.getItem('skz_lang'); return (l === 'zh' || l === 'en') ? l : 'zh'; }
+      catch (e) { return 'zh'; }
+    }
+    function applyLang(lang) {
+      var s = STRINGS[lang] || STRINGS.zh;
+      document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+      document.title = s.title;
+      document.getElementById('hero_title').textContent = s.hero_title;
+      document.getElementById('hero_sub').textContent = s.hero_sub;
+      document.getElementById('card_gomoku_name').textContent = s.gomoku_name;
+      document.getElementById('card_gomoku_desc').textContent = s.gomoku_desc;
+      document.getElementById('card_2048_name').textContent = s.g2048_name;
+      document.getElementById('card_2048_desc').textContent = s.g2048_desc;
+      document.getElementById('footer_text').textContent = s.footer;
+      var langSeg = document.getElementById('lang_seg');
+      langSeg.setAttribute('aria-label', s.aria_lang);
+      langSeg.querySelectorAll('.seg-btn[data-lang]').forEach(function(b){
+        b.setAttribute('aria-pressed', b.dataset.lang === lang ? 'true' : 'false');
+      });
+      var themeSeg = document.getElementById('theme_seg');
+      themeSeg.setAttribute('aria-label', s.aria_theme);
+      var titles = { auto: s.th_auto, light: s.th_light, dark: s.th_dark };
+      themeSeg.querySelectorAll('.seg-btn[data-theme]').forEach(function(b){
+        b.setAttribute('aria-label', titles[b.dataset.theme]);
+        b.setAttribute('title', titles[b.dataset.theme]);
+      });
+    }
+
+    // ---------- Theme ----------
+    var THEME_MODES = ['auto', 'light', 'dark'];
+    function resolveTheme(mode) {
+      if (mode === 'light' || mode === 'dark') return mode;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    function applyTheme(mode) {
+      if (THEME_MODES.indexOf(mode) < 0) mode = 'auto';
+      document.documentElement.dataset.theme = resolveTheme(mode);
+      document.documentElement.dataset.themeMode = mode;
+      document.querySelectorAll('#theme_seg .seg-btn[data-theme]').forEach(function(b){
+        b.setAttribute('aria-pressed', b.dataset.theme === mode ? 'true' : 'false');
+      });
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      applyLang(getLang());
+      applyTheme(document.documentElement.dataset.themeMode || 'auto');
+
+      document.querySelectorAll('#lang_seg .seg-btn[data-lang]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var lang = b.dataset.lang;
+          try { localStorage.setItem('skz_lang', lang); } catch (e) {}
+          applyLang(lang);
+        });
+      });
+      document.querySelectorAll('#theme_seg .seg-btn[data-theme]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var next = b.dataset.theme;
+          if (THEME_MODES.indexOf(next) < 0) return;
+          try {
+            if (next === 'auto') localStorage.removeItem('skz_theme');
+            else localStorage.setItem('skz_theme', next);
+          } catch (e) {}
+          applyTheme(next);
+        });
+      });
+
+      try {
+        var mql = window.matchMedia('(prefers-color-scheme: dark)');
+        var onSys = function () {
+          if ((document.documentElement.dataset.themeMode || 'auto') !== 'auto') return;
+          applyTheme('auto');
+        };
+        if (mql.addEventListener) mql.addEventListener('change', onSys);
+        else if (mql.addListener) mql.addListener(onSys);
+      } catch (e) {}
+    });
+  </script>
 </body>
 </html>

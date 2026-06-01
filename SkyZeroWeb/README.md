@@ -64,7 +64,9 @@ pip install onnx onnxscript onnxruntime
 
 ## Architecture
 
-- `index.html` / `style.css` — UI (ported from `play_web.py`)
+- `index.html` — landing page (game picker → `/gomoku`, `/2048`)
+- `gomoku.html` / `style.css` — five-in-a-row UI (ported from `play_web.py`)
+- `2048.html` — 2048 game UI
 - `main.js` — UI controller, canvas rendering, worker plumbing
 - `worker.js` — runs `ort.InferenceSession` + MCTS in a Web Worker
 - `mcts.js` — Sequential MCTS with variance-scaled cPUCT + Gumbel halving

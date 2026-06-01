@@ -13,6 +13,7 @@ node_modules/
 
 # Local dev
 .cache/
+.wrangler/
 
 .superpowers/
 origin_models/

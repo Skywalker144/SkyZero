@@ -81,7 +81,7 @@ try {
 
 // Show-analysis toggle (heatmaps + network WDL + "nn" line on value chart).
 // State persisted in localStorage("skz_show_analysis") as "1" / "0".
-// A pre-paint inline script in index.html applies body.show-analysis before
+// A pre-paint inline script in gomoku.html applies body.show-analysis before
 // first paint to avoid flashing the analysis surfaces on load.
 //
 // Simple mode: value-estimates card sits in the right column (default HTML
@@ -1231,7 +1231,7 @@ worker.onmessage = (e) => {
 
 // Search toggle: when off, sims=0 is sent to the worker (pure NN, policy-head
 // argmax). State persisted in localStorage("skz_search_enabled") as "1"/"0".
-// A pre-paint inline script in index.html applies body.search-disabled before
+// A pre-paint inline script in gomoku.html applies body.search-disabled before
 // first paint so the sims input doesn't flash before collapsing on load.
 function setSearchEnabled(on) {
     document.body.classList.toggle("search-disabled", !on);
