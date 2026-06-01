@@ -451,13 +451,13 @@
     // ---------- Game ----------
     const SIZE = 4;
     const GAP_PX = 10;
-    // Hard ceiling: no tile may ever exceed 65536 (2^16). Two 65536 tiles would
-    // merge into 131072, so merging is blocked once a tile hits MAX_TILE, and
-    // the editor keeps the whole board sum below SUM_CAP (2^17). That sum rule
-    // is what makes the editable max halve as the board fills: after a 65536
-    // only 32768 fits, then 16384, and so on.
-    const MAX_TILE = 65536;
-    const SUM_CAP  = MAX_TILE * 2;   // 131072
+    // Hard ceiling: no tile may ever exceed 131072 (2^17). Two 131072 tiles
+    // would merge into 262144, so merging is blocked once a tile hits MAX_TILE,
+    // and the editor keeps the whole board sum below SUM_CAP (2^18). That sum
+    // rule is what makes the editable max halve as the board fills: after a
+    // 131072 only 65536 fits, then 32768, and so on.
+    const MAX_TILE = 131072;
+    const SUM_CAP  = MAX_TILE * 2;   // 262144
     const BEST_KEY = 'skz_2048_best';
     const STATE_KEY = 'skz_2048_state';
     const UNDO_LIMIT = 20;
