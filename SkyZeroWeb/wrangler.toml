@@ -1,0 +1,16 @@
+# Cloudflare Pages config. The site is served from the repo root (no build
+# step), and functions/ is compiled into Pages Functions automatically.
+#
+# This file is the source of truth for bindings on git-connected deploys, so
+# the D1 binding below applies in production. Make sure the Pages project's
+# "build output directory" is the repo root (/) to match pages_build_output_dir.
+name = "skyzeroweb"
+pages_build_output_dir = "."
+compatibility_date = "2025-01-01"
+
+# Leaderboard database. Create it once with `npx wrangler d1 create skyzero`
+# and paste the printed database_id below (see LEADERBOARD_SETUP.md).
+[[d1_databases]]
+binding = "DB"
+database_name = "skyzero"
+database_id = "PASTE_DATABASE_ID_HERE"

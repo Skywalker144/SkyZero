@@ -34,6 +34,7 @@
     })();
   </script>
   <link rel="stylesheet" href="style.css">
+  <script defer src="/leaderboard.js"></script>
   <style>
     /* Channel Dodge — a bullet-hell survival game. Theme colors come from
        style.css variables so light/dark mode track the rest of the site. */
@@ -1709,6 +1710,7 @@
       els.best.textContent = best;
       els.startBtn.textContent = t('start');
       els.pauseBtn.textContent = t('pause');
+      if (window.SkzLB) window.SkzLB.submit('dodge', state.score);
       renderOverlay();
       showOverlay();
     }
