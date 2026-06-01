@@ -13,4 +13,4 @@ compatibility_date = "2025-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "skyzero"
-database_id = "PASTE_DATABASE_ID_HERE"
+database_id = "d10f84d8-7ace-4189-9dac-b158f08392c2"

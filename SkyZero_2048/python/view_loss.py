@@ -154,7 +154,7 @@ def _plot_selfplay(data_dir, plt) -> None:
     max_tile = (1 << (present * exps_arr[:, None]).max(axis=0)).astype(float)
     avg_max_tile = (hist * tile_vals[:, None]).sum(axis=0) / totals
 
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(9, 13), sharex=True)
+    fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5, 1, figsize=(9, 16), sharex=True)
 
     # 1) Stacked max-tile distribution (fraction of self-play games).
     labels = [str(1 << e) for e in exps]
@@ -205,10 +205,25 @@ def _plot_selfplay(data_dir, plt) -> None:
         if xs:
             ax4.plot(xs, ys, "-", color="C1", alpha=0.6, label="best score")
     ax4.set_ylabel("score")
-    ax4.set_xlabel("iter")
     ax4.set_title("self-play score")
     ax4.legend(loc="best", fontsize=8)
     ax4.grid(True, alpha=0.3)
+
+    # 5) Avg game length (moves/game) = new_rows / games. Longer games = stronger
+    #    play (the agent survives more moves) — a clean single-agent progress signal.
+    if "new_rows" in c and "games" in c:
+        nr = np.asarray(c["new_rows"], dtype=float)
+        gm = np.asarray(c["games"], dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            avglen = np.where(gm > 0, nr / gm, np.nan)
+        xs, ys = _finite_pairs(it.tolist(), avglen.tolist())
+        if xs:
+            ax5.plot(xs, ys, "-", color="C2", label="avg game len")
+    ax5.set_ylabel("moves / game")
+    ax5.set_xlabel("iter")
+    ax5.set_title("self-play avg game length")
+    ax5.legend(loc="best", fontsize=8)
+    ax5.grid(True, alpha=0.3)
 
     fig.tight_layout()
     out = data_dir / "logs" / "selfplay.png"

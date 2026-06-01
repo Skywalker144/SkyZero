@@ -272,6 +272,7 @@ int main(int argc, char** argv) {
     Game2048 game;
     std::atomic<int> next_game{0};
     std::atomic<long> sum_score{0}, sum_moves{0}, games_done{0};
+    std::atomic<long> moves_done{0};   // incremented per move PLAYED (smooth samples/s)
     std::mutex agg_m;
     std::vector<int> tile_hist(20, 0);
     long best_score = 0;
@@ -393,6 +394,7 @@ int main(int argc, char** argv) {
                 auto out = s.mcts->result();
                 if (out.best_action < 0) { finalize(s); s.active = false; continue; }
                 if (writer) { s.ts.push_back(s.state); s.tp.push_back(out.improved_policy); }
+                moves_done.fetch_add(1, std::memory_order_relaxed);  // one move/sample produced
                 auto mr = game.apply_move(s.state, out.best_action);
                 if (writer) s.tr.push_back(mr.reward);
                 s.score += mr.reward;
@@ -419,18 +421,19 @@ int main(int argc, char** argv) {
                 auto now = std::chrono::steady_clock::now();
                 double dt = std::chrono::duration<double>(now - t_prev).count();
                 double total = std::chrono::duration<double>(now - t0).count();
-                long g = games_done.load(), s = sum_moves.load();
+                long g = games_done.load(), s = moves_done.load();
                 int64_t e = server.total_evals();
                 double gps = dt > 0 ? (g - last_g) / dt : 0.0;
-                double sps = dt > 0 ? (s - last_s) / dt : 0.0;
+                double sps = dt > 0 ? (s - last_s) / dt : 0.0;     // moves PLAYED/s (smooth)
                 double eps = dt > 0 ? (e - last_e) / dt : 0.0;
                 double avg = total > 0 ? g / total : 0.0;
+                double avglen = g > 0 ? (double)sum_moves.load() / g : 0.0;  // avg over finished games
                 if (daemon)
-                    std::printf("[selfplay] %ld games  %.1f games/s (avg %.1f)  %.0f samples/s  %.0f evals/s\n",
-                                g, gps, avg, sps, eps);
+                    std::printf("[selfplay] %ld games  %.1f games/s (avg %.1f)  %.0f samples/s  avglen %.0f  %.0f evals/s\n",
+                                g, gps, avg, sps, avglen, eps);
                 else
-                    std::printf("[selfplay] %ld/%d games (%.0f%%)  %.1f games/s (avg %.1f)  %.0f samples/s  %.0f evals/s\n",
-                                g, num_games, num_games > 0 ? 100.0 * g / num_games : 0.0, gps, avg, sps, eps);
+                    std::printf("[selfplay] %ld/%d games (%.0f%%)  %.1f games/s (avg %.1f)  %.0f samples/s  avglen %.0f  %.0f evals/s\n",
+                                g, num_games, num_games > 0 ? 100.0 * g / num_games : 0.0, gps, avg, sps, avglen, eps);
                 std::fflush(stdout);
                 last_g = g; last_s = s; last_e = e; t_prev = now;
             }
@@ -499,8 +502,9 @@ int main(int argc, char** argv) {
     double secs = std::chrono::duration<double>(t1 - t0).count();
 
     std::printf("\n=== %d games, %d threads, sims=%d, batch<=%d ===\n", num_games, threads, sims, batch);
-    std::printf("avg_score=%ld best=%ld  (%.1fs, %.1f games/s)\n",
-                sum_score.load() / std::max(1, num_games), best_score, secs, num_games / secs);
+    std::printf("avg_score=%ld best=%ld avg_len=%.0f  (%.1fs, %.1f games/s)\n",
+                sum_score.load() / std::max(1, num_games), best_score,
+                (double)sum_moves.load() / std::max(1, num_games), secs, num_games / secs);
     std::printf("server forwards=%ld evals=%ld  avg_batch=%.1f  evals/s=%.0f\n",
                 server.total_forwards(), server.total_evals(),
                 (double)server.total_evals() / std::max<int64_t>(1, server.total_forwards()),
