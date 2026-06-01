@@ -284,6 +284,11 @@
           <span class="cd-legend-pts">+1</span>
         </div>
         <div class="cd-legend-row">
+          <span class="cd-legend-swatch" style="background:#4ade80;box-shadow:0 0 8px #4ade80"></span>
+          <span class="cd-legend-name" id="lg_split">分裂弹</span>
+          <span class="cd-legend-pts">+1</span>
+        </div>
+        <div class="cd-legend-row">
           <span class="cd-legend-swatch" style="background:#fb923c;box-shadow:0 0 8px #fb923c"></span>
           <span class="cd-legend-name" id="lg_aimed">追踪弹</span>
           <span class="cd-legend-pts">+2</span>
@@ -294,9 +299,19 @@
           <span class="cd-legend-pts">+3</span>
         </div>
         <div class="cd-legend-row">
+          <span class="cd-legend-swatch" style="background:#facc15;box-shadow:0 0 8px #facc15"></span>
+          <span class="cd-legend-name" id="lg_bomb">炸弹</span>
+          <span class="cd-legend-pts">+4</span>
+        </div>
+        <div class="cd-legend-row">
           <span class="cd-legend-swatch laser" style="background:#f43f5e;box-shadow:0 0 8px #f43f5e"></span>
           <span class="cd-legend-name" id="lg_laser">激光</span>
           <span class="cd-legend-pts">+5</span>
+        </div>
+        <div class="cd-legend-row">
+          <span class="cd-legend-swatch" style="background:#22c55e;border-radius:4px;box-shadow:0 0 8px #22c55e"></span>
+          <span class="cd-legend-name" id="lg_heal">血包</span>
+          <span class="cd-legend-pts" style="color:#22c55e">+25 HP</span>
         </div>
       </div>
 
@@ -316,7 +331,8 @@
         score: '分数', best: '最高分',
         start: '开始', pause: '暂停', resume: '继续', restart: '重新开始',
         legend_title: '弹幕类型 · 得分',
-        bullet: '子弹', aimed: '追踪弹', cannon: '炮弹', laser: '激光',
+        bullet: '子弹', split: '分裂弹', aimed: '追踪弹', cannon: '炮弹',
+        bomb: '炸弹', laser: '激光', heal: '血包',
         joy_tip: '按住拖动',
         hint: 'WASD / 方向键移动 · 手机上用下方摇杆 · 躲过的弹幕越多得分越高',
         intro_title: '躲避 Channel Dodge',
@@ -333,7 +349,8 @@
         score: 'Score', best: 'Best',
         start: 'Start', pause: 'Pause', resume: 'Resume', restart: 'Restart',
         legend_title: 'Bullet types · points',
-        bullet: 'Bullet', aimed: 'Homing', cannon: 'Cannonball', laser: 'Laser',
+        bullet: 'Bullet', split: 'Split', aimed: 'Homing', cannon: 'Cannonball',
+        bomb: 'Bomb', laser: 'Laser', heal: 'Health',
         joy_tip: 'Hold & drag',
         hint: 'WASD / arrow keys to move · use the joystick below on touch · dodge more to score more',
         intro_title: 'Channel Dodge',
@@ -407,8 +424,9 @@
       overlayBtn: $('overlay_btn'),
       brand: $('brand_link'), hint: $('hint'),
       legendTitle: $('legend_title'),
-      lgBullet: $('lg_bullet'), lgAimed: $('lg_aimed'),
-      lgCannon: $('lg_cannon'), lgLaser: $('lg_laser'),
+      lgBullet: $('lg_bullet'), lgSplit: $('lg_split'), lgAimed: $('lg_aimed'),
+      lgCannon: $('lg_cannon'), lgBomb: $('lg_bomb'), lgLaser: $('lg_laser'),
+      lgHeal: $('lg_heal'),
       joystick: $('joystick'), joyBase: $('joy_base'),
       joyKnob: $('joy_knob'), joyTip: $('joy_tip'),
     };
@@ -421,9 +439,12 @@
       els.lblBest.textContent = t('best');
       els.legendTitle.textContent = t('legend_title');
       els.lgBullet.textContent = t('bullet');
+      els.lgSplit.textContent = t('split');
       els.lgAimed.textContent = t('aimed');
       els.lgCannon.textContent = t('cannon');
+      els.lgBomb.textContent = t('bomb');
       els.lgLaser.textContent = t('laser');
+      els.lgHeal.textContent = t('heal');
       els.joyTip.textContent = t('joy_tip');
       els.hint.textContent = t('hint');
       els.pauseBtn.textContent = state.mode === 'paused' ? t('resume') : t('pause');
@@ -456,12 +477,21 @@
     // Per-type config. `score` is awarded when the projectile is successfully
     // dodged (leaves the arena, or — for lasers — finishes firing) without
     // having hit the player.
+    // Every type gets its OWN color so the player can read the threat at a
+    // glance. `turn` (rad/s) is the max angular velocity for steering types
+    // (0 / absent = flies straight).
     const TYPES = {
-      bullet: { score: 1, dmg: 8,  r: 6,  color: '#38bdf8', glow: '#38bdf8' },
-      aimed:  { score: 2, dmg: 12, r: 7,  color: '#fb923c', glow: '#fb923c' },
-      cannon: { score: 3, dmg: 24, r: 16, color: '#a78bfa', glow: '#a78bfa' },
-      laser:  { score: 5, dmg: 30, color: '#f43f5e', glow: '#f43f5e' },
+      bullet: { score: 1, dmg: 8,  r: 6,  color: '#38bdf8', glow: '#38bdf8' },                 // cyan — basic
+      split:  { score: 1, dmg: 8,  r: 6,  color: '#4ade80', glow: '#4ade80' },                 // green — ring/split
+      aimed:  { score: 2, dmg: 12, r: 7,  color: '#fb923c', glow: '#fb923c', turn: 1.6 },      // orange — homing
+      cannon: { score: 3, dmg: 24, r: 16, color: '#a78bfa', glow: '#a78bfa' },                 // purple — heavy
+      bomb:   { score: 4, dmg: 28, r: 11, color: '#facc15', glow: '#facc15' },                 // amber — timed blast
+      laser:  { score: 5, dmg: 30, color: '#f43f5e', glow: '#f43f5e' },                        // red — beam
     };
+
+    // Health pickup (not a threat, so not in TYPES). Touch to heal.
+    const HEAL_AMOUNT = 25;
+    const HEAL_COLOR = '#22c55e';
 
     // ============================================================
     //  State
@@ -473,11 +503,15 @@
       player: { x: 0, y: 0, hp: MAX_HP, sinceHit: 999, invuln: 0 },
       projectiles: [],        // bullets + cannonballs + aimed
       lasers: [],             // laser beams (telegraph + fire)
+      bombs: [],              // timed blast bombs (fuse → explosion)
+      pickups: [],            // health packs
       score: 0,
       dodged: 0,
       elapsed: 0,             // seconds survived
       spawnTimer: 0,
       laserTimer: 0,
+      bombTimer: 0,
+      pickupTimer: 0,
       lastTs: 0,
       raf: 0,
     };
@@ -643,7 +677,7 @@
       state.projectiles.push({
         kind: 'aimed', x: s.x, y: s.y,
         vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
-        r: TYPES.aimed.r, scored: false, hitOnce: false,
+        r: TYPES.aimed.r, scored: false, hitOnce: false, life: 6,
       });
     }
 
@@ -660,6 +694,7 @@
     }
 
     // A radial burst from a point inside the arena — classic bullet-hell ring.
+    // These are the green "split" bullets (distinct from the cyan stream).
     function spawnRing(speedMul) {
       const cx = rand(state.W * 0.2, state.W * 0.8);
       const cy = rand(state.H * 0.15, state.H * 0.5);
@@ -669,11 +704,42 @@
       for (let i = 0; i < n; i++) {
         const ang = off + (i / n) * Math.PI * 2;
         state.projectiles.push({
-          kind: 'bullet', x: cx, y: cy,
+          kind: 'split', x: cx, y: cy,
           vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
-          r: TYPES.bullet.r, scored: false, hitOnce: false,
+          r: TYPES.split.r, scored: false, hitOnce: false,
         });
       }
+    }
+
+    // A timed bomb: lands inside the arena, shows its fuse + blast radius as a
+    // telegraph, then detonates. Anything (the player) inside the radius at the
+    // moment of detonation takes the hit; survive the blast to score it.
+    const BOMB_FUSE = 1.8;        // telegraph seconds
+    const BOMB_FLASH = 0.2;       // explosion visible window (s)
+    function spawnBomb() {
+      const m = 56;
+      state.bombs.push({
+        x: rand(m, state.W - m),
+        y: rand(m, state.H - m),
+        blastR: clamp(Math.min(state.W, state.H) * 0.30, 70, 150),
+        fuse: BOMB_FUSE,
+        flash: 0,
+        phase: 'fuse',
+        scored: false, hitOnce: false,
+      });
+    }
+
+    // A health pack: drifts onto the map and heals on contact. Despawns after a
+    // while (blinking near the end) if the player doesn't grab it.
+    const PICKUP_R = 13;
+    const PICKUP_LIFE = 9;        // seconds before it fades away
+    function spawnPickup() {
+      const m = 36;
+      state.pickups.push({
+        x: rand(m, state.W - m),
+        y: rand(m, state.H - m),
+        life: PICKUP_LIFE,
+      });
     }
 
     // A laser: charges (telegraph) along a line through the arena, then fires
@@ -727,6 +793,23 @@
           spawnLaser();
         }
       }
+
+      // Timed bombs unlock mid-game and detonate on their own fuse.
+      if (d > 1.4) {
+        state.bombTimer -= dt;
+        if (state.bombTimer <= 0) {
+          state.bombTimer = rand(4.5, 7.5) / (0.7 + d * 0.12);
+          spawnBomb();
+        }
+      }
+
+      // Health packs appear on a slow, difficulty-independent cadence; cap how
+      // many sit on the map at once.
+      state.pickupTimer -= dt;
+      if (state.pickupTimer <= 0) {
+        state.pickupTimer = rand(9, 14);
+        if (state.pickups.length < 2) spawnPickup();
+      }
     }
 
     // ============================================================
@@ -748,6 +831,23 @@
       const ca = Math.cos(a), sa = Math.sin(a);
       // perpendicular component magnitude
       return Math.abs(dx * sa - dy * ca);
+    }
+
+    // Rotate a projectile's velocity toward `targetAng` by at most maxTurn·dt
+    // radians, preserving its speed magnitude. This is what makes a bullet
+    // "home" — and the cap is what makes it dodgeable.
+    function steerToward(b, targetAng, maxTurn, dt) {
+      const cur = Math.atan2(b.vy, b.vx);
+      let diff = targetAng - cur;
+      while (diff > Math.PI) diff -= 2 * Math.PI;
+      while (diff < -Math.PI) diff += 2 * Math.PI;
+      const step = maxTurn * dt;
+      if (diff > step) diff = step;
+      else if (diff < -step) diff = -step;
+      const next = cur + diff;
+      const spd = Math.hypot(b.vx, b.vy);
+      b.vx = Math.cos(next) * spd;
+      b.vy = Math.sin(next) * spd;
     }
 
     function update(dt) {
@@ -772,8 +872,21 @@
       const margin = 40;
       const alive = [];
       for (const b of state.projectiles) {
-        b.x += b.vx * dt; b.y += b.vy * dt;
         const cfg = TYPES[b.kind];
+        // Homing bullets turn toward the player, capped by their max turn rate.
+        if (b.kind === 'aimed') {
+          steerToward(b, Math.atan2(p.y - b.y, p.x - b.x), cfg.turn, dt);
+        }
+        b.x += b.vx * dt; b.y += b.vy * dt;
+        // Steering types can loiter on-screen; expire them so they can't orbit
+        // forever (counts as dodged → awards score).
+        if (b.life !== undefined) {
+          b.life -= dt;
+          if (b.life <= 0) {
+            if (!b.hitOnce && !b.scored) addScore(cfg.score);
+            continue;
+          }
+        }
         // Collision.
         if (!b.hitOnce) {
           const dx = b.x - p.x, dy = b.y - p.y;
@@ -813,6 +926,47 @@
         laserAlive.push(L);
       }
       state.lasers = laserAlive;
+
+      // Bombs: tick the fuse, detonate, then linger briefly as a flash.
+      const bombAlive = [];
+      for (const bm of state.bombs) {
+        if (bm.phase === 'fuse') {
+          bm.fuse -= dt;
+          if (bm.fuse <= 0) {
+            bm.phase = 'flash';
+            bm.flash = BOMB_FLASH;
+            // Area damage to anyone caught in the blast radius at detonation.
+            const dx = p.x - bm.x, dy = p.y - bm.y;
+            if (dx * dx + dy * dy <= bm.blastR * bm.blastR) {
+              if (hurt(TYPES.bomb.dmg)) bm.hitOnce = true;
+            }
+          }
+        } else {
+          bm.flash -= dt;
+          if (bm.flash <= 0) {
+            if (!bm.hitOnce) addScore(TYPES.bomb.score);
+            continue;   // remove
+          }
+        }
+        bombAlive.push(bm);
+      }
+      state.bombs = bombAlive;
+
+      // Health packs: heal on contact (only if not already full, so a full-HP
+      // player doesn't waste one), and fade out after their lifetime.
+      const pickAlive = [];
+      for (const k of state.pickups) {
+        k.life -= dt;
+        const dx = k.x - p.x, dy = k.y - p.y;
+        const touching = dx * dx + dy * dy <= (PICKUP_R + PLAYER_R) * (PICKUP_R + PLAYER_R);
+        if (touching && p.hp < MAX_HP) {
+          p.hp = Math.min(MAX_HP, p.hp + HEAL_AMOUNT);
+          continue;   // consumed
+        }
+        if (k.life <= 0) continue;   // expired
+        pickAlive.push(k);
+      }
+      state.pickups = pickAlive;
     }
 
     function addScore(n) {
@@ -869,6 +1023,62 @@
         }
       }
 
+      // Health packs (under bullets — they're targets, not threats).
+      for (const k of state.pickups) {
+        const blink = k.life < 2 && (Math.floor(k.life * 8) % 2 === 0);
+        ctx.save();
+        ctx.globalAlpha = blink ? 0.35 : 1;
+        ctx.shadowColor = HEAL_COLOR;
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = HEAL_COLOR;
+        // Rounded-square medkit so it reads differently from the green bullets.
+        const s = PICKUP_R, x0 = k.x - s, y0 = k.y - s, d = s * 2;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x0, y0, d, d, 5);
+        else ctx.rect(x0, y0, d, d);
+        ctx.fill();
+        // White cross.
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(k.x - s * 0.5, k.y); ctx.lineTo(k.x + s * 0.5, k.y);
+        ctx.moveTo(k.x, k.y - s * 0.5); ctx.lineTo(k.x, k.y + s * 0.5);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Bomb fuse telegraph (danger zone + body). The explosion flash is drawn
+      // later, on top of everything.
+      for (const bm of state.bombs) {
+        if (bm.phase !== 'fuse') continue;
+        const prog = 1 - bm.fuse / BOMB_FUSE;          // 0 → 1 as it nears detonation
+        ctx.save();
+        // Pulsing dashed danger ring — pulse speeds up as the fuse runs down.
+        ctx.globalAlpha = 0.3 + 0.3 * Math.abs(Math.sin(bm.fuse * (6 + prog * 16)));
+        ctx.strokeStyle = TYPES.bomb.color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 7]);
+        ctx.beginPath(); ctx.arc(bm.x, bm.y, bm.blastR, 0, Math.PI * 2); ctx.stroke();
+        // Filling pie wedge as a countdown.
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.16;
+        ctx.fillStyle = TYPES.bomb.color;
+        ctx.beginPath();
+        ctx.moveTo(bm.x, bm.y);
+        ctx.arc(bm.x, bm.y, bm.blastR, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2);
+        ctx.closePath(); ctx.fill();
+        // Bomb body, pulsing.
+        ctx.globalAlpha = 1;
+        ctx.shadowColor = TYPES.bomb.glow;
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = TYPES.bomb.color;
+        const pr = TYPES.bomb.r * (1 + 0.18 * Math.sin(bm.fuse * 16));
+        ctx.beginPath(); ctx.arc(bm.x, bm.y, pr, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+
       // Projectiles.
       for (const b of state.projectiles) {
         const cfg = TYPES[b.kind];
@@ -911,6 +1121,21 @@
         ctx.fill();
         ctx.restore();
       }
+
+      // Bomb explosion flash — drawn last so the blast reads on top of all.
+      for (const bm of state.bombs) {
+        if (bm.phase !== 'flash') continue;
+        const a = Math.max(0, bm.flash / BOMB_FLASH);   // 1 → 0 fade
+        ctx.save();
+        ctx.globalAlpha = a;
+        const grad = ctx.createRadialGradient(bm.x, bm.y, 0, bm.x, bm.y, bm.blastR);
+        grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+        grad.addColorStop(0.45, TYPES.bomb.color);
+        grad.addColorStop(1, 'rgba(249,115,22,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(bm.x, bm.y, bm.blastR, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
     }
 
     function drawHud() {
@@ -948,11 +1173,15 @@
       state.player = { x: state.W / 2, y: state.H * 0.75, hp: MAX_HP, sinceHit: 999, invuln: 0 };
       state.projectiles = [];
       state.lasers = [];
+      state.bombs = [];
+      state.pickups = [];
       state.score = 0;
       state.dodged = 0;
       state.elapsed = 0;
       state.spawnTimer = 0.6;
       state.laserTimer = 5;
+      state.bombTimer = 7;
+      state.pickupTimer = 8;
       state.lastTs = 0;
       keys.clear();
       hideOverlay();
