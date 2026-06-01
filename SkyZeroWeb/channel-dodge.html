@@ -201,6 +201,99 @@
       font-size: 11px; font-weight: 600; color: var(--fg-subtle);
     }
     .cd-joystick.dragging .cd-joystick-tip { opacity: 0; }
+
+    /* ---------- Avatar roster (collapsible) ---------- */
+    .cd-roster { display: flex; flex-direction: column; gap: 10px; }
+    .cd-roster-toggle {
+      align-self: stretch; cursor: pointer;
+      display: flex; align-items: center; gap: 8px;
+      background: none; border: none;
+      font-family: var(--font-sans);
+      font-size: 13px; font-weight: 600; color: var(--fg-muted);
+      padding: 4px 4px; border-radius: var(--radius-sm);
+    }
+    .cd-roster-toggle:hover { color: var(--fg); }
+    .cd-roster-toggle .cd-roster-current { margin-left: auto; color: var(--fg); font-weight: 700; }
+    .cd-roster-toggle .chev { transition: transform 0.2s ease; }
+    .cd-roster-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+    .cd-roster-body {
+      display: flex; flex-direction: column; gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      background: var(--surface-2);
+    }
+    .cd-roster-body[hidden] { display: none; }
+    .cd-avatar-grid {
+      display: grid; gap: 8px;
+      grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    }
+    .cd-avatar-btn {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 6px 4px; cursor: pointer;
+      background: var(--surface); border: 2px solid var(--border);
+      border-radius: var(--radius-md); color: var(--fg-muted);
+      font-size: 11px; font-weight: 600;
+      transition: border-color .12s ease, color .12s ease;
+    }
+    .cd-avatar-btn:hover { border-color: var(--border-strong); color: var(--fg); }
+    .cd-avatar-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--fg); }
+    .cd-avatar-btn canvas { width: 48px; height: 48px; display: block; }
+
+    /* ---------- Draw-your-own modal ---------- */
+    .cd-draw {
+      position: fixed; inset: 0; z-index: 50;
+      display: flex; align-items: center; justify-content: center;
+      padding: 16px;
+      background: color-mix(in srgb, var(--bg) 72%, transparent);
+      backdrop-filter: blur(3px);
+    }
+    .cd-draw[hidden] { display: none; }
+    .cd-draw-panel {
+      width: 100%; max-width: 340px;
+      display: flex; flex-direction: column; gap: 12px;
+      padding: 16px;
+      background: var(--surface); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+    }
+    .cd-draw-title { font-size: 16px; font-weight: 700; color: var(--fg); text-align: center; }
+    .cd-draw-stage {
+      display: flex; gap: 12px; align-items: flex-start; justify-content: center;
+    }
+    .cd-draw-canvas {
+      width: 232px; height: 232px; flex: none;
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      background: var(--surface-sunken);
+      touch-action: none; cursor: crosshair;
+    }
+    .cd-draw-side { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+    .cd-draw-preview {
+      width: 56px; height: 56px;
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      background:
+        conic-gradient(#0000 90deg, color-mix(in srgb, var(--fg-subtle) 14%, transparent) 0 180deg, #0000 0 270deg, color-mix(in srgb, var(--fg-subtle) 14%, transparent) 0) 0 0 / 12px 12px;
+      image-rendering: pixelated;
+    }
+    .cd-draw-preview-label { font-size: 10px; color: var(--fg-muted); text-align: center; line-height: 1.3; }
+    .cd-draw-palette { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+    .cd-swatch {
+      width: 24px; height: 24px; border-radius: 50%;
+      border: 2px solid var(--border); cursor: pointer; padding: 0;
+    }
+    .cd-swatch[aria-pressed="true"] { border-color: var(--fg); transform: scale(1.12); }
+    .cd-swatch.eraser {
+      display: grid; place-items: center;
+      background: var(--surface); color: var(--fg-muted);
+    }
+    .cd-draw-sizes { display: flex; gap: 6px; justify-content: center; align-items: center; }
+    .cd-size-btn {
+      width: 30px; height: 26px; display: grid; place-items: center;
+      background: var(--surface); border: 2px solid var(--border);
+      border-radius: var(--radius-sm); cursor: pointer; color: var(--fg);
+    }
+    .cd-size-btn[aria-pressed="true"] { border-color: var(--accent); }
+    .cd-size-btn .dot { background: currentColor; border-radius: 50%; }
+    .cd-draw-actions { display: flex; gap: 8px; justify-content: center; }
   </style>
 </head>
 <body>
@@ -315,7 +408,44 @@
         </div>
       </div>
 
+      <div class="cd-roster">
+        <button class="cd-roster-toggle" id="roster_toggle" aria-expanded="false" aria-controls="roster_body">
+          <span id="roster_label">形象</span>
+          <span class="cd-roster-current" id="roster_current"></span>
+          <svg class="chev" width="12" height="12" viewBox="0 0 16 16" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6l4 4 4-4"></path>
+          </svg>
+        </button>
+        <div class="cd-roster-body" id="roster_body" hidden>
+          <div class="cd-avatar-grid" id="avatar_grid"></div>
+          <button class="btn" id="draw_btn">自绘形象</button>
+        </div>
+      </div>
+
       <div class="cd-hint" id="hint">WASD / 方向键移动 · 手机上拖动屏幕用摇杆 · 躲过的弹幕越多得分越高</div>
+    </div>
+
+    <!-- Draw-your-own avatar modal -->
+    <div class="cd-draw" id="draw_modal" hidden>
+      <div class="cd-draw-panel">
+        <div class="cd-draw-title" id="draw_title">画一个形象</div>
+        <div class="cd-draw-stage">
+          <canvas class="cd-draw-canvas" id="draw_canvas" width="232" height="232"></canvas>
+          <div class="cd-draw-side">
+            <canvas class="cd-draw-preview" id="draw_preview" width="56" height="56"></canvas>
+            <div class="cd-draw-preview-label" id="draw_preview_label">像素预览</div>
+          </div>
+        </div>
+        <div class="cd-draw-palette" id="draw_palette"></div>
+        <div class="cd-draw-sizes" id="draw_sizes"></div>
+        <div class="cd-draw-actions">
+          <button class="btn" id="draw_clear">清空</button>
+          <button class="btn" id="draw_cancel">取消</button>
+          <button class="btn primary" id="draw_use">使用</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -342,6 +472,11 @@
         over_title: '游戏结束',
         stat_score: '得分', stat_time: '存活', stat_dodged: '躲过弹幕',
         newbest: '新纪录!',
+        roster: '形象', draw_own: '自绘形象',
+        av_ball: '原版小球', av_custom: '我的形象',
+        draw_title: '画一个形象', draw_clear: '清空', draw_cancel: '取消',
+        draw_use: '使用', draw_preview: '像素预览', draw_eraser: '橡皮',
+        draw_empty: '画点东西吧',
       },
       en: {
         title_tab: 'Dodge · SkyZero',
@@ -360,6 +495,11 @@
         over_title: 'Game over',
         stat_score: 'Score', stat_time: 'Survived', stat_dodged: 'Dodged',
         newbest: 'New best!',
+        roster: 'Avatar', draw_own: 'Draw your own',
+        av_ball: 'Classic ball', av_custom: 'My avatar',
+        draw_title: 'Draw your avatar', draw_clear: 'Clear', draw_cancel: 'Cancel',
+        draw_use: 'Use', draw_preview: 'Pixel preview', draw_eraser: 'Eraser',
+        draw_empty: 'Draw something first',
       },
     };
     let LANG = 'zh';
@@ -429,6 +569,14 @@
       lgHeal: $('lg_heal'),
       joystick: $('joystick'), joyBase: $('joy_base'),
       joyKnob: $('joy_knob'), joyTip: $('joy_tip'),
+      rosterToggle: $('roster_toggle'), rosterLabel: $('roster_label'),
+      rosterBody: $('roster_body'), rosterCurrent: $('roster_current'),
+      avatarGrid: $('avatar_grid'), drawBtn: $('draw_btn'),
+      drawModal: $('draw_modal'), drawTitle: $('draw_title'),
+      drawCanvas: $('draw_canvas'), drawPreview: $('draw_preview'),
+      drawPreviewLabel: $('draw_preview_label'),
+      drawPalette: $('draw_palette'), drawSizes: $('draw_sizes'),
+      drawClear: $('draw_clear'), drawCancel: $('draw_cancel'), drawUse: $('draw_use'),
     };
 
     function applyLang() {
@@ -447,8 +595,16 @@
       els.lgHeal.textContent = t('heal');
       els.joyTip.textContent = t('joy_tip');
       els.hint.textContent = t('hint');
+      els.rosterLabel.textContent = t('roster');
+      els.drawBtn.textContent = t('draw_own');
+      els.drawTitle.textContent = t('draw_title');
+      els.drawPreviewLabel.textContent = t('draw_preview');
+      els.drawClear.textContent = t('draw_clear');
+      els.drawCancel.textContent = t('draw_cancel');
+      els.drawUse.textContent = t('draw_use');
       els.pauseBtn.textContent = state.mode === 'paused' ? t('resume') : t('pause');
       els.startBtn.textContent = state.mode === 'playing' ? t('restart') : t('start');
+      if (typeof refreshRoster === 'function') refreshRoster();
       renderOverlay();
     }
     (function initLangSeg(){
@@ -467,7 +623,8 @@
     // ============================================================
     //  Game constants
     // ============================================================
-    const PLAYER_R = 11;
+    const PLAYER_R = 11;             // collision radius (the real hitbox)
+    const AVATAR_R = 17;             // visual radius of the drawn avatar
     const PLAYER_SPEED = 270;        // px / s (in logical CSS px)
     const MAX_HP = 100;
     const REGEN_DELAY = 3.0;         // seconds without a hit before healing
@@ -521,6 +678,339 @@
 
     const ctx = els.canvas.getContext('2d');
     refreshAccent();
+
+    // ============================================================
+    //  Avatar system — selectable skins for the controllable dot.
+    //  The hitbox stays a small circle (PLAYER_R); the avatar is purely
+    //  cosmetic and drawn larger, with a small hitbox dot at the center.
+    //  The "champion" avatars are original chibi tributes drawn in code
+    //  (no official art), recognisable by signature colors/silhouette.
+    // ============================================================
+    const TAU = Math.PI * 2;
+
+    const AVATARS = [
+      { id: 'ball',   zh: '原版小球', en: 'Classic ball' },
+      { id: 'teemo',  zh: '提莫',    en: 'Teemo' },
+      { id: 'ahri',   zh: '阿狸',    en: 'Ahri' },
+      { id: 'lux',    zh: '拉克丝',   en: 'Lux' },
+      { id: 'annie',  zh: '安妮',    en: 'Annie' },
+      { id: 'jinx',   zh: '金克丝',   en: 'Jinx' },
+      { id: 'blitz',  zh: '机器人',   en: 'Blitzcrank' },
+      { id: 'custom', zh: '我的形象', en: 'My avatar' },
+    ];
+    function avatarName(a) { return LANG === 'zh' ? a.zh : a.en; }
+
+    // --- tiny drawing helpers (operate on any 2d context `g`) ---
+    function fc(g, x, y, r) { g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill(); }
+    function fe(g, x, y, rx, ry, rot) { g.beginPath(); g.ellipse(x, y, rx, ry, rot || 0, 0, TAU); g.fill(); }
+    function tri(g, x1, y1, x2, y2, x3, y3) {
+      g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.lineTo(x3, y3); g.closePath(); g.fill();
+    }
+    function rr(g, x, y, w, h, r) {
+      g.beginPath();
+      if (g.roundRect) g.roundRect(x, y, w, h, r); else g.rect(x, y, w, h);
+      g.fill();
+    }
+    function star(g, x, y, outer, inner, pts) {
+      g.beginPath();
+      for (let i = 0; i < pts * 2; i++) {
+        const rad = (i % 2 === 0) ? outer : inner;
+        const a = (i / (pts * 2)) * TAU - Math.PI / 2;
+        const px = x + Math.cos(a) * rad, py = y + Math.sin(a) * rad;
+        i === 0 ? g.moveTo(px, py) : g.lineTo(px, py);
+      }
+      g.closePath(); g.fill();
+    }
+    function eyes(g, cx, cy, sp, sz, color) {
+      g.fillStyle = color || '#241a18';
+      fc(g, cx - sp, cy, sz); fc(g, cx + sp, cy, sz);
+      g.fillStyle = '#fff';
+      fc(g, cx - sp + sz * 0.35, cy - sz * 0.35, sz * 0.32);
+      fc(g, cx + sp + sz * 0.35, cy - sz * 0.35, sz * 0.32);
+    }
+
+    function drawTeemo(g, cx, cy, R) {
+      const u = R / 16;
+      g.fillStyle = '#3a7d44'; fe(g, cx, cy + 11 * u, 8 * u, 5 * u);            // green collar
+      g.fillStyle = '#c79a5e'; fc(g, cx - 9 * u, cy, 3 * u); fc(g, cx + 9 * u, cy, 3 * u); // ears
+      g.fillStyle = '#d9b378'; fc(g, cx, cy + 1 * u, 10 * u);                  // face
+      eyes(g, cx, cy + 1 * u, 4 * u, 3 * u);
+      g.fillStyle = '#7a5a30'; fc(g, cx, cy + 5 * u, 1.4 * u);                 // nose
+      g.fillStyle = '#6b4423'; fe(g, cx, cy - 6 * u, 12 * u, 3.4 * u);         // hat brim
+      g.beginPath(); g.arc(cx, cy - 6 * u, 7.5 * u, Math.PI, 0); g.fill();     // hat dome
+      g.fillStyle = '#caa94e'; fc(g, cx, cy - 8 * u, 2.2 * u);                 // hat badge
+    }
+    function drawAhri(g, cx, cy, R) {
+      const u = R / 16;
+      g.fillStyle = '#e8843c'; fe(g, cx + 8 * u, cy + 9 * u, 5 * u, 3 * u, -0.6); // tail
+      g.fillStyle = '#fff'; fc(g, cx + 11 * u, cy + 11 * u, 2 * u);
+      g.fillStyle = '#e9eef5'; fc(g, cx, cy + 1 * u, 11 * u);                  // silver hair
+      g.fillStyle = '#e9eef5';                                                // fox ears
+      tri(g, cx - 7 * u, cy - 6 * u, cx - 4 * u, cy - 12 * u, cx - 1 * u, cy - 6 * u);
+      tri(g, cx + 7 * u, cy - 6 * u, cx + 4 * u, cy - 12 * u, cx + 1 * u, cy - 6 * u);
+      g.fillStyle = '#e8843c';
+      tri(g, cx - 5 * u, cy - 7 * u, cx - 4 * u, cy - 10.5 * u, cx - 2.5 * u, cy - 7 * u);
+      tri(g, cx + 5 * u, cy - 7 * u, cx + 4 * u, cy - 10.5 * u, cx + 2.5 * u, cy - 7 * u);
+      g.fillStyle = '#f6e4d6'; fc(g, cx, cy + 2 * u, 8 * u);                   // pale face
+      g.fillStyle = '#caa12e'; fc(g, cx - 3.3 * u, cy + 2 * u, 2.2 * u); fc(g, cx + 3.3 * u, cy + 2 * u, 2.2 * u);
+      g.fillStyle = '#2a1f14'; fc(g, cx - 3.3 * u, cy + 2 * u, 1 * u); fc(g, cx + 3.3 * u, cy + 2 * u, 1 * u);
+      g.strokeStyle = '#d98f6a'; g.lineWidth = 1 * u; g.lineCap = 'round';     // whiskers
+      g.beginPath();
+      g.moveTo(cx - 6 * u, cy + 4 * u); g.lineTo(cx - 3 * u, cy + 4.5 * u);
+      g.moveTo(cx + 6 * u, cy + 4 * u); g.lineTo(cx + 3 * u, cy + 4.5 * u);
+      g.stroke();
+    }
+    function drawLux(g, cx, cy, R) {
+      const u = R / 16;
+      g.fillStyle = '#ffe680'; star(g, cx + 9 * u, cy - 8 * u, 4 * u, 1.8 * u, 5); // wand star
+      g.fillStyle = '#f2d06b'; fc(g, cx, cy + 2 * u, 11 * u);                  // blonde hair
+      fe(g, cx - 8 * u, cy + 6 * u, 3 * u, 6 * u); fe(g, cx + 8 * u, cy + 6 * u, 3 * u, 6 * u);
+      g.fillStyle = '#f8e6d4'; fc(g, cx, cy + 2 * u, 8 * u);                   // face
+      g.fillStyle = '#f2d06b'; g.beginPath(); g.arc(cx, cy - 3 * u, 8 * u, Math.PI, 0); g.fill(); // bangs
+      g.fillStyle = '#3a7bd5'; fc(g, cx - 3.2 * u, cy + 3 * u, 2 * u); fc(g, cx + 3.2 * u, cy + 3 * u, 2 * u);
+      g.fillStyle = '#fff'; fc(g, cx - 2.6 * u, cy + 2.4 * u, 0.7 * u); fc(g, cx + 3.8 * u, cy + 2.4 * u, 0.7 * u);
+      g.strokeStyle = '#c98f6a'; g.lineWidth = 1 * u;
+      g.beginPath(); g.arc(cx, cy + 5 * u, 2 * u, 0.2, Math.PI - 0.2); g.stroke();
+    }
+    function drawAnnie(g, cx, cy, R) {
+      const u = R / 16;
+      g.fillStyle = '#ff7a18'; fc(g, cx + 9 * u, cy + 7 * u, 3.4 * u);         // fireball
+      g.fillStyle = '#ffd24a'; fc(g, cx + 9 * u, cy + 7 * u, 1.8 * u);
+      g.fillStyle = '#7a2e1e'; fc(g, cx, cy + 1 * u, 11 * u);                  // auburn hair
+      fc(g, cx - 10 * u, cy + 1 * u, 3.5 * u); fc(g, cx + 10 * u, cy + 1 * u, 3.5 * u); // pigtails
+      g.fillStyle = '#f7e0cf'; fc(g, cx, cy + 2.5 * u, 8 * u);                 // face
+      g.fillStyle = '#7a2e1e'; g.beginPath(); g.arc(cx, cy - 2 * u, 8 * u, Math.PI, 0); g.fill(); // bangs
+      g.fillStyle = '#2fae6a'; fc(g, cx - 3.3 * u, cy + 3 * u, 2.4 * u); fc(g, cx + 3.3 * u, cy + 3 * u, 2.4 * u);
+      g.fillStyle = '#1d130e'; fc(g, cx - 3.3 * u, cy + 3 * u, 1 * u); fc(g, cx + 3.3 * u, cy + 3 * u, 1 * u);
+    }
+    function drawJinx(g, cx, cy, R) {
+      const u = R / 16;
+      g.fillStyle = '#5ea0e0'; fe(g, cx - 9 * u, cy + 8 * u, 3 * u, 8 * u); fe(g, cx + 9 * u, cy + 8 * u, 3 * u, 8 * u); // braids
+      g.fillStyle = '#4a8fd0'; fc(g, cx - 9 * u, cy + 14 * u, 2.6 * u); fc(g, cx + 9 * u, cy + 14 * u, 2.6 * u);
+      g.fillStyle = '#5ea0e0'; fc(g, cx, cy + 1 * u, 10.5 * u);                // hair top
+      g.fillStyle = '#eadbc8'; fc(g, cx, cy + 2.5 * u, 8 * u);                 // face
+      g.fillStyle = '#5ea0e0'; g.fillRect(cx - 8 * u, cy - 6 * u, 16 * u, 5 * u); // straight bangs
+      g.fillStyle = '#e0489a'; fc(g, cx - 3.3 * u, cy + 3 * u, 2 * u); fc(g, cx + 3.3 * u, cy + 3 * u, 2 * u);
+      g.fillStyle = '#fff'; fc(g, cx - 2.7 * u, cy + 2.5 * u, 0.6 * u); fc(g, cx + 3.9 * u, cy + 2.5 * u, 0.6 * u);
+      g.strokeStyle = '#b06b50'; g.lineWidth = 1 * u; g.lineCap = 'round';
+      g.beginPath(); g.arc(cx, cy + 5.5 * u, 2.4 * u, 0.15, Math.PI - 0.15); g.stroke();
+    }
+    function drawBlitz(g, cx, cy, R) {
+      const u = R / 16;
+      g.fillStyle = '#9a7b2e'; fe(g, cx, cy + 11 * u, 10 * u, 5 * u);          // shoulders
+      g.fillStyle = '#caa94e'; rr(g, cx - 9 * u, cy - 9 * u, 18 * u, 16 * u, 5 * u); // gold head
+      g.fillStyle = '#2b2b30'; rr(g, cx - 6.5 * u, cy - 4 * u, 13 * u, 8 * u, 3 * u); // face plate
+      g.fillStyle = '#48d6ff'; fc(g, cx - 3 * u, cy, 1.8 * u); fc(g, cx + 3 * u, cy, 1.8 * u); // eyes
+      g.strokeStyle = '#9a7b2e'; g.lineWidth = 1.6 * u;
+      g.beginPath(); g.moveTo(cx, cy - 9 * u); g.lineTo(cx, cy - 13 * u); g.stroke(); // antenna
+      g.fillStyle = '#e0483b'; fc(g, cx, cy - 13 * u, 2 * u);
+      g.fillStyle = '#8a6f28'; fc(g, cx - 7 * u, cy - 6 * u, 1 * u); fc(g, cx + 7 * u, cy - 6 * u, 1 * u);
+    }
+    const CHAMP = { teemo: drawTeemo, ahri: drawAhri, lux: drawLux, annie: drawAnnie, jinx: drawJinx, blitz: drawBlitz };
+
+    // Custom (player-drawn) avatar, persisted as a small pixel-art data URL.
+    let avatarId = 'ball';
+    let customImg = null, customURL = null;
+    try { const v = localStorage.getItem('cd_avatar'); if (v) avatarId = v; } catch (_) {}
+    try { customURL = localStorage.getItem('cd_avatar_custom') || null; } catch (_) {}
+    if (customURL) {
+      customImg = new Image();
+      customImg.onload = () => { buildRoster(); if (state.mode !== 'playing') draw(); };
+      customImg.src = customURL;
+    }
+    if (!AVATARS.some(a => a.id === avatarId)) avatarId = 'ball';
+    if (avatarId === 'custom' && !customURL) avatarId = 'ball';
+
+    // Draw avatar `id` centered at (cx,cy), sized to visual radius R.
+    function drawAvatar(g, id, cx, cy, R) {
+      if (id === 'custom') {
+        if (customImg && customImg.complete && customImg.naturalWidth) {
+          const prev = g.imageSmoothingEnabled;
+          g.imageSmoothingEnabled = false;
+          g.drawImage(customImg, cx - R, cy - R, R * 2, R * 2);
+          g.imageSmoothingEnabled = prev;
+          return;
+        }
+        id = 'ball';
+      }
+      const fn = CHAMP[id];
+      if (fn) { fn(g, cx, cy, R); return; }
+      g.fillStyle = accentColor; fc(g, cx, cy, R * 0.72);            // default ball
+      g.fillStyle = 'rgba(255,255,255,0.9)'; fc(g, cx, cy, R * 0.28);
+    }
+
+    // ---------- roster UI ----------
+    function buildRoster() {
+      const grid = els.avatarGrid;
+      grid.innerHTML = '';
+      const muted = getComputedStyle(document.documentElement).getPropertyValue('--fg-subtle').trim() || '#888';
+      AVATARS.forEach((a, idx) => {
+        const empty = a.id === 'custom' && !(customImg && customImg.complete && customImg.naturalWidth);
+        const btn = document.createElement('button');
+        btn.className = 'cd-avatar-btn';
+        btn.type = 'button';
+        btn.setAttribute('aria-pressed', String(a.id === avatarId));
+        const c = document.createElement('canvas');
+        c.width = 48; c.height = 48;
+        const g = c.getContext('2d');
+        if (empty) {
+          g.strokeStyle = muted; g.lineWidth = 2.5; g.lineCap = 'round';
+          g.beginPath(); g.moveTo(24, 15); g.lineTo(24, 33); g.moveTo(15, 24); g.lineTo(33, 24); g.stroke();
+        } else {
+          drawAvatar(g, a.id, 24, 25, 19);
+        }
+        const label = document.createElement('span');
+        label.textContent = empty ? t('draw_own') : avatarName(a);
+        btn.appendChild(c); btn.appendChild(label);
+        btn.addEventListener('click', () => {
+          if (empty) { openDraw(); return; }
+          selectAvatar(a.id);
+        });
+        grid.appendChild(btn);
+      });
+      updateRosterCurrent();
+    }
+    function refreshRoster() { buildRoster(); }   // rebuild on language change
+    function updateRosterCurrent() {
+      const a = AVATARS.find(x => x.id === avatarId) || AVATARS[0];
+      els.rosterCurrent.textContent = avatarName(a);
+    }
+    function selectAvatar(id) {
+      avatarId = id;
+      try { localStorage.setItem('cd_avatar', id); } catch (_) {}
+      els.avatarGrid.querySelectorAll('.cd-avatar-btn').forEach((b, i) => {
+        b.setAttribute('aria-pressed', String(AVATARS[i].id === id));
+      });
+      updateRosterCurrent();
+      if (state.mode !== 'playing') draw();
+    }
+    els.rosterToggle.addEventListener('click', () => {
+      const closed = els.rosterBody.hasAttribute('hidden');
+      els.rosterBody.toggleAttribute('hidden', !closed);
+      els.rosterToggle.setAttribute('aria-expanded', String(closed));
+    });
+    els.drawBtn.addEventListener('click', openDraw);
+
+    // ---------- draw-your-own editor ----------
+    const PALETTE = ['#1a1a1a', '#ffffff', '#e0483b', '#f5a623', '#f8e71c',
+                     '#3aa757', '#3a7bd5', '#9b59b6', '#e8843c', '#7a4a24', '#ff6fae', '#48d6ff'];
+    const GRID_N = 24;
+    const dctx = els.drawCanvas.getContext('2d');
+    let drawColor = PALETTE[0], drawErase = false, brush = 14;
+    let drawing = false, lastX = 0, lastY = 0;
+
+    function buildTools() {
+      els.drawPalette.innerHTML = '';
+      for (const col of PALETTE) {
+        const b = document.createElement('button');
+        b.className = 'cd-swatch'; b.type = 'button'; b.style.background = col; b._col = col;
+        b.addEventListener('click', () => { drawColor = col; drawErase = false; updateToolUi(); });
+        els.drawPalette.appendChild(b);
+      }
+      const er = document.createElement('button');
+      er.className = 'cd-swatch eraser'; er.type = 'button'; er.textContent = '⌫'; er._erase = true;
+      er.addEventListener('click', () => { drawErase = true; updateToolUi(); });
+      els.drawPalette.appendChild(er);
+      els.drawSizes.innerHTML = '';
+      for (const s of [8, 14, 24]) {
+        const b = document.createElement('button');
+        b.className = 'cd-size-btn'; b.type = 'button'; b._size = s;
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        const dd = Math.max(4, Math.round(s / 2.2));
+        dot.style.width = dd + 'px'; dot.style.height = dd + 'px';
+        b.appendChild(dot);
+        b.addEventListener('click', () => { brush = s; updateToolUi(); });
+        els.drawSizes.appendChild(b);
+      }
+      updateToolUi();
+    }
+    function updateToolUi() {
+      els.drawPalette.querySelectorAll('.cd-swatch').forEach(b => {
+        b.setAttribute('aria-pressed', String(b._erase ? drawErase : (!drawErase && b._col === drawColor)));
+      });
+      els.drawSizes.querySelectorAll('.cd-size-btn').forEach(b => {
+        b.setAttribute('aria-pressed', String(b._size === brush));
+      });
+    }
+    function dpt(e) {
+      const r = els.drawCanvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - r.left) * (els.drawCanvas.width / r.width),
+        y: (e.clientY - r.top) * (els.drawCanvas.height / r.height),
+      };
+    }
+    function applyBrush() {
+      dctx.lineCap = 'round'; dctx.lineJoin = 'round'; dctx.lineWidth = brush;
+      if (drawErase) { dctx.globalCompositeOperation = 'destination-out'; dctx.strokeStyle = '#000'; dctx.fillStyle = '#000'; }
+      else { dctx.globalCompositeOperation = 'source-over'; dctx.strokeStyle = drawColor; dctx.fillStyle = drawColor; }
+    }
+    els.drawCanvas.addEventListener('pointerdown', (e) => {
+      drawing = true; const p = dpt(e); lastX = p.x; lastY = p.y;
+      applyBrush(); dctx.beginPath(); dctx.arc(p.x, p.y, brush / 2, 0, TAU); dctx.fill();
+      els.drawCanvas.setPointerCapture(e.pointerId); e.preventDefault();
+    });
+    els.drawCanvas.addEventListener('pointermove', (e) => {
+      if (!drawing) return; const p = dpt(e);
+      applyBrush(); dctx.beginPath(); dctx.moveTo(lastX, lastY); dctx.lineTo(p.x, p.y); dctx.stroke();
+      lastX = p.x; lastY = p.y; e.preventDefault();
+    });
+    function endDraw() { if (!drawing) return; drawing = false; updatePreview(); }
+    els.drawCanvas.addEventListener('pointerup', endDraw);
+    els.drawCanvas.addEventListener('pointercancel', endDraw);
+
+    // Downsample the drawing to a crisp GRID_N×GRID_N pixel sprite.
+    function makePixelCanvas() {
+      const small = document.createElement('canvas');
+      small.width = GRID_N; small.height = GRID_N;
+      const sg = small.getContext('2d');
+      sg.imageSmoothingEnabled = true;
+      sg.drawImage(els.drawCanvas, 0, 0, GRID_N, GRID_N);
+      const img = sg.getImageData(0, 0, GRID_N, GRID_N), d = img.data;
+      for (let i = 0; i < d.length; i += 4) d[i + 3] = d[i + 3] >= 110 ? 255 : 0;  // hard alpha → crisp cells
+      sg.putImageData(img, 0, 0);
+      return small;
+    }
+    function pixelNonEmpty(small) {
+      const d = small.getContext('2d').getImageData(0, 0, GRID_N, GRID_N).data;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
+      return false;
+    }
+    function updatePreview() {
+      const small = makePixelCanvas();
+      const pg = els.drawPreview.getContext('2d');
+      pg.clearRect(0, 0, els.drawPreview.width, els.drawPreview.height);
+      pg.imageSmoothingEnabled = false;
+      pg.drawImage(small, 0, 0, els.drawPreview.width, els.drawPreview.height);
+    }
+    function openDraw() {
+      dctx.setTransform(1, 0, 0, 1, 0, 0);
+      dctx.clearRect(0, 0, els.drawCanvas.width, els.drawCanvas.height);
+      drawErase = false; drawColor = PALETTE[0]; brush = 14;
+      updateToolUi(); updatePreview();
+      els.drawPreviewLabel.textContent = t('draw_preview');
+      els.drawModal.removeAttribute('hidden');
+    }
+    function closeDraw() { els.drawModal.setAttribute('hidden', ''); }
+    els.drawClear.addEventListener('click', () => {
+      dctx.clearRect(0, 0, els.drawCanvas.width, els.drawCanvas.height);
+      els.drawPreviewLabel.textContent = t('draw_preview');
+      updatePreview();
+    });
+    els.drawCancel.addEventListener('click', closeDraw);
+    els.drawUse.addEventListener('click', () => {
+      const small = makePixelCanvas();
+      if (!pixelNonEmpty(small)) { els.drawPreviewLabel.textContent = t('draw_empty'); return; }
+      customURL = small.toDataURL();
+      try { localStorage.setItem('cd_avatar_custom', customURL); } catch (_) {}
+      customImg = new Image();
+      customImg.onload = () => { buildRoster(); selectAvatar('custom'); };
+      customImg.src = customURL;
+      closeDraw();
+    });
+
+    buildTools();
+    buildRoster();
 
     // ---------- responsive canvas ----------
     function resize() {
@@ -1100,25 +1590,26 @@
         ctx.restore();
       }
 
-      // Player.
+      // Player — the chosen avatar (cosmetic), drawn larger than the hitbox,
+      // with a small hitbox dot at the true collision center.
       const p = state.player;
       if (state.mode !== 'ready') {
-        ctx.save();
-        // Blink during i-frames.
         const blink = p.invuln > 0 && (Math.floor(p.invuln * 20) % 2 === 0);
+        ctx.save();
         ctx.globalAlpha = blink ? 0.4 : 1;
-        ctx.shadowColor = accentColor;
-        ctx.shadowBlur = 14;
-        ctx.fillStyle = accentColor;
+        // Soft grounding shadow under the avatar.
+        ctx.fillStyle = 'rgba(0,0,0,0.18)';
         ctx.beginPath();
-        ctx.arc(p.x, p.y, PLAYER_R, 0, Math.PI * 2);
+        ctx.ellipse(p.x, p.y + AVATAR_R * 0.95, AVATAR_R * 0.7, AVATAR_R * 0.28, 0, 0, Math.PI * 2);
         ctx.fill();
-        // White core.
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = 'rgba(255,255,255,0.9)';
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, PLAYER_R * 0.4, 0, Math.PI * 2);
-        ctx.fill();
+        drawAvatar(ctx, avatarId, p.x, p.y, AVATAR_R);
+        ctx.restore();
+        // Hitbox dot (bullet-hell convention) — shows exactly what gets hit.
+        ctx.save();
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         ctx.restore();
       }
 
