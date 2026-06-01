@@ -40,7 +40,9 @@
     .cd-app {
       max-width: 560px; margin: 0 auto; padding: 8px 16px 24px;
       display: flex; flex-direction: column; gap: 12px;
-      touch-action: none;
+      /* Allow vertical scroll (so the legend/joystick stay reachable on short
+         phones); the stage and joystick opt out of scroll themselves. */
+      touch-action: pan-y;
     }
     .cd-scores {
       display: flex; gap: 10px; justify-content: center;
@@ -156,6 +158,49 @@
     .cd-hint {
       font-size: 12px; color: var(--fg-muted); text-align: center; line-height: 1.6;
     }
+
+    /* ---------- Touch joystick (below the arena, touch devices only) ---------- */
+    .cd-joystick { display: none; }
+    body.cd-touch .cd-joystick {
+      display: block;
+      position: relative;
+      width: 100%;
+      height: 160px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface-2);
+      touch-action: none;
+      user-select: none; -webkit-user-select: none;
+      overflow: hidden;
+    }
+    /* On touch screens the arena should leave room for the joystick below. */
+    body.cd-touch .cd-stage { max-height: calc(100vh - 360px); }
+    .cd-joystick-base {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 116px; height: 116px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--fg-subtle) 16%, transparent);
+      border: 2px solid var(--border-strong);
+      transition: opacity 120ms ease;
+    }
+    .cd-joystick.dragging .cd-joystick-base { transition: none; }
+    .cd-joystick-knob {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 56px; height: 56px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+    }
+    .cd-joystick-tip {
+      position: absolute; left: 0; right: 0; bottom: 8px;
+      text-align: center; pointer-events: none;
+      font-size: 11px; font-weight: 600; color: var(--fg-subtle);
+    }
+    .cd-joystick.dragging .cd-joystick-tip { opacity: 0; }
   </style>
 </head>
 <body>
@@ -221,6 +266,16 @@
         </div>
       </div>
 
+      <!-- Touch-only joystick. Sits between the arena and the legend so a thumb
+           never covers the play field. Shown only on coarse-pointer (touch)
+           devices. -->
+      <div class="cd-joystick" id="joystick" aria-hidden="true">
+        <div class="cd-joystick-base" id="joy_base">
+          <div class="cd-joystick-knob" id="joy_knob"></div>
+        </div>
+        <div class="cd-joystick-tip" id="joy_tip">按住拖动</div>
+      </div>
+
       <div class="cd-legend">
         <div class="cd-legend-title" id="legend_title">弹幕类型 · 得分</div>
         <div class="cd-legend-row">
@@ -262,7 +317,8 @@
         start: '开始', pause: '暂停', resume: '继续', restart: '重新开始',
         legend_title: '弹幕类型 · 得分',
         bullet: '子弹', aimed: '追踪弹', cannon: '炮弹', laser: '激光',
-        hint: 'WASD / 方向键移动 · 手机上拖动屏幕用摇杆 · 躲过的弹幕越多得分越高',
+        joy_tip: '按住拖动',
+        hint: 'WASD / 方向键移动 · 手机上用下方摇杆 · 躲过的弹幕越多得分越高',
         intro_title: '躲避 Channel Dodge',
         intro_sub: '操控人物躲避四面八方飞来的弹幕。被击中会扣血,一段时间不被命中将自动回血。血量归零即游戏结束 —— 坚持得越久、躲过的弹幕越多,得分越高。',
         paused_title: '已暂停',
@@ -278,7 +334,8 @@
         start: 'Start', pause: 'Pause', resume: 'Resume', restart: 'Restart',
         legend_title: 'Bullet types · points',
         bullet: 'Bullet', aimed: 'Homing', cannon: 'Cannonball', laser: 'Laser',
-        hint: 'WASD / arrow keys to move · drag on touch for the joystick · dodge more to score more',
+        joy_tip: 'Hold & drag',
+        hint: 'WASD / arrow keys to move · use the joystick below on touch · dodge more to score more',
         intro_title: 'Channel Dodge',
         intro_sub: 'Steer your character to dodge bullets flying in from every side. Getting hit costs HP; survive a while without being hit and you slowly heal. When HP hits zero it is game over — the longer you last and the more you dodge, the higher you score.',
         paused_title: 'Paused',
@@ -352,6 +409,8 @@
       legendTitle: $('legend_title'),
       lgBullet: $('lg_bullet'), lgAimed: $('lg_aimed'),
       lgCannon: $('lg_cannon'), lgLaser: $('lg_laser'),
+      joystick: $('joystick'), joyBase: $('joy_base'),
+      joyKnob: $('joy_knob'), joyTip: $('joy_tip'),
     };
 
     function applyLang() {
@@ -365,6 +424,7 @@
       els.lgAimed.textContent = t('aimed');
       els.lgCannon.textContent = t('cannon');
       els.lgLaser.textContent = t('laser');
+      els.joyTip.textContent = t('joy_tip');
       els.hint.textContent = t('hint');
       els.pauseBtn.textContent = state.mode === 'paused' ? t('resume') : t('pause');
       els.startBtn.textContent = state.mode === 'playing' ? t('restart') : t('start');
@@ -476,39 +536,61 @@
       if (e.key in MOVE_KEYS) keys.delete(MOVE_KEYS[e.key]);
     });
 
-    // Floating joystick: a touch on the arena drops a base; dragging from it
-    // sets the move vector. Shown only while a pointer is held down.
-    const joy = { active: false, id: null, bx: 0, by: 0, dx: 0, dy: 0 };
-    const JOY_MAX = 46;
-    function stagePoint(e) {
-      const rect = els.stage.getBoundingClientRect();
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    // Touch joystick lives in the dedicated region BELOW the arena, so the
+    // thumb never covers the play field. A press anywhere in the region drops
+    // the base at that point (floating), and dragging from there sets the move
+    // vector. Only wired up on coarse-pointer (touch) devices.
+    const joy = { active: false, id: null, dx: 0, dy: 0 };
+    const JOY_MAX = 50;
+    const isTouch = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+                    || ('ontouchstart' in window);
+
+    if (isTouch) {
+      document.body.classList.add('cd-touch');
+      const region = els.joystick, base = els.joyBase, knob = els.joyKnob;
+      const regionPoint = (e) => {
+        const r = region.getBoundingClientRect();
+        return { x: e.clientX - r.left, y: e.clientY - r.top };
+      };
+      const setKnob = (dx, dy) => {
+        knob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+      };
+      region.addEventListener('pointerdown', (e) => {
+        const p = regionPoint(e);
+        joy.active = true; joy.id = e.pointerId; joy.dx = 0; joy.dy = 0;
+        // Anchor the base where the thumb landed.
+        base.style.left = p.x + 'px';
+        base.style.top = p.y + 'px';
+        setKnob(0, 0);
+        region.classList.add('dragging');
+        region.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
+      region.addEventListener('pointermove', (e) => {
+        if (!joy.active || e.pointerId !== joy.id) return;
+        const p = regionPoint(e);
+        const r = region.getBoundingClientRect();
+        // Base center in region coords = the px left/top we set on pointerdown.
+        const bx = parseFloat(base.style.left) || r.width / 2;
+        const by = parseFloat(base.style.top) || r.height / 2;
+        let dx = p.x - bx, dy = p.y - by;
+        const len = Math.hypot(dx, dy);
+        if (len > JOY_MAX) { dx = dx / len * JOY_MAX; dy = dy / len * JOY_MAX; }
+        joy.dx = dx; joy.dy = dy;
+        setKnob(dx, dy);
+        e.preventDefault();
+      });
+      const endJoy = (e) => {
+        if (e.pointerId !== joy.id) return;
+        joy.active = false; joy.id = null; joy.dx = 0; joy.dy = 0;
+        // Snap the base back to its resting (centered) position.
+        base.style.left = ''; base.style.top = '';
+        setKnob(0, 0);
+        region.classList.remove('dragging');
+      };
+      region.addEventListener('pointerup', endJoy);
+      region.addEventListener('pointercancel', endJoy);
     }
-    els.canvas.addEventListener('pointerdown', (e) => {
-      if (state.mode !== 'playing') return;
-      // Mouse on desktop keeps keyboard control; only treat touch/pen as joystick.
-      if (e.pointerType === 'mouse') return;
-      const p = stagePoint(e);
-      joy.active = true; joy.id = e.pointerId;
-      joy.bx = p.x; joy.by = p.y; joy.dx = 0; joy.dy = 0;
-      els.canvas.setPointerCapture(e.pointerId);
-      e.preventDefault();
-    });
-    els.canvas.addEventListener('pointermove', (e) => {
-      if (!joy.active || e.pointerId !== joy.id) return;
-      const p = stagePoint(e);
-      let dx = p.x - joy.bx, dy = p.y - joy.by;
-      const len = Math.hypot(dx, dy);
-      if (len > JOY_MAX) { dx = dx / len * JOY_MAX; dy = dy / len * JOY_MAX; }
-      joy.dx = dx; joy.dy = dy;
-      e.preventDefault();
-    });
-    function endJoy(e) {
-      if (e.pointerId !== joy.id) return;
-      joy.active = false; joy.id = null; joy.dx = 0; joy.dy = 0;
-    }
-    els.canvas.addEventListener('pointerup', endJoy);
-    els.canvas.addEventListener('pointercancel', endJoy);
 
     function moveVector() {
       // Joystick takes priority when held.
@@ -614,8 +696,9 @@
 
     // Director: scale spawn frequency and unlock harder patterns over time.
     function difficulty() {
-      // 0 at start, grows ~linearly; soft-capped.
-      return Math.min(1 + state.elapsed / 28, 4.2);
+      // Starts at 1, grows ~linearly but gently; soft-capped. A larger divisor
+      // means a slower ramp — the player has more time at each intensity.
+      return Math.min(1 + state.elapsed / 50, 3.8);
     }
 
     function runDirector(dt) {
@@ -826,18 +909,6 @@
         ctx.beginPath();
         ctx.arc(p.x, p.y, PLAYER_R * 0.4, 0, Math.PI * 2);
         ctx.fill();
-        ctx.restore();
-      }
-
-      // Joystick.
-      if (joy.active) {
-        ctx.save();
-        ctx.strokeStyle = 'rgba(127,127,127,0.5)';
-        ctx.fillStyle = 'rgba(127,127,127,0.15)';
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(joy.bx, joy.by, JOY_MAX, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        ctx.fillStyle = 'rgba(127,127,127,0.55)';
-        ctx.beginPath(); ctx.arc(joy.bx + joy.dx, joy.by + joy.dy, 18, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       }
     }
