@@ -170,6 +170,90 @@
       font-size: 12px; color: var(--fg-muted); text-align: center;
       line-height: 1.5;
     }
+
+    /* ---------- Advanced options (collapsible) ---------- */
+    .g2048-advanced { display: flex; flex-direction: column; gap: 10px; }
+    .g2048-advanced-toggle {
+      align-self: center; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
+      background: none; border: none;
+      font-family: var(--font-sans);
+      font-size: 13px; font-weight: 600; color: var(--fg-muted);
+      padding: 4px 8px; border-radius: var(--radius-sm);
+    }
+    .g2048-advanced-toggle:hover { color: var(--fg); }
+    .g2048-advanced-toggle .chev { transition: transform 0.2s ease; }
+    .g2048-advanced-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+    .g2048-advanced-body {
+      display: flex; flex-direction: column; gap: 10px; align-items: center;
+      padding: 12px;
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      background: var(--surface-2);
+    }
+    .g2048-advanced-body[hidden] { display: none; }
+    /* Edit-mode toggle uses the active (pressed) accent styling of .btn.primary
+       via aria-pressed so it visibly latches on. */
+    #edit_toggle[aria-pressed="true"] {
+      background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+    }
+    #edit_toggle[aria-pressed="true"]:hover {
+      background: var(--accent-hover); border-color: var(--accent-hover);
+    }
+    .g2048-edit-hint {
+      font-size: 11px; color: var(--fg-muted); text-align: center; line-height: 1.5;
+    }
+
+    /* ---------- Edit-mode visuals ---------- */
+    .g2048-board.editing { cursor: pointer; }
+    /* Highlights the cell currently being edited. */
+    .g2048-edit-marker {
+      position: absolute; box-sizing: border-box;
+      border: 2px solid var(--accent);
+      border-radius: var(--radius-md);
+      pointer-events: none; z-index: 4;
+    }
+    /* Inline exponent editor popover, anchored near the tapped cell. */
+    .g2048-editor {
+      position: absolute; z-index: 5; width: 132px;
+      box-sizing: border-box;
+      background: var(--surface); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.22);
+      padding: 8px; pointer-events: auto;
+      display: flex; flex-direction: column; gap: 6px;
+      font-family: var(--font-sans);
+    }
+    .g2048-editor-row {
+      display: flex; align-items: baseline; justify-content: center; gap: 2px;
+    }
+    .g2048-editor-base { font-size: 20px; font-weight: 700; color: var(--fg); }
+    .g2048-editor-exp {
+      width: 46px;
+      font-family: var(--font-mono); font-size: 15px; font-weight: 700;
+      text-align: center; padding: 3px 4px;
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      background: var(--bg); color: var(--fg);
+      /* Sit it slightly raised so "2 ⁿ" reads as a power. */
+      transform: translateY(-6px);
+      -moz-appearance: textfield;
+    }
+    .g2048-editor-exp:focus {
+      outline: none; border-color: var(--accent);
+    }
+    .g2048-editor-exp::-webkit-outer-spin-button,
+    .g2048-editor-exp::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .g2048-editor-result {
+      text-align: center; font-family: var(--font-mono);
+      font-size: 17px; font-weight: 700; color: var(--fg); line-height: 1.1;
+    }
+    .g2048-editor-result.clear { color: var(--fg-muted); }
+    .g2048-editor-max {
+      text-align: center; font-family: var(--font-mono);
+      font-size: 11px; font-weight: 600; color: var(--fg-muted); line-height: 1.2;
+    }
+    .g2048-editor-tip {
+      text-align: center; font-size: 10px; color: var(--fg-muted); line-height: 1.4;
+    }
   </style>
 </head>
 <body>
@@ -230,6 +314,23 @@
         </div>
       </div>
       <div class="g2048-hint" id="hint">↑ ↓ ← → 或 WASD;手机上滑动屏幕</div>
+
+      <div class="g2048-advanced">
+        <button class="g2048-advanced-toggle" id="adv_toggle" aria-expanded="false" aria-controls="adv_body">
+          <span id="adv_label">高级选项</span>
+          <svg class="chev" width="12" height="12" viewBox="0 0 16 16" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6l4 4 4-4"></path>
+          </svg>
+        </button>
+        <div class="g2048-advanced-body" id="adv_body" hidden>
+          <button class="btn" id="edit_toggle" aria-pressed="false">
+            <span id="edit_label">编辑方块</span>
+          </button>
+          <div class="g2048-edit-hint" id="edit_hint"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -246,6 +347,15 @@
         play_again: '再来一局', keep_going: '继续',
         hint: '↑ ↓ ← → 或 WASD;手机上滑动屏幕',
         brand: '← SkyZero · 2048',
+        advanced: '高级选项',
+        edit_tiles: '编辑方块',
+        edit_done: '完成编辑',
+        edit_hint: '点击空格添加方块,点击方块修改;输入幂(2ⁿ)后回车确认',
+        editor_tip: '回车确认 · Esc 取消',
+        editor_clear: '清空',
+        editor_max: '上限',
+        editor_full: '已达上限',
+        editor_capped: '(上限)',
       },
       en: {
         score: 'Score', best: 'Best',
@@ -254,6 +364,15 @@
         play_again: 'Play again', keep_going: 'Keep going',
         hint: 'Arrow keys / WASD · swipe on touch',
         brand: '← SkyZero · 2048',
+        advanced: 'Advanced',
+        edit_tiles: 'Edit tiles',
+        edit_done: 'Done editing',
+        edit_hint: 'Tap an empty cell to add a tile, a tile to edit · type the exponent (2ⁿ) and press Enter',
+        editor_tip: 'Enter to confirm · Esc to cancel',
+        editor_clear: 'Clear',
+        editor_max: 'Max',
+        editor_full: 'Board full',
+        editor_capped: '(max)',
       },
     };
     let LANG = 'zh';
@@ -271,9 +390,13 @@
       document.getElementById('overlay_btn').textContent = t('play_again');
       document.getElementById('hint').textContent      = t('hint');
       document.getElementById('brand_link').textContent = t('brand');
+      document.getElementById('adv_label').textContent  = t('advanced');
+      document.getElementById('edit_hint').textContent  = t('edit_hint');
       document.title = '2048 · SkyZero';
       // Refresh overlay title if it's visible (state-dependent label).
       if (typeof updateOverlay === 'function') updateOverlay();
+      // Refresh edit-mode label + open editor tip (both are state-dependent).
+      if (typeof updateEditUi === 'function') updateEditUi();
     }
 
     // ---------- Theme + lang controls (mirror gomoku page) ----------
@@ -328,6 +451,13 @@
     // ---------- Game ----------
     const SIZE = 4;
     const GAP_PX = 10;
+    // Hard ceiling: no tile may ever exceed 65536 (2^16). Two 65536 tiles would
+    // merge into 131072, so merging is blocked once a tile hits MAX_TILE, and
+    // the editor keeps the whole board sum below SUM_CAP (2^17). That sum rule
+    // is what makes the editable max halve as the board fills: after a 65536
+    // only 32768 fits, then 16384, and so on.
+    const MAX_TILE = 65536;
+    const SUM_CAP  = MAX_TILE * 2;   // 131072
     const BEST_KEY = 'skz_2048_best';
     const STATE_KEY = 'skz_2048_state';
     const UNDO_LIMIT = 20;
@@ -354,6 +484,11 @@
     let history = [];          // stack of {grid, score, won} snapshots
     let won = false;
     let overlayMode = null;    // null | 'lose' | 'win'
+
+    // Board-editing mode (from the Advanced panel). While on, slides are
+    // disabled and tapping a cell opens an inline exponent editor.
+    let editMode = false;
+    let editor = null;         // { r, c, box, input, marker } when open, else null
 
     // Live tile DOM, keyed by stable per-tile id. Each entry's DOM node
     // persists across moves so a CSS `transform` transition animates the slide.
@@ -450,6 +585,7 @@
         for (let c = 0; c < SIZE; c++) {
           if (grid[r][c] === 0) return true;
           const v = grid[r][c];
+          if (v * 2 > MAX_TILE) continue;   // capped tiles can't merge
           if (r + 1 < SIZE && grid[r + 1][c] === v) return true;
           if (c + 1 < SIZE && grid[r][c + 1] === v) return true;
         }
@@ -462,6 +598,36 @@
       for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
         if (grid[r][c] > m) m = grid[r][c];
       }
+      return m;
+    }
+
+    function boardSum() {
+      let s = 0;
+      for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) s += grid[r][c];
+      return s;
+    }
+
+    // Score implied by the current board, assuming every tile was built from
+    // 2-spawns: a 2^k tile is worth (k-1)*2^k of accumulated merge score. Used
+    // to keep score/best in sync after a board edit.
+    function scoreFromGrid() {
+      let s = 0;
+      for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
+        const v = grid[r][c];
+        if (v >= 4) s += v * (Math.round(Math.log2(v)) - 1);
+      }
+      return s;
+    }
+
+    // Largest power-of-two value the editor may write into (r,c): the biggest
+    // m (≤ MAX_TILE) that keeps the total board sum below SUM_CAP. Returns 0
+    // when even a 2 wouldn't fit (cell can only be cleared).
+    function editCapFor(r, c) {
+      const sumOthers = boardSum() - grid[r][c];
+      const room = SUM_CAP - sumOthers - 1;   // value must be ≤ room
+      if (room < 2) return 0;
+      let m = 2;
+      while (m * 2 <= room && m < MAX_TILE) m *= 2;
       return m;
     }
 
@@ -574,7 +740,9 @@
         const id = idsLine[i];
         const v  = valsLine[i];
         if (id === 0) continue;
-        if (writeIdx > 0 && canMerge && newVals[writeIdx - 1] === v) {
+        // Block the merge that would exceed the ceiling — two MAX_TILE tiles
+        // stay separate instead of forming 131072.
+        if (writeIdx > 0 && canMerge && newVals[writeIdx - 1] === v && v * 2 <= MAX_TILE) {
           const surviveId = newIds[writeIdx - 1];
           const merged = v * 2;
           gained += merged;
@@ -593,6 +761,7 @@
     }
 
     function doMove(dir) {
+      if (editMode) return;        // sliding is disabled while editing the board
       if (overlayMode === 'lose') return;
       // Snap any in-flight animation to its committed state before we mutate.
       finalizeAnimation();
@@ -728,6 +897,7 @@
 
     function undo() {
       finalizeAnimation();
+      closeEditor(false);
       const prev = history.pop();
       if (!prev) return;
       grid = prev.grid;
@@ -742,6 +912,7 @@
 
     function newGame() {
       if (animTimer) { clearTimeout(animTimer); animTimer = 0; }
+      closeEditor(false);
       pendingMerges = [];
       pendingSpawns = [];
       grid = emptyGrid();
@@ -759,6 +930,194 @@
       updateOverlay();
       saveState();
     }
+
+    // ---------- Board editing ----------
+    const advToggle  = document.getElementById('adv_toggle');
+    const advBody    = document.getElementById('adv_body');
+    const editToggle = document.getElementById('edit_toggle');
+
+    // Re-derive win/lose from the current grid. Used after edits so the overlay
+    // reflects the hand-built position rather than stale state.
+    function recomputeOverlay() {
+      if (maxTile() >= 2048) { won = true; overlayMode = 'win'; }
+      else if (!anyMovePossible()) { won = false; overlayMode = 'lose'; }
+      else { won = false; overlayMode = null; }
+      updateOverlay();
+    }
+
+    // Keep the edit toggle label + open editor tip in sync with language/state.
+    function updateEditUi() {
+      editToggle.querySelector('#edit_label').textContent =
+        editMode ? t('edit_done') : t('edit_tiles');
+      editToggle.setAttribute('aria-pressed', String(editMode));
+      if (editor) {
+        const tip = editor.box.querySelector('.g2048-editor-tip');
+        if (tip) tip.textContent = t('editor_tip');
+        const mx = editor.box.querySelector('.g2048-editor-max');
+        if (mx) mx.textContent = editor.cap > 0 ? t('editor_max') + ' ' + editor.cap : t('editor_full');
+        renderEditorResult();
+      }
+    }
+
+    // Pixel position of cell (r,c) within #tiles, matching tile layout.
+    function cellXY(r, c) {
+      const size = cellSizePx();
+      return { x: c * (size + GAP_PX), y: r * (size + GAP_PX), size };
+    }
+
+    function closeEditor(commit) {
+      if (!editor) return;
+      const ed = editor;
+      editor = null;
+      if (commit) {
+        const raw = ed.input.value.trim();
+        // Empty or 0 → clear the cell; otherwise value = 2^n, capped so the
+        // board sum stays under SUM_CAP (never letting a >65536 tile exist).
+        let value = 0;
+        if (raw !== '') {
+          const n = parseInt(raw, 10);
+          if (isFinite(n) && n >= 1) value = Math.min(Math.pow(2, Math.min(n, 17)), ed.cap);
+        }
+        applyEdit(ed.r, ed.c, value);
+      }
+      if (ed.box.parentNode) ed.box.parentNode.removeChild(ed.box);
+      if (ed.marker.parentNode) ed.marker.parentNode.removeChild(ed.marker);
+    }
+
+    // Live "= value" preview reflecting the typed exponent, clamped to the cap.
+    function renderEditorResult() {
+      if (!editor) return;
+      const res = editor.box.querySelector('.g2048-editor-result');
+      const raw = editor.input.value.trim();
+      if (raw === '') { res.textContent = t('editor_clear'); res.classList.add('clear'); return; }
+      const n = parseInt(raw, 10);
+      if (!isFinite(n) || n < 1) { res.textContent = t('editor_clear'); res.classList.add('clear'); return; }
+      let v = Math.pow(2, Math.min(n, 17));
+      const capped = v > editor.cap;
+      if (capped) v = editor.cap;
+      res.classList.remove('clear');
+      // Show the capped value, and flag when the request was clamped down.
+      res.textContent = '= ' + v + (capped ? ' ' + t('editor_capped') : '');
+    }
+
+    function openEditor(r, c) {
+      closeEditor(false);
+      const { x, y, size } = cellXY(r, c);
+
+      // Highlight the target cell.
+      const marker = document.createElement('div');
+      marker.className = 'g2048-edit-marker';
+      marker.style.left = x + 'px';
+      marker.style.top = y + 'px';
+      marker.style.width = size + 'px';
+      marker.style.height = size + 'px';
+      tilesEl.appendChild(marker);
+
+      // Build the popover.
+      const box = document.createElement('div');
+      box.className = 'g2048-editor';
+      box.innerHTML =
+        '<div class="g2048-editor-row">' +
+          '<span class="g2048-editor-base">2</span>' +
+          '<input class="g2048-editor-exp" type="text" inputmode="numeric" ' +
+                 'autocomplete="off" maxlength="2" aria-label="exponent">' +
+        '</div>' +
+        '<div class="g2048-editor-result"></div>' +
+        '<div class="g2048-editor-max"></div>' +
+        '<div class="g2048-editor-tip"></div>';
+      tilesEl.appendChild(box);
+
+      const input = box.querySelector('.g2048-editor-exp');
+      box.querySelector('.g2048-editor-tip').textContent = t('editor_tip');
+
+      // Largest value this cell may hold given the rest of the board.
+      const cap = editCapFor(r, c);
+      box.querySelector('.g2048-editor-max').textContent =
+        cap > 0 ? t('editor_max') + ' ' + cap : t('editor_full');
+
+      // Pre-fill with the current tile's exponent, if any.
+      if (grid[r][c] > 0) input.value = String(Math.round(Math.log2(grid[r][c])));
+
+      editor = { r, c, box, input, marker, cap };
+      renderEditorResult();
+
+      // Position: prefer below the cell, flip above if it would overflow the
+      // bottom, and clamp horizontally inside the tiles area.
+      const tilesW = tilesEl.clientWidth;
+      const tilesH = tilesEl.clientHeight;
+      const bw = box.offsetWidth || 132;
+      const bh = box.offsetHeight || 90;
+      let left = x + size / 2 - bw / 2;
+      left = Math.max(0, Math.min(left, tilesW - bw));
+      let top = y + size + 6;
+      if (top + bh > tilesH) top = y - bh - 6;
+      if (top < 0) top = Math.max(0, Math.min(y, tilesH - bh));
+      box.style.left = left + 'px';
+      box.style.top = top + 'px';
+
+      input.addEventListener('input', renderEditorResult);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); closeEditor(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); closeEditor(false); }
+      });
+      input.focus();
+      input.select();
+    }
+
+    // Write a single cell, snapshot for undo, refresh DOM, and re-derive the
+    // score from the new board so the best score stays in sync.
+    function applyEdit(r, c, value) {
+      if (grid[r][c] === value) return;
+      const snapshot = { grid: cloneGrid(grid), score, won };
+      history.push(snapshot);
+      if (history.length > UNDO_LIMIT) history.shift();
+      grid[r][c] = value;
+      score = scoreFromGrid();
+      if (score > best) { best = score; saveBest(); }
+      rebuildTilesFromGrid(null);
+      updateScoreDom();
+      saveState();
+    }
+
+    // Translate a board click into a cell and open its editor.
+    boardEl.addEventListener('click', (e) => {
+      if (!editMode) return;
+      // A click inside the open editor is handled by the editor itself.
+      if (editor && editor.box.contains(e.target)) return;
+      const rect = tilesEl.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      if (px < 0 || py < 0 || px > rect.width || py > rect.height) { closeEditor(false); return; }
+      const size = cellSizePx();
+      const step = size + GAP_PX;
+      const c = Math.floor(px / step);
+      const r = Math.floor(py / step);
+      if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) { closeEditor(false); return; }
+      openEditor(r, c);
+    });
+
+    function setEditMode(on) {
+      editMode = on;
+      boardEl.classList.toggle('editing', on);
+      if (!on) {
+        closeEditor(false);
+        recomputeOverlay();   // reflect the freshly edited position
+      } else {
+        // Editing a finished board should clear any leftover overlay.
+        overlayMode = null;
+        updateOverlay();
+      }
+      updateEditUi();
+    }
+
+    advToggle.addEventListener('click', () => {
+      const open = advBody.hasAttribute('hidden');
+      if (open) advBody.removeAttribute('hidden');
+      else advBody.setAttribute('hidden', '');
+      advToggle.setAttribute('aria-expanded', String(open));
+      if (!open && editMode) setEditMode(false);  // collapsing exits edit mode
+    });
+    editToggle.addEventListener('click', () => setEditMode(!editMode));
 
     // ---------- Input ----------
     const KEY_DIR = {
@@ -817,6 +1176,9 @@
     let resizeRaf = 0;
     window.addEventListener('resize', () => {
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      // The open editor is anchored to pixel coords that change with the board
+      // width, so close it rather than leave it misplaced.
+      closeEditor(false);
       resizeRaf = requestAnimationFrame(() => { resizeRaf = 0; reflowTiles(); });
     });
 
