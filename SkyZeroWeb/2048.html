@@ -34,6 +34,8 @@
     })();
   </script>
   <link rel="stylesheet" href="style.css">
+  <!-- Pin the leaderboard to 2048 so the dodge board doesn't show here. -->
+  <script>window.SKZ_LB_GAME = '2048';</script>
   <script defer src="/leaderboard.js"></script>
   <style>
     /* 2048-specific styles. Theme colors come from style.css variables so
@@ -41,7 +43,10 @@
     .g2048-app {
       max-width: 520px; margin: 0 auto; padding: 8px 16px 24px;
       display: flex; flex-direction: column; gap: 14px;
-      touch-action: none;
+      /* Allow vertical scroll so the inline leaderboard below the board stays
+         reachable on phones; only the board itself opts out of scroll (below)
+         so swipes drive moves instead of panning the page. */
+      touch-action: pan-y;
     }
     .g2048-scores {
       display: flex; gap: 10px; justify-content: center;
@@ -85,6 +90,8 @@
       box-shadow: var(--shadow-xs);
       user-select: none;
       -webkit-user-select: none;
+      /* Swipes on the board drive moves, not page scroll. */
+      touch-action: none;
     }
     .g2048-grid {
       position: absolute; inset: 10px;

@@ -12,6 +12,16 @@
   var NAME_KEY = 'skz_name';
   var TOKEN_KEY = 'skz_token';
   var GAMES = ['2048', 'dodge'];
+  // A game page can pin the board to its own game by setting
+  // `window.SKZ_LB_GAME = '2048' | 'dodge'` before this script runs. Then only
+  // that game's scores show here (no cross-game tab), and first-time visitors
+  // are prompted to set a nickname on arrival. The landing page leaves it
+  // unset and keeps both games behind tabs.
+  var ONLY_GAME = (function () {
+    var g = (typeof window !== 'undefined') ? window.SKZ_LB_GAME : null;
+    return GAMES.indexOf(g) >= 0 ? g : null;
+  })();
+  var VIEW_GAMES = ONLY_GAME ? [ONLY_GAME] : GAMES;
 
   // ---------- i18n (reads the site-wide skz_lang) ----------
   var STR = {
@@ -20,7 +30,7 @@
       tab_2048: '2048', tab_dodge: '躲避',
       you: '你', set_name: '设置昵称', change: '改名',
       name_title: '起个名字', name_ph: '昵称(最多 20 字)',
-      name_hint: '昵称用于排行榜显示。换设备或清缓存后需重新设置。',
+      name_hint: '昵称用于排行榜显示。成绩仅保存在当前浏览器,换浏览器、换设备或清除缓存后无法同步,需要重新设置。',
       save: '保存', cancel: '取消',
       empty: '还没有记录,快来抢第一!',
       loading: '加载中…', unavailable: '排行榜暂不可用',
@@ -34,7 +44,7 @@
       tab_2048: '2048', tab_dodge: 'Dodge',
       you: 'You', set_name: 'Set name', change: 'Rename',
       name_title: 'Pick a name', name_ph: 'Nickname (max 20)',
-      name_hint: 'Your nickname shows on the leaderboard. You will need to set it again on a new device or after clearing storage.',
+      name_hint: 'Your nickname shows on the leaderboard. Scores live only in this browser — they will not sync to another browser or device, and you will need to set the name again after switching or clearing storage.',
       save: 'Save', cancel: 'Cancel',
       empty: 'No scores yet — be the first!',
       loading: 'Loading…', unavailable: 'Leaderboard unavailable',
@@ -279,7 +289,7 @@
   // shared state. `isVisible()` lets refreshViews() skip off-screen instances.
   var views = [];
   function createView(isVisible) {
-    var v = { root: null, idEl: null, listEl: null, tabEls: {}, game: '2048',
+    var v = { root: null, idEl: null, listEl: null, tabEls: {}, game: VIEW_GAMES[0],
               isVisible: isVisible || function () { return true; } };
     v.root = document.createElement('div');
     v.root.className = 'skz-lb-view';
@@ -290,6 +300,7 @@
     var tabs = document.createElement('div');
     tabs.className = 'skz-lb-tabs';
     [['2048', 'tab_2048'], ['dodge', 'tab_dodge']].forEach(function (pair) {
+      if (VIEW_GAMES.indexOf(pair[0]) < 0) return;   // pinned page: hide the other game
       var b = document.createElement('button');
       b.className = 'skz-lb-tab'; b.type = 'button';
       b.textContent = t(pair[1]);
@@ -303,7 +314,8 @@
     v.listEl.className = 'skz-lb-list';
 
     v.root.appendChild(v.idEl);
-    v.root.appendChild(tabs);
+    // A single-game page needs no tab strip — there's nothing to switch to.
+    if (VIEW_GAMES.length > 1) v.root.appendChild(tabs);
     v.root.appendChild(v.listEl);
     renderId(v);
     views.push(v);
@@ -552,6 +564,10 @@
     injectOverlayButton();
     buildDock();     // game pages only (checks for #overlay); loads immediately
     buildInline();   // pages with a #skz-lb-inline mount (e.g. 2048 mobile)
+    // On a pinned game page (2048 / dodge), nudge first-time players to set a
+    // nickname right away so their scores can land on the board. Only when one
+    // isn't set yet — returning players aren't nagged.
+    if (ONLY_GAME && !getName()) openNameDialog();
     // Keep labels in sync if the user toggles language in-page. The page's own
     // lang listener is registered first (inline script runs before this defer
     // script), so localStorage is already updated when these fire.
