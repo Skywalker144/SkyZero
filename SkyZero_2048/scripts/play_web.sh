@@ -12,7 +12,7 @@ ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 source "$SCRIPT_DIR/env_paths.cfg"
 
 CKPT="${CKPT:-$ROOT/data2048_nbt/models/latest.pt}"   # active TorchScript mirror
-PORT="${PORT:-8858}"
+PORT="${PORT:-8868}"
 SIMS="${SIMS:-128}"
 DEVICE="${DEVICE:-cuda}"
 
