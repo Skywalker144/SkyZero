@@ -93,6 +93,12 @@
       /* Swipes on the board drive moves, not page scroll. */
       touch-action: none;
     }
+    /* The board is focusable (tabindex=0) so keyboard arrows work, but the
+       default focus ring shows up as a blue box around it — suppress it. */
+    .g2048-board:focus,
+    .g2048-board:focus-visible {
+      outline: none;
+    }
     .g2048-grid {
       position: absolute; inset: 10px;
       display: grid;
