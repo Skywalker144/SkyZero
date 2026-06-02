@@ -69,7 +69,16 @@
       line-height: 1.1; margin-top: 2px;
     }
     .g2048-actions {
-      display: flex; gap: 10px; justify-content: center;
+      display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+    }
+    .btn:disabled { opacity: 0.5; cursor: default; pointer-events: none; }
+    /* AI auto-play toggle: lit when engaged. */
+    #ai_auto_btn[aria-pressed="true"] {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
+    .g2048-ai-status {
+      min-height: 18px; text-align: center; font-size: 12.5px;
+      font-family: var(--font-mono); color: var(--fg-muted);
     }
     .g2048-board {
       position: relative;
@@ -231,7 +240,10 @@
       <div class="g2048-actions">
         <button class="btn primary" id="new_btn">新对局</button>
         <button class="btn danger-ghost" id="undo_btn">撤销</button>
+        <button class="btn" id="ai_move_btn" disabled>AI 走子</button>
+        <button class="btn" id="ai_auto_btn" aria-pressed="false" disabled>AI 托管</button>
       </div>
+      <div class="g2048-ai-status" id="ai_status"></div>
       <div class="g2048-board" id="g2048_board" tabindex="0" aria-label="2048 board">
         <div class="g2048-grid" id="grid"></div>
         <div class="g2048-tiles" id="tiles"></div>
@@ -258,6 +270,10 @@
         game_over: '游戏结束', you_win: '到达 2048!',
         play_again: '再来一局', keep_going: '继续',
         brand: '← SkyZero · 2048',
+        ai_move: 'AI 走子', ai_auto: 'AI 托管', ai_stop: '停止',
+        ai_loading: '加载 AI 模型…', ai_thinking: '思考中…',
+        ai_ready: 'AI 就绪', ai_error: 'AI 加载失败',
+        dir_up: '上', dir_right: '右', dir_down: '下', dir_left: '左',
       },
       en: {
         score: 'Score', best: 'Best',
@@ -265,6 +281,10 @@
         game_over: 'Game over', you_win: 'You reached 2048!',
         play_again: 'Play again', keep_going: 'Keep going',
         brand: '← SkyZero · 2048',
+        ai_move: 'AI move', ai_auto: 'AI autoplay', ai_stop: 'Stop',
+        ai_loading: 'Loading AI model…', ai_thinking: 'Thinking…',
+        ai_ready: 'AI ready', ai_error: 'AI failed to load',
+        dir_up: 'Up', dir_right: 'Right', dir_down: 'Down', dir_left: 'Left',
       },
     };
     let LANG = 'zh';
@@ -279,6 +299,8 @@
       document.getElementById('lbl_best').textContent  = t('best');
       document.getElementById('new_btn').textContent   = t('new_game');
       document.getElementById('undo_btn').textContent  = t('undo');
+      document.getElementById('ai_move_btn').textContent = t('ai_move');
+      if (typeof refreshAiButtons === 'function') refreshAiButtons();
       document.getElementById('overlay_btn').textContent = t('play_again');
       document.getElementById('brand_link').textContent = t('brand');
       document.title = '2048 · SkyZero';
@@ -576,6 +598,7 @@
       } else {
         overlayEl.classList.remove('show');
       }
+      if (typeof refreshAiButtons === 'function') refreshAiButtons();
     }
 
     // ---------- Move / merge with identity ----------
@@ -846,6 +869,85 @@
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
       resizeRaf = requestAnimationFrame(() => { resizeRaf = 0; reflowTiles(); });
     });
+
+    // ---------- AI (Stochastic Gumbel AlphaZero, browser-side) ----------
+    // Loads the exported 2048 value net (models/2048.onnx) in a Web Worker and
+    // plays moves via a 1-ply expectimax over the value head (ai2048.js):
+    //   Q(a) = reward(a) + gamma * E_spawn[V(next)].
+    // An AI-assisted run is marked `tainted` so it never posts a score to the
+    // human leaderboard.
+    const AI_MODEL_URL = 'models/2048.onnx';
+    const AI_AUTO_DELAY_MS = 200;   // > slide anim so the spawned tile settles
+    let aiReady = false, aiBusy = false, aiAuto = false, aiSeq = 0, aiWorker = null;
+    const aiMoveBtn = document.getElementById('ai_move_btn');
+    const aiAutoBtn = document.getElementById('ai_auto_btn');
+    const aiStatusEl = document.getElementById('ai_status');
+
+    function setAiStatus(text) { if (aiStatusEl) aiStatusEl.textContent = text || ''; }
+
+    function refreshAiButtons() {
+      if (!aiMoveBtn || !aiAutoBtn) return;
+      aiAutoBtn.textContent = aiAuto ? t('ai_stop') : t('ai_auto');
+      aiAutoBtn.setAttribute('aria-pressed', String(aiAuto));
+      const gameOver = (overlayMode === 'lose');
+      aiMoveBtn.disabled = !aiReady || gameOver || aiBusy || aiAuto;
+      aiAutoBtn.disabled = !aiReady || gameOver;
+    }
+
+    function startAiWorker() {
+      try {
+        aiWorker = new Worker('worker2048.js?v=' + Date.now());
+      } catch (e) { setAiStatus(t('ai_error')); return; }
+      aiWorker.onmessage = (ev) => {
+        const m = ev.data || {};
+        if (m.type === 'model-progress') {
+          if (!aiReady) setAiStatus(t('ai_loading') +
+            (m.percent != null ? ' ' + Math.round(m.percent) + '%' : ''));
+        } else if (m.type === 'ready') {
+          aiReady = true; setAiStatus(''); refreshAiButtons();
+        } else if (m.type === 'move') {
+          onAiMove(m);
+        } else if (m.type === 'error') {
+          aiBusy = false; aiAuto = false;
+          setAiStatus(t('ai_error') + ': ' + m.message); refreshAiButtons();
+        }
+      };
+      aiWorker.onerror = () => {
+        aiBusy = false; aiAuto = false; setAiStatus(t('ai_error')); refreshAiButtons();
+      };
+      setAiStatus(t('ai_loading'));
+      aiWorker.postMessage({ type: 'init', model: AI_MODEL_URL });
+    }
+
+    function requestAiMove() {
+      if (!aiReady || aiBusy) return;
+      // Flush any in-flight slide so the worker sees the settled board (incl.
+      // the freshly spawned tile) and any just-reached win/lose state.
+      finalizeAnimation();
+      if (overlayMode === 'win') { overlayMode = null; updateOverlay(); }
+      if (overlayMode === 'lose' || !anyMovePossible()) {
+        aiAuto = false; refreshAiButtons(); return;
+      }
+      aiBusy = true; setAiStatus(t('ai_thinking')); refreshAiButtons();
+      aiWorker.postMessage({ type: 'think', id: ++aiSeq, grid: cloneGrid(grid) });
+    }
+
+    function onAiMove(m) {
+      aiBusy = false;
+      if (m.terminal) { aiAuto = false; setAiStatus(''); refreshAiButtons(); return; }
+      tainted = true;   // AI-assisted run: ineligible for the human leaderboard
+      setAiStatus('AI ▸ ' + t('dir_' + m.dir) + '  ≈ ' + Math.round(m.value).toLocaleString());
+      doMove(m.dir);
+      refreshAiButtons();
+      if (aiAuto) setTimeout(requestAiMove, AI_AUTO_DELAY_MS);
+    }
+
+    aiMoveBtn.addEventListener('click', () => { if (!aiAuto) requestAiMove(); });
+    aiAutoBtn.addEventListener('click', () => {
+      aiAuto = !aiAuto; refreshAiButtons();
+      if (aiAuto) requestAiMove();
+    });
+    startAiWorker();
 
     // ---------- Boot ----------
     loadBest();
