@@ -71,7 +71,18 @@ def _save_summary(path: pathlib.Path, summary: dict) -> None:
 
 
 def _count_rows_worker(path_str: str) -> tuple[str, int]:
-    return path_str, count_rows(path_str)
+    # Robust against 0-byte / truncated / mid-write npz files (e.g. stale
+    # debris from an aborted run, or a file self-play is still writing).
+    # np.load on an empty file raises EOFError; a worker exception would
+    # otherwise propagate through pool.imap and crash the whole shuffle.
+    # Return -1 so the caller skips (and does NOT cache) the file; it will be
+    # retried next iteration once fully written, or stay skipped if corrupt.
+    try:
+        return path_str, count_rows(path_str)
+    except Exception as e:  # noqa: BLE001 - any decode/IO error means "skip"
+        print(f"[shuffle] WARN skipping unreadable npz {path_str}: {e}",
+              file=sys.stderr)
+        return path_str, -1
 
 
 def discover_and_count(selfplay_dir, summary_path, pool):
@@ -99,7 +110,7 @@ def discover_and_count(selfplay_dir, summary_path, pool):
                 known[pathlib.Path(path_str).name] = rows
         else:
             for p in unknown:
-                known[p.name] = count_rows(p)
+                known[p.name] = _count_rows_worker(str(p))[1]
     new_entry: dict[str, dict] = {}
     result: list[tuple[pathlib.Path, int]] = []
     for p in files:
@@ -108,7 +119,9 @@ def discover_and_count(selfplay_dir, summary_path, pool):
         except FileNotFoundError:
             continue
         rows = known.get(p.name)
-        if rows is None:
+        if rows is None or rows < 0:
+            # unreadable/empty file: skip it and don't cache, so a still-being-
+            # written file is re-counted next time instead of being remembered.
             continue
         new_entry[p.name] = {"mtime": mtime, "rows": rows}
         result.append((p, rows))
