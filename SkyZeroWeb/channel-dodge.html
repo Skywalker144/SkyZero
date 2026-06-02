@@ -275,7 +275,6 @@
       border: 1px solid var(--border); border-radius: var(--radius-sm);
       background:
         conic-gradient(#0000 90deg, color-mix(in srgb, var(--fg-subtle) 14%, transparent) 0 180deg, #0000 0 270deg, color-mix(in srgb, var(--fg-subtle) 14%, transparent) 0) 0 0 / 12px 12px;
-      image-rendering: pixelated;
     }
     .cd-draw-preview-label { font-size: 10px; color: var(--fg-muted); text-align: center; line-height: 1.3; }
     .cd-draw-palette { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
@@ -438,7 +437,7 @@
           <canvas class="cd-draw-canvas" id="draw_canvas" width="232" height="232"></canvas>
           <div class="cd-draw-side">
             <canvas class="cd-draw-preview" id="draw_preview" width="56" height="56"></canvas>
-            <div class="cd-draw-preview-label" id="draw_preview_label">像素预览</div>
+            <div class="cd-draw-preview-label" id="draw_preview_label">预览</div>
           </div>
         </div>
         <div class="cd-draw-palette" id="draw_palette"></div>
@@ -478,7 +477,7 @@
         roster: '形象', draw_own: '自绘形象',
         av_ball: '原版小球', av_custom: '我的形象',
         draw_title: '画一个形象', draw_clear: '清空', draw_cancel: '取消',
-        draw_use: '使用', draw_preview: '像素预览', draw_eraser: '橡皮',
+        draw_use: '使用', draw_preview: '预览', draw_eraser: '橡皮',
         draw_empty: '画点东西吧',
       },
       en: {
@@ -501,7 +500,7 @@
         roster: 'Avatar', draw_own: 'Draw your own',
         av_ball: 'Classic ball', av_custom: 'My avatar',
         draw_title: 'Draw your avatar', draw_clear: 'Clear', draw_cancel: 'Cancel',
-        draw_use: 'Use', draw_preview: 'Pixel preview', draw_eraser: 'Eraser',
+        draw_use: 'Use', draw_preview: 'Preview', draw_eraser: 'Eraser',
         draw_empty: 'Draw something first',
       },
     };
@@ -828,10 +827,8 @@
     function drawAvatar(g, id, cx, cy, R) {
       if (id === 'custom') {
         if (customImg && customImg.complete && customImg.naturalWidth) {
-          const prev = g.imageSmoothingEnabled;
-          g.imageSmoothingEnabled = false;
+          // 1:1 drawing scaled smoothly into the avatar box.
           g.drawImage(customImg, cx - R, cy - R, R * 2, R * 2);
-          g.imageSmoothingEnabled = prev;
           return;
         }
         id = 'ball';
@@ -897,8 +894,7 @@
     // ---------- draw-your-own editor ----------
     const PALETTE = ['#1a1a1a', '#ffffff', '#e0483b', '#f5a623', '#f8e71c',
                      '#3aa757', '#3a7bd5', '#9b59b6', '#e8843c', '#7a4a24', '#ff6fae', '#48d6ff'];
-    const GRID_N = 24;
-    const dctx = els.drawCanvas.getContext('2d');
+    const dctx = els.drawCanvas.getContext('2d', { willReadFrequently: true });
     let drawColor = PALETTE[0], drawErase = false, brush = 14;
     let drawing = false, lastX = 0, lastY = 0;
 
@@ -962,29 +958,17 @@
     els.drawCanvas.addEventListener('pointerup', endDraw);
     els.drawCanvas.addEventListener('pointercancel', endDraw);
 
-    // Downsample the drawing to a crisp GRID_N×GRID_N pixel sprite.
-    function makePixelCanvas() {
-      const small = document.createElement('canvas');
-      small.width = GRID_N; small.height = GRID_N;
-      const sg = small.getContext('2d');
-      sg.imageSmoothingEnabled = true;
-      sg.drawImage(els.drawCanvas, 0, 0, GRID_N, GRID_N);
-      const img = sg.getImageData(0, 0, GRID_N, GRID_N), d = img.data;
-      for (let i = 0; i < d.length; i += 4) d[i + 3] = d[i + 3] >= 110 ? 255 : 0;  // hard alpha → crisp cells
-      sg.putImageData(img, 0, 0);
-      return small;
-    }
-    function pixelNonEmpty(small) {
-      const d = small.getContext('2d').getImageData(0, 0, GRID_N, GRID_N).data;
+    // The drawing is used 1:1 (no pixelation) — we just capture the canvas as-is.
+    function drawingNonEmpty() {
+      const d = dctx.getImageData(0, 0, els.drawCanvas.width, els.drawCanvas.height).data;
       for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
       return false;
     }
     function updatePreview() {
-      const small = makePixelCanvas();
       const pg = els.drawPreview.getContext('2d');
       pg.clearRect(0, 0, els.drawPreview.width, els.drawPreview.height);
-      pg.imageSmoothingEnabled = false;
-      pg.drawImage(small, 0, 0, els.drawPreview.width, els.drawPreview.height);
+      pg.imageSmoothingEnabled = true;
+      pg.drawImage(els.drawCanvas, 0, 0, els.drawPreview.width, els.drawPreview.height);
     }
     function openDraw() {
       dctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1002,9 +986,8 @@
     });
     els.drawCancel.addEventListener('click', closeDraw);
     els.drawUse.addEventListener('click', () => {
-      const small = makePixelCanvas();
-      if (!pixelNonEmpty(small)) { els.drawPreviewLabel.textContent = t('draw_empty'); return; }
-      customURL = small.toDataURL();
+      if (!drawingNonEmpty()) { els.drawPreviewLabel.textContent = t('draw_empty'); return; }
+      customURL = els.drawCanvas.toDataURL();   // 1:1 capture, transparent background preserved
       try { localStorage.setItem('cd_avatar_custom', customURL); } catch (_) {}
       customImg = new Image();
       customImg.onload = () => { buildRoster(); selectAvatar('custom'); };
@@ -1607,12 +1590,16 @@
         ctx.fill();
         drawAvatar(ctx, avatarId, p.x, p.y, AVATAR_R);
         ctx.restore();
-        // Hitbox dot (bullet-hell convention) — shows exactly what gets hit.
+        // Hitbox indicator: a small hollow ring (not a filled dot) so the
+        // avatar shows through the middle while the true collision center stays
+        // clearly marked. Dark outer + white inner stroke reads on any backdrop.
         ctx.save();
-        ctx.fillStyle = '#ffffff';
-        ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 3.4, 0, Math.PI * 2); ctx.stroke();
         ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.strokeStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 3.4, 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
       }
 
