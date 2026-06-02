@@ -106,6 +106,9 @@ fi
 [[ -d "$MODELS_DIR" ]] || { echo "[elo.sh] no models dir at $MODELS_DIR" >&2; exit 1; }
 OUT_FILE="${OUT_FILE:-$ELO_OUT_DIR/games.jsonl}"
 PLOT_FILE="${PLOT_FILE:-$ELO_OUT_DIR/elo.png}"
+# Plain-text ratings table (one row per model: name, games, Elo, ±se, iter),
+# written next to the PNG so each run leaves a readable record of the scores.
+TEXT_FILE="${TEXT_FILE:-$ELO_OUT_DIR/elo.txt}"
 
 ANCHOR_DIR="${ANCHOR_DIR:-$(cfg_get ANCHOR_DIR anchors)}"
 [[ "$ANCHOR_DIR" = /* ]] || ANCHOR_DIR="$ROOT/$ANCHOR_DIR"
@@ -372,5 +375,5 @@ if (( ${#PENDING[@]} > 0 )); then
 fi
 
 # --- Regenerate Elo table + curve ---------------------------------------
-echo "[elo.sh] updating Elo: $PLOT_FILE"
-python "$ROOT/python/elo.py" --games "$OUT_FILE" --plot "$PLOT_FILE"
+echo "[elo.sh] updating Elo: $PLOT_FILE (+ $TEXT_FILE)"
+python "$ROOT/python/elo.py" --games "$OUT_FILE" --plot "$PLOT_FILE" --out-text "$TEXT_FILE"

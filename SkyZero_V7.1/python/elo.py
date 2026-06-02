@@ -131,6 +131,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--games", required=True, type=Path, help="JSONL from gomoku_elo")
     ap.add_argument("--plot", type=Path, default=None, help="Output PNG path for Elo curve")
+    ap.add_argument("--out-text", type=Path, default=None,
+                    help="Also write the ratings table (one row per model) to this text file")
     ap.add_argument("--min-games", type=int, default=1,
                     help="Drop models with fewer than this many total games")
     args = ap.parse_args()
@@ -164,16 +166,27 @@ def main() -> int:
 
     # --- Table ---
     w = max(len(os.path.basename(m)) for m in models)
-    print(f"{'model':<{w}}  {'games':>6}  {'Elo':>8}  {'±se':>6}  {'iter':>6}")
     rows = []
     for m, e, es in zip(models, elo, elo_se):
         rows.append((m, counts[m], e, es, parse_iter(m)))
     # Sort table by iteration (anchors first by their iter number too).
     rows.sort(key=lambda x: (x[4] if x[4] is not None else -1, x[0]))
+
+    # Build the table once, then both print it and (optionally) write it to a
+    # file so a run leaves a machine-readable record of every model's Elo
+    # alongside the PNG curve.
+    lines = [f"{'model':<{w}}  {'games':>6}  {'Elo':>8}  {'±se':>6}  {'iter':>6}"]
     for m, c, e, es, it in rows:
         it_str = str(it) if it is not None else "-"
         tag = " [anchor]" if "/anchors/" in m else ""
-        print(f"{os.path.basename(m):<{w}}  {c:>6}  {e:>+8.1f}  {es:>6.1f}  {it_str:>6}{tag}")
+        lines.append(f"{os.path.basename(m):<{w}}  {c:>6}  {e:>+8.1f}  {es:>6.1f}  {it_str:>6}{tag}")
+    table = "\n".join(lines)
+    print(table)
+
+    if args.out_text:
+        args.out_text.parent.mkdir(parents=True, exist_ok=True)
+        args.out_text.write_text(table + "\n", encoding="utf-8")
+        print(f"[elo] wrote {args.out_text}")
 
     # --- Plot ---
     if args.plot:
