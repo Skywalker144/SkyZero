@@ -70,7 +70,7 @@ browser. Export a checkpoint with the dedicated script (uses the SkyZero_2048
 
 ```bash
 /home/sky/miniconda3/envs/pytorch/bin/python tools/export_onnx_2048.py \
-    --ckpt ../SkyZero_2048/data2048_td/nets/b3c64/scripted_iter_000009.pt \
+    --ckpt ../SkyZero_2048/data2048_td/nets/b3c64/scripted_iter_000051.pt \
     --net  b3c64 --out models/2048.onnx
 ```
 
