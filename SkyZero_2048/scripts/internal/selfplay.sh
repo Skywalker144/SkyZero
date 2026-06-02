@@ -51,6 +51,7 @@ echo "[selfplay.sh] iter=$iter games=$games sims=$NSIM main_gpu=${MAIN_GPU:-0} t
     --batch "${BATCH:-512}" \
     --wait-us "${WAIT_US:-500}" \
     --value-scale "${VALUE_SCALE:-4000}" \
+    --td-steps "${TD_STEPS:-0}" \
     --device "${DEVICE:-cuda}" \
     --log-dir "$DATA_DIR/logs" \
     --progress-secs "${PROGRESS_SECS:-15}" \

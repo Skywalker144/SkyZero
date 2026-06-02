@@ -182,21 +182,50 @@
     .g2048-ai-head { display: flex; justify-content: space-between; align-items: baseline;
       font-size: 13px; color: var(--fg-muted); }
     .g2048-ai-head #ai_value { font-family: var(--font-mono); color: var(--fg); font-weight: 600; }
-    .g2048-ai-dirs { display: flex; flex-direction: column; gap: 7px; }
-    .g2048-ai-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-    .g2048-ai-row .dir { width: 30px; color: var(--fg-muted); font-family: var(--font-mono); }
-    .g2048-ai-row.chosen .dir { color: var(--accent, #7aa2f7); font-weight: 700; }
-    .g2048-ai-bars { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-    .g2048-ai-bar { height: 7px; border-radius: 4px; background: color-mix(in srgb, var(--fg-subtle) 16%, transparent); overflow: hidden; }
-    .g2048-ai-bar > i { display: block; height: 100%; width: 0; border-radius: 4px; transition: width .18s ease; }
-    .g2048-ai-bar.nn  > i { background: #7aa2f7; }
-    .g2048-ai-bar.imp > i { background: #9ece6a; }
-    .g2048-ai-bar.vis > i { background: #e0af68; }
     .g2048-ai-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--fg-muted); }
     .g2048-ai-legend i.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
-    .g2048-ai-legend i.nn { background: #7aa2f7; }
-    .g2048-ai-legend i.imp { background: #9ece6a; }
-    .g2048-ai-legend i.vis { background: #e0af68; }
+    .g2048-ai-legend i.nn { background: #4d8df6; }
+    .g2048-ai-legend i.imp { background: #ef5350; }
+
+    /* ---------- Directional policy strips (around the board) ----------
+       A 3x3 grid frames the square board: the four edge cells hold one strip
+       each (top=↑ right=→ bottom=↓ left=←). The board sits in the center cell;
+       its width drives the layout (aspect-ratio makes it square, so the middle
+       row's `auto` height resolves from the board's width — no circular sizing).
+       Each strip carries two bars: nn policy (blue) above/inside improved
+       policy (green). The bar's fill grows from the center outward, length =
+       probability for that move. */
+    .g2048-policy-frame {
+      --pol-w: 42px;     /* strip thickness (and the bar's max length) */
+      --pol-gap: 10px;   /* gap between strip and board */
+      display: grid;
+      grid-template-columns: var(--pol-w) minmax(0, 1fr) var(--pol-w);
+      grid-template-rows: var(--pol-w) auto var(--pol-w);
+      gap: var(--pol-gap);
+    }
+    .g2048-policy-frame .g2048-board { grid-column: 2; grid-row: 2; }
+    .g2048-pol { display: flex; gap: 4px; border-radius: 7px; padding: 1px; }
+    .pol-up    { grid-column: 2; grid-row: 1; }
+    .pol-down  { grid-column: 2; grid-row: 3; }
+    .pol-left  { grid-column: 1; grid-row: 2; }
+    .pol-right { grid-column: 3; grid-row: 2; }
+    .g2048-pol-bar {
+      flex: 1; display: flex; overflow: hidden; border-radius: 5px;
+      background: color-mix(in srgb, var(--fg-subtle) 14%, transparent);
+    }
+    .g2048-pol-bar > i { display: block; border-radius: 5px; transition: width .18s ease, height .18s ease; }
+    .g2048-pol-bar.nn  > i { background: #4d8df6; }   /* nn policy = blue */
+    .g2048-pol-bar.imp > i { background: #ef5350; }   /* improved policy = red */
+    /* Top/bottom: two horizontal bars stacked; fill width = probability, centered. */
+    .pol-up, .pol-down { flex-direction: column; }
+    .pol-up .g2048-pol-bar, .pol-down .g2048-pol-bar { align-items: stretch; justify-content: center; }
+    .pol-up .g2048-pol-bar > i, .pol-down .g2048-pol-bar > i { height: 100%; width: var(--p, 0%); }
+    /* Left/right: two vertical bars side by side; fill height = probability, centered. */
+    .pol-left, .pol-right { flex-direction: row; }
+    .pol-left .g2048-pol-bar, .pol-right .g2048-pol-bar { flex-direction: column; align-items: stretch; justify-content: center; }
+    .pol-left .g2048-pol-bar > i, .pol-right .g2048-pol-bar > i { width: 100%; height: var(--p, 0%); }
+    /* The move the agent actually chose gets a faint accent ring. */
+    .g2048-pol.chosen { box-shadow: 0 0 0 1.5px var(--accent, #7aa2f7); }
 
     /* ---------- Advanced options (collapsible) ---------- */
     .g2048-advanced { display: flex; flex-direction: column; gap: 10px; }
@@ -339,13 +368,19 @@
           <input id="ai_speed" type="range" min="0" max="560" value="300">
         </label>
       </div>
-      <div class="g2048-board" id="g2048_board" tabindex="0" aria-label="2048 board">
-        <div class="g2048-grid" id="grid"></div>
-        <div class="g2048-tiles" id="tiles"></div>
-        <div class="g2048-overlay" id="overlay">
-          <div class="g2048-overlay-title" id="overlay_title">游戏结束</div>
-          <button class="btn primary" id="overlay_btn">再来一局</button>
+      <div class="g2048-policy-frame" id="policy_frame">
+        <div class="g2048-pol pol-up" id="pol_up" aria-label="up policy"><div class="g2048-pol-bar nn"><i></i></div><div class="g2048-pol-bar imp"><i></i></div></div>
+        <div class="g2048-pol pol-left" id="pol_left" aria-label="left policy"><div class="g2048-pol-bar nn"><i></i></div><div class="g2048-pol-bar imp"><i></i></div></div>
+        <div class="g2048-board" id="g2048_board" tabindex="0" aria-label="2048 board">
+          <div class="g2048-grid" id="grid"></div>
+          <div class="g2048-tiles" id="tiles"></div>
+          <div class="g2048-overlay" id="overlay">
+            <div class="g2048-overlay-title" id="overlay_title">游戏结束</div>
+            <button class="btn primary" id="overlay_btn">再来一局</button>
+          </div>
         </div>
+        <div class="g2048-pol pol-right" id="pol_right" aria-label="right policy"><div class="g2048-pol-bar nn"><i></i></div><div class="g2048-pol-bar imp"><i></i></div></div>
+        <div class="g2048-pol pol-down" id="pol_down" aria-label="down policy"><div class="g2048-pol-bar nn"><i></i></div><div class="g2048-pol-bar imp"><i></i></div></div>
       </div>
       <div class="g2048-hint" id="hint">↑ ↓ ← → 或 WASD;手机上滑动屏幕 · 或让 AI 来玩</div>
 
@@ -354,11 +389,9 @@
           <span id="ai_status">Stochastic Gumbel AlphaZero</span>
           <span id="ai_value"></span>
         </div>
-        <div class="g2048-ai-dirs" id="ai_dirs"></div>
         <div class="g2048-ai-legend">
-          <span><i class="sw nn"></i>网络策略 (policy)</span>
-          <span><i class="sw imp"></i>improved policy (MCTS)</span>
-          <span><i class="sw vis"></i>访问量</span>
+          <span><i class="sw nn"></i>网络策略 nn policy</span>
+          <span><i class="sw imp"></i>改进策略 improved policy (MCTS)</span>
         </div>
       </div>
 
@@ -954,6 +987,7 @@
       rebuildTilesFromGrid(null);  // no pop animation on undo
       updateScoreDom();
       updateOverlay();
+      clearDecision();
       saveState();
     }
 
@@ -975,6 +1009,7 @@
       if (e2) spawnTileAt(e2[0], e2[1], Math.random() < 0.9 ? 2 : 4, 'appear');
       updateScoreDom();
       updateOverlay();
+      clearDecision();
       saveState();
     }
 
@@ -1238,20 +1273,15 @@
     const aiSpeed = document.getElementById('ai_speed');
     const aiStatus = document.getElementById('ai_status');
     const aiValueEl = document.getElementById('ai_value');
-    const aiDirsEl = document.getElementById('ai_dirs');
-
-    (function buildAiRows() {
-      for (let a = 0; a < 4; a++) {
-        const row = document.createElement('div');
-        row.className = 'g2048-ai-row'; row.dataset.a = a;
-        row.innerHTML = '<span class="dir">' + DIR_LABEL[a] + '</span>' +
-          '<div class="g2048-ai-bars">' +
-          '<div class="g2048-ai-bar nn"><i></i></div>' +
-          '<div class="g2048-ai-bar imp"><i></i></div>' +
-          '<div class="g2048-ai-bar vis"><i></i></div></div>';
-        aiDirsEl.appendChild(row);
-      }
-    })();
+    // Four directional policy strips around the board, indexed by the server's
+    // action id (0=up 1=right 2=down 3=left). Each strip holds an nn bar and an
+    // improved-policy bar that we resize per decision.
+    const POL_STRIPS = [
+      document.getElementById('pol_up'),
+      document.getElementById('pol_right'),
+      document.getElementById('pol_down'),
+      document.getElementById('pol_left'),
+    ];
 
     function gridToBoard() {
       const b = new Array(SIZE * SIZE).fill(0);
@@ -1262,18 +1292,33 @@
       return b;
     }
 
+    // Resize one bar (`cls` = 'nn' | 'imp') in a strip to a 0..1 probability.
+    function setPolFill(strip, cls, p) {
+      const i = strip && strip.querySelector('.' + cls + ' > i');
+      if (i) i.style.setProperty('--p', (100 * Math.max(0, Math.min(1, p))) + '%');
+    }
+
+    // Empty all strips (e.g. on a new game / undo, when there's no fresh decision).
+    function clearDecision() {
+      for (const s of POL_STRIPS) {
+        if (!s) continue;
+        setPolFill(s, 'nn', 0);
+        setPolFill(s, 'imp', 0);
+        s.classList.remove('chosen');
+      }
+      aiValueEl.textContent = '';
+    }
+
     function renderDecision(resp) {
       const nn = resp.nn_policy || [0, 0, 0, 0];
       const imp = resp.improved_policy || [0, 0, 0, 0];
-      const vis = resp.visits || [0, 0, 0, 0];
-      const vsum = vis.reduce((a, b) => a + b, 0) || 1;
-      document.querySelectorAll('.g2048-ai-row').forEach(row => {
-        const a = +row.dataset.a;
-        row.querySelector('.nn > i').style.width = (100 * nn[a]) + '%';
-        row.querySelector('.imp > i').style.width = (100 * imp[a]) + '%';
-        row.querySelector('.vis > i').style.width = (100 * vis[a] / vsum) + '%';
-        row.classList.toggle('chosen', a === resp.action);
-      });
+      for (let a = 0; a < 4; a++) {
+        const s = POL_STRIPS[a];
+        if (!s) continue;
+        setPolFill(s, 'nn', nn[a]);
+        setPolFill(s, 'imp', imp[a]);
+        s.classList.toggle('chosen', a === resp.action);
+      }
       aiValueEl.textContent = 'V≈' + Math.round(resp.value);
       aiStatus.textContent = '选择 ' + DIR_LABEL[resp.action];
     }

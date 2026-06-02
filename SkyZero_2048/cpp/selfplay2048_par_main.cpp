@@ -186,6 +186,7 @@ int main(int argc, char** argv) {
     std::string model_path = "data2048/model_ts.pt", out_dir, prefix = "cpp";
     int num_games = 400, sims = 64, threads = 48, batch = 256, wait_us = 300, max_rows = 50000;
     int games_per_worker = 64, server_threads = 1;
+    int td_steps = 0;              // 0 = full MC return; >0 = n-step TD bootstrap
     float value_scale = 4000.0f;
     bool noise = true;
     uint64_t seed = 1;
@@ -208,6 +209,7 @@ int main(int argc, char** argv) {
         else if (a == "--batch") batch = std::stoi(next());
         else if (a == "--wait-us") wait_us = std::stoi(next());
         else if (a == "--value-scale") value_scale = std::stof(next());
+        else if (a == "--td-steps") td_steps = std::stoi(next());
         else if (a == "--out" || a == "--output-dir") out_dir = next();
         else if (a == "--prefix") prefix = next();
         else if (a == "--noise") noise = std::stoi(next()) != 0;
@@ -268,6 +270,7 @@ int main(int argc, char** argv) {
     SkyZero2048Config cfg;
     cfg.num_simulations = sims;
     cfg.gumbel_noise = noise;
+    cfg.td_steps = td_steps;
 
     Game2048 game;
     std::atomic<int> next_game{0};
@@ -291,6 +294,7 @@ int main(int argc, char** argv) {
             std::vector<std::vector<int8_t>> ts;
             std::vector<std::array<float, 4>> tp;
             std::vector<int> tr;
+            std::vector<float> tv;   // per-step MCTS search value (TD bootstrap)
             bool active = false;
         };
         std::mt19937 rng(seed + 7919 * tid + 1);
@@ -299,12 +303,7 @@ int main(int argc, char** argv) {
 
         auto finalize = [&](Slot& s) {
             if (writer && !s.tr.empty()) {
-                std::vector<float> vals(s.tr.size());
-                float gret = 0.0f;
-                for (int t = static_cast<int>(s.tr.size()) - 1; t >= 0; --t) {
-                    gret = s.tr[t] + cfg.gamma * gret;
-                    vals[t] = gret;
-                }
+                auto vals = skyzero::compute_value_targets(s.tr, s.tv, cfg.gamma, cfg.td_steps);
                 for (size_t t = 0; t < s.ts.size(); ++t) writer->append(s.ts[t], s.tp[t], vals[t]);
             }
             int me = game.max_tile_exp(s.state);
@@ -342,7 +341,7 @@ int main(int argc, char** argv) {
                     }
                     if (start) {
                         s.state = game.get_initial_state(rng);
-                        s.score = 0; s.ts.clear(); s.tp.clear(); s.tr.clear();
+                        s.score = 0; s.ts.clear(); s.tp.clear(); s.tr.clear(); s.tv.clear();
                         s.active = true;
                     }
                 }
@@ -393,7 +392,8 @@ int main(int argc, char** argv) {
                 if (!s.active) continue;
                 auto out = s.mcts->result();
                 if (out.best_action < 0) { finalize(s); s.active = false; continue; }
-                if (writer) { s.ts.push_back(s.state); s.tp.push_back(out.improved_policy); }
+                if (writer) { s.ts.push_back(s.state); s.tp.push_back(out.improved_policy);
+                              s.tv.push_back(out.root_value); }
                 moves_done.fetch_add(1, std::memory_order_relaxed);  // one move/sample produced
                 auto mr = game.apply_move(s.state, out.best_action);
                 if (writer) s.tr.push_back(mr.reward);

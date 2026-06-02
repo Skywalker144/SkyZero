@@ -122,6 +122,44 @@ int main() {
         check(out.best_action == 1 || out.best_action == 3, "merge move chosen");
     }
 
+    // --- value-target construction: MC return-to-go vs n-step TD bootstrap ---
+    {
+        using skyzero::compute_value_targets;
+        // rewards r=[10,20,30,40], search values v=[1,2,3,4], gamma=0.5.
+        std::vector<int> r = {10, 20, 30, 40};
+        std::vector<float> v = {1.f, 2.f, 3.f, 4.f};
+
+        // td_steps<=0 -> full MC return-to-go (bootstrap ignored).
+        auto mc = compute_value_targets(r, v, 0.5f, 0);
+        // z3=40; z2=30+.5*40=50; z1=20+.5*50=45; z0=10+.5*45=32.5
+        check(std::abs(mc[3] - 40.0f)  < 1e-4f, "MC z3");
+        check(std::abs(mc[2] - 50.0f)  < 1e-4f, "MC z2");
+        check(std::abs(mc[1] - 45.0f)  < 1e-4f, "MC z1");
+        check(std::abs(mc[0] - 32.5f)  < 1e-4f, "MC z0");
+
+        // td_steps=1 -> z_t = r_t + gamma*v_{t+1} (bootstrap), last step no bootstrap.
+        auto td1 = compute_value_targets(r, v, 0.5f, 1);
+        // z0=10+.5*v1=11; z1=20+.5*v2=21.5; z2=30+.5*v3=32; z3=40 (t+1 past terminal)
+        check(std::abs(td1[0] - 11.0f)  < 1e-4f, "TD1 z0");
+        check(std::abs(td1[1] - 21.5f)  < 1e-4f, "TD1 z1");
+        check(std::abs(td1[2] - 32.0f)  < 1e-4f, "TD1 z2");
+        check(std::abs(td1[3] - 40.0f)  < 1e-4f, "TD1 z3 (no bootstrap past terminal)");
+
+        // td_steps=2 -> z_t = r_t + gamma*r_{t+1} + gamma^2*v_{t+2}.
+        auto td2 = compute_value_targets(r, v, 0.5f, 2);
+        // z0=10+.5*20+.25*v2=10+10+0.75=20.75; z1=20+.5*30+.25*v3=20+15+1=36
+        // z2=30+.5*40 (t+2 past terminal)=50; z3=40
+        check(std::abs(td2[0] - 20.75f) < 1e-4f, "TD2 z0");
+        check(std::abs(td2[1] - 36.0f)  < 1e-4f, "TD2 z1");
+        check(std::abs(td2[2] - 50.0f)  < 1e-4f, "TD2 z2 (bootstrap past terminal dropped)");
+        check(std::abs(td2[3] - 40.0f)  < 1e-4f, "TD2 z3");
+
+        // n >= length -> identical to full MC return (bootstrap never used).
+        auto tdbig = compute_value_targets(r, v, 0.5f, 99);
+        for (int t = 0; t < 4; ++t)
+            check(std::abs(tdbig[t] - mc[t]) < 1e-4f, "TD(n>=len) == MC return");
+    }
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;
 }

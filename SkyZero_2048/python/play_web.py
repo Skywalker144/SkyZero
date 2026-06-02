@@ -34,7 +34,7 @@ _STATE: dict = {}
 def _decide(board: list[int]):
     """Decide the move for a board (exponents) WITHOUT spawning — the web UI's
     own animation engine applies the slide + spawn. Returns the chosen direction
-    plus the raw network policy, the Gumbel improved policy, visits and value."""
+    plus the raw network policy, the Gumbel improved policy and the value."""
     cfg: Config = _STATE["cfg"]
     eval_fn = _STATE["eval_fn"]
     rng = _STATE["rng"]
@@ -48,7 +48,6 @@ def _decide(board: list[int]):
         "action": int(gs.best_action()),          # 0=up 1=right 2=down 3=left
         "nn_policy": gs.nn_policy().tolist(),
         "improved_policy": gs.improved_policy().tolist(),
-        "visits": gs.visit_counts().tolist(),
         "value": float(gs.root_value()),
     }
 

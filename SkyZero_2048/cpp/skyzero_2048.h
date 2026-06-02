@@ -35,6 +35,12 @@ struct SkyZero2048Config {
     int num_simulations = 200;
     float c_puct = 1.25f;
     float gamma = 0.999f;     // discount on future reward
+    // Value-target construction in self-play (see compute_value_targets):
+    //   0  -> full Monte-Carlo discounted return-to-go (AlphaZero style).
+    //   >0 -> n-step TD bootstrap on the MCTS search value (MuZero / Stochastic
+    //         MuZero style): far lower variance than the full MC return, which on
+    //         2048 carries the entire rest-of-game spawn randomness.
+    int td_steps = 0;
     // Gumbel MCTS (Danihelka et al. 2022): root uses Gumbel-Top-k + sequential
     // halving + completed-Q improved policy. Matches az2048/mcts.py.
     float gumbel_c_visit = 50.0f;
@@ -44,6 +50,37 @@ struct SkyZero2048Config {
     float root_dirichlet_alpha = 0.0f;   // <=0 disables
     float root_noise_frac = 0.25f;
 };
+
+// Build per-step value targets for one finished self-play trajectory.
+//   rewards[t] = realized merge reward of the move played at state_t.
+//   vroot[t]   = MCTS search value V(state_t) (the backed-up root value).
+//
+//   td_steps <= 0 : full Monte-Carlo discounted return-to-go
+//                     z_t = Σ_{k>=t} γ^{k-t} rewards[k]            (AlphaZero).
+//   td_steps  > 0 : n-step TD bootstrap on the search value         (MuZero):
+//                     z_t = Σ_{k=t}^{t+n-1} γ^{k-t} rewards[k] + γ^n · vroot[t+n],
+//                   dropping the bootstrap term once t+n reaches terminal (the
+//                   true post-terminal value is 0). vroot is unused when n<=0.
+inline std::vector<float> compute_value_targets(const std::vector<int>& rewards,
+                                                const std::vector<float>& vroot,
+                                                float gamma, int td_steps) {
+    const int T = static_cast<int>(rewards.size());
+    std::vector<float> out(T, 0.0f);
+    if (td_steps <= 0) {
+        float g = 0.0f;
+        for (int t = T - 1; t >= 0; --t) { g = rewards[t] + gamma * g; out[t] = g; }
+    } else {
+        for (int t = 0; t < T; ++t) {
+            float z = 0.0f, disc = 1.0f;
+            const int b = t + td_steps;
+            const int end = std::min(b, T);
+            for (int k = t; k < end; ++k) { z += disc * rewards[k]; disc *= gamma; }
+            if (b < T) z += disc * vroot[b];   // disc == γ^td_steps here
+            out[t] = z;
+        }
+    }
+    return out;
+}
 
 // NN inference: encoded state (NUM_PLANES*AREA int8) -> (policy_logits[4], value).
 // value is the network's estimate of V(state) (expected discounted future
