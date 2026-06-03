@@ -871,9 +871,11 @@
     });
 
     // ---------- AI (Stochastic Gumbel AlphaZero, browser-side) ----------
-    // Loads the exported 2048 value net (models/2048.onnx) in a Web Worker and
-    // plays moves via a 1-ply expectimax over the value head (ai2048.js):
-    //   Q(a) = reward(a) + gamma * E_spawn[V(next)].
+    // Loads the exported 2048 net (models/2048.onnx) in a Web Worker and plays
+    // moves via the full afterstate Stochastic Gumbel AlphaZero MCTS (mcts2048.js,
+    // a port of SkyZero_2048/python/mcts.py): a tree of DECISION + CHANCE nodes,
+    // PUCT with MuZero min-max Q-norm, and Gumbel sequential halving at the root.
+    // `value` reported back is the search's expected discounted score from here.
     // An AI-assisted run is marked `tainted` so it never posts a score to the
     // human leaderboard.
     const AI_MODEL_URL = 'models/2048.onnx';

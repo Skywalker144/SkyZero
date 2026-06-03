@@ -1,7 +1,8 @@
-// Web Worker that runs the 2048 value network (ONNX) off the main thread and
-// picks moves via the 1-ply expectimax in ai2048.js. Mirrors worker.js (the
-// Gomoku worker): same onnxruntime-web build, single-threaded WASM, cache-bust
-// propagated to importScripts.
+// Web Worker that runs the 2048 net (ONNX) off the main thread and picks moves
+// via the full afterstate Stochastic Gumbel AlphaZero MCTS in mcts2048.js (a
+// port of SkyZero_2048/python/mcts.py). Mirrors worker.js (the Gomoku worker):
+// same onnxruntime-web build, single-threaded WASM, cache-bust propagated to
+// importScripts.
 //
 // Protocol (postMessage):
 //   in  { type:'init',  model:<url> }            -> out { type:'ready' }
@@ -12,12 +13,15 @@
 const _qs = self.location.search || ('?v=' + Date.now());
 importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/ort.min.js');
 importScripts('ai2048.js' + _qs);
+importScripts('mcts2048.js' + _qs);
 
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.0/dist/';
 ort.env.wasm.numThreads = 1;   // SharedArrayBuffer cross-origin fragility; force single-thread
 
 var session = null;
-var GAMMA = 0.999;
+// Search config (overrides MCTS2048.DEFAULTS); mirrors configs/vtransform/run.cfg.
+// Eval mode => gumbel_noise off (deterministic strongest play).
+var SEARCH_CFG = { gamma: 0.999, num_simulations: 64, gumbel_noise: false };
 var PLANES = AI2048.NUM_PLANES * AI2048.AREA;   // 16*16 = 256 floats / state
 
 async function fetchModelWithProgress(url) {
@@ -56,18 +60,19 @@ async function init(modelUrl) {
   postMessage({ type: 'ready' });
 }
 
-// Batched value-net eval: flat is B*256 float32 (plane-major encoded states).
-// Returns a Float32Array[B] of value-head outputs (raw 2048 points).
-async function runBatch(flat, B) {
+// Batched net eval: flat is B*256 float32 (plane-major encoded states). Returns
+// both heads: { logits:Float32Array[B*4], values:Float32Array[B] } (value in
+// raw 2048 points — the ONNX export folds value_scale + h_inv into the graph).
+async function runNet(flat, B) {
   if (!session) throw new Error('session not ready');
   var feeds = { input: new ort.Tensor('float32', flat, [B, AI2048.NUM_PLANES, 4, 4]) };
   var out = await session.run(feeds);
-  return out.value.data;   // (B, 1) -> length-B Float32Array
+  return { logits: out.policy_logits.data, values: out.value.data };
 }
 
 async function think(grid, id) {
   var exps = AI2048.gridValuesToExps(grid);
-  var res = await AI2048.chooseMove(exps, runBatch, GAMMA);
+  var res = await MCTS2048.chooseMoveMCTS(exps, runNet, SEARCH_CFG);
   postMessage({
     type: 'move', id: id,
     action: res.action, dir: res.dir, qs: res.qs, value: res.value,
