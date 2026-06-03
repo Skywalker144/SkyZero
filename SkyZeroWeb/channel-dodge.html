@@ -642,7 +642,7 @@
     const TYPES = {
       bullet: { score: 1, dmg: 8,  r: 6,  color: '#38bdf8', glow: '#38bdf8' },                 // cyan — basic
       split:  { score: 1, dmg: 8,  r: 6,  color: '#4ade80', glow: '#4ade80' },                 // green — ring/split
-      aimed:  { score: 2, dmg: 12, r: 7,  color: '#fb923c', glow: '#fb923c', turn: 1.6 },      // orange — homing
+      aimed:  { score: 2, dmg: 12, r: 7,  color: '#fb923c', glow: '#fb923c', turn: 1.12 },     // orange — homing (70% of former 1.6 turn rate)
       cannon: { score: 3, dmg: 24, r: 16, color: '#a78bfa', glow: '#a78bfa' },                 // purple — heavy
       bomb:   { score: 4, dmg: 28, r: 11, color: '#facc15', glow: '#facc15' },                 // amber — timed blast
       laser:  { score: 5, dmg: 30, color: '#f43f5e', glow: '#f43f5e' },                        // red — beam
@@ -668,9 +668,12 @@
       dodged: 0,
       elapsed: 0,             // seconds survived
       spawnTimer: 0,
+      ringTimer: 0,
       laserTimer: 0,
       bombTimer: 0,
       pickupTimer: 0,
+      recentKinds: [],        // recent primary spawn kinds (anti-streak)
+      lastRing: null,         // last split-burst origin (avoid stacking)
       lastTs: 0,
       raf: 0,
     };
@@ -1172,8 +1175,16 @@
     // A radial burst from a point inside the arena — classic bullet-hell ring.
     // These are the green "split" bullets (distinct from the cyan stream).
     function spawnRing(speedMul) {
-      const cx = rand(state.W * 0.2, state.W * 0.8);
-      const cy = rand(state.H * 0.15, state.H * 0.5);
+      // Pick a burst origin that isn't right on top of the previous one, so
+      // consecutive split bursts don't stack in the same spot.
+      let cx, cy;
+      const minSep = Math.min(state.W, state.H) * 0.28;
+      for (let tries = 0; tries < 6; tries++) {
+        cx = rand(state.W * 0.2, state.W * 0.8);
+        cy = rand(state.H * 0.15, state.H * 0.5);
+        if (!state.lastRing || Math.hypot(cx - state.lastRing.x, cy - state.lastRing.y) >= minSep) break;
+      }
+      state.lastRing = { x: cx, y: cy };
       const n = Math.floor(rand(8, 14));
       const spd = rand(120, 170) * speedMul;
       const off = rand(0, Math.PI * 2);
@@ -1243,6 +1254,26 @@
       return Math.min(1 + state.elapsed / 50, 3.8);
     }
 
+    // Choose the kind for a primary spawn, then break up long runs of the same
+    // kind so the screen doesn't end up flooded with one bullet type. The base
+    // roll keeps the original relative mix (ring is handled on its own timer).
+    function pickSpawnKind(d, roll) {
+      let kind;
+      if (d > 1.5 && roll < 0.23) kind = 'cannon';
+      else if (roll < 0.56) kind = 'aimed';
+      else kind = 'bullet';
+      const rk = state.recentKinds;
+      // No more than 2 of the same kind in a row.
+      if (rk.length >= 2 && rk[rk.length - 1] === kind && rk[rk.length - 2] === kind) {
+        const alts = ['bullet', 'aimed', 'cannon']
+          .filter(k => k !== kind && (k !== 'cannon' || d > 1.5));
+        kind = alts[Math.floor(Math.random() * alts.length)];
+      }
+      rk.push(kind);
+      if (rk.length > 4) rk.shift();
+      return kind;
+    }
+
     function runDirector(dt) {
       const d = difficulty();
       const speedMul = 0.9 + d * 0.12;
@@ -1251,14 +1282,24 @@
       if (state.spawnTimer <= 0) {
         // Interval shrinks as difficulty rises.
         state.spawnTimer = rand(0.55, 1.0) / (0.7 + d * 0.4);
-        const roll = Math.random();
-        if (d > 2.2 && roll < 0.14) spawnRing(speedMul);
-        else if (d > 1.5 && roll < 0.34) spawnCannon(speedMul);
-        else if (roll < 0.62) spawnAimed(speedMul);
+        const kind = pickSpawnKind(d, Math.random());
+        if (kind === 'cannon') spawnCannon(speedMul);
+        else if (kind === 'aimed') spawnAimed(speedMul);
         else spawnBullet(speedMul);
         // Extra simple bullets fired alongside at higher difficulty.
         if (d > 1.8 && Math.random() < 0.5) spawnBullet(speedMul);
         if (d > 3.0 && Math.random() < 0.5) spawnBullet(speedMul);
+      }
+
+      // Split bursts fire on their own evenly-spaced cadence (rather than a
+      // random per-tick roll, which clustered several bursts back-to-back).
+      // The interval is tuned to keep the same average rate as the old roll.
+      if (d > 2.2) {
+        state.ringTimer -= dt;
+        if (state.ringTimer <= 0) {
+          state.ringTimer = rand(2.6, 3.6) / (0.55 + d * 0.18);
+          spawnRing(speedMul);
+        }
       }
 
       // Lasers unlock a bit later and fire on their own cadence.
@@ -1660,9 +1701,12 @@
       state.dodged = 0;
       state.elapsed = 0;
       state.spawnTimer = 0.6;
+      state.ringTimer = 2.5;
       state.laserTimer = 5;
       state.bombTimer = 7;
       state.pickupTimer = 8;
+      state.recentKinds = [];
+      state.lastRing = null;
       state.lastTs = 0;
       keys.clear();
       hideOverlay();
