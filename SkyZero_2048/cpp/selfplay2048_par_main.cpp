@@ -198,6 +198,7 @@ int main(int argc, char** argv) {
     bool daemon = false;
     int model_watch_poll_ms = 2000;
     int progress_secs = 15;        // periodic [selfplay] games/s line (0 = off)
+    int stats_games = 1000;        // daemon: emit a selfplay_stats row every N completed games
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -225,6 +226,7 @@ int main(int argc, char** argv) {
         else if (a == "--model-watch-poll-ms") model_watch_poll_ms = std::stoi(next());
         else if (a == "--sims-warmup-cmd") sims_warmup_cmd = next();
         else if (a == "--progress-secs") progress_secs = std::stoi(next());
+        else if (a == "--stats-games") stats_games = std::stoi(next());
     }
 
     // models/latest.meta.json sits beside the model (daemon version tag).
@@ -285,6 +287,7 @@ int main(int argc, char** argv) {
     std::mutex agg_m;
     std::vector<int> tile_hist(20, 0);
     long best_score = 0;
+    long ver_best = 0;   // best score within the current daemon version (reset each reload)
     const int G = std::max(1, games_per_worker);
 
     auto t0 = std::chrono::steady_clock::now();
@@ -318,6 +321,7 @@ int main(int argc, char** argv) {
             games_done.fetch_add(1);
             std::lock_guard<std::mutex> lk(agg_m);
             if (s.score > best_score) best_score = s.score;
+            if (s.score > ver_best) ver_best = s.score;
             if (me < static_cast<int>(tile_hist.size())) tile_hist[me]++;
         };
 
@@ -454,11 +458,45 @@ int main(int argc, char** argv) {
                     daemon_version, threads, sims, model_watch_poll_ms, model_path.c_str());
         std::fflush(stdout);
         long long last_mtime = file_mtime_ns(model_path);
-        int64_t rows_base = 0; long games_base = 0;
+        int64_t rows_base = 0; long games_base = 0;        // selfplay.tsv (per-version cadence)
         auto ver_t0 = std::chrono::steady_clock::now();
+
+        // selfplay_stats.tsv (avg/best score + tile reach) for view_loss's selfplay
+        // plot. Emitted every ~stats_games COMPLETED games — DECOUPLED from model
+        // reloads — so each row averages a run.sh-comparable sample. A per-reload
+        // window is often only tens of games and 2048 scores are heavy-tailed (mean
+        // is carried by rare 8192+ games), so small windows read as wild avg swings
+        // / phantom regressions. Tagged with the live daemon_version as the iter col.
+        long stats_games_base = 0, stats_score_base = 0;
+        int64_t stats_rows_base = 0;
+        std::vector<int> stats_tile_base(tile_hist.size(), 0);
+        auto stats_t0 = ver_t0;
+        auto emit_stats = [&]() {
+            long games_now = games_done.load();
+            long sgames = games_now - stats_games_base;
+            if (sgames <= 0) return;
+            long score_now = sum_score.load();
+            int64_t rows_now = writer ? writer->total() : 0;
+            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - stats_t0).count();
+            long avg = (score_now - stats_score_base) / sgames;
+            std::vector<int> tiles(tile_hist.size());
+            long sbest;
+            {
+                std::lock_guard<std::mutex> lk(agg_m);
+                for (size_t i = 0; i < tile_hist.size(); ++i) tiles[i] = tile_hist[i] - stats_tile_base[i];
+                stats_tile_base = tile_hist;
+                sbest = ver_best; ver_best = 0;
+            }
+            append_selfplay_stats(log_dir, daemon_version, sgames, rows_now - stats_rows_base,
+                                  secs, avg, sbest, tiles);
+            stats_games_base = games_now; stats_score_base = score_now;
+            stats_rows_base = rows_now; stats_t0 = std::chrono::steady_clock::now();
+        };
         while (!g_stop.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(model_watch_poll_ms));
             if (g_stop.load()) break;
+            // Periodic stats every ~stats_games games (independent of reloads below).
+            if (games_done.load() - stats_games_base >= stats_games) emit_stats();
             long long m = file_mtime_ns(model_path);
             if (m == last_mtime || m == MTIME_ERR) continue;
             std::this_thread::sleep_for(std::chrono::milliseconds(150));  // settle (atomic export)
@@ -495,6 +533,7 @@ int main(int argc, char** argv) {
         int64_t rows_now = writer ? writer->total() : 0;
         append_selfplay_tsv(log_dir, "daemon", daemon_version,
                             games_done.load() - games_base, rows_now - rows_base, secs);
+        emit_stats();   // flush the trailing partial-window stats row
         std::printf("[daemon] stopped at v%06ld (total %ld games, %lld rows)\n",
                     daemon_version, games_done.load(), (long long)rows_now);
         return 0;
