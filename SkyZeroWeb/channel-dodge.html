@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <title>躲避 · SkyZero</title>
+  <title>SkyZero · Dodge</title>
   <link rel="preload" href="fonts/Inter-Regular.woff2"  as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <script>
@@ -302,8 +302,8 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <a class="brand-title" href="/" style="text-decoration:none;color:inherit;"
-           title="返回首页" id="brand_link">← SkyZero · 躲避</a>
+        <a class="brand-title" href="/"
+           title="返回首页" id="brand_link">SkyZero · Dodge</a>
       </div>
       <div class="topbar-actions">
         <div class="seg-row compact" id="lang_seg" role="group" aria-label="Switch language">
@@ -347,6 +347,7 @@
       <div class="cd-actions">
         <button class="btn primary" id="start_btn">开始</button>
         <button class="btn" id="pause_btn">暂停</button>
+        <button class="btn" id="ai_btn" aria-pressed="false">AI 托管</button>
       </div>
 
       <div class="cd-stage" id="stage" tabindex="0" aria-label="Channel Dodge arena">
@@ -451,6 +452,9 @@
     </div>
   </div>
 
+  <!-- PPO-trained autopilot weights (tiny MLP, pure-JS forward pass below).
+       Re-export with tools/export_dodge_weights.py and bump ?v= on each retrain. -->
+  <script src="dodge-policy.js?v=dodge_v2"></script>
   <script>
   (function(){
     'use strict';
@@ -458,8 +462,8 @@
     // ---------- i18n (tiny, just for this page) ----------
     const STR = {
       zh: {
-        title_tab: '躲避 · SkyZero',
-        brand: '← SkyZero · 躲避',
+        title_tab: 'SkyZero · Dodge',
+        brand: 'SkyZero · Dodge',
         score: '分数', best: '最高分',
         start: '开始', pause: '暂停', resume: '继续', restart: '重新开始',
         legend_title: '弹幕类型 · 得分',
@@ -479,10 +483,11 @@
         draw_title: '画一个形象', draw_clear: '清空', draw_cancel: '取消',
         draw_use: '使用', draw_preview: '预览', draw_eraser: '橡皮',
         draw_empty: '画点东西吧',
+        ai_play: 'AI 托管', ai_on: 'AI 接管中',
       },
       en: {
-        title_tab: 'Dodge · SkyZero',
-        brand: '← SkyZero · Dodge',
+        title_tab: 'SkyZero · Dodge',
+        brand: 'SkyZero · Dodge',
         score: 'Score', best: 'Best',
         start: 'Start', pause: 'Pause', resume: 'Resume', restart: 'Restart',
         legend_title: 'Bullet types · points',
@@ -502,6 +507,7 @@
         draw_title: 'Draw your avatar', draw_clear: 'Clear', draw_cancel: 'Cancel',
         draw_use: 'Use', draw_preview: 'Preview', draw_eraser: 'Eraser',
         draw_empty: 'Draw something first',
+        ai_play: 'Autopilot', ai_on: 'AI playing',
       },
     };
     let LANG = 'zh';
@@ -558,7 +564,7 @@
     const els = {
       score: $('score'), best: $('best'),
       lblScore: $('lbl_score'), lblBest: $('lbl_best'),
-      startBtn: $('start_btn'), pauseBtn: $('pause_btn'),
+      startBtn: $('start_btn'), pauseBtn: $('pause_btn'), aiBtn: $('ai_btn'),
       stage: $('stage'), canvas: $('canvas'),
       hpFill: $('hp_fill'), time: $('time'),
       overlay: $('overlay'), overlayTitle: $('overlay_title'),
@@ -606,6 +612,7 @@
       els.drawUse.textContent = t('draw_use');
       els.pauseBtn.textContent = state.mode === 'paused' ? t('resume') : t('pause');
       els.startBtn.textContent = state.mode === 'playing' ? t('restart') : t('start');
+      els.aiBtn.textContent = state.aiOn ? t('ai_on') : t('ai_play');
       if (typeof refreshRoster === 'function') refreshRoster();
       renderOverlay();
     }
@@ -674,6 +681,7 @@
       pickupTimer: 0,
       recentKinds: [],        // recent primary spawn kinds (anti-streak)
       lastRing: null,         // last split-burst origin (avoid stacking)
+      aiOn: false,            // PPO autopilot driving the player
       lastTs: 0,
       raf: 0,
     };
@@ -1029,6 +1037,162 @@
     function rand(a, b) { return a + Math.random() * (b - a); }
 
     // ============================================================
+    //  AI autopilot — a PPO-trained policy plays the game.
+    //  The policy is a tiny MLP (obs 74 → 256 → 256 → 9, tanh) whose weights
+    //  ship in dodge-policy.js. Each decision we rebuild the exact egocentric
+    //  observation the policy trained on (mirrors env_dodge.py _obs_vector),
+    //  run a synchronous forward pass, and steer toward the arg-max move.
+    //  No CDN, no async, no WASM — it stays a self-contained page.
+    //
+    //  Training used a fixed 450×600 arena; the live canvas is responsive
+    //  (locked 3:4), so positions/velocities are remapped live→training coords
+    //  before building the obs, so the net sees its trained distribution at any
+    //  screen size. Decisions run at a fixed 30 Hz (the training step rate),
+    //  with the chosen move held between ticks.
+    // ============================================================
+    const AI = (function () {
+      const W_TRAIN = 450, H_TRAIN = 600;            // training arena (px)
+      const POS_NORM = 250, VEL_NORM = 300, DMG_NORM = 30;
+      const K_THREATS = 10, K_PICKUPS = 2, THREAT_FEATS = 6, PICKUP_FEATS = 3;
+      const VEC_DIM = 74, STEP = 1 / 30;             // obs size, decision period (s)
+      const BOMB_FUSE_S = 1.8;
+      const SQ = Math.SQRT1_2;
+      // Unit move vectors — MUST match env_dodge.ACTION_VECS (stay + 8 dirs).
+      const ACTIONS = [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0],
+                       [-SQ, -SQ], [SQ, -SQ], [-SQ, SQ], [SQ, SQ]];
+
+      let weights = null, arch = null;
+      const move = { x: 0, y: 0 };
+      let accum = 0;
+
+      // Decode the packed little-endian float32 blob from dodge-policy.js once.
+      function load() {
+        if (weights) return true;
+        const P = window.DODGE_POLICY;
+        if (!P || !P.weightsB64) return false;
+        try {
+          const bin = atob(P.weightsB64);
+          const u8 = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+          weights = new Float32Array(u8.buffer);
+          arch = P.arch;
+          return true;
+        } catch (e) { weights = null; arch = null; return false; }
+      }
+
+      // Forward pass over the packed weights → arg-max action index.
+      // Packed order per layer: W[out,in] row-major, then b[out].
+      function forward(x) {
+        let inp = x, off = 0, out = null;
+        for (let li = 0; li < arch.length; li++) {
+          const nIn = arch[li][0], nOut = arch[li][1], act = arch[li][2];
+          out = new Float32Array(nOut);
+          for (let o = 0; o < nOut; o++) {
+            let s = 0; const base = off + o * nIn;
+            for (let i = 0; i < nIn; i++) s += weights[base + i] * inp[i];
+            out[o] = s;
+          }
+          off += nOut * nIn;
+          for (let o = 0; o < nOut; o++) out[o] += weights[off + o];
+          off += nOut;
+          if (act === 'tanh') for (let o = 0; o < nOut; o++) out[o] = Math.tanh(out[o]);
+          inp = out;
+        }
+        let best = 0;
+        for (let o = 1; o < out.length; o++) if (out[o] > out[best]) best = o;
+        return best;
+      }
+
+      // Rebuild the 74-dim observation from the live state, in the 450×600
+      // training frame. Mirrors ChannelDodgeEnv._obs_vector exactly.
+      function buildObs() {
+        const p = state.player;
+        const sx = W_TRAIN / state.W, sy = H_TRAIN / state.H;   // live→train scale
+        const px = p.x * sx, py = p.y * sy;
+
+        // Unified danger points: [dx, dy, dvx, dvy, danger] in the train frame.
+        const pts = [];
+        for (const b of state.projectiles) {
+          pts.push([(b.x - p.x) * sx, (b.y - p.y) * sy, b.vx * sx, b.vy * sy,
+                    TYPES[b.kind].dmg / DMG_NORM]);
+        }
+        for (const bm of state.bombs) {
+          let danger = TYPES.bomb.dmg / DMG_NORM;
+          if (bm.phase === 'fuse') danger *= (0.3 + 0.7 * (1 - bm.fuse / BOMB_FUSE_S));
+          pts.push([(bm.x - p.x) * sx, (bm.y - p.y) * sy, 0, 0, danger]);
+        }
+        for (const L of state.lasers) {
+          // foot of perpendicular from the player onto the beam line (live px)
+          const ca = Math.cos(L.ang), sa = Math.sin(L.ang);
+          const tt = (p.x - L.ox) * ca + (p.y - L.oy) * sa;
+          const fx = L.ox + ca * tt, fy = L.oy + sa * tt;
+          let danger = TYPES.laser.dmg / DMG_NORM;
+          if (L.phase === 'charge') danger *= 0.4;
+          pts.push([(fx - p.x) * sx, (fy - p.y) * sy, 0, 0, danger]);
+        }
+        pts.sort((a, b) => (a[0] * a[0] + a[1] * a[1]) - (b[0] * b[0] + b[1] * b[1]));
+
+        const cl = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
+        const o = new Float32Array(VEC_DIM);
+        let i = 0;
+        const nT = Math.min(K_THREATS, pts.length);
+        for (let k = 0; k < nT; k++) {
+          const q = pts[k];
+          o[i + 0] = cl(q[0] / POS_NORM, -1, 1);
+          o[i + 1] = cl(q[1] / POS_NORM, -1, 1);
+          o[i + 2] = cl(q[2] / VEL_NORM, -1, 1);
+          o[i + 3] = cl(q[3] / VEL_NORM, -1, 1);
+          o[i + 4] = q[4];
+          o[i + 5] = 1;
+          i += THREAT_FEATS;
+        }
+        i = K_THREATS * THREAT_FEATS;   // 60
+
+        const picks = state.pickups
+          .map(k => [(k.x - p.x) * sx, (k.y - p.y) * sy])
+          .sort((a, b) => (a[0] * a[0] + a[1] * a[1]) - (b[0] * b[0] + b[1] * b[1]));
+        let j = i;
+        const nP = Math.min(K_PICKUPS, picks.length);
+        for (let k = 0; k < nP; k++) {
+          o[j + 0] = cl(picks[k][0] / POS_NORM, -1, 1);
+          o[j + 1] = cl(picks[k][1] / POS_NORM, -1, 1);
+          o[j + 2] = 1;
+          j += PICKUP_FEATS;
+        }
+        j = i + K_PICKUPS * PICKUP_FEATS;   // 66
+
+        o[j + 0] = p.hp / MAX_HP;
+        o[j + 1] = Math.min(1, p.invuln / HIT_INVULN);
+        o[j + 2] = px / W_TRAIN;
+        o[j + 3] = py / H_TRAIN;
+        o[j + 4] = cl(px / POS_NORM, 0, 1);
+        o[j + 5] = cl((W_TRAIN - px) / POS_NORM, 0, 1);
+        o[j + 6] = cl(py / POS_NORM, 0, 1);
+        o[j + 7] = cl((H_TRAIN - py) / POS_NORM, 0, 1);
+        return o;
+      }
+
+      // Advance the decision clock; re-decide at 30 Hz, hold the move between.
+      function tick(dt) {
+        if (!weights || !state.W) { move.x = 0; move.y = 0; return; }
+        accum += dt;
+        if (accum < STEP) return;
+        accum %= STEP;
+        const a = forward(buildObs());
+        move.x = ACTIONS[a][0];
+        move.y = ACTIONS[a][1];
+      }
+
+      function reset() { move.x = 0; move.y = 0; accum = 0; }
+
+      return {
+        load, tick, reset, move,
+        get available() { return !!(window.DODGE_POLICY && window.DODGE_POLICY.weightsB64); },
+        get version() { return (window.DODGE_POLICY && window.DODGE_POLICY.version) || ''; },
+      };
+    })();
+
+    // ============================================================
     //  Input — keyboard + floating touch joystick
     // ============================================================
     const keys = new Set();
@@ -1106,6 +1270,7 @@
     }
 
     function moveVector() {
+      if (state.aiOn) return AI.move;                 // PPO autopilot drives
       // Joystick takes priority when held.
       if (joy.active && (joy.dx || joy.dy)) {
         const len = Math.hypot(joy.dx, joy.dy);
@@ -1372,6 +1537,9 @@
       state.elapsed += dt;
       p.invuln = Math.max(0, p.invuln - dt);
       p.sinceHit += dt;
+
+      // AI autopilot refreshes its held move at the policy's 30 Hz cadence.
+      if (state.aiOn) AI.tick(dt);
 
       // Movement.
       const mv = moveVector();
@@ -1709,6 +1877,7 @@
       state.lastRing = null;
       state.lastTs = 0;
       keys.clear();
+      AI.reset();
       hideOverlay();
       els.startBtn.textContent = t('restart');
       els.pauseBtn.textContent = t('pause');
@@ -1790,6 +1959,20 @@
       else if (state.mode === 'paused') resumeGame();
     });
 
+    // AI autopilot toggle: hand control to the PPO policy. Turning it on from a
+    // menu auto-starts a round so you can just sit back and watch it play.
+    function setAi(on) {
+      if (on && !AI.load()) return;             // weights missing/bad — no-op
+      state.aiOn = on;
+      AI.reset();
+      els.aiBtn.setAttribute('aria-pressed', String(on));
+      els.aiBtn.classList.toggle('primary', on);
+      els.aiBtn.textContent = on ? t('ai_on') : t('ai_play');
+      if (on && state.mode !== 'playing') startGame();
+      else if (state.mode === 'playing') els.stage.focus({ preventScroll: true });
+    }
+    els.aiBtn.addEventListener('click', () => setAi(!state.aiOn));
+
     // Auto-pause when the tab/window loses focus mid-game.
     document.addEventListener('visibilitychange', () => {
       if (document.hidden && state.mode === 'playing') pauseGame();
@@ -1800,6 +1983,7 @@
 
     // ---------- boot ----------
     els.best.textContent = best;
+    if (!AI.available) els.aiBtn.style.display = 'none';   // policy file absent
     applyLang();
     requestAnimationFrame(() => {
       resize();
