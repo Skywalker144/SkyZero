@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 
 import game as G
+import value_transform
 from augment import augment_batch
 from model_config import Config
 
@@ -67,7 +68,10 @@ def _train_loop(net, opt, states, policies, values, weights, cfg: Config, steps:
         idx = rng.integers(0, n, size=cfg.batch_size)
         x = torch.from_numpy(_encode_states(states[idx])).to(dev)
         pol_t = torch.from_numpy(policies[idx]).to(dev)
-        val_t = torch.from_numpy(values[idx]).to(dev) / cfg.value_scale
+        raw_v = torch.from_numpy(values[idx]).to(dev)
+        if cfg.value_transform:
+            raw_v = value_transform.to_h_torch(raw_v)   # compress before scaling
+        val_t = raw_v / cfg.value_scale
         w = torch.from_numpy(weights[idx].astype(np.float32)).to(dev)
         w = w / w.mean().clamp_min(1e-8)            # normalize so scale ~ unweighted
 

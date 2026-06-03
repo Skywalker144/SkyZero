@@ -360,8 +360,10 @@ def batch_search(searches: list[GameSearch], eval_fn: EvalFn, cfg: Config) -> No
 
 def net_evaluator(net, cfg: Config, device: str | None = None) -> EvalFn:
     """Wrap a Net2048 into an EvalFn returning (logits[B,4], value[B] in RAW
-    points). value head outputs scaled units => multiply by value_scale."""
+    points). value head outputs scaled units => multiply by value_scale (and,
+    when value_transform is on, invert the MuZero h() to get back to points)."""
     import torch
+    import value_transform
 
     dev = device or cfg.device
 
@@ -370,7 +372,10 @@ def net_evaluator(net, cfg: Config, device: str | None = None) -> EvalFn:
         with torch.no_grad():
             x = torch.from_numpy(enc).to(dev)
             logits, value = net(x)
-        return logits.float().cpu().numpy(), value.float().cpu().numpy() * cfg.value_scale
+        v = value.float().cpu().numpy() * cfg.value_scale
+        if cfg.value_transform:
+            v = value_transform.from_h_np(v).astype(np.float32)
+        return logits.float().cpu().numpy(), v
 
     return _eval
 

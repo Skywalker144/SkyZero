@@ -29,6 +29,12 @@ class Config:
     # stability; mcts/selfplay multiply back to raw points so Q = reward + g*V
     # stays in one unit.
     value_scale: float = 4000.0
+    # When True, wrap the target in the invertible MuZero scaling h() before the
+    # VALUE_SCALE divide (target = h(raw)/SCALE, decode = h_inv(out*SCALE)); see
+    # value_transform.py. Off => original linear raw/SCALE. Changing this changes
+    # the value head's output semantics, so a model/run must not mix the two
+    # (use a fresh DATA_DIR). With it on, VALUE_SCALE lives in h-space (~30).
+    value_transform: bool = False
 
     # --- search ---
     gamma: float = 0.999
@@ -88,6 +94,13 @@ def _env_float(name: str, default: float) -> float:
     return float(v) if v not in (None, "") else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v in (None, ""):
+        return default
+    return v.strip().lower() not in ("0", "false", "no", "off")
+
+
 def config_from_env(**overrides) -> Config:
     """Build a Config from environment variables (set by scripts/run.sh from
     run.cfg). C_MID / C_GPOOL left unset (0/absent) auto-derive from channels.
@@ -101,6 +114,7 @@ def config_from_env(**overrides) -> Config:
         internal_length=_env_int("INTERNAL_LENGTH", Config.internal_length),
         value_hidden=_env_int("VALUE_HIDDEN", Config.value_hidden),
         value_scale=_env_float("VALUE_SCALE", Config.value_scale),
+        value_transform=_env_bool("VALUE_TRANSFORM", Config.value_transform),
         gamma=_env_float("GAMMA", Config.gamma),
         num_simulations=_env_int("SIMS", Config.num_simulations),
         lr=_env_float("LR", Config.lr),

@@ -57,17 +57,23 @@ int main(int argc, char** argv) {
     if (model_path.empty()) { std::fprintf(stderr, "[probe] --model required\n"); return 1; }
 
     float value_scale = 4000.0f;
+    bool value_transform = false;
+    float gamma = 0.999f;
     int sims = 400;
     std::string device_str = "cuda";
     if (!config_path.empty()) {
         if (auto s = cfg_get(config_path, "VALUE_SCALE"); !s.empty()) value_scale = std::stof(s);
+        if (auto s = cfg_get(config_path, "VALUE_TRANSFORM"); !s.empty())
+            value_transform = (s != "0" && s != "false" && s != "off");
+        if (auto s = cfg_get(config_path, "GAMMA"); !s.empty()) gamma = std::stof(s);
         if (auto s = cfg_get(config_path, "PROBE_NUM_SIMULATIONS"); !s.empty()) sims = std::stoi(s);
         else if (auto s2 = cfg_get(config_path, "SIMS"); !s2.empty()) sims = std::stoi(s2);
         if (auto s = cfg_get(config_path, "DEVICE"); !s.empty()) device_str = s;
     }
 
     torch::Device device(device_str == "cuda" ? torch::kCUDA : torch::kCPU);
-    InferenceServer2048 server(model_path, device, value_scale, /*max_batch*/8, /*wait_us*/0, 1);
+    InferenceServer2048 server(model_path, device, value_scale, /*max_batch*/8, /*wait_us*/0, 1,
+                               value_transform);
     auto infer = [&server](const std::vector<int8_t>& enc) { return server.submit(enc).get(); };
 
     Game2048 game;
@@ -81,6 +87,7 @@ int main(int argc, char** argv) {
 
     SkyZero2048Config cfg;
     cfg.num_simulations = sims;
+    cfg.gamma = gamma;
     cfg.gumbel_noise = false;             // deterministic probe
     SkyZero2048MCTS mcts(game, cfg, infer, /*seed*/12345);
     auto out = mcts.search(probe_board);

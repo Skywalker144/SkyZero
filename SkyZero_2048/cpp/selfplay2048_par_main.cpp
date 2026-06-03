@@ -188,6 +188,8 @@ int main(int argc, char** argv) {
     int games_per_worker = 64, server_threads = 1;
     int td_steps = 0;              // 0 = full MC return; >0 = n-step TD bootstrap
     float value_scale = 4000.0f;
+    bool value_transform = false;  // wrap value in MuZero h() (see infer_server)
+    float gamma = 0.999f;          // discount on future reward (was hardcoded)
     bool noise = true;
     uint64_t seed = 1;
     std::string device_str = "cuda";
@@ -209,6 +211,8 @@ int main(int argc, char** argv) {
         else if (a == "--batch") batch = std::stoi(next());
         else if (a == "--wait-us") wait_us = std::stoi(next());
         else if (a == "--value-scale") value_scale = std::stof(next());
+        else if (a == "--value-transform") value_transform = (std::stoi(next()) != 0);
+        else if (a == "--gamma") gamma = std::stof(next());
         else if (a == "--td-steps") td_steps = std::stoi(next());
         else if (a == "--out" || a == "--output-dir") out_dir = next();
         else if (a == "--prefix") prefix = next();
@@ -241,7 +245,8 @@ int main(int argc, char** argv) {
     }
 
     torch::Device device(device_str == "cuda" ? torch::kCUDA : torch::kCPU);
-    InferenceServer2048 server(model_path, device, value_scale, batch, wait_us, server_threads);
+    InferenceServer2048 server(model_path, device, value_scale, batch, wait_us, server_threads,
+                               value_transform);
     auto infer = [&server](const std::vector<int8_t>& enc) {
         return server.submit(enc).get();
     };
@@ -271,6 +276,7 @@ int main(int argc, char** argv) {
     cfg.num_simulations = sims;
     cfg.gumbel_noise = noise;
     cfg.td_steps = td_steps;
+    cfg.gamma = gamma;
 
     Game2048 game;
     std::atomic<int> next_game{0};

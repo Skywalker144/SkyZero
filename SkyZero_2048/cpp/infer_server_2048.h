@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <future>
 #include <memory>
@@ -29,13 +30,24 @@
 
 namespace skyzero {
 
+// Inverse of the MuZero value-scaling h() (mirror of python/value_transform.py;
+// keep EPS and the formula in sync). Maps an h-space value back to raw points.
+// Only used when value_transform is enabled; identity path otherwise.
+inline float inv_value_h(float y, float eps = 1e-3f) {
+    const float s = static_cast<float>((y > 0.f) - (y < 0.f));
+    const float z = (std::sqrt(1.f + 4.f * eps * (std::fabs(y) + 1.f + eps)) - 1.f)
+                    / (2.f * eps);
+    return s * (z * z - 1.f);
+}
+
 class InferenceServer2048 {
 public:
     using Result = std::pair<std::array<float, 4>, float>;  // (policy logits, raw value)
 
     InferenceServer2048(const std::string& model_path, torch::Device device,
-                        float value_scale, int max_batch, int wait_us, int num_threads = 1)
-        : device_(device), value_scale_(value_scale),
+                        float value_scale, int max_batch, int wait_us, int num_threads = 1,
+                        bool value_transform = false)
+        : device_(device), value_scale_(value_scale), value_transform_(value_transform),
           max_batch_(std::max(1, max_batch)), wait_us_(wait_us) {
         module_ = torch::jit::load(model_path, device_);
         module_.eval();
@@ -122,7 +134,9 @@ private:
             const float* vp = val.data_ptr<float>();
             for (int b = 0; b < B; ++b) {
                 std::array<float, 4> lg{pp[b * 4], pp[b * 4 + 1], pp[b * 4 + 2], pp[b * 4 + 3]};
-                batch[b]->prom.set_value({lg, vp[b] * value_scale_});
+                const float scaled = vp[b] * value_scale_;
+                const float raw_v = value_transform_ ? inv_value_h(scaled) : scaled;
+                batch[b]->prom.set_value({lg, raw_v});
             }
             forwards_.fetch_add(1);
             evals_.fetch_add(B);
@@ -133,6 +147,7 @@ private:
     std::shared_mutex model_mu_;            // guards module_ across reload()
     torch::Device device_;
     float value_scale_;
+    bool value_transform_;
     int max_batch_;
     int wait_us_;
 

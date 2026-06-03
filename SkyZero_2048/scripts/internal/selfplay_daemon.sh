@@ -71,6 +71,8 @@ run_one() {
             --batch "${BATCH:-512}" \
             --wait-us "${WAIT_US:-500}" \
             --value-scale "${VALUE_SCALE:-4000}" \
+            --value-transform "${VALUE_TRANSFORM:-0}" \
+            --gamma "${GAMMA:-0.999}" \
             --td-steps "${TD_STEPS:-0}" \
             --progress-secs "${PROGRESS_SECS:-30}" \
             --device cuda --noise 1 \
