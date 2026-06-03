@@ -35,8 +35,13 @@ driven by `scripts/run.sh` + `scripts/internal/*.sh`. Torch lives in the
 | `python/view_loss.py` | per-net loss + self-play + eval + probe PNGs. `python/loop.py`,`selfplay.py`,`selfplay_parallel.py` | pure-Python debug loop (`python loop.py`; slower, no C++). |
 | `python/play_web.py` + `python/web/play2048.html` | live web demo (loads TorchScript `models/latest.pt`). |
 
-Value semantics: value head regresses `target/value_scale`; `net_evaluator`
-multiplies back so MCTS Q = reward + γ·V stays in raw 2048 points.
+Value semantics: value head regresses `h(target)/value_scale`, where `h` is the
+optional invertible MuZero transform `h(x)=sign(x)(√(|x|+1)−1)+εx` (`VALUE_TRANSFORM=1`;
+plain linear `target/value_scale` when `0`). `net_evaluator` applies `h⁻¹` and
+multiplies back so MCTS Q = reward + γ·V stays in raw 2048 points. Two live
+experiment data dirs: **`data2048_td`** (linear value-target baseline) and
+**`data2048_vt`** (h()-transform). NEVER share a shuffle window or checkpoint
+between them — the value-head output semantics differ.
 
 ---
 
@@ -46,7 +51,7 @@ multiplies back so MCTS Q = reward + γ·V stays in raw 2048 points.
 |---|---|
 | `CONFIG_DIR=configs/baseline bash scripts/run.sh [max_iters]` | **main entry** — V7.1-style bash loop: schedule→mirror→selfplay→shuffle→bucket→train×nets→export×nets→probe→eval→view_loss. Auto-builds + auto-resumes (per-net `state.json`). |
 | `cd python && python loop.py --iters N --games G` | pure-Python self-play loop (slower, simpler, for debugging) |
-| `bash scripts/play_web.sh` | web demo (loads `data2048_nbt/models/latest.pt`; stub fallback if missing) |
+| `CONFIG_DIR=configs/vtransform bash scripts/play_web.sh` | web demo — resolves `DATA_DIR` from the config like run.sh, loads `$DATA_DIR/models/latest.pt` (stub fallback if missing). `CKPT=` still overrides. |
 
 `scripts/run.sh` sources `$CONFIG_DIR/{run.cfg,paths.cfg}` (+ `run.cfg.local`)
 and exports every hyperparameter to the env, which the `internal/*.sh` steps and
@@ -86,16 +91,18 @@ Build: `bash scripts/build.sh --target selfplay2048_par` (when ADDING a target,
 reconfigure first: `source scripts/env_paths.cfg && cmake -S cpp -B cpp/build
 -DCMAKE_PREFIX_PATH=$LIBTORCH -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_CUDA_COMPILER=$NVCC`).
 
-C++-driven training loop: `python -m az2048.loop_cpp` (export TS → C++ self-play →
-load npz → train → eval → ckpt). Good config: `--threads 6 --slot-games 128
---server-threads 3 --selfplay-games 800` (~5 games/s). The 4×4 net is tiny so the
-GPU sits ~20% regardless — games/s is the metric, not GPU%. Batches only fill when
-total games >> threads×slot-games. CRITICAL: the server takes ENCODED input
+The C++ self-play is driven by `scripts/run.sh` → `scripts/internal/selfplay.sh`,
+which runs the `selfplay2048_par_main` binary with the run.cfg knobs: `THREADS` ×
+`SLOT_GAMES` lockstep games per worker, `SERVER_THREADS` inference threads,
+`BATCH`/`WAIT_US` batch tuning, `GAMES_PER_ITER` games/iter. The 4×4 net is tiny so
+the GPU sits ~20% regardless — games/s is the metric, not GPU%. Batches only fill
+when total games >> THREADS×SLOT_GAMES. CRITICAL: the server takes ENCODED input
 (NUM_PLANES×16); always submit `encode_state(state)`, never the raw 16-cell board.
 
-The pure-Python loop (`az2048/loop.py`) still works and is simpler for debugging.
-Config flows: `configs/<exp>/run.cfg` (bash KEY=VALUE) → `scripts/run.sh` (source)
-→ `loop_cpp` CLI flags → `Config` dataclass. `config.py` holds the defaults.
+The pure-Python loop (`cd python && python loop.py`) still works and is simpler for
+debugging. Config flows: `configs/<exp>/run.cfg` (bash KEY=VALUE) → `scripts/run.sh`
+sources + exports to env → `internal/*.sh` steps + `python/` scripts read it via
+`model_config.config_from_env` (NO `az2048` package, NO `loop_cpp`/`config.py`).
 
 Validate the C++ core:
 ```
@@ -117,5 +124,3 @@ cd cpp && g++ -std=c++17 -I . envs/game2048_test.cpp -o /tmp/t && /tmp/t
   for PUCT; value head trained on `target/value_scale`.
 - Torch lives in the `pytorch` conda env only (base python has none); always use
   `$PY` from `scripts/env_paths.cfg.local`.
-
-The inherited Gomoku guide is preserved below the line for framework reference.
