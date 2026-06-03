@@ -80,9 +80,9 @@
       min-height: 18px; text-align: center; font-size: 12.5px;
       font-family: var(--font-mono); color: var(--fg-muted);
     }
-    /* AI speed/strength slider: left = faster (fewer sims), right = stronger
-       (more MCTS sims). Custom-styled as a rounded pill track with a left-
-       anchored accent fill and a round thumb seated INSIDE the track. */
+    /* AI speed/strength slider: left = faster (fewer MCTS sims), right =
+       stronger (more sims). Minimal style — a thin neutral rail (no fill) with
+       a solid accent knob riding on top, distinct from the rail by color. */
     .g2048-ai-speed {
       display: flex; align-items: center; gap: 12px;
       max-width: 360px; margin: 2px auto 0; width: 100%;
@@ -93,42 +93,43 @@
     }
     #ai_speed {
       -webkit-appearance: none; appearance: none;
-      flex: 1; min-width: 0; height: 22px; margin: 0;
+      flex: 1; min-width: 0; height: 18px; margin: 0;
       background: transparent; cursor: pointer;
     }
-    /* WebKit/Blink: track holds the fill (sized by --pct, set from JS). */
+    /* WebKit/Blink: thin gray rail + accent knob centered on it. */
     #ai_speed::-webkit-slider-runnable-track {
-      height: 22px; border-radius: 999px;
-      background:
-        linear-gradient(var(--accent), var(--accent)) no-repeat,
-        var(--surface-2);
-      background-size: var(--pct, 8%) 100%, 100% 100%;
-      box-shadow: inset 0 0 0 1px var(--border);
+      height: 4px; border-radius: 999px;
+      background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border);
     }
     #ai_speed::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
-      width: 16px; height: 16px; margin-top: 3px;   /* (22-16)/2 — seats inside */
-      border-radius: 50%; background: #fff;
-      box-shadow: 0 1px 3px rgba(0,0,0,.28), inset 0 0 0 1px var(--border);
-      transition: transform .1s ease;
+      width: 16px; height: 16px; margin-top: -6px;   /* (4-16)/2 — ride on rail */
+      border-radius: 50%; background: var(--accent);
+      box-shadow: 0 1px 3px rgba(0,0,0,.3);
+      transition: transform .12s ease, box-shadow .12s ease;
     }
-    #ai_speed:active::-webkit-slider-thumb { transform: scale(1.12); }
-    /* Firefox: native progress fill + track. */
+    #ai_speed:hover::-webkit-slider-thumb { box-shadow: 0 1px 5px rgba(0,0,0,.38); }
+    #ai_speed:active::-webkit-slider-thumb { transform: scale(1.15); }
+    /* Firefox: keep ::-moz-range-progress the same gray as the track so there
+       is no left-side fill; accent knob. */
     #ai_speed::-moz-range-track {
-      height: 22px; border-radius: 999px;
+      height: 4px; border-radius: 999px;
       background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border);
     }
     #ai_speed::-moz-range-progress {
-      height: 22px; border-radius: 999px 0 0 999px; background: var(--accent);
+      height: 4px; border-radius: 999px; background: var(--surface-2);
     }
     #ai_speed::-moz-range-thumb {
       width: 16px; height: 16px; border: none; border-radius: 50%;
-      background: #fff;
-      box-shadow: 0 1px 3px rgba(0,0,0,.28), inset 0 0 0 1px var(--border);
+      background: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.3);
     }
     #ai_speed:focus { outline: none; }
-    #ai_speed:focus-visible::-webkit-slider-runnable-track { box-shadow: inset 0 0 0 1px var(--accent); }
-    #ai_speed:focus-visible::-moz-range-track { box-shadow: inset 0 0 0 1px var(--accent); }
+    #ai_speed:focus-visible::-webkit-slider-thumb {
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent);
+    }
+    #ai_speed:focus-visible::-moz-range-thumb {
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent);
+    }
     .g2048-board {
       position: relative;
       width: 100%;
@@ -963,10 +964,6 @@
     }
     function aiNorm() { return (aiSims() - AI_SIMS_MIN) / (AI_SIMS_MAX - AI_SIMS_MIN); }
     function aiDelay() { return Math.round(aiNorm() * AI_DELAY_MAX_MS); }
-    // Paint the WebKit fill width (Firefox uses native ::-moz-range-progress).
-    function updateSpeedFill() {
-      if (aiSpeedEl) aiSpeedEl.style.setProperty('--pct', (aiNorm() * 100).toFixed(1) + '%');
-    }
 
     function refreshAiButtons() {
       if (!aiMoveBtn || !aiAutoBtn) return;
@@ -1038,10 +1035,6 @@
       aiAuto = !aiAuto; refreshAiButtons();
       if (aiAuto) requestAiMove();
     });
-    if (aiSpeedEl) {
-      aiSpeedEl.addEventListener('input', updateSpeedFill);
-    }
-    updateSpeedFill();
     startAiWorker();
 
     // ---------- Boot ----------
