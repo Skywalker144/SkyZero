@@ -85,7 +85,18 @@
        a solid accent knob riding on top, distinct from the rail by color. */
     .g2048-ai-speed {
       display: flex; align-items: center; gap: 12px;
-      max-width: 360px; margin: 2px auto 0; width: 100%;
+      max-width: 360px; margin: 0 auto; width: 100%;
+      /* Collapsed until AI autoplay is engaged; .open slides + fades it in.
+         margin-bottom cancels the parent .g2048-app gap (14px) while collapsed
+         so the hidden slider takes up no vertical space. */
+      max-height: 0; opacity: 0; overflow: hidden; visibility: hidden;
+      margin-bottom: -14px; transform: translateY(-4px); pointer-events: none;
+      transition: max-height .28s ease, opacity .24s ease, margin-bottom .28s ease,
+                  transform .28s ease, visibility .28s;
+    }
+    .g2048-ai-speed.open {
+      max-height: 32px; opacity: 1; visibility: visible;
+      margin-bottom: 0; transform: translateY(0); pointer-events: auto;
     }
     .g2048-speed-end {
       font-size: 12px; font-weight: 600; color: var(--fg-muted);
@@ -96,11 +107,11 @@
       flex: 1; min-width: 0; height: 20px; margin: 0;
       background: transparent; cursor: pointer;
     }
-    /* WebKit/Blink: a clearly-visible gray rail (--border, edged with
-       --border-strong so it stands off the page bg) + accent knob on top. */
+    /* WebKit/Blink: rail in the score-card gray (--surface-2 + --border edge)
+       + accent knob riding on top. */
     #ai_speed::-webkit-slider-runnable-track {
       height: 8px; border-radius: 999px;
-      background: var(--border); box-shadow: inset 0 0 0 1px var(--border-strong);
+      background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border);
     }
     #ai_speed::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
@@ -115,10 +126,10 @@
        is no left-side fill; accent knob. */
     #ai_speed::-moz-range-track {
       height: 8px; border-radius: 999px;
-      background: var(--border); box-shadow: inset 0 0 0 1px var(--border-strong);
+      background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border);
     }
     #ai_speed::-moz-range-progress {
-      height: 8px; border-radius: 999px; background: var(--border);
+      height: 8px; border-radius: 999px; background: var(--surface-2);
     }
     #ai_speed::-moz-range-thumb {
       width: 18px; height: 18px; border: none; border-radius: 50%;
@@ -291,10 +302,9 @@
       <div class="g2048-actions">
         <button class="btn primary" id="new_btn">新对局</button>
         <button class="btn danger-ghost" id="undo_btn">撤销</button>
-        <button class="btn" id="ai_move_btn" disabled>AI 走子</button>
         <button class="btn" id="ai_auto_btn" aria-pressed="false" disabled>AI 托管</button>
       </div>
-      <div class="g2048-ai-speed">
+      <div class="g2048-ai-speed" id="ai_speed_row">
         <span class="g2048-speed-end" id="ai_speed_fast">更快</span>
         <input type="range" id="ai_speed" min="48" max="256" step="1" value="64"
                aria-label="AI 速度 / 强度">
@@ -327,7 +337,7 @@
         game_over: '游戏结束', you_win: '到达 2048!',
         play_again: '再来一局', keep_going: '继续',
         brand: '← SkyZero · 2048',
-        ai_move: 'AI 走子', ai_auto: 'AI 托管', ai_stop: '停止',
+        ai_auto: 'AI 托管', ai_stop: '停止',
         ai_loading: '加载 AI 模型…', ai_thinking: '思考中…',
         ai_ready: 'AI 就绪', ai_error: 'AI 加载失败',
         ai_fast: '更快', ai_strong: '更强',
@@ -339,7 +349,7 @@
         game_over: 'Game over', you_win: 'You reached 2048!',
         play_again: 'Play again', keep_going: 'Keep going',
         brand: '← SkyZero · 2048',
-        ai_move: 'AI move', ai_auto: 'AI autoplay', ai_stop: 'Stop',
+        ai_auto: 'AI autoplay', ai_stop: 'Stop',
         ai_loading: 'Loading AI model…', ai_thinking: 'Thinking…',
         ai_ready: 'AI ready', ai_error: 'AI failed to load',
         ai_fast: 'Faster', ai_strong: 'Stronger',
@@ -358,7 +368,6 @@
       document.getElementById('lbl_best').textContent  = t('best');
       document.getElementById('new_btn').textContent   = t('new_game');
       document.getElementById('undo_btn').textContent  = t('undo');
-      document.getElementById('ai_move_btn').textContent = t('ai_move');
       document.getElementById('ai_speed_fast').textContent = t('ai_fast');
       document.getElementById('ai_speed_strong').textContent = t('ai_strong');
       if (typeof refreshAiButtons === 'function') refreshAiButtons();
@@ -952,10 +961,10 @@
     // watchable on a fast machine instead of flashing by.
     const AI_SIMS_MIN = 48, AI_SIMS_MAX = 256, AI_DELAY_MAX_MS = 650;
     let aiReady = false, aiBusy = false, aiAuto = false, aiSeq = 0, aiWorker = null;
-    const aiMoveBtn = document.getElementById('ai_move_btn');
     const aiAutoBtn = document.getElementById('ai_auto_btn');
     const aiStatusEl = document.getElementById('ai_status');
     const aiSpeedEl = document.getElementById('ai_speed');
+    const aiSpeedRow = document.getElementById('ai_speed_row');
 
     function setAiStatus(text) { if (aiStatusEl) aiStatusEl.textContent = text || ''; }
     function fmtMB(bytes) { return (Number(bytes || 0) / 1048576).toFixed(1); }
@@ -967,12 +976,13 @@
     function aiDelay() { return Math.round(aiNorm() * AI_DELAY_MAX_MS); }
 
     function refreshAiButtons() {
-      if (!aiMoveBtn || !aiAutoBtn) return;
+      if (!aiAutoBtn) return;
       aiAutoBtn.textContent = aiAuto ? t('ai_stop') : t('ai_auto');
       aiAutoBtn.setAttribute('aria-pressed', String(aiAuto));
       const gameOver = (overlayMode === 'lose');
-      aiMoveBtn.disabled = !aiReady || gameOver || aiBusy || aiAuto;
       aiAutoBtn.disabled = !aiReady || gameOver;
+      // The speed slider is only shown (animated) while autoplay is engaged.
+      if (aiSpeedRow) aiSpeedRow.classList.toggle('open', aiAuto);
     }
 
     function startAiWorker() {
@@ -1031,7 +1041,6 @@
       if (aiAuto) setTimeout(requestAiMove, aiDelay());
     }
 
-    aiMoveBtn.addEventListener('click', () => { if (!aiAuto) requestAiMove(); });
     aiAutoBtn.addEventListener('click', () => {
       aiAuto = !aiAuto; refreshAiButtons();
       if (aiAuto) requestAiMove();
