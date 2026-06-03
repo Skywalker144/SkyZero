@@ -99,12 +99,25 @@
       margin-bottom: 0; transform: translateY(0); pointer-events: auto;
     }
     .g2048-speed-end {
-      font-size: 12px; font-weight: 600; color: var(--fg-muted);
+      font-size: 11px; font-weight: 600; color: var(--fg-muted);
       white-space: nowrap; user-select: none; -webkit-user-select: none;
+    }
+    .g2048-speed-wrap { position: relative; flex: 1; min-width: 0; }
+    /* Small triangle under the rail marking the default (snap) position. JS sets
+       --default-pos to the default value's normalized [0,1] spot; 9px = thumb
+       radius, 18px = thumb width, so it lines up with where the thumb rests. */
+    .g2048-speed-default {
+      position: absolute; bottom: 0;
+      left: calc(9px + (100% - 18px) * var(--default-pos, 0.0769));
+      transform: translateX(-50%);
+      width: 0; height: 0; pointer-events: none;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-bottom: 5px solid var(--fg-subtle);
     }
     #ai_speed {
       -webkit-appearance: none; appearance: none;
-      flex: 1; min-width: 0; height: 20px; margin: 0;
+      display: block; width: 100%; height: 20px; margin: 0;
       background: transparent; cursor: pointer;
     }
     /* WebKit/Blink: rail in the score-card gray (--surface-2 + --border edge)
@@ -305,10 +318,13 @@
         <button class="btn" id="ai_auto_btn" aria-pressed="false" disabled>AI 托管</button>
       </div>
       <div class="g2048-ai-speed" id="ai_speed_row">
-        <span class="g2048-speed-end" id="ai_speed_fast">更快</span>
-        <input type="range" id="ai_speed" min="48" max="256" step="1" value="64"
-               aria-label="AI 速度 / 强度">
-        <span class="g2048-speed-end" id="ai_speed_strong">更强</span>
+        <span class="g2048-speed-end" id="ai_speed_fast">更快 更弱</span>
+        <span class="g2048-speed-wrap">
+          <input type="range" id="ai_speed" min="48" max="256" step="1" value="64"
+                 aria-label="AI 速度 / 强度">
+          <span class="g2048-speed-default" aria-hidden="true"></span>
+        </span>
+        <span class="g2048-speed-end" id="ai_speed_strong">更慢 更强</span>
       </div>
       <div class="g2048-ai-status" id="ai_status"></div>
       <div class="g2048-board" id="g2048_board" tabindex="0" aria-label="2048 board">
@@ -337,10 +353,10 @@
         game_over: '游戏结束', you_win: '到达 2048!',
         play_again: '再来一局', keep_going: '继续',
         brand: '← SkyZero · 2048',
-        ai_auto: 'AI 托管', ai_stop: '停止',
+        ai_auto: 'AI 托管', ai_stop: '停止AI托管',
         ai_loading: '加载 AI 模型…', ai_thinking: '思考中…',
         ai_ready: 'AI 就绪', ai_error: 'AI 加载失败',
-        ai_fast: '更快', ai_strong: '更强',
+        ai_fast: '更快 更弱', ai_strong: '更慢 更强',
         dir_up: '上', dir_right: '右', dir_down: '下', dir_left: '左',
       },
       en: {
@@ -349,10 +365,10 @@
         game_over: 'Game over', you_win: 'You reached 2048!',
         play_again: 'Play again', keep_going: 'Keep going',
         brand: '← SkyZero · 2048',
-        ai_auto: 'AI autoplay', ai_stop: 'Stop',
+        ai_auto: 'AI autoplay', ai_stop: 'Stop autoplay',
         ai_loading: 'Loading AI model…', ai_thinking: 'Thinking…',
         ai_ready: 'AI ready', ai_error: 'AI failed to load',
-        ai_fast: 'Faster', ai_strong: 'Stronger',
+        ai_fast: 'Faster, weaker', ai_strong: 'Slower, stronger',
         dir_up: 'Up', dir_right: 'Right', dir_down: 'Down', dir_left: 'Left',
       },
     };
@@ -960,6 +976,7 @@
     // between-move autoplay delay grows with strength so strong games stay
     // watchable on a fast machine instead of flashing by.
     const AI_SIMS_MIN = 48, AI_SIMS_MAX = 256, AI_DELAY_MAX_MS = 650;
+    const AI_SIMS_DEFAULT = 64, AI_SNAP_RADIUS = 5;   // detent at the default
     let aiReady = false, aiBusy = false, aiAuto = false, aiSeq = 0, aiWorker = null;
     const aiAutoBtn = document.getElementById('ai_auto_btn');
     const aiStatusEl = document.getElementById('ai_status');
@@ -1045,6 +1062,18 @@
       aiAuto = !aiAuto; refreshAiButtons();
       if (aiAuto) requestAiMove();
     });
+    if (aiSpeedEl && aiSpeedRow) {
+      // Place the default-position marker, and snap the slider to the default
+      // value when dragged within AI_SNAP_RADIUS of it (a magnetic detent).
+      aiSpeedRow.style.setProperty('--default-pos',
+        String((AI_SIMS_DEFAULT - AI_SIMS_MIN) / (AI_SIMS_MAX - AI_SIMS_MIN)));
+      aiSpeedEl.addEventListener('input', () => {
+        const v = parseInt(aiSpeedEl.value, 10);
+        if (v !== AI_SIMS_DEFAULT && Math.abs(v - AI_SIMS_DEFAULT) <= AI_SNAP_RADIUS) {
+          aiSpeedEl.value = String(AI_SIMS_DEFAULT);
+        }
+      });
+    }
     startAiWorker();
 
     // ---------- Boot ----------
