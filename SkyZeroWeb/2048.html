@@ -80,9 +80,9 @@
       min-height: 18px; text-align: center; font-size: 12.5px;
       font-family: var(--font-mono); color: var(--fg-muted);
     }
-    /* AI speed/strength slider: left = faster (fewer MCTS sims), right =
-       stronger (more sims). Minimal style — a thin neutral rail (no fill) with
-       a solid accent knob riding on top, distinct from the rail by color. */
+    /* AI speed/strength slider: left = faster (shorter time/move), right =
+       stronger (longer time/move). Minimal style — a thin neutral rail (no fill)
+       with a solid accent knob riding on top, distinct from the rail by color. */
     .g2048-ai-speed {
       display: flex; align-items: center; gap: 12px;
       max-width: 360px; margin: 0 auto; width: 100%;
@@ -95,7 +95,7 @@
                   transform .28s ease, visibility .28s;
     }
     .g2048-ai-speed.open {
-      max-height: 32px; opacity: 1; visibility: visible;
+      max-height: 40px; opacity: 1; visibility: visible;   /* ≥ the 32px slider */
       margin-bottom: 0; transform: translateY(0); pointer-events: auto;
     }
     .g2048-speed-end {
@@ -117,7 +117,12 @@
     }
     #ai_speed {
       -webkit-appearance: none; appearance: none;
-      display: block; width: 100%; height: 20px; margin: 0;
+      /* Tall hit area (32px) so the :active-scaled thumb (18px → ~20.7px) has
+         vertical room and isn't clipped top/bottom by the row's overflow, and
+         so the default-position triangle (pinned to the bottom of the wrap)
+         clears the thumb instead of overlapping it. The visible 8px rail and
+         the 18px thumb stay auto-centered within this height. */
+      display: block; width: 100%; height: 32px; margin: 0;
       background: transparent; cursor: pointer;
     }
     /* WebKit/Blink: rail in the score-card gray (--surface-2 + --border edge)
@@ -320,7 +325,7 @@
       <div class="g2048-ai-speed" id="ai_speed_row">
         <span class="g2048-speed-end" id="ai_speed_fast">更快 更弱</span>
         <span class="g2048-speed-wrap">
-          <input type="range" id="ai_speed" min="48" max="256" step="1" value="64"
+          <input type="range" id="ai_speed" min="50" max="2000" step="10" value="330"
                  aria-label="AI 速度 / 强度">
           <span class="g2048-speed-default" aria-hidden="true"></span>
         </span>
@@ -971,12 +976,27 @@
     // Bump AI_MODEL_VERSION whenever models/2048.onnx is re-exported.
     const AI_MODEL_VERSION = 'b3c64-vt-iter89';
     const AI_MODEL_URL = 'models/2048.onnx?v=' + AI_MODEL_VERSION;
-    // AI speed/strength: the slider sets the MCTS simulation budget linearly
-    // from AI_SIMS_MIN (faster, weaker) to AI_SIMS_MAX (stronger, slower). The
-    // between-move autoplay delay grows with strength so strong games stay
-    // watchable on a fast machine instead of flashing by.
-    const AI_SIMS_MIN = 48, AI_SIMS_MAX = 256, AI_DELAY_MAX_MS = 650;
-    const AI_SIMS_DEFAULT = 64, AI_SNAP_RADIUS = 5;   // detent at the default
+    // AI speed/strength: the slider sets the wall-clock TIME PER MOVE (ms), not a
+    // raw simulation count. Left = faster + weaker (short budget), right = slower
+    // + stronger (long budget). Default 330ms ≈ 3 moves/sec. The on-screen cadence
+    // is held to exactly the slider's interval by padding (see onAiMove), so
+    // "N steps/sec" is honest and device-independent; only the *strength* (how many
+    // sims fit in the budget) scales with the machine.
+    const AI_STEP_MIN_MS = 50;        // fastest: ~20 moves/sec
+    const AI_STEP_MAX_MS = 2000;      // slowest: 0.5 moves/sec
+    const AI_STEP_DEFAULT_MS = 330;   // default: ~3 moves/sec
+    const AI_STEP_SNAP_MS = 40;       // magnetic detent at the default
+    // Reserve part of each interval for the slide animation + settle, so the think
+    // budget is interval − reserve and consecutive moves don't visually collide.
+    const AI_RENDER_RESERVE_MS = 140;  // capped at ½ the interval — see aiThinkBudgetMs
+    const AI_THINK_MIN_MS = 40;        // floor so the fast end still searches a bit
+    // Adaptive sim budget: we don't know how fast this device evaluates the net,
+    // so we measure ms-per-sim (EWMA) and pick the sim count that fills the think
+    // budget. Clamped so the fast end isn't random and the slow end can't run away.
+    const AI_SIMS_MIN = 8, AI_SIMS_MAX = 1000, AI_SIMS_BOOTSTRAP = 64;
+    const AI_EWMA_ALPHA = 0.3;
+    let aiMsPerSim = 0;               // 0 until the first move is measured
+    let aiThinkStartTs = 0;           // performance.now() when the think was dispatched
     let aiReady = false, aiBusy = false, aiAuto = false, aiSeq = 0, aiWorker = null;
     const aiAutoBtn = document.getElementById('ai_auto_btn');
     const aiStatusEl = document.getElementById('ai_status');
@@ -985,12 +1005,28 @@
 
     function setAiStatus(text) { if (aiStatusEl) aiStatusEl.textContent = text || ''; }
     function fmtMB(bytes) { return (Number(bytes || 0) / 1048576).toFixed(1); }
-    function aiSims() {
-      const v = aiSpeedEl ? parseInt(aiSpeedEl.value, 10) : 64;
-      return Math.min(AI_SIMS_MAX, Math.max(AI_SIMS_MIN, v || 64));
+    // Current per-move interval (ms) from the slider — read live so dragging it
+    // mid-autoplay takes effect on the next move.
+    function aiStepMs() {
+      const v = aiSpeedEl ? parseInt(aiSpeedEl.value, 10) : AI_STEP_DEFAULT_MS;
+      return Math.min(AI_STEP_MAX_MS, Math.max(AI_STEP_MIN_MS, v || AI_STEP_DEFAULT_MS));
     }
-    function aiNorm() { return (aiSims() - AI_SIMS_MIN) / (AI_SIMS_MAX - AI_SIMS_MIN); }
-    function aiDelay() { return Math.round(aiNorm() * AI_DELAY_MAX_MS); }
+    // How long the search may run this move (leave room for the slide + settle).
+    function aiThinkBudgetMs() {
+      // Reserve shrinks with the interval (capped at half) so the fast end isn't
+      // starved — the budget ramps down smoothly instead of slamming into
+      // AI_THINK_MIN_MS across the whole fast band. No-op for interval ≥ 280ms
+      // (covers the default + slow end), so their budgets are unchanged.
+      const reserve = Math.min(AI_RENDER_RESERVE_MS, aiStepMs() / 2);
+      return Math.max(AI_THINK_MIN_MS, aiStepMs() - reserve);
+    }
+    // Sim count that should fill the think budget on this device. Until we've
+    // measured the net's per-sim cost, use a modest bootstrap and learn from it.
+    function aiPlanSims() {
+      if (aiMsPerSim <= 0) return AI_SIMS_BOOTSTRAP;
+      const n = Math.round(aiThinkBudgetMs() / aiMsPerSim);
+      return Math.min(AI_SIMS_MAX, Math.max(AI_SIMS_MIN, n));
+    }
 
     function refreshAiButtons() {
       if (!aiAutoBtn) return;
@@ -1033,44 +1069,66 @@
     }
 
     function requestAiMove() {
-      if (!aiReady || aiBusy) return;
+      // Bail if autoplay was stopped: a between-move timer or a late start can
+      // still reach here after the user hit stop — don't fire another think.
+      if (!aiAuto || !aiReady || aiBusy) return;
       // Flush any in-flight slide so the worker sees the settled board (incl.
       // the freshly spawned tile) and any just-reached win/lose state.
       finalizeAnimation();
       if (overlayMode === 'win') { overlayMode = null; updateOverlay(); }
       if (overlayMode === 'lose' || !anyMovePossible()) {
-        aiAuto = false; refreshAiButtons(); return;
+        aiAuto = false; setAiStatus(''); refreshAiButtons(); return;
       }
       // Asking the AI to move disqualifies the run from the human leaderboard
       // (set here, the instant we dispatch, so a 托管 run can never submit).
       tainted = true;
       aiBusy = true; setAiStatus(t('ai_thinking')); refreshAiButtons();
-      aiWorker.postMessage({ type: 'think', id: ++aiSeq, grid: cloneGrid(grid), sims: aiSims() });
+      aiThinkStartTs = performance.now();
+      aiWorker.postMessage({ type: 'think', id: ++aiSeq, grid: cloneGrid(grid), sims: aiPlanSims() });
     }
 
     function onAiMove(m) {
       aiBusy = false;
+      // Measure how long this search actually took and fold it into the EWMA of
+      // ms-per-sim, so aiPlanSims() converges on the right sim count for this
+      // device. Guard against the noisy first eval (ONNX warmup) and any glitch.
+      const elapsed = performance.now() - aiThinkStartTs;
+      if (!m.terminal && m.sims > 0 && elapsed > 0 && elapsed < 60000) {
+        const per = elapsed / m.sims;
+        aiMsPerSim = aiMsPerSim > 0 ? aiMsPerSim * (1 - AI_EWMA_ALPHA) + per * AI_EWMA_ALPHA : per;
+      }
       if (m.terminal) { aiAuto = false; setAiStatus(''); refreshAiButtons(); return; }
+      // Autoplay was stopped while this move was being computed: drop the move
+      // and clear the status so no stale "AI ▸ <dir>" lingers after stopping.
+      if (!aiAuto) { setAiStatus(''); refreshAiButtons(); return; }
       setAiStatus('AI ▸ ' + t('dir_' + m.dir));
       doMove(m.dir);
       refreshAiButtons();
-      // Read the slider live each move so dragging it mid-autoplay takes effect.
-      if (aiAuto) setTimeout(requestAiMove, aiDelay());
+      // Hold the cadence to exactly the slider's interval: the next think fires at
+      // (dispatch + interval), so each move occupies one interval regardless of how
+      // long the search took. If the search overran the interval (only at the very
+      // fast end on a slow device), go again immediately. Read live so dragging the
+      // slider mid-autoplay takes effect; requestAiMove re-checks aiAuto, so a stop
+      // during the wait is a no-op.
+      const wait = Math.max(0, aiStepMs() - (performance.now() - aiThinkStartTs));
+      setTimeout(requestAiMove, wait);
     }
 
     aiAutoBtn.addEventListener('click', () => {
-      aiAuto = !aiAuto; refreshAiButtons();
+      aiAuto = !aiAuto;
+      refreshAiButtons();
       if (aiAuto) requestAiMove();
+      else setAiStatus('');   // clear the lingering "AI ▸ <dir>" on stop
     });
     if (aiSpeedEl && aiSpeedRow) {
       // Place the default-position marker, and snap the slider to the default
-      // value when dragged within AI_SNAP_RADIUS of it (a magnetic detent).
+      // value when dragged within AI_STEP_SNAP_MS of it (a magnetic detent).
       aiSpeedRow.style.setProperty('--default-pos',
-        String((AI_SIMS_DEFAULT - AI_SIMS_MIN) / (AI_SIMS_MAX - AI_SIMS_MIN)));
+        String((AI_STEP_DEFAULT_MS - AI_STEP_MIN_MS) / (AI_STEP_MAX_MS - AI_STEP_MIN_MS)));
       aiSpeedEl.addEventListener('input', () => {
         const v = parseInt(aiSpeedEl.value, 10);
-        if (v !== AI_SIMS_DEFAULT && Math.abs(v - AI_SIMS_DEFAULT) <= AI_SNAP_RADIUS) {
-          aiSpeedEl.value = String(AI_SIMS_DEFAULT);
+        if (v !== AI_STEP_DEFAULT_MS && Math.abs(v - AI_STEP_DEFAULT_MS) <= AI_STEP_SNAP_MS) {
+          aiSpeedEl.value = String(AI_STEP_DEFAULT_MS);
         }
       });
     }
