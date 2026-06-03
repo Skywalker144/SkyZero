@@ -80,23 +80,55 @@
       min-height: 18px; text-align: center; font-size: 12.5px;
       font-family: var(--font-mono); color: var(--fg-muted);
     }
-    /* AI speed/strength slider: left = fast & weak (few sims), right = slow &
-       strong (more sims). */
+    /* AI speed/strength slider: left = faster (fewer sims), right = stronger
+       (more MCTS sims). Custom-styled as a rounded pill track with a left-
+       anchored accent fill and a round thumb seated INSIDE the track. */
     .g2048-ai-speed {
-      display: flex; align-items: center; gap: 10px;
-      max-width: 360px; margin: 0 auto; width: 100%;
-    }
-    .g2048-ai-speed #ai_speed {
-      flex: 1; min-width: 0; accent-color: var(--accent); cursor: pointer;
+      display: flex; align-items: center; gap: 12px;
+      max-width: 360px; margin: 2px auto 0; width: 100%;
     }
     .g2048-speed-end {
       font-size: 12px; font-weight: 600; color: var(--fg-muted);
-      white-space: nowrap;
+      white-space: nowrap; user-select: none; -webkit-user-select: none;
     }
-    .g2048-speed-readout {
-      font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-muted);
-      min-width: 4.5em; text-align: right; white-space: nowrap;
+    #ai_speed {
+      -webkit-appearance: none; appearance: none;
+      flex: 1; min-width: 0; height: 22px; margin: 0;
+      background: transparent; cursor: pointer;
     }
+    /* WebKit/Blink: track holds the fill (sized by --pct, set from JS). */
+    #ai_speed::-webkit-slider-runnable-track {
+      height: 22px; border-radius: 999px;
+      background:
+        linear-gradient(var(--accent), var(--accent)) no-repeat,
+        var(--surface-2);
+      background-size: var(--pct, 8%) 100%, 100% 100%;
+      box-shadow: inset 0 0 0 1px var(--border);
+    }
+    #ai_speed::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 16px; height: 16px; margin-top: 3px;   /* (22-16)/2 — seats inside */
+      border-radius: 50%; background: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,.28), inset 0 0 0 1px var(--border);
+      transition: transform .1s ease;
+    }
+    #ai_speed:active::-webkit-slider-thumb { transform: scale(1.12); }
+    /* Firefox: native progress fill + track. */
+    #ai_speed::-moz-range-track {
+      height: 22px; border-radius: 999px;
+      background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border);
+    }
+    #ai_speed::-moz-range-progress {
+      height: 22px; border-radius: 999px 0 0 999px; background: var(--accent);
+    }
+    #ai_speed::-moz-range-thumb {
+      width: 16px; height: 16px; border: none; border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,.28), inset 0 0 0 1px var(--border);
+    }
+    #ai_speed:focus { outline: none; }
+    #ai_speed:focus-visible::-webkit-slider-runnable-track { box-shadow: inset 0 0 0 1px var(--accent); }
+    #ai_speed:focus-visible::-moz-range-track { box-shadow: inset 0 0 0 1px var(--accent); }
     .g2048-board {
       position: relative;
       width: 100%;
@@ -261,11 +293,10 @@
         <button class="btn" id="ai_auto_btn" aria-pressed="false" disabled>AI 托管</button>
       </div>
       <div class="g2048-ai-speed">
-        <span class="g2048-speed-end" id="ai_speed_fast">快</span>
-        <input type="range" id="ai_speed" min="0" max="5" step="1" value="2"
+        <span class="g2048-speed-end" id="ai_speed_fast">更快</span>
+        <input type="range" id="ai_speed" min="48" max="256" step="1" value="64"
                aria-label="AI 速度 / 强度">
-        <span class="g2048-speed-end" id="ai_speed_strong">强</span>
-        <span class="g2048-speed-readout" id="ai_speed_readout"></span>
+        <span class="g2048-speed-end" id="ai_speed_strong">更强</span>
       </div>
       <div class="g2048-ai-status" id="ai_status"></div>
       <div class="g2048-board" id="g2048_board" tabindex="0" aria-label="2048 board">
@@ -297,7 +328,7 @@
         ai_move: 'AI 走子', ai_auto: 'AI 托管', ai_stop: '停止',
         ai_loading: '加载 AI 模型…', ai_thinking: '思考中…',
         ai_ready: 'AI 就绪', ai_error: 'AI 加载失败',
-        ai_fast: '快', ai_strong: '强', ai_sims: '次模拟',
+        ai_fast: '更快', ai_strong: '更强',
         dir_up: '上', dir_right: '右', dir_down: '下', dir_left: '左',
       },
       en: {
@@ -309,7 +340,7 @@
         ai_move: 'AI move', ai_auto: 'AI autoplay', ai_stop: 'Stop',
         ai_loading: 'Loading AI model…', ai_thinking: 'Thinking…',
         ai_ready: 'AI ready', ai_error: 'AI failed to load',
-        ai_fast: 'Fast', ai_strong: 'Strong', ai_sims: 'sims',
+        ai_fast: 'Faster', ai_strong: 'Stronger',
         dir_up: 'Up', dir_right: 'Right', dir_down: 'Down', dir_left: 'Left',
       },
     };
@@ -328,7 +359,6 @@
       document.getElementById('ai_move_btn').textContent = t('ai_move');
       document.getElementById('ai_speed_fast').textContent = t('ai_fast');
       document.getElementById('ai_speed_strong').textContent = t('ai_strong');
-      if (typeof updateSpeedReadout === 'function') updateSpeedReadout();
       if (typeof refreshAiButtons === 'function') refreshAiButtons();
       document.getElementById('overlay_btn').textContent = t('play_again');
       document.getElementById('brand_link').textContent = t('brand');
@@ -914,31 +944,28 @@
     // Bump AI_MODEL_VERSION whenever models/2048.onnx is re-exported.
     const AI_MODEL_VERSION = 'b3c64-vt-iter89';
     const AI_MODEL_URL = 'models/2048.onnx?v=' + AI_MODEL_VERSION;
-    // AI speed/strength levels (slider index 0..5): more sims = stronger but
-    // slower; delay also grows so a fast machine's strong games stay watchable
-    // instead of flashing by. Index 2 (64 sims) is the training/default budget.
-    const AI_LEVELS = [
-      { sims: 16,  delay: 0    },
-      { sims: 32,  delay: 90   },
-      { sims: 64,  delay: 200  },
-      { sims: 128, delay: 450  },
-      { sims: 256, delay: 750  },
-      { sims: 512, delay: 1100 },
-    ];
-    let aiLevel = 2;   // current slider index
+    // AI speed/strength: the slider sets the MCTS simulation budget linearly
+    // from AI_SIMS_MIN (faster, weaker) to AI_SIMS_MAX (stronger, slower). The
+    // between-move autoplay delay grows with strength so strong games stay
+    // watchable on a fast machine instead of flashing by.
+    const AI_SIMS_MIN = 48, AI_SIMS_MAX = 256, AI_DELAY_MAX_MS = 650;
     let aiReady = false, aiBusy = false, aiAuto = false, aiSeq = 0, aiWorker = null;
     const aiMoveBtn = document.getElementById('ai_move_btn');
     const aiAutoBtn = document.getElementById('ai_auto_btn');
     const aiStatusEl = document.getElementById('ai_status');
     const aiSpeedEl = document.getElementById('ai_speed');
-    const aiSpeedReadoutEl = document.getElementById('ai_speed_readout');
 
     function setAiStatus(text) { if (aiStatusEl) aiStatusEl.textContent = text || ''; }
     function fmtMB(bytes) { return (Number(bytes || 0) / 1048576).toFixed(1); }
-    function aiSims() { return AI_LEVELS[aiLevel].sims; }
-    function aiDelay() { return AI_LEVELS[aiLevel].delay; }
-    function updateSpeedReadout() {
-      if (aiSpeedReadoutEl) aiSpeedReadoutEl.textContent = aiSims() + ' ' + t('ai_sims');
+    function aiSims() {
+      const v = aiSpeedEl ? parseInt(aiSpeedEl.value, 10) : 64;
+      return Math.min(AI_SIMS_MAX, Math.max(AI_SIMS_MIN, v || 64));
+    }
+    function aiNorm() { return (aiSims() - AI_SIMS_MIN) / (AI_SIMS_MAX - AI_SIMS_MIN); }
+    function aiDelay() { return Math.round(aiNorm() * AI_DELAY_MAX_MS); }
+    // Paint the WebKit fill width (Firefox uses native ::-moz-range-progress).
+    function updateSpeedFill() {
+      if (aiSpeedEl) aiSpeedEl.style.setProperty('--pct', (aiNorm() * 100).toFixed(1) + '%');
     }
 
     function refreshAiButtons() {
@@ -989,6 +1016,9 @@
       if (overlayMode === 'lose' || !anyMovePossible()) {
         aiAuto = false; refreshAiButtons(); return;
       }
+      // Asking the AI to move disqualifies the run from the human leaderboard
+      // (set here, the instant we dispatch, so a 托管 run can never submit).
+      tainted = true;
       aiBusy = true; setAiStatus(t('ai_thinking')); refreshAiButtons();
       aiWorker.postMessage({ type: 'think', id: ++aiSeq, grid: cloneGrid(grid), sims: aiSims() });
     }
@@ -996,7 +1026,6 @@
     function onAiMove(m) {
       aiBusy = false;
       if (m.terminal) { aiAuto = false; setAiStatus(''); refreshAiButtons(); return; }
-      tainted = true;   // AI-assisted run: ineligible for the human leaderboard
       setAiStatus('AI ▸ ' + t('dir_' + m.dir));
       doMove(m.dir);
       refreshAiButtons();
@@ -1010,13 +1039,9 @@
       if (aiAuto) requestAiMove();
     });
     if (aiSpeedEl) {
-      aiLevel = Math.min(AI_LEVELS.length - 1, Math.max(0, parseInt(aiSpeedEl.value, 10) || 0));
-      aiSpeedEl.addEventListener('input', () => {
-        aiLevel = Math.min(AI_LEVELS.length - 1, Math.max(0, parseInt(aiSpeedEl.value, 10) || 0));
-        updateSpeedReadout();
-      });
+      aiSpeedEl.addEventListener('input', updateSpeedFill);
     }
-    updateSpeedReadout();
+    updateSpeedFill();
     startAiWorker();
 
     // ---------- Boot ----------
