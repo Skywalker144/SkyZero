@@ -878,7 +878,13 @@
     // `value` reported back is the search's expected discounted score from here.
     // An AI-assisted run is marked `tainted` so it never posts a score to the
     // human leaderboard.
-    const AI_MODEL_URL = 'models/2048.onnx';
+    // Cache-bust: .onnx is served `immutable, max-age=1yr` (see _headers), so the
+    // browser would otherwise never refetch an updated model — a plain reload would
+    // keep showing the stale net, and the only way to get the new one would be a
+    // "clear site data", which also wipes the leaderboard token in localStorage.
+    // Bump AI_MODEL_VERSION whenever models/2048.onnx is re-exported.
+    const AI_MODEL_VERSION = 'b3c64-vt-iter89';
+    const AI_MODEL_URL = 'models/2048.onnx?v=' + AI_MODEL_VERSION;
     const AI_AUTO_DELAY_MS = 200;   // > slide anim so the spawned tile settles
     let aiReady = false, aiBusy = false, aiAuto = false, aiSeq = 0, aiWorker = null;
     const aiMoveBtn = document.getElementById('ai_move_btn');
@@ -886,6 +892,7 @@
     const aiStatusEl = document.getElementById('ai_status');
 
     function setAiStatus(text) { if (aiStatusEl) aiStatusEl.textContent = text || ''; }
+    function fmtMB(bytes) { return (Number(bytes || 0) / 1048576).toFixed(1); }
 
     function refreshAiButtons() {
       if (!aiMoveBtn || !aiAutoBtn) return;
@@ -903,8 +910,13 @@
       aiWorker.onmessage = (ev) => {
         const m = ev.data || {};
         if (m.type === 'model-progress') {
-          if (!aiReady) setAiStatus(t('ai_loading') +
-            (m.percent != null ? ' ' + Math.round(m.percent) + '%' : ''));
+          if (!aiReady) {
+            let s = t('ai_loading');
+            if (m.percent != null) s += ' ' + Math.round(m.percent) + '%';
+            if (m.total) s += ' (' + fmtMB(m.loaded) + '/' + fmtMB(m.total) + ' MB)';
+            else if (m.loaded) s += ' (' + fmtMB(m.loaded) + ' MB)';
+            setAiStatus(s);
+          }
         } else if (m.type === 'ready') {
           aiReady = true; setAiStatus(''); refreshAiButtons();
         } else if (m.type === 'move') {

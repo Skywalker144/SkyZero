@@ -894,13 +894,17 @@ function modelUrl(m) {
 const BOARD_SIZES = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
 
 // --- Loading overlay (only shown for first model load) ---
-function setLoadingProgress(pct) {
+function fmtMB(bytes) { return (Number(bytes || 0) / 1048576).toFixed(1); }
+function setLoadingProgress(pct, loaded, total) {
     const fill = document.getElementById("loading_fill");
     const text = document.getElementById("loading_pct");
     if (!fill || !text) return;
     if (Number.isFinite(pct)) {
         fill.style.width = Math.max(0, Math.min(100, pct)) + "%";
-        text.textContent = Math.round(pct) + "%";
+        let s = Math.round(pct) + "%";
+        if (total) s += "  ·  " + fmtMB(loaded) + "/" + fmtMB(total) + " MB";
+        else if (loaded) s += "  ·  " + fmtMB(loaded) + " MB";
+        text.textContent = s;
     }
 }
 function hideLoadingOverlay() {
@@ -1175,7 +1179,7 @@ function undoEditStep() {
 worker.onmessage = (e) => {
     const data = e.data;
     if (data.type === "model-progress") {
-        if (Number.isFinite(data.percent)) setLoadingProgress(data.percent);
+        if (Number.isFinite(data.percent)) setLoadingProgress(data.percent, data.loaded, data.total);
         return;
     }
     if (data.type === "ready") {

@@ -30,7 +30,7 @@ async function fetchModelWithProgress(url) {
   var total = Number(response.headers.get('Content-Length')) || 0;
   if (!response.body) {
     var buf = await response.arrayBuffer();
-    postMessage({ type: 'model-progress', percent: 100 });
+    postMessage({ type: 'model-progress', percent: 100, loaded: buf.byteLength, total: buf.byteLength });
     return new Uint8Array(buf);
   }
   var reader = response.body.getReader();
@@ -41,7 +41,7 @@ async function fetchModelWithProgress(url) {
     if (r.done) break;
     chunks.push(r.value);
     loaded += r.value.length;
-    postMessage({ type: 'model-progress', percent: total > 0 ? (loaded / total) * 100 : null });
+    postMessage({ type: 'model-progress', percent: total > 0 ? (loaded / total) * 100 : null, loaded: loaded, total: total || null });
   }
   var size = total || loaded;
   var out = new Uint8Array(size);
