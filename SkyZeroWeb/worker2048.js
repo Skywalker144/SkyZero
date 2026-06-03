@@ -70,13 +70,16 @@ async function runNet(flat, B) {
   return { logits: out.policy_logits.data, values: out.value.data };
 }
 
-async function think(grid, id) {
+async function think(grid, id, sims) {
   var exps = AI2048.gridValuesToExps(grid);
-  var res = await MCTS2048.chooseMoveMCTS(exps, runNet, SEARCH_CFG);
+  // sims (from the speed slider) overrides the default simulation budget; more
+  // sims = stronger play (and slower). Falls back to SEARCH_CFG.num_simulations.
+  var cfg = (sims > 0) ? Object.assign({}, SEARCH_CFG, { num_simulations: sims }) : SEARCH_CFG;
+  var res = await MCTS2048.chooseMoveMCTS(exps, runNet, cfg);
   postMessage({
     type: 'move', id: id,
     action: res.action, dir: res.dir, qs: res.qs, value: res.value,
-    terminal: res.action < 0,
+    sims: cfg.num_simulations, terminal: res.action < 0,
   });
 }
 
@@ -84,7 +87,7 @@ self.onmessage = function (e) {
   var msg = e.data || {};
   var p;
   if (msg.type === 'init') p = init(msg.model);
-  else if (msg.type === 'think') p = think(msg.grid, msg.id);
+  else if (msg.type === 'think') p = think(msg.grid, msg.id, msg.sims);
   else return;
   Promise.resolve(p).catch(function (err) {
     postMessage({ type: 'error', message: (err && err.message) || String(err) });
