@@ -173,8 +173,13 @@
   .brand { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-width: 0; }
   .brand-title {
     font-size: 25px; font-weight: 600; letter-spacing: -0.01em;
-    color: var(--fg);
+    color: var(--fg); text-decoration: none;
   }
+  /* On game pages the brand title is a link back to the home page. Give it a
+     hover color shift so it reads as interactive (no underline); the plain
+     <div> brand on the landing page is a non-link and is unaffected. */
+  a.brand-title { transition: color 0.15s ease; }
+  a.brand-title:hover { color: var(--accent); }
   .brand-toggle { padding: 0; gap: 8px; color: var(--fg-muted); }
   .brand-toggle .toggle-text { font-weight: 500; }
   .brand-toggle:hover { color: var(--fg); }

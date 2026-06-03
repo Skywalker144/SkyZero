@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <title>2048 · SkyZero</title>
+  <title>SkyZero · 2048</title>
   <link rel="preload" href="fonts/Inter-Regular.woff2"  as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
   <script>
@@ -276,8 +276,8 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <a class="brand-title" href="/" style="text-decoration:none;color:inherit;"
-           title="返回首页" id="brand_link">← SkyZero · 2048</a>
+        <a class="brand-title" href="/"
+           title="返回首页" id="brand_link">SkyZero · 2048</a>
       </div>
       <div class="topbar-actions">
         <div class="seg-row compact" id="lang_seg" role="group" aria-label="Switch language">
@@ -357,7 +357,7 @@
         new_game: '新对局', undo: '撤销',
         game_over: '游戏结束', you_win: '到达 2048!',
         play_again: '再来一局', keep_going: '继续',
-        brand: '← SkyZero · 2048',
+        brand: 'SkyZero · 2048',
         ai_auto: 'AI 托管', ai_stop: '停止AI托管',
         ai_loading: '加载 AI 模型…', ai_thinking: '思考中…',
         ai_ready: 'AI 就绪', ai_error: 'AI 加载失败',
@@ -369,7 +369,7 @@
         new_game: 'New game', undo: 'Undo',
         game_over: 'Game over', you_win: 'You reached 2048!',
         play_again: 'Play again', keep_going: 'Keep going',
-        brand: '← SkyZero · 2048',
+        brand: 'SkyZero · 2048',
         ai_auto: 'AI autoplay', ai_stop: 'Stop autoplay',
         ai_loading: 'Loading AI model…', ai_thinking: 'Thinking…',
         ai_ready: 'AI ready', ai_error: 'AI failed to load',
@@ -394,7 +394,7 @@
       if (typeof refreshAiButtons === 'function') refreshAiButtons();
       document.getElementById('overlay_btn').textContent = t('play_again');
       document.getElementById('brand_link').textContent = t('brand');
-      document.title = '2048 · SkyZero';
+      document.title = 'SkyZero · 2048';
       // Refresh overlay title if it's visible (state-dependent label).
       if (typeof updateOverlay === 'function') updateOverlay();
     }
