@@ -273,6 +273,7 @@
         ai_move: 'AI 走子', ai_auto: 'AI 托管', ai_stop: '停止',
         ai_loading: '加载 AI 模型…', ai_thinking: '思考中…',
         ai_ready: 'AI 就绪', ai_error: 'AI 加载失败',
+        ai_est: '预估终局', ai_maxtile: '最大方块',
         dir_up: '上', dir_right: '右', dir_down: '下', dir_left: '左',
       },
       en: {
@@ -284,6 +285,7 @@
         ai_move: 'AI move', ai_auto: 'AI autoplay', ai_stop: 'Stop',
         ai_loading: 'Loading AI model…', ai_thinking: 'Thinking…',
         ai_ready: 'AI ready', ai_error: 'AI failed to load',
+        ai_est: 'Est. final', ai_maxtile: 'Max tile',
         dir_up: 'Up', dir_right: 'Right', dir_down: 'Down', dir_left: 'Left',
       },
     };
@@ -504,6 +506,18 @@
         if (grid[r][c] > m) m = grid[r][c];
       }
       return m;
+    }
+
+    // Rough "predicted largest tile" from a predicted FINAL score. Building one
+    // 2^n tile (from spawned 2s) costs ~(n-1)*2^n points, so the largest tile a
+    // given score can have produced is the biggest 2^n whose build cost fits.
+    // Clamped to the tile already on the board (can't end up smaller). The input
+    // score comes from the value head, which is gamma-discounted => conservative
+    // early in a game, so this errs low.
+    function predictedMaxTile(finalScore) {
+      let n = 1;                                   // 2^1 = 2 floor
+      while (n * Math.pow(2, n + 1) <= finalScore) n++;   // cost(n+1) = n*2^(n+1)
+      return Math.max(Math.pow(2, n), maxTile());
     }
 
     // ---------- Tile DOM ----------
@@ -950,7 +964,13 @@
       aiBusy = false;
       if (m.terminal) { aiAuto = false; setAiStatus(''); refreshAiButtons(); return; }
       tainted = true;   // AI-assisted run: ineligible for the human leaderboard
-      setAiStatus('AI ▸ ' + t('dir_' + m.dir) + '  ≈ ' + Math.round(m.value).toLocaleString());
+      // Predicted FINAL score = current score + the search's expected (discounted)
+      // future score; predicted largest tile is derived from it. `score` here is
+      // still pre-move, matching the board that was evaluated.
+      const finalScore = score + m.value;
+      setAiStatus('AI ▸ ' + t('dir_' + m.dir) +
+        '  ·  ' + t('ai_est') + ' ≈ ' + Math.round(finalScore).toLocaleString() +
+        '  ·  ' + t('ai_maxtile') + ' ' + predictedMaxTile(finalScore));
       doMove(m.dir);
       refreshAiButtons();
       if (aiAuto) setTimeout(requestAiMove, AI_AUTO_DELAY_MS);
