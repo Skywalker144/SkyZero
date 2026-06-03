@@ -135,6 +135,9 @@
       line-height: 1.7;
     }
     .cd-overlay-stats b { color: var(--accent); font-size: 20px; }
+    .cd-overlay-stats .ai-note {
+      font-family: inherit; font-size: 12px; color: var(--fg-muted);
+    }
     /* Legend of bullet types and their point values. */
     .cd-legend {
       display: flex; flex-direction: column; gap: 6px;
@@ -484,6 +487,8 @@
         draw_use: '使用', draw_preview: '预览', draw_eraser: '橡皮',
         draw_empty: '画点东西吧',
         ai_play: 'AI 托管', ai_on: 'AI 接管中',
+        ai_warn: '启用 AI 托管后,本局得分将不会计入排行榜。确定要开启吗?',
+        ai_note: '本局使用了 AI 托管,未计入排行榜',
       },
       en: {
         title_tab: 'SkyZero · Dodge',
@@ -508,6 +513,8 @@
         draw_use: 'Use', draw_preview: 'Preview', draw_eraser: 'Eraser',
         draw_empty: 'Draw something first',
         ai_play: 'Autopilot', ai_on: 'AI playing',
+        ai_warn: 'With autopilot on, this run will not count toward the leaderboard. Turn it on?',
+        ai_note: 'AI autopilot was used — not counted on the leaderboard',
       },
     };
     let LANG = 'zh';
@@ -682,6 +689,7 @@
       recentKinds: [],        // recent primary spawn kinds (anti-streak)
       lastRing: null,         // last split-burst origin (avoid stacking)
       aiOn: false,            // PPO autopilot driving the player
+      aiEverUsed: false,      // sticky: did AI ever drive this round? (taints leaderboard)
       lastTs: 0,
       raf: 0,
     };
@@ -1867,6 +1875,8 @@
       state.pickups = [];
       state.score = 0;
       state.dodged = 0;
+      state.aiEverUsed = state.aiOn;   // a round that starts under AI is already tainted
+
       state.elapsed = 0;
       state.spawnTimer = 0.6;
       state.ringTimer = 2.5;
@@ -1912,7 +1922,8 @@
       els.best.textContent = best;
       els.startBtn.textContent = t('start');
       els.pauseBtn.textContent = t('pause');
-      if (window.SkzLB) window.SkzLB.submit('dodge', state.score);
+      // AI-driven runs never post to the leaderboard (honor system).
+      if (window.SkzLB && !state.aiEverUsed) window.SkzLB.submit('dodge', state.score);
       renderOverlay();
       showOverlay();
     }
@@ -1943,7 +1954,8 @@
         o.overlayStats.innerHTML =
           t('stat_score') + ': <b>' + state.score + '</b><br>' +
           t('stat_time') + ': ' + state.elapsed.toFixed(1) + 's · ' +
-          t('stat_dodged') + ': ' + state.dodged;
+          t('stat_dodged') + ': ' + state.dodged +
+          (state.aiEverUsed ? '<br><span class="ai-note">' + t('ai_note') + '</span>' : '');
         o.overlayBtn.textContent = t('restart');
       }
     }
@@ -1964,6 +1976,7 @@
     function setAi(on) {
       if (on && !AI.load()) return;             // weights missing/bad — no-op
       state.aiOn = on;
+      if (on) state.aiEverUsed = true;          // sticky: taints this round's score
       AI.reset();
       els.aiBtn.setAttribute('aria-pressed', String(on));
       els.aiBtn.classList.toggle('primary', on);
@@ -1971,7 +1984,17 @@
       if (on && state.mode !== 'playing') startGame();
       else if (state.mode === 'playing') els.stage.focus({ preventScroll: true });
     }
-    els.aiBtn.addEventListener('click', () => setAi(!state.aiOn));
+    // Warn once (per page load) the first time the player hands over to the AI:
+    // doing so disqualifies the run from the leaderboard. Cancel = stay manual.
+    let aiWarned = false;
+    els.aiBtn.addEventListener('click', () => {
+      const turningOn = !state.aiOn;
+      if (turningOn && !aiWarned) {
+        if (!confirm(t('ai_warn'))) return;
+        aiWarned = true;
+      }
+      setAi(turningOn);
+    });
 
     // Auto-pause when the tab/window loses focus mid-game.
     document.addEventListener('visibilitychange', () => {

@@ -38,19 +38,30 @@
   <style>
     .landing-main {
       flex: 1; display: flex; flex-direction: column; align-items: center;
-      justify-content: center; gap: 28px; padding: 40px 20px 64px;
+      justify-content: center; gap: 64px; padding: 40px 20px 64px;
       text-align: center;
     }
-    .landing-hero h1 {
-      margin: 0; font-size: clamp(28px, 6vw, 44px); font-weight: 600;
-      letter-spacing: -0.02em; color: var(--fg);
+    .landing-hero {
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
     }
-    .landing-hero p {
-      margin: 10px 0 0; font-size: 15px; color: var(--fg-muted);
+    .hero-brand {
+      display: inline-flex; align-items: center; gap: 14px;
+    }
+    .hero-mark {
+      width: 46px; height: 46px; flex: none;
+      filter: drop-shadow(0 4px 12px rgba(27,31,36,0.12));
+    }
+    .hero-wordmark {
+      font-size: clamp(34px, 7vw, 52px); font-weight: 700;
+      letter-spacing: -0.03em; color: var(--fg); line-height: 1;
+    }
+    .hero-eyebrow {
+      margin: 0; font-size: 15px; font-weight: 500; color: var(--fg-muted);
+      letter-spacing: 0.01em;
     }
     .landing-grid {
-      display: grid; gap: 18px; width: 100%; max-width: 720px;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      display: grid; gap: 18px; width: 100%; max-width: 780px;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     }
     .game-card {
       display: flex; flex-direction: column; align-items: center; gap: 14px;
@@ -83,9 +94,7 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div class="brand">
-        <div class="brand-title">SkyZero</div>
-      </div>
+      <div></div>
       <div class="topbar-actions">
         <div class="seg-row compact" id="lang_seg" role="group" aria-label="切换语言">
           <button class="seg-btn" data-lang="zh" aria-pressed="true">中</button>
@@ -115,8 +124,10 @@
 
     <div class="landing-main">
       <div class="landing-hero">
-        <h1 id="hero_title">选择一个游戏</h1>
-        <p id="hero_sub">浏览器端运行的 SkyZero 强化学习引擎</p>
+        <div class="hero-brand">
+          <span class="hero-wordmark">SkyZero</span>
+        </div>
+        <p class="hero-eyebrow" id="hero_title">选择一个游戏</p>
       </div>
 
       <div class="landing-grid">
@@ -136,7 +147,7 @@
             </svg>
           </div>
           <div class="game-name" id="card_gomoku_name">五子棋</div>
-          <div class="game-desc" id="card_gomoku_desc">对弈 AlphaZero 风格神经网络</div>
+          <div class="game-desc" id="card_gomoku_desc">和 SkyZero 对弈</div>
         </a>
 
         <a class="game-card" href="/2048">
@@ -180,7 +191,7 @@
     </div>
 
     <footer class="landing-footer">
-      <span id="footer_text">SkyZero · 全部在浏览器本地运行，无服务器</span>
+      <span id="footer_text">QQ群:620366051</span>
     </footer>
   </div>
 
@@ -190,28 +201,26 @@
       zh: {
         title: 'SkyZero · Web',
         hero_title: '选择一个游戏',
-        hero_sub: '浏览器端运行的 SkyZero 强化学习引擎',
         gomoku_name: '五子棋',
-        gomoku_desc: '对弈 AlphaZero 风格神经网络',
+        gomoku_desc: '和 SkyZero 对弈',
         g2048_name: '2048',
         g2048_desc: '经典数字合并益智游戏',
         dodge_name: '躲避',
         dodge_desc: '操控人物躲避四面弹幕',
-        footer: 'SkyZero · 全部在浏览器本地运行，无服务器',
+        footer: 'QQ群:620366051',
         aria_lang: '切换语言', aria_theme: '切换配色主题',
         th_auto: '自动', th_light: '明亮', th_dark: '暗黑',
       },
       en: {
         title: 'SkyZero · Web',
         hero_title: 'Choose a game',
-        hero_sub: 'SkyZero reinforcement-learning engines, running in your browser',
         gomoku_name: 'Gomoku',
-        gomoku_desc: 'Play an AlphaZero-style neural network',
+        gomoku_desc: 'Play against SkyZero',
         g2048_name: '2048',
         g2048_desc: 'The classic tile-merging puzzle',
         dodge_name: 'Dodge',
         dodge_desc: 'Steer a character through bullet hell',
-        footer: 'SkyZero · Runs entirely in your browser, no server',
+        footer: 'QQ群:620366051',
         aria_lang: 'Switch language', aria_theme: 'Toggle theme',
         th_auto: 'Auto', th_light: 'Light', th_dark: 'Dark',
       },
@@ -225,7 +234,6 @@
       document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
       document.title = s.title;
       document.getElementById('hero_title').textContent = s.hero_title;
-      document.getElementById('hero_sub').textContent = s.hero_sub;
       document.getElementById('card_gomoku_name').textContent = s.gomoku_name;
       document.getElementById('card_gomoku_desc').textContent = s.gomoku_desc;
       document.getElementById('card_2048_name').textContent = s.g2048_name;
