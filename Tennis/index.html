@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>2D Tennis (Perspective)</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #0b0f14;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    height: 100%;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    gap: 10px;
+  }
+  #hud {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    font-size: 14px;
+    color: #9aa5b1;
+  }
+  #score {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: 4px;
+    color: #e6edf3;
+  }
+  canvas {
+    display: block;
+    background: #1a2230;
+    border-radius: 6px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    cursor: none;
+  }
+  #help {
+    font-size: 12px;
+    color: #6b7280;
+    text-align: center;
+    line-height: 1.7;
+    max-width: 920px;
+  }
+  kbd {
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: #c9d1d9;
+  }
+  #overlay {
+    position: absolute;
+    pointer-events: none;
+    color: #ffffff;
+    font-size: 36px;
+    font-weight: 700;
+    text-shadow: 0 2px 12px rgba(0,0,0,0.8);
+    opacity: 0;
+    transition: opacity 0.25s;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <span>对手 (AI)</span>
+    <span id="score">0 : 0</span>
+    <span>玩家 (你)</span>
+  </div>
+  <canvas id="game" width="960" height="620"></canvas>
+  <div id="help">
+    移动: <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> 或 <kbd>WASD</kbd> · 鼠标控制左右 ·
+    <b>击球方向</b>: 击球瞬间按住的方向键决定下一拍 (左右控走向, 上下控深短) ·
+    黄色十字 = 落点预测<br>
+    正反手会根据球的左右自动判断 · 发球: <kbd>空格</kbd> · 重置: <kbd>R</kbd>
+  </div>
+  <div id="overlay"></div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+  const scoreEl = document.getElementById('score');
+  const overlayEl = document.getElementById('overlay');
+
+  // ===========================================================
+  // World (3D-ish) coordinate system
+  //   x: left/right across court (centered at 0)
+  //   y: depth (0 = near baseline, COURT_LEN = far baseline)
+  //   z: height above ground
+  //   Units ≈ feet
+  // ===========================================================
+  const COURT_LEN = 78;
+  const COURT_WID = 36;
+  const SINGLES_WID = 27;
+  const NET_Y = COURT_LEN / 2;
+  const NET_H_CENTER = 3.0;
+  const NET_H_POST = 3.5;
+  const NET_OVERHANG = 1.5;
+  const SERVICE_NEAR_Y = NET_Y - 21;
+  const SERVICE_FAR_Y = NET_Y + 21;
+
+  // Camera (TV-style: behind near baseline, elevated)
+  const cam = {
+    dist: 26,
+    height: 26,
+    focal: 430,
+    horizon: 110,
+  };
+
+  function project(wx, wy, wz) {
+    const d = cam.dist + wy;
+    const s = cam.focal / d;
+    return { x: W / 2 + wx * s, y: cam.horizon + (cam.height - wz) * s, scale: s };
+  }
+
+  // ===========================================================
+  // Entities
+  // ===========================================================
+  const PLAYER_HEIGHT = 6;
+  const REACH_X = 4.5;
+  const REACH_Y_FRONT = 4;
+  const REACH_Y_BACK = 2.0;
+  const REACH_Z = 9;
+
+  const BALL_RADIUS = 0.4;
+  const GRAVITY = 0.04;
+  const RESTITUTION = 0.65;
+
+  const player = {
+    x: 0, y: -1,
+    prevX: 0, prevY: -1,
+    minX: -COURT_WID/2 - 2, maxX: COURT_WID/2 + 2,
+    minY: -4, maxY: NET_Y - 6,
+    speed: 0.5,
+    swing: { state: 'idle', phase: 0, type: 'forehand' },
+  };
+
+  const ai = {
+    x: 0, y: COURT_LEN + 1,
+    prevX: 0, prevY: COURT_LEN + 1,
+    minX: -COURT_WID/2 - 2, maxX: COURT_WID/2 + 2,
+    minY: NET_Y + 6, maxY: COURT_LEN + 4,
+    speed: 0.42,
+    swing: { state: 'idle', phase: 0, type: 'forehand' },
+  };
+
+  const ball = {
+    x: 0, y: 0, z: 0,
+    vx: 0, vy: 0, vz: 0,
+    alive: false,
+    lastHitBy: null,
+    bouncedOnSide: null,
+    trail: [],
+  };
+
+  const score = { player: 0, ai: 0 };
+  let server = 'player';
+
+  const keys = {};
+  let mouseControl = false;
+  let mouseScreenX = W / 2;
+
+  // ===========================================================
+  // Input
+  // ===========================================================
+  window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    if (e.key === ' ' && !ball.alive && server === 'player') { serve(); e.preventDefault(); }
+    if (e.key.toLowerCase() === 'r') resetMatch();
+  });
+  window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    mouseScreenX = (e.clientX - rect.left) * (W / rect.width);
+    mouseControl = true;
+  });
+  canvas.addEventListener('mouseleave', () => { mouseControl = false; });
+  canvas.addEventListener('click', () => {
+    if (!ball.alive && server === 'player') serve();
+  });
+
+  // ===========================================================
+  // Math helpers
+  // ===========================================================
+  function lerp3(a, b, t) {
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: a.z + (b.z - a.z) * t };
+  }
+  function smoothstep(t) { return t * t * (3 - 2 * t); }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+  function netHeightAt(x) {
+    const t = Math.min(1, Math.abs(x) / (COURT_WID / 2));
+    return NET_H_CENTER + (NET_H_POST - NET_H_CENTER) * t;
+  }
+
+  function showMessage(text, ms = 1200) {
+    overlayEl.textContent = text;
+    overlayEl.style.opacity = 1;
+    const rect = canvas.getBoundingClientRect();
+    overlayEl.style.left = (rect.left + rect.width / 2 - overlayEl.offsetWidth / 2) + 'px';
+    overlayEl.style.top = (rect.top + rect.height / 2 - 40) + 'px';
+    clearTimeout(showMessage._t);
+    showMessage._t = setTimeout(() => { overlayEl.style.opacity = 0; }, ms);
+  }
+
+  function serve() {
+    ball.alive = true;
+    ball.trail.length = 0;
+    ball.bouncedOnSide = null;
+    if (server === 'player') {
+      ball.x = player.x; ball.y = player.y + 0.6; ball.z = 5.0;
+      ball.vx = (Math.random() - 0.5) * 0.3;
+      ball.vy = 1.5; ball.vz = 0.55;
+      ball.lastHitBy = 'player';
+      player.swing.state = 'swing';
+      player.swing.type = 'forehand';
+      player.swing.phase = 0.45;
+    } else {
+      ball.x = ai.x; ball.y = ai.y - 0.6; ball.z = 5.0;
+      ball.vx = (Math.random() - 0.5) * 0.3;
+      ball.vy = -1.5; ball.vz = 0.55;
+      ball.lastHitBy = 'ai';
+      ai.swing.state = 'swing';
+      ai.swing.type = 'forehand';
+      ai.swing.phase = 0.45;
+    }
+  }
+
+  function endPoint(winner, reason) {
+    if (!ball.alive) return;
+    ball.alive = false;
+    score[winner] += 1;
+    scoreEl.textContent = `${score.ai} : ${score.player}`;
+    showMessage(winner === 'player' ? `你得分!  (${reason})` : `对手得分  (${reason})`);
+    server = (server === 'player') ? 'ai' : 'player';
+    setTimeout(() => {
+      if (server === 'player') { ball.x = player.x; ball.y = player.y + 0.6; ball.z = 5.0; }
+      else { ball.x = ai.x; ball.y = ai.y - 0.6; ball.z = 5.0; }
+      ball.vx = 0; ball.vy = 0; ball.vz = 0;
+    }, 400);
+  }
+
+  function resetMatch() {
+    score.player = 0; score.ai = 0;
+    scoreEl.textContent = '0 : 0';
+    ball.alive = false;
+    server = 'player';
+    ball.x = player.x; ball.y = player.y + 0.6; ball.z = 5.0;
+    ball.vx = 0; ball.vy = 0; ball.vz = 0;
+    showMessage('比赛重置', 800);
+  }
+
+  // ===========================================================
+  // Movement updates
+  // ===========================================================
+  function updatePlayer() {
+    player.prevX = player.x; player.prevY = player.y;
+
+    let dx = 0, dy = 0;
+    if (keys['arrowleft']  || keys['a']) dx -= 1;
+    if (keys['arrowright'] || keys['d']) dx += 1;
+    if (keys['arrowup']    || keys['w']) dy += 1;
+    if (keys['arrowdown']  || keys['s']) dy -= 1;
+
+    if (dx !== 0 || dy !== 0) {
+      mouseControl = false;
+      const len = Math.hypot(dx, dy) || 1;
+      player.x += (dx / len) * player.speed;
+      player.y += (dy / len) * player.speed;
+    } else if (mouseControl) {
+      const d = cam.dist + player.y;
+      const s = cam.focal / d;
+      const targetX = (mouseScreenX - W / 2) / s;
+      player.x += (targetX - player.x) * 0.30;
+    }
+
+    player.x = clamp(player.x, player.minX, player.maxX);
+    player.y = clamp(player.y, player.minY, player.maxY);
+  }
+
+  function updateAI() {
+    ai.prevX = ai.x; ai.prevY = ai.y;
+
+    const incoming = ball.alive && ball.vy > 0;
+    const targetX = incoming ? (ball.x + ball.vx * 6) : 0;
+    const jitter = Math.sin(performance.now() * 0.002) * 1.5;
+    const tx = targetX + jitter;
+    const dx = tx - ai.x;
+    const stepX = clamp(dx * 0.18, -ai.speed, ai.speed);
+    ai.x += stepX;
+
+    const targetY = COURT_LEN + 1;
+    ai.y += (targetY - ai.y) * 0.04;
+
+    ai.x = clamp(ai.x, ai.minX, ai.maxX);
+    ai.y = clamp(ai.y, ai.minY, ai.maxY);
+
+    if (!ball.alive && server === 'ai') {
+      if (!updateAI._serveTimer) updateAI._serveTimer = performance.now() + 900;
+      if (performance.now() > updateAI._serveTimer) { serve(); updateAI._serveTimer = null; }
+    } else {
+      updateAI._serveTimer = null;
+    }
+  }
+
+  // ===========================================================
+  // Swing state machine (idle → prep → swing → recover)
+  // ===========================================================
+  const PREP_RANGE = 18;    // start winding up when ball is this close (forward feet)
+  const PREP_DEPTH = 16;    // full wind-up at PREP_RANGE - PREP_DEPTH
+
+  function decideSwingType(p, isPlayer) {
+    const lateral = ball.x - p.x;
+    // Player faces +y, right hand at +x → ball on +x = forehand
+    // AI faces -y, right hand at -x → ball on -x = forehand
+    return isPlayer ? (lateral >= -0.3 ? 'forehand' : 'backhand')
+                    : (lateral <=  0.3 ? 'forehand' : 'backhand');
+  }
+
+  function updateSwing(p, isPlayer) {
+    const sw = p.swing;
+    const approaching = ball.alive && ((isPlayer && ball.vy < 0) || (!isPlayer && ball.vy > 0));
+    const dy = isPlayer ? (ball.y - p.y) : (p.y - ball.y);
+    const close = approaching && dy > -3 && dy < PREP_RANGE;
+
+    switch (sw.state) {
+      case 'idle':
+        if (close) {
+          sw.state = 'prep';
+          sw.phase = 0;
+          sw.type = decideSwingType(p, isPlayer);
+        }
+        break;
+      case 'prep':
+        if (!close || dy < -3) {
+          sw.state = 'recover';
+          sw.phase = 0;
+          break;
+        }
+        sw.phase = clamp((PREP_RANGE - dy) / PREP_DEPTH, 0, 1);
+        // Switch type only if we haven't committed past the halfway point
+        if (sw.phase < 0.55) {
+          sw.type = decideSwingType(p, isPlayer);
+        }
+        break;
+      case 'swing':
+        sw.phase += 1 / 8;
+        if (sw.phase >= 1) { sw.state = 'recover'; sw.phase = 0; }
+        break;
+      case 'recover':
+        sw.phase += 1 / 10;
+        if (sw.phase >= 1) { sw.state = 'idle'; sw.phase = 0; }
+        break;
+    }
+  }
+
+  function shoulderPos(p, isNear) {
+    const right = isNear ? +1 : -1;
+    return { x: p.x + right * 0.85, y: p.y, z: PLAYER_HEIGHT * 0.82 };
+  }
+
+  // Returns the world-space hand/racket grip position for the current swing frame.
+  function computeRacketPos(p, isNear) {
+    const sw = p.swing;
+    const fwd = isNear ? +1 : -1;
+    const right = isNear ? +1 : -1;
+    const swingSide = (sw.type === 'forehand' ? right : -right);
+
+    const idle    = { x: right     * 0.55, y: fwd  * 0.40, z: 3.9 };
+    const windup  = { x: swingSide * 1.75, y: -fwd * 1.30, z: 5.4 };
+    const impact  = { x: swingSide * 1.30, y: fwd  * 1.60, z: 4.0 };
+    const followT = { x: -swingSide* 1.55, y: fwd  * 0.50, z: 6.5 };
+
+    let pos;
+    switch (sw.state) {
+      case 'idle':    pos = idle; break;
+      case 'prep':    pos = lerp3(idle, windup, smoothstep(sw.phase)); break;
+      case 'swing':
+        if (sw.phase < 0.5) pos = lerp3(windup, impact, sw.phase * 2);
+        else                pos = lerp3(impact, followT, (sw.phase - 0.5) * 2);
+        break;
+      case 'recover': pos = lerp3(followT, idle, smoothstep(sw.phase)); break;
+    }
+    return { x: p.x + pos.x, y: p.y + pos.y, z: pos.z };
+  }
+
+  // ===========================================================
+  // Hit detection + shot direction control
+  // ===========================================================
+  function tryPaddleHit(p, who) {
+    if (ball.z > REACH_Z || ball.z < 0) return false;
+    const dx = ball.x - p.x;
+    if (Math.abs(dx) > REACH_X) return false;
+    const isPlayer = who === 'player';
+    if (isPlayer && ball.vy >= 0) return false;
+    if (!isPlayer && ball.vy <= 0) return false;
+    const dy = isPlayer ? (ball.y - p.y) : (p.y - ball.y);
+    if (dy > REACH_Y_FRONT || dy < -REACH_Y_BACK) return false;
+
+    // Aim modifiers from held keys (player only).
+    // The keys ALSO move the player — but at the impact moment whatever you hold
+    // is interpreted as aim. Release keys for the last instant to use pure positional aim.
+    let aimX = 0, aimDepth = 0;
+    if (isPlayer) {
+      if (keys['arrowleft']  || keys['a']) aimX -= 1;
+      if (keys['arrowright'] || keys['d']) aimX += 1;
+      if (keys['arrowup']    || keys['w']) aimDepth += 1;
+      if (keys['arrowdown']  || keys['s']) aimDepth -= 1;
+    } else {
+      // AI: simple — aim away from where the player currently stands
+      aimX = clamp(-Math.sign(player.x) * 0.7, -1, 1);
+      aimDepth = 0.4;
+    }
+
+    const offset = clamp(dx / REACH_X, -1, 1);
+    const dirSign = isPlayer ? +1 : -1;
+
+    ball.vx = offset * 0.28 + aimX * 0.22;
+    ball.vy = dirSign * (0.95 + aimDepth * 0.18 + (Math.random() - 0.5) * 0.04);
+    ball.vz = 1.05 - aimDepth * 0.20 + Math.abs(offset) * 0.10;
+    ball.z  = Math.max(ball.z, 0.4);
+    ball.lastHitBy = who;
+    ball.bouncedOnSide = null;
+
+    // Trigger swing animation (snap into impact, then follow-through)
+    p.swing.type = decideSwingType(p, isPlayer);
+    p.swing.state = 'swing';
+    p.swing.phase = 0.45;
+
+    return true;
+  }
+
+  function updateBall() {
+    if (!ball.alive) return;
+    const prevY = ball.y;
+
+    ball.x += ball.vx;
+    ball.y += ball.vy;
+    ball.z += ball.vz;
+    ball.vz -= GRAVITY;
+
+    // Net collision
+    const crossingNet = (prevY < NET_Y && ball.y >= NET_Y) || (prevY > NET_Y && ball.y <= NET_Y);
+    if (crossingNet) {
+      const insideNet = Math.abs(ball.x) <= COURT_WID / 2 + NET_OVERHANG;
+      if (insideNet && ball.z < netHeightAt(ball.x)) {
+        const winner = (ball.lastHitBy === 'player') ? 'ai' : 'player';
+        return endPoint(winner, '挂网');
+      }
+    }
+
+    // Ground bounce
+    if (ball.z <= 0) {
+      ball.z = 0;
+      if (ball.vz < -0.3) {
+        ball.vz = -ball.vz * RESTITUTION;
+        ball.vx *= 0.93;
+        ball.vy *= 0.93;
+      } else {
+        ball.vz = 0;
+      }
+      const side = (ball.y < NET_Y) ? 'near' : 'far';
+      const inCourt = ball.x >= -COURT_WID/2 && ball.x <= COURT_WID/2 &&
+                      ball.y >= 0 && ball.y <= COURT_LEN;
+      if (ball.bouncedOnSide === null) {
+        if (!inCourt) {
+          const winner = (ball.lastHitBy === 'player') ? 'ai' : 'player';
+          return endPoint(winner, ball.lastHitBy === 'player' ? '出界' : '对手出界');
+        }
+        if (ball.lastHitBy === 'player' && side === 'near') return endPoint('ai', '球未过网');
+        if (ball.lastHitBy === 'ai' && side === 'far')      return endPoint('player', '对手球未过网');
+        ball.bouncedOnSide = side;
+      } else {
+        const loser = (side === 'near') ? 'player' : 'ai';
+        const winner = (loser === 'player') ? 'ai' : 'player';
+        return endPoint(winner, '未接到');
+      }
+    }
+
+    tryPaddleHit(player, 'player');
+    tryPaddleHit(ai, 'ai');
+
+    const farPad = 8;
+    if (ball.y < -farPad || ball.y > COURT_LEN + farPad ||
+        ball.x < -COURT_WID/2 - farPad || ball.x > COURT_WID/2 + farPad) {
+      if (ball.bouncedOnSide === null) {
+        const winner = (ball.lastHitBy === 'player') ? 'ai' : 'player';
+        return endPoint(winner, ball.lastHitBy === 'player' ? '出界' : '对手出界');
+      } else {
+        const loser = (ball.bouncedOnSide === 'near') ? 'player' : 'ai';
+        const winner = (loser === 'player') ? 'ai' : 'player';
+        return endPoint(winner, '未接到');
+      }
+    }
+
+    ball.trail.push({ x: ball.x, y: ball.y, z: ball.z });
+    if (ball.trail.length > 14) ball.trail.shift();
+  }
+
+  // ===========================================================
+  // Render
+  // ===========================================================
+  function drawSkyAndStadium() {
+    const sky = ctx.createLinearGradient(0, 0, 0, cam.horizon + 40);
+    sky.addColorStop(0, '#0c1a2b');
+    sky.addColorStop(1, '#1e3550');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, cam.horizon + 40);
+
+    const standsTop = cam.horizon - 30;
+    const standsBot = cam.horizon + 30;
+    const stands = ctx.createLinearGradient(0, standsTop, 0, standsBot);
+    stands.addColorStop(0, '#0a1018');
+    stands.addColorStop(0.5, '#1a2230');
+    stands.addColorStop(1, '#0e1622');
+    ctx.fillStyle = stands;
+    ctx.fillRect(0, standsTop, W, standsBot - standsTop);
+
+    ctx.fillStyle = 'rgba(220,200,160,0.18)';
+    for (let i = 0; i < 240; i++) {
+      const x = (i * 73 + 17) % W;
+      const y = standsTop + ((i * 31) % 50);
+      const sz = 1 + (i % 3) * 0.4;
+      ctx.fillRect(x, y, sz, sz);
+    }
+
+    ctx.fillStyle = '#0f1a14';
+    ctx.fillRect(0, cam.horizon + 20, W, H - (cam.horizon + 20));
+  }
+
+  function fillWorldPoly(points, fillStyle) {
+    ctx.beginPath();
+    let first = true;
+    for (const [wx, wy, wz] of points) {
+      const p = project(wx, wy, wz || 0);
+      if (first) { ctx.moveTo(p.x, p.y); first = false; }
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = fillStyle;
+    ctx.fill();
+  }
+
+  function strokeWorldLine(x1, y1, x2, y2, color, baseWidth = 2) {
+    const a = project(x1, y1, 0);
+    const b = project(x2, y2, 0);
+    ctx.strokeStyle = color;
+    const avgScale = (a.scale + b.scale) / 2;
+    ctx.lineWidth = Math.max(1, baseWidth * (avgScale / 16));
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
+  function drawCourt() {
+    const pad = 8;
+    fillWorldPoly([
+      [-COURT_WID/2 - pad, -pad, 0],
+      [ COURT_WID/2 + pad, -pad, 0],
+      [ COURT_WID/2 + pad, COURT_LEN + pad, 0],
+      [-COURT_WID/2 - pad, COURT_LEN + pad, 0],
+    ], '#274b6b');
+
+    fillWorldPoly([
+      [-COURT_WID/2, 0, 0],
+      [ COURT_WID/2, 0, 0],
+      [ COURT_WID/2, COURT_LEN, 0],
+      [-COURT_WID/2, COURT_LEN, 0],
+    ], '#2f6aa1');
+
+    fillWorldPoly([
+      [-SINGLES_WID/2, SERVICE_NEAR_Y, 0],
+      [ SINGLES_WID/2, SERVICE_NEAR_Y, 0],
+      [ SINGLES_WID/2, SERVICE_FAR_Y, 0],
+      [-SINGLES_WID/2, SERVICE_FAR_Y, 0],
+    ], '#367ab8');
+
+    const L = '#ffffff';
+    strokeWorldLine(-COURT_WID/2, 0,  COURT_WID/2, 0, L, 2);
+    strokeWorldLine(-COURT_WID/2, COURT_LEN,  COURT_WID/2, COURT_LEN, L, 2);
+    strokeWorldLine(-COURT_WID/2, 0, -COURT_WID/2, COURT_LEN, L, 2);
+    strokeWorldLine( COURT_WID/2, 0,  COURT_WID/2, COURT_LEN, L, 2);
+    strokeWorldLine(-SINGLES_WID/2, 0, -SINGLES_WID/2, COURT_LEN, L, 2);
+    strokeWorldLine( SINGLES_WID/2, 0,  SINGLES_WID/2, COURT_LEN, L, 2);
+    strokeWorldLine(-SINGLES_WID/2, SERVICE_NEAR_Y,  SINGLES_WID/2, SERVICE_NEAR_Y, L, 2);
+    strokeWorldLine(-SINGLES_WID/2, SERVICE_FAR_Y,   SINGLES_WID/2, SERVICE_FAR_Y,  L, 2);
+    strokeWorldLine(0, SERVICE_NEAR_Y, 0, SERVICE_FAR_Y, L, 2);
+    strokeWorldLine(0, 0, 0, 1.5, L, 2);
+    strokeWorldLine(0, COURT_LEN - 1.5, 0, COURT_LEN, L, 2);
+  }
+
+  function drawNet() {
+    const leftPost = COURT_WID/2 + NET_OVERHANG;
+    const segments = 28;
+    ctx.beginPath();
+    for (let i = 0; i <= segments; i++) {
+      const x = -leftPost + (2 * leftPost) * (i / segments);
+      const top = project(x, NET_Y, netHeightAt(x));
+      if (i === 0) ctx.moveTo(top.x, top.y);
+      else ctx.lineTo(top.x, top.y);
+    }
+    for (let i = segments; i >= 0; i--) {
+      const x = -leftPost + (2 * leftPost) * (i / segments);
+      const bot = project(x, NET_Y, 0);
+      ctx.lineTo(bot.x, bot.y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(20,30,40,0.55)';
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(230,240,255,0.55)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= segments * 2; i++) {
+      const x = -leftPost + (2 * leftPost) * (i / (segments * 2));
+      const top = project(x, NET_Y, netHeightAt(x));
+      const bot = project(x, NET_Y, 0);
+      ctx.beginPath();
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(bot.x, bot.y);
+      ctx.stroke();
+    }
+    const meshRows = 5;
+    for (let r = 1; r <= meshRows; r++) {
+      ctx.beginPath();
+      for (let i = 0; i <= segments; i++) {
+        const x = -leftPost + (2 * leftPost) * (i / segments);
+        const h = netHeightAt(x) * (r / meshRows);
+        const p = project(x, NET_Y, h);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (let i = 0; i <= segments; i++) {
+      const x = -leftPost + (2 * leftPost) * (i / segments);
+      const top = project(x, NET_Y, netHeightAt(x));
+      if (i === 0) ctx.moveTo(top.x, top.y);
+      else ctx.lineTo(top.x, top.y);
+    }
+    ctx.stroke();
+
+    [-leftPost, leftPost].forEach(px => {
+      const top = project(px, NET_Y, NET_H_POST + 0.4);
+      const bot = project(px, NET_Y, 0);
+      ctx.strokeStyle = '#cfd6df';
+      ctx.lineWidth = Math.max(2, 0.18 * top.scale);
+      ctx.beginPath();
+      ctx.moveTo(top.x, top.y);
+      ctx.lineTo(bot.x, bot.y);
+      ctx.stroke();
+    });
+  }
+
+  function drawPlayerFigure(p, jersey, shorts, isNear) {
+    const foot  = project(p.x, p.y, 0);
+    const hip   = project(p.x, p.y, PLAYER_HEIGHT * 0.55);
+    const chest = project(p.x, p.y, PLAYER_HEIGHT * 0.78);
+    const head  = project(p.x, p.y, PLAYER_HEIGHT);
+    const s = foot.scale;
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.42)';
+    ctx.beginPath();
+    ctx.ellipse(foot.x, foot.y, 1.4 * s, 0.45 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Legs (slight split-stance widening during prep/swing)
+    const stanceWiden = (p.swing.state === 'prep' || p.swing.state === 'swing') ? 0.25 : 0;
+    const legWidth = Math.max(2, 0.35 * s);
+    ctx.strokeStyle = '#222831';
+    ctx.lineWidth = legWidth;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(foot.x - (0.4 + stanceWiden) * s, foot.y);
+    ctx.lineTo(hip.x - 0.3 * s, hip.y);
+    ctx.moveTo(foot.x + (0.4 + stanceWiden) * s, foot.y);
+    ctx.lineTo(hip.x + 0.3 * s, hip.y);
+    ctx.stroke();
+
+    // Shorts
+    const shortsW = 1.6 * s;
+    ctx.fillStyle = shorts;
+    ctx.fillRect(hip.x - shortsW / 2, hip.y - 0.2 * s, shortsW, (foot.y - hip.y) * 0.35);
+
+    // Torso
+    ctx.fillStyle = jersey;
+    ctx.beginPath();
+    ctx.moveTo(hip.x - 0.9 * s, hip.y);
+    ctx.lineTo(hip.x + 0.9 * s, hip.y);
+    ctx.lineTo(chest.x + 1.1 * s, chest.y);
+    ctx.lineTo(chest.x - 1.1 * s, chest.y);
+    ctx.closePath();
+    ctx.fill();
+
+    // Non-racket arm at rest by the side (opposite shoulder)
+    const nonRacketSide = isNear ? -1 : +1;
+    const nrShoulder = project(p.x + nonRacketSide * 0.85, p.y, PLAYER_HEIGHT * 0.82);
+    const nrHand     = project(p.x + nonRacketSide * 1.0,  p.y, PLAYER_HEIGHT * 0.50);
+    ctx.strokeStyle = '#e0bd96';
+    ctx.lineWidth = Math.max(2, 0.28 * s);
+    ctx.beginPath();
+    ctx.moveTo(nrShoulder.x, nrShoulder.y);
+    ctx.lineTo(nrHand.x, nrHand.y);
+    ctx.stroke();
+
+    // Neck + head
+    ctx.fillStyle = jersey;
+    ctx.fillRect(chest.x - 0.25 * s, chest.y - 0.4 * s, 0.5 * s, 0.5 * s);
+    const headR = 0.55 * s;
+    ctx.fillStyle = '#e0bd96';
+    ctx.beginPath();
+    ctx.arc(head.x, head.y + headR * 0.4, headR, 0, Math.PI * 2);
+    ctx.fill();
+    // Hair
+    ctx.fillStyle = '#2e2520';
+    ctx.beginPath();
+    if (isNear) ctx.arc(head.x, head.y + headR * 0.2, headR, Math.PI, Math.PI * 2);
+    else        ctx.arc(head.x, head.y + headR * 0.4, headR * 0.95, Math.PI, Math.PI * 2);
+    ctx.fill();
+
+    // ===== Racket arm + racket (driven by swing state machine) =====
+    const racket = computeRacketPos(p, isNear);
+    const shoulder = shoulderPos(p, isNear);
+    const racketProj = project(racket.x, racket.y, racket.z);
+    const shoulderProj = project(shoulder.x, shoulder.y, shoulder.z);
+
+    // Elbow placed roughly midway, with a slight downward sag
+    const elbowW = {
+      x: (shoulder.x + racket.x) / 2,
+      y: (shoulder.y + racket.y) / 2,
+      z: (shoulder.z + racket.z) / 2 - 0.35,
+    };
+    const elbowProj = project(elbowW.x, elbowW.y, elbowW.z);
+
+    ctx.strokeStyle = '#e0bd96';
+    ctx.lineWidth = Math.max(2, 0.32 * s);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(shoulderProj.x, shoulderProj.y);
+    ctx.lineTo(elbowProj.x, elbowProj.y);
+    ctx.lineTo(racketProj.x, racketProj.y);
+    ctx.stroke();
+
+    // Racket: handle leads into the head, head extends past the hand
+    const dirX = racket.x - elbowW.x;
+    const dirY = racket.y - elbowW.y;
+    const dirZ = racket.z - elbowW.z;
+    const dlen = Math.hypot(dirX, dirY, dirZ) || 1;
+    const racketHeadOffset = 1.1;
+    const racketCenter = {
+      x: racket.x + dirX / dlen * racketHeadOffset,
+      y: racket.y + dirY / dlen * racketHeadOffset,
+      z: racket.z + dirZ / dlen * racketHeadOffset,
+    };
+    const centerProj = project(racketCenter.x, racketCenter.y, racketCenter.z);
+    const racketLong = Math.max(7, 0.9 * centerProj.scale);
+    const racketShort = racketLong * 0.78;
+
+    const angle = Math.atan2(centerProj.y - racketProj.y, centerProj.x - racketProj.x);
+    const inSwingPeak = p.swing.state === 'swing' && p.swing.phase > 0.25 && p.swing.phase < 0.7;
+
+    ctx.save();
+    ctx.translate(centerProj.x, centerProj.y);
+    ctx.rotate(angle);
+
+    if (inSwingPeak) {
+      // Motion-blurred sweep
+      ctx.fillStyle = 'rgba(245,240,225,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, racketLong * 1.4, racketShort * 1.2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, racketLong, racketShort, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // Strings + frame
+      ctx.fillStyle = 'rgba(245,240,225,0.85)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, racketLong, racketShort, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#1c1f24';
+      ctx.lineWidth = Math.max(1.5, 0.16 * centerProj.scale);
+      ctx.stroke();
+      // String pattern
+      ctx.strokeStyle = 'rgba(40,40,40,0.55)';
+      ctx.lineWidth = 1;
+      const rows = 5;
+      for (let i = 1; i < rows; i++) {
+        const yy = -racketShort + (i / rows) * 2 * racketShort;
+        const xx = Math.sqrt(Math.max(0, racketLong*racketLong * (1 - yy*yy/(racketShort*racketShort))));
+        ctx.beginPath(); ctx.moveTo(-xx, yy); ctx.lineTo(xx, yy); ctx.stroke();
+      }
+      for (let i = 1; i < rows; i++) {
+        const xx = -racketLong + (i / rows) * 2 * racketLong;
+        const yy = Math.sqrt(Math.max(0, racketShort*racketShort * (1 - xx*xx/(racketLong*racketLong))));
+        ctx.beginPath(); ctx.moveTo(xx, -yy); ctx.lineTo(xx, yy); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawAimReticle() {
+    if (!ball.alive) return;
+    if (ball.vy >= 0) return;             // only when ball is coming to player
+    if (player.swing.state === 'idle' || player.swing.state === 'recover') return;
+
+    // Simulate the hit using current key state
+    const dx = ball.x - player.x;
+    const offset = clamp(dx / REACH_X, -1, 1);
+    let aimX = 0, aimDepth = 0;
+    if (keys['arrowleft']  || keys['a']) aimX -= 1;
+    if (keys['arrowright'] || keys['d']) aimX += 1;
+    if (keys['arrowup']    || keys['w']) aimDepth += 1;
+    if (keys['arrowdown']  || keys['s']) aimDepth -= 1;
+
+    const vx = offset * 0.28 + aimX * 0.22;
+    const vy = 0.95 + aimDepth * 0.18;
+    const vz = 1.05 - aimDepth * 0.20 + Math.abs(offset) * 0.10;
+    const z0 = 0.4;
+    const t = (vz + Math.sqrt(vz*vz + 2*GRAVITY*z0)) / GRAVITY;
+
+    const landX = player.x + vx * t;
+    const landY = player.y + vy * t;
+
+    const inCourt = landY >= NET_Y && landY <= COURT_LEN &&
+                    landX >= -COURT_WID/2 && landX <= COURT_WID/2;
+    const willHitNet = landY < NET_Y;
+    const color = willHitNet ? 'rgba(220,80,80,0.7)' :
+                  inCourt ? 'rgba(255,220,80,0.85)' : 'rgba(220,80,80,0.7)';
+
+    // Clamp display position to court area so the marker stays visible
+    const dispX = clamp(landX, -COURT_WID/2 - 4, COURT_WID/2 + 4);
+    const dispY = clamp(landY, NET_Y, COURT_LEN + 4);
+    const proj = project(dispX, dispY, 0);
+    const r = Math.max(5, 0.8 * proj.scale);
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(proj.x, proj.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(proj.x - r * 1.5, proj.y);
+    ctx.lineTo(proj.x + r * 1.5, proj.y);
+    ctx.moveTo(proj.x, proj.y - r * 1.5);
+    ctx.lineTo(proj.x, proj.y + r * 1.5);
+    ctx.stroke();
+  }
+
+  function drawBall() {
+    const shadow = project(ball.x, ball.y, 0);
+    const heightFactor = Math.max(0.4, 1 - ball.z * 0.04);
+    ctx.fillStyle = `rgba(0,0,0,${0.35 * heightFactor})`;
+    ctx.beginPath();
+    ctx.ellipse(shadow.x, shadow.y,
+      BALL_RADIUS * 2.4 * shadow.scale * heightFactor,
+      BALL_RADIUS * 1.0 * shadow.scale * heightFactor,
+      0, 0, Math.PI * 2);
+    ctx.fill();
+
+    for (let i = 0; i < ball.trail.length; i++) {
+      const t = ball.trail[i];
+      const pp = project(t.x, t.y, t.z);
+      const a = (i + 1) / ball.trail.length * 0.45;
+      ctx.fillStyle = `rgba(245,235,90,${a})`;
+      ctx.beginPath();
+      ctx.arc(pp.x, pp.y, BALL_RADIUS * pp.scale * (0.4 + 0.6 * (i / ball.trail.length)), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    const bp = project(ball.x, ball.y, ball.z);
+    const r = Math.max(2, BALL_RADIUS * bp.scale);
+    const grad = ctx.createRadialGradient(bp.x - r * 0.4, bp.y - r * 0.4, r * 0.2, bp.x, bp.y, r);
+    grad.addColorStop(0, '#fff5a3');
+    grad.addColorStop(1, '#c8b73a');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(bp.x, bp.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = Math.max(1, r * 0.18);
+    ctx.beginPath();
+    ctx.arc(bp.x, bp.y, r * 0.9, -Math.PI / 5, Math.PI / 5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(bp.x, bp.y, r * 0.9, Math.PI - Math.PI / 5, Math.PI + Math.PI / 5);
+    ctx.stroke();
+  }
+
+  function drawSwingLabel() {
+    // Tiny label showing FH/BH when player is in prep/swing
+    if (player.swing.state !== 'prep' && player.swing.state !== 'swing') return;
+    const text = player.swing.type === 'forehand' ? '正手 FH' : '反手 BH';
+    const proj = project(player.x, player.y, PLAYER_HEIGHT + 1.5);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = `${Math.max(10, 0.6 * proj.scale)}px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica`;
+    ctx.textAlign = 'center';
+    ctx.fillText(text, proj.x, proj.y);
+  }
+
+  function drawHint() {
+    if (ball.alive) return;
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = '16px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial';
+    ctx.textAlign = 'center';
+    const msg = (server === 'player') ? '按 [空格] 或 点击 开始发球' : '对手准备发球…';
+    ctx.fillText(msg, W / 2, H - 18);
+  }
+
+  function render() {
+    drawSkyAndStadium();
+    drawCourt();
+    drawAimReticle();
+    drawPlayerFigure(ai, '#d83a3a', '#e8e8e8', false);
+    if (ball.y > NET_Y) drawBall();
+    drawNet();
+    if (ball.y <= NET_Y) drawBall();
+    drawPlayerFigure(player, '#2b7fd6', '#e8e8e8', true);
+    drawSwingLabel();
+    drawHint();
+  }
+
+  // ===========================================================
+  // Main loop
+  // ===========================================================
+  function loop() {
+    updatePlayer();
+    updateAI();
+    updateSwing(player, true);
+    updateSwing(ai, false);
+    updateBall();
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  ball.x = player.x;
+  ball.y = player.y + 0.6;
+  ball.z = 5.0;
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
