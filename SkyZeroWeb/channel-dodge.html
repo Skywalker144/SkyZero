@@ -457,7 +457,7 @@
 
   <!-- PPO-trained autopilot weights (tiny MLP, pure-JS forward pass below).
        Re-export with tools/export_dodge_weights.py and bump ?v= on each retrain. -->
-  <script src="dodge-policy.js?v=dodge_v4"></script>
+  <script src="dodge-policy.js?v=dodge_v5_cont"></script>
   <script>
   (function(){
     'use strict';
@@ -1045,7 +1045,7 @@
 
     // ============================================================
     //  AI autopilot — a PPO-trained policy plays the game.
-    //  The policy is a tiny MLP (obs 74 → 256 → 256 → 9, tanh) whose weights
+    //  The policy is a tiny MLP (obs 271 → 256 → 256 → 9, tanh) whose weights
     //  ship in dodge-policy.js. Each decision we rebuild the exact egocentric
     //  observation the policy trained on (mirrors env_dodge.py _obs_vector),
     //  run a synchronous forward pass, and steer toward the arg-max move.
@@ -1059,10 +1059,13 @@
     // ============================================================
     const AI = (function () {
       const W_TRAIN = 450, H_TRAIN = 600;            // training arena (px)
-      const POS_NORM = 250, VEL_NORM = 300, DMG_NORM = 30;
-      const K_THREATS = 10, K_PICKUPS = 2, THREAT_FEATS = 6, PICKUP_FEATS = 3;
-      const VEC_DIM = 74, STEP = 1 / 30;             // obs size, decision period (s)
-      const BOMB_FUSE_S = 1.8;
+      const POS_NORM = 250, VEL_NORM = 300, DMG_NORM = 30, R_NORM = 20, BLAST_NORM = 150;
+      const LASER_CHARGE = 1.0, LASER_FIRE = 0.55, BOMB_FUSE = 1.8;   // telegraph / beam / fuse (s)
+      const K_THREATS = 32, K_LASERS = 3, K_BOMBS = 3, K_PICKUPS = 2;
+      const THREAT_FEATS = 7, LASER_FEATS = 6, BOMB_FEATS = 5, PICKUP_FEATS = 3, PLAYER_FEATS = 8;
+      const VEC_DIM = K_THREATS * THREAT_FEATS + K_LASERS * LASER_FEATS + K_BOMBS * BOMB_FEATS
+                    + K_PICKUPS * PICKUP_FEATS + PLAYER_FEATS;   // 271
+      const STEP = 1 / 30;                           // decision period (s)
       const SQ = Math.SQRT1_2;
       // Unit move vectors — MUST match env_dodge.ACTION_VECS (stay + 8 dirs).
       const ACTIONS = [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0],
@@ -1110,64 +1113,96 @@
         return best;
       }
 
-      // Rebuild the 74-dim observation from the live state, in the 450×600
-      // training frame. Mirrors ChannelDodgeEnv._obs_vector exactly.
+      // Rebuild the 271-dim observation from the live state, in the 450×600
+      // training frame. Mirrors ChannelDodgeEnv._obs_vector exactly. Layout:
+      //   projectiles 32×7 | lasers 3×6 | bombs 3×5 | pickups 2×3 | player 8.
+      // Spatial quantities (positions, velocities, beam offset, blast radius)
+      // are scaled live→train; per-type constants (damage, radius) and timers
+      // (charge/fire/fuse, hp, invuln) are not.
       function buildObs() {
         const p = state.player;
-        const sx = W_TRAIN / state.W, sy = H_TRAIN / state.H;   // live→train scale
+        const sx = W_TRAIN / state.W, sy = H_TRAIN / state.H;   // live→train scale (≈equal, 3:4 locked)
         const px = p.x * sx, py = p.y * sy;
-
-        // Unified danger points: [dx, dy, dvx, dvy, danger] in the train frame.
-        const pts = [];
-        for (const b of state.projectiles) {
-          pts.push([(b.x - p.x) * sx, (b.y - p.y) * sy, b.vx * sx, b.vy * sy,
-                    TYPES[b.kind].dmg / DMG_NORM]);
-        }
-        for (const bm of state.bombs) {
-          let danger = TYPES.bomb.dmg / DMG_NORM;
-          if (bm.phase === 'fuse') danger *= (0.3 + 0.7 * (1 - bm.fuse / BOMB_FUSE_S));
-          pts.push([(bm.x - p.x) * sx, (bm.y - p.y) * sy, 0, 0, danger]);
-        }
-        for (const L of state.lasers) {
-          // foot of perpendicular from the player onto the beam line (live px)
-          const ca = Math.cos(L.ang), sa = Math.sin(L.ang);
-          const tt = (p.x - L.ox) * ca + (p.y - L.oy) * sa;
-          const fx = L.ox + ca * tt, fy = L.oy + sa * tt;
-          let danger = TYPES.laser.dmg / DMG_NORM;
-          if (L.phase === 'charge') danger *= 0.4;
-          pts.push([(fx - p.x) * sx, (fy - p.y) * sy, 0, 0, danger]);
-        }
-        pts.sort((a, b) => (a[0] * a[0] + a[1] * a[1]) - (b[0] * b[0] + b[1] * b[1]));
-
         const cl = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));
         const o = new Float32Array(VEC_DIM);
+
+        // --- nearest projectiles: rel pos / rel vel / danger / radius / present ---
+        const pts = [];
+        for (const b of state.projectiles) {
+          const cfg = TYPES[b.kind];
+          pts.push([(b.x - p.x) * sx, (b.y - p.y) * sy, b.vx * sx, b.vy * sy,
+                    cfg.dmg / DMG_NORM, cfg.r / R_NORM]);
+        }
+        pts.sort((a, b) => (a[0] * a[0] + a[1] * a[1]) - (b[0] * b[0] + b[1] * b[1]));
         let i = 0;
-        const nT = Math.min(K_THREATS, pts.length);
-        for (let k = 0; k < nT; k++) {
+        for (let k = 0; k < Math.min(K_THREATS, pts.length); k++) {
           const q = pts[k];
           o[i + 0] = cl(q[0] / POS_NORM, -1, 1);
           o[i + 1] = cl(q[1] / POS_NORM, -1, 1);
           o[i + 2] = cl(q[2] / VEL_NORM, -1, 1);
           o[i + 3] = cl(q[3] / VEL_NORM, -1, 1);
           o[i + 4] = q[4];
-          o[i + 5] = 1;
+          o[i + 5] = q[5];
+          o[i + 6] = 1;
           i += THREAT_FEATS;
         }
-        i = K_THREATS * THREAT_FEATS;   // 60
+        i = K_THREATS * THREAT_FEATS;   // 224
 
+        // --- lasers: signed perp distance to beam + orientation + charge/fire timing ---
+        const lz = [];
+        for (const L of state.lasers) {
+          const ca = Math.cos(L.ang), sa = Math.sin(L.ang);
+          const perp = (p.x - L.ox) * sa - (p.y - L.oy) * ca;   // signed dist to beam line (live px)
+          const tFire = L.phase === 'charge' ? L.charge : 0;
+          const tFiring = L.phase === 'fire' ? L.fire : 0;
+          lz.push([Math.abs(perp), perp, ca, sa, tFire, tFiring]);
+        }
+        lz.sort((a, b) => a[0] - b[0]);
+        for (let k = 0; k < Math.min(K_LASERS, lz.length); k++) {
+          const q = lz[k];
+          o[i + 0] = cl(q[1] * sx / POS_NORM, -1, 1);
+          o[i + 1] = q[2];
+          o[i + 2] = q[3];
+          o[i + 3] = cl(q[4] / LASER_CHARGE, 0, 1);
+          o[i + 4] = cl(q[5] / LASER_FIRE, 0, 1);
+          o[i + 5] = 1;
+          i += LASER_FEATS;
+        }
+        i = K_THREATS * THREAT_FEATS + K_LASERS * LASER_FEATS;   // 242
+
+        // --- bombs: rel pos + blast radius + fuse remaining + present ---
+        const bz = [];
+        for (const bm of state.bombs) {
+          const dx = bm.x - p.x, dy = bm.y - p.y;
+          const fuseRem = bm.phase === 'fuse' ? Math.max(0, bm.fuse) : 0;
+          bz.push([dx * dx + dy * dy, dx, dy, bm.blastR, fuseRem]);
+        }
+        bz.sort((a, b) => a[0] - b[0]);
+        for (let k = 0; k < Math.min(K_BOMBS, bz.length); k++) {
+          const q = bz[k];
+          o[i + 0] = cl(q[1] * sx / POS_NORM, -1, 1);
+          o[i + 1] = cl(q[2] * sy / POS_NORM, -1, 1);
+          o[i + 2] = cl(q[3] * sx / BLAST_NORM, 0, 1);
+          o[i + 3] = cl(q[4] / BOMB_FUSE, 0, 1);
+          o[i + 4] = 1;
+          i += BOMB_FEATS;
+        }
+        i = K_THREATS * THREAT_FEATS + K_LASERS * LASER_FEATS + K_BOMBS * BOMB_FEATS;   // 257
+
+        // --- pickups: rel pos + present ---
         const picks = state.pickups
           .map(k => [(k.x - p.x) * sx, (k.y - p.y) * sy])
           .sort((a, b) => (a[0] * a[0] + a[1] * a[1]) - (b[0] * b[0] + b[1] * b[1]));
         let j = i;
-        const nP = Math.min(K_PICKUPS, picks.length);
-        for (let k = 0; k < nP; k++) {
+        for (let k = 0; k < Math.min(K_PICKUPS, picks.length); k++) {
           o[j + 0] = cl(picks[k][0] / POS_NORM, -1, 1);
           o[j + 1] = cl(picks[k][1] / POS_NORM, -1, 1);
           o[j + 2] = 1;
           j += PICKUP_FEATS;
         }
-        j = i + K_PICKUPS * PICKUP_FEATS;   // 66
+        j = i + K_PICKUPS * PICKUP_FEATS;   // 263
 
+        // --- player state ---
         o[j + 0] = p.hp / MAX_HP;
         o[j + 1] = Math.min(1, p.invuln / HIT_INVULN);
         o[j + 2] = px / W_TRAIN;
