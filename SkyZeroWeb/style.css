@@ -49,6 +49,13 @@
   font-display: swap;
   src: url("fonts/JetBrainsMono-SemiBold.woff2") format("woff2");
 }
+@font-face {
+  font-family: "Jost";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("fonts/Jost-SemiBold.woff2") format("woff2");
+}
 
 :root {
     --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -183,6 +190,25 @@
   .brand-toggle { padding: 0; gap: 8px; color: var(--fg-muted); }
   .brand-toggle .toggle-text { font-weight: 500; }
   .brand-toggle:hover { color: var(--fg); }
+
+  /* SkyZero brand wordmark: Jost geometric, neutral "Sky" + rainbow "Zero".
+     Gradient = 120deg (red upper-left -> violet lower-right), red held to 15%,
+     vivid 7-stop via OKLab + Catmull-Rom spline, baked into stops. Pure CSS. */
+  .brand-wm { font-family: "Jost", var(--font-sans); font-weight: 600; letter-spacing: -0.01em; }
+  .brand-wm .bw-sky { color: var(--fg); }
+  .brand-wm .bw-zero {
+    background: linear-gradient(120deg,
+      #fb3640 0%, #fb3640 15%, #fc5132 21.1%, #fe6f11 27.1%, #ff9200 33.2%,
+      #ffbb00 39.3%, #f1d525 45.4%, #a6de58 51.4%, #3ddc84 57.5%, #00d8be 63.6%,
+      #00cbf4 69.6%, #3ba9ff 75.7%, #5977ff 81.8%, #7554ff 87.9%, #9f4dff 93.9%,
+      #c14bff 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+  }
+  /* Game-page topbar brand link: whole link in Jost; suffix accent on hover. */
+  .brand-title { font-family: "Jost", var(--font-sans); }
+  .brand-suffix { color: var(--fg); }
+  a.brand-title:hover .brand-suffix { color: var(--accent); }
   .icon-btn {
     width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
     background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);

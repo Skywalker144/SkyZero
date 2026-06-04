@@ -6,6 +6,7 @@
   <title>SkyZero · Dodge</title>
   <link rel="preload" href="fonts/Inter-Regular.woff2"  as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Jost-SemiBold.woff2"  as="font" type="font/woff2" crossorigin>
   <script>
     // Reuse the same theme/lang prefs as the other game pages so the look
     // stays consistent across the whole site.
@@ -305,8 +306,7 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <a class="brand-title" href="/"
-           title="返回首页" id="brand_link">SkyZero · Dodge</a>
+        <a class="brand-title" href="/" title="返回首页" id="brand_link"><span class="brand-wm"><span class="bw-sky">Sky</span><span class="bw-zero">Zero</span></span><span class="brand-suffix"> · Dodge</span></a>
       </div>
       <div class="topbar-actions">
         <div class="seg-row compact" id="lang_seg" role="group" aria-label="Switch language">
@@ -597,7 +597,6 @@
     function applyLang() {
       document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
       document.title = t('title_tab');
-      els.brand.textContent = t('brand');
       els.lblScore.textContent = t('score');
       els.lblBest.textContent = t('best');
       els.legendTitle.textContent = t('legend_title');

@@ -6,6 +6,7 @@
   <title>SkyZero · Web</title>
   <link rel="preload" href="fonts/Inter-Regular.woff2"  as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Jost-SemiBold.woff2"  as="font" type="font/woff2" crossorigin>
   <script>
     // Set theme before first paint to avoid flash. Tri-state: auto/light/dark.
     (function(){
@@ -52,8 +53,7 @@
       filter: drop-shadow(0 4px 12px rgba(27,31,36,0.12));
     }
     .hero-wordmark {
-      font-size: clamp(34px, 7vw, 52px); font-weight: 700;
-      letter-spacing: -0.03em; color: var(--fg); line-height: 1;
+      font-size: clamp(34px, 7vw, 52px); line-height: 1;
     }
     .hero-eyebrow {
       margin: 0; font-size: 15px; font-weight: 500; color: var(--fg-muted);
@@ -125,7 +125,7 @@
     <div class="landing-main">
       <div class="landing-hero">
         <div class="hero-brand">
-          <span class="hero-wordmark">SkyZero</span>
+          <span class="hero-wordmark brand-wm"><span class="bw-sky">Sky</span><span class="bw-zero">Zero</span></span>
         </div>
         <p class="hero-eyebrow" id="hero_title">选择一个游戏</p>
       </div>

@@ -6,6 +6,7 @@
   <title>SkyZero · 2048</title>
   <link rel="preload" href="fonts/Inter-Regular.woff2"  as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Jost-SemiBold.woff2"  as="font" type="font/woff2" crossorigin>
   <script>
     // Reuse the same theme/lang prefs as the Gomoku page so style stays
     // consistent across the two games.
@@ -302,8 +303,7 @@
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <a class="brand-title" href="/"
-           title="返回首页" id="brand_link">SkyZero · 2048</a>
+        <a class="brand-title" href="/" title="返回首页" id="brand_link"><span class="brand-wm"><span class="bw-sky">Sky</span><span class="bw-zero">Zero</span></span><span class="brand-suffix"> · 2048</span></a>
       </div>
       <div class="topbar-actions">
         <div class="seg-row compact" id="lang_seg" role="group" aria-label="Switch language">
@@ -428,7 +428,6 @@
       document.getElementById('ai_speed_strong').textContent = t('ai_strong');
       if (typeof refreshAiButtons === 'function') refreshAiButtons();
       document.getElementById('overlay_btn').textContent = t('play_again');
-      document.getElementById('brand_link').textContent = t('brand');
       document.title = 'SkyZero · 2048';
       // Refresh overlay title if it's visible (state-dependent label).
       if (typeof updateOverlay === 'function') updateOverlay();
