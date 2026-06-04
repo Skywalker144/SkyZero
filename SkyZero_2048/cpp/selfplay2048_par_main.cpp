@@ -9,6 +9,7 @@
 // policy_target (N,4) f32, value_target (N,1) f32) — the schema az2048/train.py
 // consumes directly.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -187,6 +188,7 @@ int main(int argc, char** argv) {
     int num_games = 400, sims = 64, threads = 48, batch = 256, wait_us = 300, max_rows = 50000;
     int games_per_worker = 64, server_threads = 1;
     int td_steps = 0;              // 0 = full MC return; >0 = n-step TD bootstrap
+    int max_moves = 0;             // >0: cap moves/game (eval; long deterministic games else never end)
     float value_scale = 4000.0f;
     bool value_transform = false;  // wrap value in MuZero h() (see infer_server)
     float gamma = 0.999f;          // discount on future reward (was hardcoded)
@@ -195,6 +197,7 @@ int main(int argc, char** argv) {
     std::string device_str = "cuda";
     std::string log_dir, sims_warmup_cmd;
     long iter_tag = -1;            // selfplay.tsv/stats iter column (bounded mode)
+    std::string eval_log, eval_network;  // bounded-eval: write a python/evaluate.py-style eval.tsv row
     bool daemon = false;
     int model_watch_poll_ms = 2000;
     int progress_secs = 15;        // periodic [selfplay] games/s line (0 = off)
@@ -227,6 +230,9 @@ int main(int argc, char** argv) {
         else if (a == "--sims-warmup-cmd") sims_warmup_cmd = next();
         else if (a == "--progress-secs") progress_secs = std::stoi(next());
         else if (a == "--stats-games") stats_games = std::stoi(next());
+        else if (a == "--eval-log") eval_log = next();
+        else if (a == "--eval-network") eval_network = next();
+        else if (a == "--max-moves") max_moves = std::stoi(next());
     }
 
     // models/latest.meta.json sits beside the model (daemon version tag).
@@ -286,6 +292,7 @@ int main(int argc, char** argv) {
     std::atomic<long> moves_done{0};   // incremented per move PLAYED (smooth samples/s)
     std::mutex agg_m;
     std::vector<int> tile_hist(20, 0);
+    std::vector<long> eval_scores;   // per-game scores for the eval.tsv median (eval mode only)
     long best_score = 0;
     long ver_best = 0;   // best score within the current daemon version (reset each reload)
     const int G = std::max(1, games_per_worker);
@@ -304,6 +311,7 @@ int main(int argc, char** argv) {
             std::vector<std::array<float, 4>> tp;
             std::vector<int> tr;
             std::vector<float> tv;   // per-step MCTS search value (TD bootstrap)
+            int moves = 0;           // moves played this game (for --max-moves cap)
             bool active = false;
         };
         std::mt19937 rng(seed + 7919 * tid + 1);
@@ -323,6 +331,7 @@ int main(int argc, char** argv) {
             if (s.score > best_score) best_score = s.score;
             if (s.score > ver_best) ver_best = s.score;
             if (me < static_cast<int>(tile_hist.size())) tile_hist[me]++;
+            if (!eval_log.empty()) eval_scores.push_back(s.score);
         };
 
         auto eval_batch = [&](std::vector<std::vector<int8_t>>& encs) {
@@ -351,7 +360,7 @@ int main(int argc, char** argv) {
                     }
                     if (start) {
                         s.state = game.get_initial_state(rng);
-                        s.score = 0; s.ts.clear(); s.tp.clear(); s.tr.clear(); s.tv.clear();
+                        s.score = 0; s.moves = 0; s.ts.clear(); s.tp.clear(); s.tr.clear(); s.tv.clear();
                         s.active = true;
                     }
                 }
@@ -409,7 +418,10 @@ int main(int argc, char** argv) {
                 if (writer) s.tr.push_back(mr.reward);
                 s.score += mr.reward;
                 s.state = game.spawn_random(mr.afterstate, rng);
-                if (game.is_terminal(s.state)) { finalize(s); s.active = false; }
+                s.moves++;
+                if (game.is_terminal(s.state) || (max_moves > 0 && s.moves >= max_moves)) {
+                    finalize(s); s.active = false;
+                }
             }
         }
     };
@@ -564,5 +576,48 @@ int main(int argc, char** argv) {
     append_selfplay_tsv(log_dir, "main", iter_tag, games_total, writer ? writer->total() : 0, secs);
     append_selfplay_stats(log_dir, iter_tag, games_total, writer ? writer->total() : 0, secs,
                           sum_score.load() / std::max(1, num_games), best_score, tile_hist);
+
+    // Bounded-eval (--eval-log): one python/evaluate.py-schema row to eval.tsv —
+    // avg/median/max score, avg max-tile, tile reach-rates. view_loss.py reads it
+    // unchanged. Only fires in eval mode; self-play/daemon leaves eval_log empty.
+    if (!eval_log.empty()) {
+        std::sort(eval_scores.begin(), eval_scores.end());
+        const int ng = std::max(1, num_games);
+        const size_t n = eval_scores.size();
+        const double avg = (double)sum_score.load() / ng;
+        const double median = n == 0 ? 0.0
+            : (n % 2 ? (double)eval_scores[n / 2]
+                     : 0.5 * (eval_scores[n / 2 - 1] + eval_scores[n / 2]));
+        double sum_tile = 0.0;
+        for (int e = 0; e < (int)tile_hist.size(); ++e) sum_tile += (double)tile_hist[e] * (1L << e);
+        const double avg_max_tile = sum_tile / ng;
+        const int milestones[] = {256, 512, 1024, 2048, 4096, 8192};
+        double reach[6];
+        for (int k = 0; k < 6; ++k) {
+            long c = 0;
+            for (int e = 0; e < (int)tile_hist.size(); ++e)
+                if ((1L << e) >= milestones[k]) c += tile_hist[e];
+            reach[k] = (double)c / ng;
+        }
+        std::filesystem::path lp(eval_log);
+        if (lp.has_parent_path()) std::filesystem::create_directories(lp.parent_path());
+        bool fresh = !std::filesystem::exists(lp);
+        std::ofstream f(lp, std::ios::app);
+        if (fresh)
+            f << "iter\ttimestamp\tnetwork\tgames\tavg_score\tmedian_score\tmax_score"
+                 "\tavg_max_tile\tr256\tr512\tr1024\tr2048\tr4096\tr8192\n";
+        f << iter_tag << '\t' << (long)std::time(nullptr) << '\t' << eval_network << '\t' << num_games
+          << '\t' << (long)(avg + 0.5) << '\t' << (long)(median + 0.5)
+          << '\t' << best_score << '\t' << (long)(avg_max_tile + 0.5);
+        for (int k = 0; k < 6; ++k) {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "%.4f", reach[k]);
+            f << '\t' << buf;
+        }
+        f << '\n';
+        std::printf("[eval] iter=%ld games=%d avg=%.0f median=%.0f best=%ld "
+                    "reach2048=%.2f reach4096=%.2f -> %s\n",
+                    iter_tag, num_games, avg, median, best_score, reach[3], reach[4], eval_log.c_str());
+    }
     return 0;
 }

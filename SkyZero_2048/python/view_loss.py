@@ -123,12 +123,51 @@ def _plot_probe(data_dir, plt) -> None:
     print(f"saved {out}")
 
 
+def _agg_by_iter(c):
+    """Collapse selfplay_stats rows sharing an iter into one point per iter.
+
+    The C++ daemon emits a row every ~STATS_GAMES completed games, so one train
+    cycle (one model version) — especially with several daemons or fast data —
+    produces multiple rows all tagged with the same iter. Plotting them straight
+    puts several points on the same x, reading as jagged back-and-forth. Merging
+    by iter gives exactly one point per trained iter AND a larger, steadier
+    per-point sample (the whole cycle's games), so curves smooth out for free:
+    counts (games/new_rows/sp_seconds/eN) sum, avg_score is games-weighted, and
+    best_score takes the max."""
+    iters = c.get("iter") or []
+    groups = {}
+    for i, v in enumerate(iters):
+        if v == v:  # drop nan iters
+            groups.setdefault(v, []).append(i)
+    keys = sorted(groups)
+    games = c.get("games", [1.0] * len(iters))
+    out = {}
+    for name, col in c.items():
+        res = []
+        for k in keys:
+            idx = groups[k]
+            xs = [col[i] for i in idx]
+            fin = [x for x in xs if x == x]
+            if name == "iter":
+                res.append(k)
+            elif name == "best_score":
+                res.append(max(fin) if fin else float("nan"))
+            elif name == "avg_score":
+                num = sum(col[i] * games[i] for i in idx if col[i] == col[i])
+                den = sum(games[i] for i in idx if col[i] == col[i])
+                res.append(num / den if den else float("nan"))
+            else:  # counts (games/new_rows/sp_seconds/eN) and timestamp: sum
+                res.append(sum(fin))
+        out[name] = res
+    return out
+
+
 def _plot_selfplay(data_dir, plt) -> None:
     import numpy as np
     header, rows = _read_tsv(data_dir / "logs" / "selfplay_stats.tsv")
     if not rows:
         return
-    c = _cols(header, rows)
+    c = _agg_by_iter(_cols(header, rows))  # one point per trained iter
     it = np.asarray(c.get("iter", []), dtype=float)
     if it.size == 0:
         return
