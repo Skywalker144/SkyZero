@@ -174,7 +174,10 @@
       // wide screens where it clears the centered game (≥1200px).
       '.skz-lb-dock{display:none}' +
       '@media (min-width:1200px){' +
-        '.skz-lb-dock{display:flex;flex-direction:column;gap:12px;position:fixed;left:20px;top:72px;' +
+        // position:absolute (not fixed) so the dock scrolls with the page and
+        // stays anchored just below the topbar — it can never ride up over the
+        // brand. positionDock() keeps `top` in document coordinates.
+        '.skz-lb-dock{display:flex;flex-direction:column;gap:12px;position:absolute;left:20px;top:72px;' +
           'width:272px;max-height:calc(100vh - 96px);box-sizing:border-box;padding:16px;z-index:40;' +
           'background:var(--surface,#fff);border:1px solid var(--border,#d0d7de);' +
           'border-radius:var(--radius-lg,16px);box-shadow:0 6px 24px rgba(0,0,0,.06)}' +
@@ -417,7 +420,12 @@
   function positionDock() {
     if (!dock) return;
     var tb = document.querySelector('.topbar');
-    dock.style.top = (tb ? Math.round(tb.getBoundingClientRect().bottom) + 8 : 72) + 'px';
+    // Document-relative top (add scrollY) so the absolutely-positioned dock sits
+    // just below the topbar regardless of the scroll offset when this runs.
+    // getBoundingClientRect() alone is viewport-relative and, if measured while
+    // the page is scrolled (resize, restored scroll position), would bake in a
+    // wrong/negative top and leave the dock floating over the brand.
+    dock.style.top = (tb ? Math.round(tb.getBoundingClientRect().bottom + window.scrollY) + 8 : 72) + 'px';
   }
 
   // ---------- DOM: inline panel (mounted by the page, e.g. 2048 below board) ----------
