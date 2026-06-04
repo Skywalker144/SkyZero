@@ -1,0 +1,139 @@
+"""Central network configuration.
+
+Kept intentionally minimal: the hyperparameters the C++ selfplay side also
+needs to know live in scripts/run.cfg; this file only defines the Python
+network topology defaults.
+
+Defaults match a b12c128 KataGo v15 model. The KataGo v15 derived fields
+(c_mid, c_gpool, c_p1, c_g1, c_v1, c_v2, intermediate_head_blocks) auto-
+derive from num_channels / num_blocks unless explicitly overridden, so
+users can scale the model just by setting num_blocks / num_channels.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class NetConfig:
+    board_size: int = 15
+    num_planes: int = 5  # mask, own, opp, forbidden_black, forbidden_white
+    num_blocks: int = 12
+    num_channels: int = 128
+
+    # ----- KataGo v15 fields -----
+    num_global_features: int = 12
+    internal_length: int = 2
+    has_intermediate_head: bool = True
+    activation: str = "mish"
+    version: int = 15
+
+    # Auto-derived from num_channels / num_blocks unless explicitly set.
+    c_mid: Optional[int] = None
+    c_gpool: Optional[int] = None
+    c_p1: Optional[int] = None
+    c_g1: Optional[int] = None
+    c_v1: Optional[int] = None
+    c_v2: Optional[int] = None
+    intermediate_head_blocks: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.c_mid is None:
+            self.c_mid = max(16, self.num_channels // 2)
+        if self.c_gpool is None:
+            self.c_gpool = max(16, self.num_channels // 8)
+        if self.c_p1 is None:
+            self.c_p1 = max(16, self.num_channels // 4)
+        if self.c_g1 is None:
+            self.c_g1 = max(16, self.num_channels // 4)
+        if self.c_v1 is None:
+            self.c_v1 = max(16, self.num_channels // 4)
+        if self.c_v2 is None:
+            self.c_v2 = max(32, self.num_channels // 4 + 16)
+        if self.intermediate_head_blocks is None:
+            self.intermediate_head_blocks = max(1, self.num_blocks * 2 // 3)
+
+
+def net_config_from_env() -> NetConfig:
+    """Read env vars set by scripts/run.cfg (sourced in bash then exported).
+
+    Reads the basic dimensions (NUM_BLOCKS, NUM_CHANNELS, NUM_PLANES,
+    NUM_GLOBAL_FEATURES) plus optional explicit overrides for derived
+    fields (C_MID, C_GPOOL, INTERMEDIATE_HEAD_BLOCKS, ...).
+    Constructor's __post_init__ fills any field left as None.
+
+    NetConfig.board_size (model canvas) is read from env MAX_BOARD_SIZE,
+    which scripts/run.cfg owns. cpp/CMakeLists.txt parses the same line and
+    bakes it into the C++ binary as SKYZERO_MAX_BOARD_SIZE (consumed by
+    cpp/envs/gomoku.h's Gomoku::MAX_BOARD_SIZE). To change canvas size: edit
+    MAX_BOARD_SIZE in run.cfg, then `cmake --build cpp/build` (auto-detects
+    the change) and re-trace via init_model.py.
+    """
+    import os
+    kwargs: dict = {}
+    if (v := os.environ.get("MAX_BOARD_SIZE")):
+        kwargs["board_size"] = int(v)
+    if (v := os.environ.get("NUM_PLANES")):
+        kwargs["num_planes"] = int(v)
+    if (v := os.environ.get("NUM_BLOCKS")):
+        kwargs["num_blocks"] = int(v)
+    if (v := os.environ.get("NUM_CHANNELS")):
+        kwargs["num_channels"] = int(v)
+    if (v := os.environ.get("NUM_GLOBAL_FEATURES")):
+        kwargs["num_global_features"] = int(v)
+    if (v := os.environ.get("C_MID")):
+        kwargs["c_mid"] = int(v)
+    if (v := os.environ.get("C_GPOOL")):
+        kwargs["c_gpool"] = int(v)
+    if (v := os.environ.get("INTERMEDIATE_HEAD_BLOCKS")):
+        kwargs["intermediate_head_blocks"] = int(v)
+    if (v := os.environ.get("C_P1")):
+        kwargs["c_p1"] = int(v)
+    if (v := os.environ.get("C_G1")):
+        kwargs["c_g1"] = int(v)
+    if (v := os.environ.get("C_V1")):
+        kwargs["c_v1"] = int(v)
+    if (v := os.environ.get("C_V2")):
+        kwargs["c_v2"] = int(v)
+    if (v := os.environ.get("ACTIVATION")):
+        kwargs["activation"] = v
+    return NetConfig(**kwargs)
+
+
+_NET_NAME_RE = re.compile(r"^b(\d+)c(\d+)$")
+
+
+def net_config_from_name(name: str) -> NetConfig:
+    """Parse a network name like 'b5c128' into a NetConfig.
+
+    Format: b<num_blocks>c<num_channels>. All other fields (board_size,
+    num_planes, num_global_features, derived c_* widths, etc.) come from
+    env vars via the same path as net_config_from_env(): we read those
+    overrides first, then apply num_blocks / num_channels from the name.
+    """
+    m = _NET_NAME_RE.match(name)
+    if not m:
+        raise ValueError(
+            f"bad network name {name!r}: expected format b<blocks>c<channels>, "
+            "e.g. b5c128, b10c256"
+        )
+    cfg = net_config_from_env()
+    cfg.num_blocks = int(m.group(1))
+    cfg.num_channels = int(m.group(2))
+    # Re-derive auto fields (c_mid, c_gpool, ...) that depend on the
+    # block/channel count we just overrode. Anything explicitly set via
+    # env var (C_MID, etc.) survives because we only reset fields that
+    # net_config_from_env didn't populate.
+    import os
+    for field, attr in (
+        ("C_MID", "c_mid"), ("C_GPOOL", "c_gpool"),
+        ("C_P1", "c_p1"), ("C_G1", "c_g1"),
+        ("C_V1", "c_v1"), ("C_V2", "c_v2"),
+        ("INTERMEDIATE_HEAD_BLOCKS", "intermediate_head_blocks"),
+    ):
+        if not os.environ.get(field):
+            setattr(cfg, attr, None)
+    cfg.__post_init__()
+    return cfg
