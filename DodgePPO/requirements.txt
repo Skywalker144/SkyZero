@@ -1,0 +1,11 @@
+# Core dependencies
+numpy>=1.23
+torch>=2.0
+
+# For the training dashboard PNG (score / survival / return / entropy curves).
+# Training still runs without it (CSVs are written either way); plots are skipped.
+matplotlib>=3.5
+
+# Optional: only needed for gym/gymnasium wrappers or gym.make().
+# The dodge env works without it (it ships lightweight Discrete/Box shims).
+# gymnasium>=0.29

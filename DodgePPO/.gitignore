@@ -1,0 +1,13 @@
+# DodgePPO — PPO channel-dodge agent. Track source (*.py, configs/, README,
+# requirements.txt, retrain.sh); ignore regenerable training output.
+
+# Per-run training output: checkpoints (*.pt), train.csv/log, eval.csv,
+# progress.png, plus stray seed .pt files — all live under runs/<run_name>/.
+runs/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Claude Code agent-local state (matches root /.claude convention)
+.claude/

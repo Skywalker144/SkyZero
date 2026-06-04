@@ -37,7 +37,7 @@ import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_ROOT = os.path.dirname(HERE)                      # …/SkyZeroWeb
-DEFAULT_PPO = "/home/sky/RL/PPO"
+DEFAULT_PPO = os.path.join(os.path.dirname(WEB_ROOT), "DodgePPO")  # sibling …/SkyZero/DodgePPO
 
 # state_dict keys for the actor path (see networks.ActorCritic)
 LAYERS = [
