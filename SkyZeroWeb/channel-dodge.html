@@ -352,6 +352,7 @@
         <button class="btn" id="pause_btn">暂停</button>
         <button class="btn" id="ai_btn" aria-pressed="false">AI 托管</button>
       </div>
+      <div class="cd-hint" id="ai_hint" hidden>本局使用了 AI 托管,未计入排行榜</div>
 
       <div class="cd-stage" id="stage" tabindex="0" aria-label="Channel Dodge arena">
         <canvas class="cd-canvas" id="canvas"></canvas>
@@ -487,7 +488,6 @@
         draw_use: '使用', draw_preview: '预览', draw_eraser: '橡皮',
         draw_empty: '画点东西吧',
         ai_play: 'AI 托管', ai_on: 'AI 接管中',
-        ai_warn: '启用 AI 托管后,本局得分将不会计入排行榜。确定要开启吗?',
         ai_note: '本局使用了 AI 托管,未计入排行榜',
       },
       en: {
@@ -513,7 +513,6 @@
         draw_use: 'Use', draw_preview: 'Preview', draw_eraser: 'Eraser',
         draw_empty: 'Draw something first',
         ai_play: 'Autopilot', ai_on: 'AI playing',
-        ai_warn: 'With autopilot on, this run will not count toward the leaderboard. Turn it on?',
         ai_note: 'AI autopilot was used — not counted on the leaderboard',
       },
     };
@@ -592,6 +591,7 @@
       drawPreviewLabel: $('draw_preview_label'),
       drawPalette: $('draw_palette'), drawSizes: $('draw_sizes'),
       drawClear: $('draw_clear'), drawCancel: $('draw_cancel'), drawUse: $('draw_use'),
+      aiHint: $('ai_hint'),
     };
 
     function applyLang() {
@@ -619,6 +619,7 @@
       els.pauseBtn.textContent = state.mode === 'paused' ? t('resume') : t('pause');
       els.startBtn.textContent = state.mode === 'playing' ? t('restart') : t('start');
       els.aiBtn.textContent = state.aiOn ? t('ai_on') : t('ai_play');
+      els.aiHint.textContent = t('ai_note');
       if (typeof refreshRoster === 'function') refreshRoster();
       renderOverlay();
     }
@@ -1910,6 +1911,7 @@
       state.score = 0;
       state.dodged = 0;
       state.aiEverUsed = state.aiOn;   // a round that starts under AI is already tainted
+      els.aiHint.hidden = !state.aiEverUsed;
 
       state.elapsed = 0;
       state.spawnTimer = 0.6;
@@ -2015,19 +2017,14 @@
       els.aiBtn.setAttribute('aria-pressed', String(on));
       els.aiBtn.classList.toggle('primary', on);
       els.aiBtn.textContent = on ? t('ai_on') : t('ai_play');
+      els.aiHint.hidden = !state.aiEverUsed;   // sticky caption: AI use disqualifies this run
       if (on && state.mode !== 'playing') startGame();
       else if (state.mode === 'playing') els.stage.focus({ preventScroll: true });
     }
-    // Warn once (per page load) the first time the player hands over to the AI:
-    // doing so disqualifies the run from the leaderboard. Cancel = stay manual.
-    let aiWarned = false;
+    // Handing over to the AI disqualifies the run from the leaderboard; instead of
+    // a modal we surface a quiet caption under the buttons (see setAi / ai_hint).
     els.aiBtn.addEventListener('click', () => {
-      const turningOn = !state.aiOn;
-      if (turningOn && !aiWarned) {
-        if (!confirm(t('ai_warn'))) return;
-        aiWarned = true;
-      }
-      setAi(turningOn);
+      setAi(!state.aiOn);
     });
 
     // Auto-pause when the tab/window loses focus mid-game.

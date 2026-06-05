@@ -349,6 +349,7 @@
         <button class="btn" id="ai_auto_btn" aria-pressed="false" disabled>AI 托管</button>
       </div>
       <div class="g2048-undo-hint" id="undo_hint">使用撤销会使本局不计入排行榜</div>
+      <div class="g2048-undo-hint" id="ai_hint" hidden>本局使用了 AI 托管,未计入排行榜</div>
       <div class="g2048-ai-speed" id="ai_speed_row">
         <span class="g2048-speed-end" id="ai_speed_fast">更快 更弱</span>
         <span class="g2048-speed-wrap">
@@ -390,7 +391,6 @@
         ai_loading: '加载 AI 模型…', ai_thinking: '思考中…',
         ai_ready: 'AI 就绪', ai_error: 'AI 加载失败',
         ai_fast: '更快 更弱', ai_strong: '更慢 更强',
-        ai_warn: '启用 AI 托管后,本局得分将不会计入排行榜。确定要开启吗?',
         ai_note: '本局使用了 AI 托管,未计入排行榜',
         undo_hint: '使用撤销会使本局不计入排行榜',
         dir_up: '上', dir_right: '右', dir_down: '下', dir_left: '左',
@@ -405,7 +405,6 @@
         ai_loading: 'Loading AI model…', ai_thinking: 'Thinking…',
         ai_ready: 'AI ready', ai_error: 'AI failed to load',
         ai_fast: 'Faster, weaker', ai_strong: 'Slower, stronger',
-        ai_warn: 'With AI autoplay on, this run will not count toward the leaderboard. Turn it on?',
         ai_note: 'AI autoplay was used — not counted on the leaderboard',
         undo_hint: 'Using undo disqualifies the run from the leaderboard',
         dir_up: 'Up', dir_right: 'Right', dir_down: 'Down', dir_left: 'Left',
@@ -424,6 +423,7 @@
       document.getElementById('new_btn').textContent   = t('new_game');
       document.getElementById('undo_btn').textContent  = t('undo');
       document.getElementById('undo_hint').textContent = t('undo_hint');
+      document.getElementById('ai_hint').textContent   = t('ai_note');
       document.getElementById('ai_speed_fast').textContent = t('ai_fast');
       document.getElementById('ai_speed_strong').textContent = t('ai_strong');
       if (typeof refreshAiButtons === 'function') refreshAiButtons();
@@ -1101,6 +1101,10 @@
       aiAutoBtn.disabled = !aiReady || gameOver;
       // The speed slider is only shown (animated) while autoplay is engaged.
       if (aiSpeedRow) aiSpeedRow.classList.toggle('open', aiAuto);
+      // Once the AI has touched this run it's leaderboard-disqualified; show a quiet
+      // caption (no modal) until the next new game resets aiUsed.
+      const aiHint = document.getElementById('ai_hint');
+      if (aiHint) aiHint.hidden = !aiUsed;
     }
 
     function startAiWorker() {
@@ -1180,14 +1184,9 @@
       setTimeout(requestAiMove, wait);
     }
 
-    // Warn once (per page load) the first time the player hands over to the AI:
-    // an AI-assisted run is `tainted` and never posts to the leaderboard.
-    let aiWarned = false;
+    // Handing over to the AI disqualifies the run from the leaderboard; instead of
+    // a modal we surface a quiet caption under the buttons (see refreshAiButtons).
     aiAutoBtn.addEventListener('click', () => {
-      if (!aiAuto && !aiWarned) {            // about to turn AI on
-        if (!confirm(t('ai_warn'))) return;
-        aiWarned = true;
-      }
       aiAuto = !aiAuto;
       refreshAiButtons();
       if (aiAuto) requestAiMove();
