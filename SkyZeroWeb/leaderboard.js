@@ -23,6 +23,12 @@
   })();
   var VIEW_GAMES = ONLY_GAME ? [ONLY_GAME] : GAMES;
 
+  // A pinned "house champion": SkyZero (the site's own AI) holds rank #1 on
+  // every board, shown with the brand rainbow. It is synthetic — never stored in
+  // D1 nor fetched — so it always leads and real players are renumbered below it.
+  var CHAMPION = { name: 'SkyZero', score: { '2048': 175842, 'dodge': 31961 } };
+  var CHAMP_LOWER = CHAMPION.name.toLowerCase();
+
   // ---------- i18n (reads the site-wide skz_lang) ----------
   var STR = {
     zh: {
@@ -202,6 +208,14 @@
       '.skz-lb-row.me{background:color-mix(in srgb,var(--accent,#3b82f6) 12%,transparent);border-radius:8px}' +
       '.skz-lb-rk{text-align:center;font-variant-numeric:tabular-nums;color:var(--fg-muted,#656d76)}' +
       '.skz-lb-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+      // Pinned champion's name, tinted with the SkyZero brand rainbow (mirrors
+      // the .bw-zero wordmark gradient in style.css).
+      '.skz-lb-rainbow{font-weight:700;background:linear-gradient(120deg,' +
+        '#fb3640 0%,#fb3640 15%,#fc5132 21.1%,#fe6f11 27.1%,#ff9200 33.2%,' +
+        '#ffbb00 39.3%,#f1d525 45.4%,#a6de58 51.4%,#3ddc84 57.5%,#00d8be 63.6%,' +
+        '#00cbf4 69.6%,#3ba9ff 75.7%,#5977ff 81.8%,#7554ff 87.9%,#9f4dff 93.9%,' +
+        '#c14bff 100%);-webkit-background-clip:text;background-clip:text;' +
+        '-webkit-text-fill-color:transparent;color:transparent}' +
       '.skz-lb-sc{font-variant-numeric:tabular-nums;font-weight:700}' +
       '.skz-lb-msg{padding:24px 8px;text-align:center;color:var(--fg-muted,#656d76);font-size:14px}' +
       '.skz-lb-me-out{border-top:1px dashed var(--border,#d0d7de);margin-top:4px;padding-top:8px}' +
@@ -354,22 +368,30 @@
     var game = v.game;
     fetchBoard(game).then(function (data) {
       if (game !== v.game) return;             // a newer tab click won the race
-      var top = (data && data.top) || [];
       var myName = getName().toLowerCase();
+      // Drop any real row colliding with the reserved champion name so SkyZero
+      // can never appear twice.
+      var top = ((data && data.top) || []).filter(function (r) {
+        return r.name.toLowerCase() !== CHAMP_LOWER;
+      });
+      v.listEl.innerHTML = '';
+      // SkyZero is pinned at #1; real players are renumbered from #2 down.
+      v.listEl.appendChild(champRow(game));
+      top.forEach(function (r, i) {
+        v.listEl.appendChild(row(i + 2, r.name, r.best, r.name.toLowerCase() === myName));
+      });
       if (!top.length) {
-        v.listEl.innerHTML = '<div class="skz-lb-msg">' + t('empty') + '</div>';
-      } else {
-        v.listEl.innerHTML = '';
-        top.forEach(function (r) {
-          v.listEl.appendChild(row(r.rank, r.name, r.best, r.name.toLowerCase() === myName));
-        });
+        var msg = document.createElement('div');
+        msg.className = 'skz-lb-msg';
+        msg.textContent = t('empty');     // "be the first" now reads as: beat SkyZero
+        v.listEl.appendChild(msg);
+      } else if (data.me && !top.some(function (r) { return r.name.toLowerCase() === myName; })) {
         // Show the caller's own rank when they fell outside the top window.
-        if (data.me && !top.some(function (r) { return r.name.toLowerCase() === myName; })) {
-          var wrap = document.createElement('div');
-          wrap.className = 'skz-lb-me-out';
-          wrap.appendChild(row(data.me.rank, data.me.name, data.me.best, true));
-          v.listEl.appendChild(wrap);
-        }
+        // +1 because the champion occupies a slot above every real player.
+        var wrap = document.createElement('div');
+        wrap.className = 'skz-lb-me-out';
+        wrap.appendChild(row(data.me.rank + 1, data.me.name, data.me.best, true));
+        v.listEl.appendChild(wrap);
       }
     }).catch(function () {
       if (game !== v.game) return;
@@ -384,6 +406,14 @@
     var nm = document.createElement('div'); nm.className = 'skz-lb-nm'; nm.textContent = name;
     var sc = document.createElement('div'); sc.className = 'skz-lb-sc'; sc.textContent = fmt(score);
     el.appendChild(rk); el.appendChild(nm); el.appendChild(sc);
+    return el;
+  }
+  // The pinned champion, rendered through row() so it shares the grid layout,
+  // then tinted with the brand rainbow on the name.
+  function champRow(game) {
+    var el = row(1, CHAMPION.name, CHAMPION.score[game], false);
+    var nm = el.querySelector('.skz-lb-nm');
+    if (nm) nm.classList.add('skz-lb-rainbow');
     return el;
   }
   // Reload every currently-visible view (after a name change or score upload),
