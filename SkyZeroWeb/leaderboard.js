@@ -208,9 +208,10 @@
       '.skz-lb-row.me{background:color-mix(in srgb,var(--accent,#3b82f6) 12%,transparent);border-radius:8px}' +
       '.skz-lb-rk{text-align:center;font-variant-numeric:tabular-nums;color:var(--fg-muted,#656d76)}' +
       '.skz-lb-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
-      // Pinned champion's name, tinted with the SkyZero brand rainbow (mirrors
-      // the .bw-zero wordmark gradient in style.css).
-      '.skz-lb-rainbow{font-weight:700;background:linear-gradient(120deg,' +
+      // Pinned champion wordmark: neutral "Sky" (inherits --fg) + rainbow "Zero",
+      // mirroring the .bw-zero brand gradient in style.css (120deg = its slant).
+      '.skz-lb-champ-nm{font-weight:700}' +
+      '.skz-lb-zero{background:linear-gradient(120deg,' +
         '#fb3640 0%,#fb3640 15%,#fc5132 21.1%,#fe6f11 27.1%,#ff9200 33.2%,' +
         '#ffbb00 39.3%,#f1d525 45.4%,#a6de58 51.4%,#3ddc84 57.5%,#00d8be 63.6%,' +
         '#00cbf4 69.6%,#3ba9ff 75.7%,#5977ff 81.8%,#7554ff 87.9%,#9f4dff 93.9%,' +
@@ -409,11 +410,17 @@
     return el;
   }
   // The pinned champion, rendered through row() so it shares the grid layout,
-  // then tinted with the brand rainbow on the name.
+  // then given the brand wordmark treatment: neutral "Sky" + rainbow "Zero".
   function champRow(game) {
     var el = row(1, CHAMPION.name, CHAMPION.score[game], false);
     var nm = el.querySelector('.skz-lb-nm');
-    if (nm) nm.classList.add('skz-lb-rainbow');
+    if (nm) {
+      nm.textContent = '';                  // replace the plain "SkyZero" text
+      nm.classList.add('skz-lb-champ-nm');
+      var sky = document.createElement('span'); sky.textContent = 'Sky';
+      var zero = document.createElement('span'); zero.className = 'skz-lb-zero'; zero.textContent = 'Zero';
+      nm.appendChild(sky); nm.appendChild(zero);
+    }
     return el;
   }
   // Reload every currently-visible view (after a name change or score upload),
