@@ -456,9 +456,9 @@
     </div>
   </div>
 
-  <!-- PPO-trained autopilot weights (tiny MLP, pure-JS forward pass below).
-       Re-export with tools/export_dodge_weights.py and bump ?v= on each retrain. -->
-  <script src="dodge-policy.js?v=dodge_v6_cont_best"></script>
+  <!-- Trained autopilot weights (tiny MLP, pure-JS forward pass below). Discrete PPO:
+       tools/export_dodge_weights.py; continuous SAC: tools/export_dodge_sac.py. Bump ?v= each retrain. -->
+  <script src="dodge-policy.js?v=sac_gpu_smooth"></script>
   <script>
   (function(){
     'use strict';
@@ -1072,7 +1072,7 @@
       const ACTIONS = [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0],
                        [-SQ, -SQ], [SQ, -SQ], [-SQ, SQ], [SQ, SQ]];
 
-      let weights = null, arch = null;
+      let weights = null, arch = null, cont = false;   // cont=true: continuous (SAC) policy
       const move = { x: 0, y: 0 };
       let accum = 0;
 
@@ -1087,6 +1087,7 @@
           for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
           weights = new Float32Array(u8.buffer);
           arch = P.arch;
+          cont = !!P.continuous;                  // SAC: forward emits a 2D move (mean→tanh), not a discrete arg-max
           return true;
         } catch (e) { weights = null; arch = null; return false; }
       }
@@ -1107,11 +1108,10 @@
           for (let o = 0; o < nOut; o++) out[o] += weights[off + o];
           off += nOut;
           if (act === 'tanh') for (let o = 0; o < nOut; o++) out[o] = Math.tanh(out[o]);
+          else if (act === 'relu') for (let o = 0; o < nOut; o++) { if (out[o] < 0) out[o] = 0; }
           inp = out;
         }
-        let best = 0;
-        for (let o = 1; o < out.length; o++) if (out[o] > out[best]) best = o;
-        return best;
+        return out;   // raw layer output; tick() decodes (discrete arg-max vs continuous mean)
       }
 
       // Rebuild the 271-dim observation from the live state, in the 450×600
@@ -1221,9 +1221,18 @@
         accum += dt;
         if (accum < STEP) return;
         accum %= STEP;
-        const a = forward(buildObs());
-        move.x = ACTIONS[a][0];
-        move.y = ACTIONS[a][1];
+        const out = forward(buildObs());
+        if (cont) {
+          // SAC: first 2 outputs are the Gaussian mean -> tanh -> move vector, clamped to the unit disk
+          let mx = Math.tanh(out[0]), my = Math.tanh(out[1]);
+          const mag = Math.hypot(mx, my);
+          if (mag > 1) { mx /= mag; my /= mag; }
+          move.x = mx; move.y = my;
+        } else {
+          let best = 0;
+          for (let o = 1; o < out.length; o++) if (out[o] > out[best]) best = o;
+          move.x = ACTIONS[best][0]; move.y = ACTIONS[best][1];
+        }
       }
 
       function reset() { move.x = 0; move.y = 0; accum = 0; }
