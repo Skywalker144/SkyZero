@@ -100,7 +100,7 @@ def _plot_dashboard(train_csv, eval_csv, out_png, tag=""):
     import matplotlib.pyplot as plt
 
     tr, ev = _read_csv(train_csv), _read_csv(eval_csv)
-    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 8))
     fig.suptitle(f"Channel-Dodge progress — {tag}", fontsize=13)
 
     ax = axes[0, 0]
@@ -169,6 +169,30 @@ def _plot_dashboard(train_csv, eval_csv, out_png, tag=""):
         ax.set_ylabel("seconds"); ax.set_title("Survival time (s)")
         ax.legend(fontsize=8, loc="upper left")
     ax.set_xlabel("env steps"); ax.grid(alpha=0.3)
+
+    # [0,2] Episode reward (return) — unlike in-game score (which saturates at the
+    # 600s time cap), the shaped return keeps moving as economy/smoothness/centering
+    # improve, so it shows progress the score curve can't.
+    ax = axes[0, 2]
+    if tr is not None and "ret_avg" in tr:
+        ax.plot(tr["step"], tr["ret_avg"], color="tab:green", lw=1.3, label="train return")
+    if ev is not None and "ret_mean" in ev and np.isfinite(ev["ret_mean"]).any():
+        ax.plot(ev["step"], ev["ret_mean"], "o-", color="tab:olive", label="eval return")
+    ax.set_title("Episode reward (return)"); ax.set_xlabel("env steps"); ax.set_ylabel("return")
+    ax.grid(alpha=0.3)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=8, loc="lower right")
+
+    # [1,2] Survival time.
+    ax = axes[1, 2]
+    if ev is not None and "surv_mean" in ev:
+        ax.plot(ev["step"], ev["surv_mean"], "o-", color="tab:green", label="eval surv")
+        if "surv_max" in ev:
+            ax.plot(ev["step"], ev["surv_max"], "x--", color="tab:olive", alpha=0.6, label="eval max")
+    ax.set_title("Survival time (s)"); ax.set_xlabel("env steps"); ax.set_ylabel("seconds")
+    ax.grid(alpha=0.3)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=8, loc="lower right")
 
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(out_png, dpi=110)
