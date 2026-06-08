@@ -77,10 +77,6 @@
       width: 100%;
       aspect-ratio: 3 / 4;
       max-height: calc(100vh - 220px);
-      /* Pair max-width with max-height so the box stays EXACTLY 3:4 even when the
-         viewport is short — otherwise max-height alone squishes it and the fixed
-         450×600 sim render (see resize()) gets stretched vertically. */
-      max-width: calc((100vh - 220px) * 3 / 4);
       margin: 0 auto;
       background: var(--surface-sunken);
       border: 1px solid var(--border);
@@ -185,7 +181,7 @@
       overflow: hidden;
     }
     /* On touch screens the arena should leave room for the joystick below. */
-    body.cd-touch .cd-stage { max-height: calc(100vh - 360px); max-width: calc((100vh - 360px) * 3 / 4); }
+    body.cd-touch .cd-stage { max-height: calc(100vh - 360px); }
     .cd-joystick-base {
       position: absolute;
       left: 50%; top: 50%;
@@ -1038,8 +1034,12 @@
       state.H = SIM_H;
       els.canvas.width = Math.round(rect.width * dpr);
       els.canvas.height = Math.round(rect.height * dpr);
-      // …and the logical arena is scaled to fill the (responsive) canvas at draw time.
-      ctx.setTransform(els.canvas.width / SIM_W, 0, 0, els.canvas.height / SIM_H, 0, 0);
+      // …rendered letterboxed: scale the fixed 450×600 arena UNIFORMLY to fit the
+      // (any-aspect, full-width) canvas and center it — never distorts, never overflows.
+      const s = Math.min(els.canvas.width / SIM_W, els.canvas.height / SIM_H);
+      state._ox = (els.canvas.width - SIM_W * s) / 2;
+      state._oy = (els.canvas.height - SIM_H * s) / 2;
+      ctx.setTransform(s, 0, 0, s, state._ox, state._oy);
       // Keep the player inside the (possibly resized) arena.
       const p = state.player;
       p.x = clamp(p.x, PLAYER_R, state.W - PLAYER_R);
@@ -1728,7 +1728,14 @@
     // ============================================================
     function draw() {
       const W = state.W, H = state.H;
-      ctx.clearRect(0, 0, W, H);
+      // Letterbox: clear the WHOLE backing canvas (incl. the centered bands), then
+      // clip the rest of drawing to the 450×600 play area so nothing spills out.
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+      ctx.restore();
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
 
       // Subtle grid backdrop.
       const isDark = document.documentElement.dataset.theme === 'dark';
@@ -1890,6 +1897,7 @@
         ctx.beginPath(); ctx.arc(bm.x, bm.y, bm.blastR, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       }
+      ctx.restore();   // end letterbox clip (paired with the save() at draw() start)
     }
 
     function drawHud() {
