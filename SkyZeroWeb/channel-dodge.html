@@ -77,6 +77,10 @@
       width: 100%;
       aspect-ratio: 3 / 4;
       max-height: calc(100vh - 220px);
+      /* Pair max-width with max-height so the box stays EXACTLY 3:4 even when the
+         viewport is short — otherwise max-height alone squishes it and the fixed
+         450×600 sim render (see resize()) gets stretched vertically. */
+      max-width: calc((100vh - 220px) * 3 / 4);
       margin: 0 auto;
       background: var(--surface-sunken);
       border: 1px solid var(--border);
@@ -181,7 +185,7 @@
       overflow: hidden;
     }
     /* On touch screens the arena should leave room for the joystick below. */
-    body.cd-touch .cd-stage { max-height: calc(100vh - 360px); }
+    body.cd-touch .cd-stage { max-height: calc(100vh - 360px); max-width: calc((100vh - 360px) * 3 / 4); }
     .cd-joystick-base {
       position: absolute;
       left: 50%; top: 50%;
