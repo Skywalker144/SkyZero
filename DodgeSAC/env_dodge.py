@@ -174,6 +174,10 @@ class ChannelDodgeEnv(_EnvBase):
         death_penalty=1.0,
         stationary_bonus=0.005,
         reverse_penalty=0.0,
+        accel_penalty=0.0,
+        jerk_penalty=0.0,
+        speed_penalty=0.0,
+        center_weight=0.0,
         render_mode=None,
     ):
         super().__init__()
@@ -199,6 +203,10 @@ class ChannelDodgeEnv(_EnvBase):
         self.death_penalty = float(death_penalty)
         self.stationary_bonus = float(stationary_bonus)
         self.reverse_penalty = float(reverse_penalty)
+        self.accel_penalty = float(accel_penalty)   # penalize ||mv_t - mv_{t-1}|| (anti-jitter)
+        self.jerk_penalty = float(jerk_penalty)     # penalize ||2nd diff of mv|| (smoother still)
+        self.speed_penalty = float(speed_penalty)   # penalize ||mv|| (energy: rest when safe, move when threatened)
+        self.center_weight = float(center_weight)   # reward proximity to arena center (small)
         self.render_mode = render_mode
 
         self.rng = None
@@ -249,7 +257,8 @@ class ChannelDodgeEnv(_EnvBase):
         self._dmg_step = 0.0
         self._score_step = 0
         self._heal_step = 0.0
-        self._prev_move = (0.0, 0.0)   # last step's move vector (for reverse_penalty)
+        self._prev_move = (0.0, 0.0)   # last step's move vector (for reverse/accel penalty)
+        self._prev2_move = (0.0, 0.0)  # move vector two steps ago (for jerk penalty)
 
     def _action_to_move(self, action):
         if self.action_mode == "discrete":
@@ -275,8 +284,15 @@ class ChannelDodgeEnv(_EnvBase):
         # movement shaping (small, so dodging stays primary): reward holding still,
         # and penalize reversing direction — both target the high-frequency jitter.
         mvx, mvy = float(mv[0]), float(mv[1])
-        stay_r = self.stationary_bonus * max(0.0, 1.0 - math.hypot(mvx, mvy))
+        speed = math.hypot(mvx, mvy)
+        stay_r = self.stationary_bonus * max(0.0, 1.0 - speed)
         reversal = max(0.0, -(mvx * self._prev_move[0] + mvy * self._prev_move[1]))
+        # smoothness: 1st diff (acceleration) and 2nd diff (jerk) of the move command
+        ax, ay = mvx - self._prev_move[0], mvy - self._prev_move[1]
+        accel = math.hypot(ax, ay)
+        pax, pay = self._prev_move[0] - self._prev2_move[0], self._prev_move[1] - self._prev2_move[1]
+        jerk = math.hypot(ax - pax, ay - pay)
+        self._prev2_move = self._prev_move
         self._prev_move = (mvx, mvy)
 
         reward = (
@@ -286,6 +302,12 @@ class ChannelDodgeEnv(_EnvBase):
             + self.heal_weight * (self._heal_step / HEAL_AMOUNT)
             + stay_r
             - self.reverse_penalty * reversal
+            - self.accel_penalty * accel
+            - self.jerk_penalty * jerk
+            - self.speed_penalty * speed
+            + self.center_weight * max(0.0, 1.0 - math.hypot(
+                self.player["x"] - self.W * 0.5, self.player["y"] - self.H * 0.5)
+                / math.hypot(self.W * 0.5, self.H * 0.5))
         )
         if terminated:
             reward -= self.death_penalty
@@ -792,6 +814,11 @@ class SyncVectorDodgeEnv:
                  "truncations": truncations, "episodes": episodes}
         return obs, rewards, terminations, truncations, infos
 
+    def set_env_attr(self, name, value):
+        """Live-update an attribute on every sub-env (e.g. anneal accel_penalty)."""
+        for e in self.envs:
+            setattr(e, name, value)
+
     def close(self):
         pass
 
@@ -822,6 +849,9 @@ def _subproc_worker(remote, parent_remote, chunk_size, env_kwargs, base_seed):
                 remote.send(venv.step(data))
             elif cmd == "reset":
                 remote.send(venv.reset(seed=data))
+            elif cmd == "set_attr":
+                venv.set_env_attr(*data)
+                remote.send("ok")
             elif cmd == "close":
                 remote.close()
                 break
@@ -897,6 +927,13 @@ class SubprocVectorDodgeEnv:
         infos = {"final_obs": final_obs, "terminations": terminations,
                  "truncations": truncations, "episodes": episodes}
         return obs, rewards, terminations, truncations, infos
+
+    def set_env_attr(self, name, value):
+        """Broadcast a live attribute update to every worker's sub-envs."""
+        for remote in self.remotes:
+            remote.send(("set_attr", (name, value)))
+        for remote in self.remotes:
+            remote.recv()
 
     def close(self):
         if self.closed:

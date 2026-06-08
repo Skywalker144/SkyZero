@@ -456,9 +456,9 @@
     </div>
   </div>
 
-  <!-- Trained autopilot weights (tiny MLP, pure-JS forward pass below). Discrete PPO:
-       tools/export_dodge_weights.py; continuous SAC: tools/export_dodge_sac.py. Bump ?v= each retrain. -->
-  <script src="dodge-policy.js?v=sac_gpu_smooth"></script>
+  <!-- Trained autopilot weights (tiny MLP, pure-JS forward pass below). Exported from
+       ../DodgeSAC by tools/export_dodge_sac.py (continuous SAC). Bump ?v= each retrain. -->
+  <script src="dodge-policy.js?v=sac_t2a"></script>
   <script>
   (function(){
     'use strict';
@@ -643,7 +643,7 @@
     const AVATAR_R = 17;             // visual radius of the drawn avatar
     const PLAYER_SPEED = 270;        // px / s (in the logical sim arena, below)
     // The simulation always runs in a fixed SIM_W×SIM_H logical arena, identical to
-    // the training environment (DodgePPO/env_dodge.py: 450×600). The canvas is scaled
+    // the training environment (DodgeSAC/env_dodge.py: 450×600). The canvas is scaled
     // to fit any screen at render time. This keeps the 271-dim observation (which
     // normalizes by POS_NORM=250 / VEL_NORM=300, tuned for 450×600) screen-independent
     // — without it the continuous SAC policy gets clamped/distorted obs on phones and

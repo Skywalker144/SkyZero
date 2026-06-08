@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Export a trained SAC (continuous) Channel-Dodge actor to dodge-policy.js.
 
-Sibling of export_dodge_weights.py (which handles the discrete PPO actor). SAC's
-actor is a SquashedGaussianActor — a ReLU MLP ``271 -> 256 -> 256 -> 4`` whose
+The Channel-Dodge autopilot. SAC's actor is a SquashedGaussianActor — a ReLU MLP
+``271 -> 256 -> 256 -> 4`` (trained in ../DodgeSAC) whose
 first 2 outputs are the Gaussian mean (the last 2 are log-std, inference-irrelevant).
 Greedy action = ``tanh(mean)`` clamped to the unit disk, which the JS in
 channel-dodge.html does when ``DODGE_POLICY.continuous`` is set.
@@ -12,7 +12,7 @@ Packed float32 blob layout (little-endian, the order the JS reads):
     net.2.weight [256,256], net.2.bias [256],
     net.4.weight [4,256]  , net.4.bias [4]
 
-    python tools/export_dodge_sac.py --ckpt ../../RainbowDQN/runs/sac_gpu_smooth/best.pt \
+    python tools/export_dodge_sac.py --ckpt ../DodgeSAC/runs/sac_gpu_smooth/best.pt \
         --version sac_gpu_smooth
 """
 
@@ -26,7 +26,7 @@ import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WEB_ROOT = os.path.dirname(HERE)                                  # …/SkyZeroWeb
-RAINBOW = os.path.normpath(os.path.join(WEB_ROOT, "..", "..", "RainbowDQN"))  # …/RL/RainbowDQN
+AGENT = os.path.normpath(os.path.join(WEB_ROOT, "..", "DodgeSAC"))  # …/SkyZero/DodgeSAC (sibling)
 
 # SquashedGaussianActor.net = _mlp(271, (256,256), 4): Linear,ReLU,Linear,ReLU,Linear
 LAYERS = [
@@ -53,7 +53,7 @@ def _forward_numpy(blob, x):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ckpt", default=os.path.join(RAINBOW, "runs", "sac_gpu_smooth", "best.pt"))
+    ap.add_argument("--ckpt", default=os.path.join(AGENT, "runs", "sac_gpu_smooth", "best.pt"))
     ap.add_argument("--out", default=os.path.join(WEB_ROOT, "dodge-policy.js"))
     ap.add_argument("--version", default="sac_gpu_smooth")
     args = ap.parse_args()
@@ -78,7 +78,7 @@ def main():
     blob = np.concatenate(parts).astype("<f4")
 
     # --- self-check: packed-blob mean MUST match the real torch actor mean ---
-    sys.path.insert(0, RAINBOW)
+    sys.path.insert(0, AGENT)
     from sac_net import SquashedGaussianActor  # noqa: E402
     actor = SquashedGaussianActor(OBS_DIM, ACT_DIM, HIDDEN)
     actor.load_state_dict(sd); actor.eval()

@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Channel-Dodge — agent replay viewer</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --fg:#e6edf3; --muted:#8b949e;
+          --accent:#4493f8; --border:#30363d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { display:flex; gap:18px; padding:18px; align-items:flex-start; flex-wrap:wrap; }
+  canvas { background:#0a0e14; border:1px solid var(--border); border-radius:10px;
+           box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+  .side { min-width:300px; max-width:360px; display:flex; flex-direction:column; gap:14px; }
+  h1 { font-size:17px; margin:0 0 2px; }
+  .sub { font-size:12px; color:var(--muted); margin:0; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .row { display:flex; align-items:center; gap:8px; margin:6px 0; flex-wrap:wrap; }
+  button { background:#21262d; color:var(--fg); border:1px solid var(--border);
+           border-radius:7px; padding:6px 12px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .algobtns button { flex:1; }
+  .algobtns button.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  select, input[type=range] { accent-color:var(--accent); }
+  select { background:#21262d; color:var(--fg); border:1px solid var(--border);
+           border-radius:7px; padding:5px 8px; font-size:13px; }
+  input[type=range] { width:100%; }
+  .stat-grid { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:13px; }
+  .stat-grid .k { color:var(--muted); }
+  .stat-grid .v { font-variant-numeric: tabular-nums; font-weight:600; }
+  .hpbar { height:10px; border-radius:5px; background:#21262d; overflow:hidden; margin-top:2px; }
+  .hpfill { height:100%; background:linear-gradient(90deg,#2ecc71,#27ae60); transition:width .05s linear; }
+  .legend { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; font-size:12px; }
+  .legend span { display:inline-block; width:11px; height:11px; border-radius:50%;
+                 margin-right:6px; vertical-align:-1px; box-shadow:0 0 6px currentColor; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="cv" width="450" height="600"></canvas>
+  <div class="side">
+    <div>
+      <h1>Channel-Dodge · agent replay</h1>
+      <p class="sub" id="meta">loading…</p>
+    </div>
+
+    <div class="card">
+      <div class="sub" style="margin-bottom:6px">Agent</div>
+      <div class="row algobtns">
+        <button data-file="sac_play.js"     data-label="SAC (CPU, 4225)">SAC</button>
+        <button data-file="play_sac_gpu_smooth.js" data-label="★SAC-GPU final (7490, centered+smoothed, ~indefinite)">SAC-GPU★</button>
+        <button data-file="play_td3.js"     data-label="TD3 (accel=.03)">TD3</button>
+        <button data-file="qrdqn_play.js"   data-label="QR-DQN">QR-DQN</button>
+        <button data-file="rainbow_play.js" data-label="Rainbow">Rainbow</button>
+      </div>
+      <div class="sub" style="margin:8px 0 4px">SAC smoothness — strong policies (jitter@60s)</div>
+      <div class="row algobtns" id="extrabtns">
+        <button data-file="play_sac_base.js"      data-label="base 0/0 (jit .28)">base 0/0</button>
+        <button data-file="play_sac_smooth.js"    data-label="smooth accel=0.03 (jit .20)">smooth .03</button>
+        <button data-file="play_sac_a003_j003.js" data-label="a.03 j.03 (jit .10, lower score)">+jerk</button>
+        <button data-file="play_sac_j006.js"      data-label="j.06 (jit .075, low score)">pure jerk</button>
+      </div>
+      <div class="sub" style="margin:10px 0 4px">SAC energy — speed_penalty (rest when safe)</div>
+      <div class="row algobtns">
+        <button data-file="play_sac_sp0.js"  data-label="sp=0 (always fast)">sp 0</button>
+        <button data-file="play_sac_sp01.js" data-label="sp=0.01">0.01</button>
+        <button data-file="play_sac_sp02.js" data-label="sp=0.02 (rests when safe)">0.02 ★</button>
+        <button data-file="play_sac_sp04.js" data-label="sp=0.04 (very lazy)">0.04</button>
+        <button data-file="play_sac_final.js" data-label="★FINAL sp.02+accel.03 (rest+smooth)">★final</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button id="play" class="primary">▶ Play</button>
+        <button id="step">⤳ Step</button>
+        <button id="restart">⟲ Restart</button>
+        <label class="sub">Episode</label>
+        <select id="ep"></select>
+      </div>
+      <div class="row">
+        <label class="sub">Speed</label>
+        <select id="speed">
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+        <label class="sub" style="margin-left:auto">
+          <input type="checkbox" id="arrow" checked> action arrow
+        </label>
+      </div>
+      <div class="row">
+        <input type="range" id="scrub" min="0" max="0" value="0">
+      </div>
+      <div class="row sub mono"><span id="framelbl">frame 0 / 0</span></div>
+    </div>
+
+    <div class="card">
+      <div class="stat-grid">
+        <div class="k">Score</div><div class="v" id="s_score">0</div>
+        <div class="k">Time</div><div class="v" id="s_time">0.0s</div>
+        <div class="k">HP</div><div class="v" id="s_hp">100</div>
+      </div>
+      <div class="hpbar"><div class="hpfill" id="s_hpbar" style="width:100%"></div></div>
+      <div class="stat-grid" style="margin-top:8px">
+        <div class="k">Threats</div><div class="v" id="s_threats">0</div>
+        <div class="k">Action</div><div class="v mono" id="s_act">0.00, 0.00</div>
+        <div class="k">|Δaction|</div><div class="v mono" id="s_jit">0.00</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sub" style="margin-bottom:8px">Legend</div>
+      <div class="legend">
+        <div style="color:#38bdf8"><span></span>bullet</div>
+        <div style="color:#4ade80"><span></span>split</div>
+        <div style="color:#fb923c"><span></span>aimed (homing)</div>
+        <div style="color:#a78bfa"><span></span>cannon</div>
+        <div style="color:#facc15"><span></span>bomb</div>
+        <div style="color:#f43f5e"><span></span>laser</div>
+        <div style="color:#22c55e"><span></span>heal pickup</div>
+        <div style="color:#4493f8"><span></span>player (agent)</div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="sub">load file: <input type="file" id="file" accept=".js,.json"></label>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const COLORS = ["#38bdf8","#4ade80","#fb923c","#a78bfa"]; // bullet split aimed cannon
+const BOMB="#facc15", LASER="#f43f5e", HEAL="#22c55e", PLAYER="#4493f8";
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+
+let REP=null, meta=null, ep=0, frame=0, playing=false, acc=0, lastTs=0;
+
+function parseReplayText(txt){
+  const m = txt.match(/window\.REPLAY\s*=\s*([\s\S]*?);?\s*$/);
+  return JSON.parse(m ? m[1] : txt);
+}
+
+async function loadByFile(path, label){
+  $("meta").textContent = `loading ${label||path}…`;
+  try {
+    const res = await fetch(path, {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    loadReplay(parseReplayText(await res.text()));
+    document.querySelectorAll(".algobtns button").forEach(b=>
+      b.classList.toggle("on", b.dataset.file===path));
+  } catch(err){
+    $("meta").textContent = `couldn't fetch ${path} (${err.message}). ` +
+      `Serve the folder over HTTP (python -m http.server) or use "load file" below.`;
+  }
+}
+
+function loadReplay(rep){
+  REP = rep; meta = rep.meta;
+  cv.width = meta.W; cv.height = meta.H;
+  $("meta").textContent = `${meta.algo} · ${meta.action_mode} · ${rep.episodes.length} episodes · ${meta.checkpoint||""}`;
+  const sel = $("ep"); sel.innerHTML="";
+  rep.episodes.forEach((e,i)=>{
+    const o=document.createElement("option");
+    o.value=i; o.textContent=`#${i} — score ${e.score}, ${e.survived}s${e.died?" (died)":""}`;
+    sel.appendChild(o);
+  });
+  setEpisode(0); playing=true; $("play").textContent="⏸ Pause";
+}
+
+function setEpisode(i){
+  ep=i; frame=0; $("ep").value=i;
+  $("scrub").max = REP.episodes[i].frames.length-1;
+  draw();
+}
+
+function curFrames(){ return REP.episodes[ep].frames; }
+
+function draw(){
+  const F = curFrames(); if(!F.length) return;
+  const i = Math.min(frame, F.length-1), f = F[i];
+  ctx.clearRect(0,0,meta.W,meta.H);
+  ctx.strokeStyle="#1b2230"; ctx.lineWidth=1;
+  ctx.strokeRect(0.5,0.5,meta.W-1,meta.H-1);
+
+  for(const L of f.la){
+    const ca=Math.cos(L.a), sa=Math.sin(L.a), len=900;
+    const x1=L.ox-ca*len, y1=L.oy-sa*len, x2=L.ox+ca*len, y2=L.oy+sa*len;
+    if(L.ph===0){ ctx.strokeStyle="rgba(244,63,94,0.35)"; ctx.lineWidth=2; ctx.setLineDash([8,7]); }
+    else { ctx.strokeStyle=LASER; ctx.lineWidth=(L.hw+meta.player_r)*2*0.6; ctx.setLineDash([]);
+           ctx.shadowColor=LASER; ctx.shadowBlur=14; }
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    ctx.setLineDash([]); ctx.shadowBlur=0;
+  }
+  for(const b of f.bo){
+    ctx.beginPath(); ctx.arc(b.x,b.y,b.br,0,Math.PI*2);
+    if(b.ph===0){ ctx.strokeStyle="rgba(250,204,21,0.5)"; ctx.lineWidth=2; ctx.stroke();
+      ctx.fillStyle="rgba(250,204,21,0.10)"; ctx.fill();
+      ctx.beginPath(); ctx.arc(b.x,b.y,7,0,Math.PI*2); ctx.fillStyle=BOMB; ctx.fill();
+    } else { ctx.fillStyle="rgba(250,204,21,0.45)"; ctx.fill(); }
+  }
+  for(const k of f.pk){
+    ctx.fillStyle=HEAL; ctx.shadowColor=HEAL; ctx.shadowBlur=10;
+    ctx.fillRect(k.x-6,k.y-6,12,12); ctx.shadowBlur=0;
+    ctx.fillStyle="#0a0e14"; ctx.font="bold 9px monospace"; ctx.textAlign="center";
+    ctx.fillText("+",k.x,k.y+3);
+  }
+  for(const p of f.pr){
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+    ctx.fillStyle=COLORS[p.k]||"#fff"; ctx.shadowColor=ctx.fillStyle; ctx.shadowBlur=8;
+    ctx.fill(); ctx.shadowBlur=0;
+  }
+  ctx.beginPath(); ctx.arc(f.px,f.py,meta.player_r,0,Math.PI*2);
+  ctx.fillStyle = f.iv? "rgba(68,147,248,0.5)":PLAYER;
+  ctx.shadowColor=PLAYER; ctx.shadowBlur=14; ctx.fill(); ctx.shadowBlur=0;
+  if(f.iv){ ctx.strokeStyle="#9ec5ff"; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(f.px,f.py,meta.player_r+3,0,Math.PI*2); ctx.stroke(); }
+  if($("arrow").checked){
+    const mag=Math.hypot(f.ax,f.ay);
+    if(mag>0.02){
+      const L=22*Math.min(1,mag), ex=f.px+f.ax/mag*L, ey=f.py+f.ay/mag*L;
+      ctx.strokeStyle="#ffffff"; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.moveTo(f.px,f.py); ctx.lineTo(ex,ey); ctx.stroke();
+      const ang=Math.atan2(f.ay,f.ax);
+      ctx.beginPath(); ctx.moveTo(ex,ey);
+      ctx.lineTo(ex-6*Math.cos(ang-0.5), ey-6*Math.sin(ang-0.5));
+      ctx.lineTo(ex-6*Math.cos(ang+0.5), ey-6*Math.sin(ang+0.5));
+      ctx.closePath(); ctx.fillStyle="#fff"; ctx.fill();
+    }
+  }
+  // |Δaction| — the jitter metric (how much the command changed since last frame)
+  let jit=0; if(i>0){ const pf=F[i-1]; jit=Math.hypot(f.ax-pf.ax, f.ay-pf.ay); }
+  $("s_score").textContent=f.sc;
+  $("s_time").textContent=f.t.toFixed(1)+"s";
+  $("s_hp").textContent=Math.round(f.hp);
+  const hpf=$("s_hpbar"); hpf.style.width=Math.max(0,f.hp)+"%";
+  hpf.style.background = f.hp<25?"linear-gradient(90deg,#e74c3c,#c0392b)":
+                        f.hp<55?"linear-gradient(90deg,#f39c12,#e67e22)":
+                                "linear-gradient(90deg,#2ecc71,#27ae60)";
+  $("s_threats").textContent = f.pr.length + (f.la.length?` +${f.la.length}L`:"") + (f.bo.length?` +${f.bo.length}B`:"");
+  $("s_act").textContent = f.ax.toFixed(2)+", "+f.ay.toFixed(2);
+  $("s_jit").textContent = jit.toFixed(2);
+  $("scrub").value=frame;
+  $("framelbl").textContent=`frame ${frame} / ${F.length-1}`;
+}
+
+function tick(ts){
+  if(!lastTs){ lastTs=ts; requestAnimationFrame(tick); return; }
+  if(playing && REP){
+    const F=curFrames();
+    const spf = 1000*meta.dt / parseFloat($("speed").value);
+    acc += ts-lastTs;
+    while(acc>=spf){ acc-=spf; frame++; if(frame>=F.length){ frame=F.length-1; playing=false; $("play").textContent="▶ Play"; break; } }
+    draw();
+  }
+  lastTs=ts; requestAnimationFrame(tick);
+}
+
+document.querySelectorAll(".algobtns button").forEach(b=>
+  b.onclick=()=>loadByFile(b.dataset.file, b.dataset.label));
+$("play").onclick=()=>{ if(!REP) return; playing=!playing; $("play").textContent=playing?"⏸ Pause":"▶ Play";
+  if(playing && frame>=curFrames().length-1) frame=0; };
+$("step").onclick=()=>{ if(!REP) return; playing=false; $("play").textContent="▶ Play";
+  if(frame<curFrames().length-1){frame++;draw();} };
+$("restart").onclick=()=>{ if(!REP) return; frame=0; draw(); };
+$("ep").onchange=e=>setEpisode(+e.target.value);
+$("scrub").oninput=e=>{ frame=+e.target.value; draw(); };
+$("file").onchange=e=>{
+  const file=e.target.files[0]; if(!file) return;
+  const rd=new FileReader();
+  rd.onload=()=>{ try{ loadReplay(parseReplayText(rd.result)); }catch(err){ alert("parse failed: "+err); } };
+  rd.readAsText(file);
+};
+
+loadByFile("sac_play.js","SAC");          // default
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
