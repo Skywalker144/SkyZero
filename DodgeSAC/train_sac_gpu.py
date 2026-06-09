@@ -89,17 +89,18 @@ def gpu_eval(actor, dev, env_kwargs, episodes=30, max_steps=18000, seed=999):
     n = max(episodes, 64)
     ev = VecDodgeGPU(n, device=dev, max_steps=max_steps, **env_kwargs)
     obs = ev.reset(seed=seed)
-    scores, survs, steps = [], [], 0
+    scores, survs, rets, steps = [], [], [], 0
     while len(scores) < episodes and steps < max_steps + 5:
         obs, r, term, trunc, info = ev.step(actor.mean_action(obs))
         ep = info["episodes"]; dm = ep["done"]
         if bool(dm.any()):
             scores += ep["score"][dm].tolist(); survs += ep["survived"][dm].tolist()
+            rets += ep["ret"][dm].tolist()
         steps += 1
-    s, v = np.array(scores[:episodes]), np.array(survs[:episodes])
+    s, v, rt = np.array(scores[:episodes]), np.array(survs[:episodes]), np.array(rets[:episodes])
     return {"score_mean": float(s.mean()), "score_max": int(s.max()),
             "surv_mean": float(v.mean()), "surv_max": float(v.max()),
-            "ret_mean": float("nan"), "hp_mean": float("nan"), "len_mean": float(v.mean() * 30)}
+            "ret_mean": float(rt.mean()), "hp_mean": float("nan"), "len_mean": float(v.mean() * 30)}
 
 
 def main():
