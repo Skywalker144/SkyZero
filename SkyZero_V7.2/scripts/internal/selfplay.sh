@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 SCRIPTS_DIR="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPTS_DIR/.." &> /dev/null && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/log_common.sh"
 
 iter="${1:?iter required}"
 games="${2:?games required}"
@@ -17,7 +19,7 @@ source "$CONFIG_DIR/paths.cfg"
 PY="${PY:-python}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
-    echo "[selfplay.sh] binary not found or not executable: $SELFPLAY_BIN" >&2
+    echo "$(_tag SelfPlay) binary not found or not executable: $SELFPLAY_BIN" >&2
     echo "Build it first: bash scripts/build.sh" >&2
     exit 1
 fi
@@ -46,7 +48,7 @@ fi
 # when NUM_SIMULATIONS_STAGES/SCHEDULE are empty or length-mismatched.
 NSIM=$( cd "$ROOT/python" && "$PY" warmup.py num-simulations --data-dir "$DATA_DIR" )
 
-echo "[selfplay.sh] iter=$iter games=$games num_simulations=$NSIM main_gpu=$MAIN_GPU devices=${INFERENCE_SERVER_DEVICES}"
+echo "$(_tag SelfPlay) iter=$iter games=$games num_simulations=$NSIM main_gpu=$MAIN_GPU devices=${INFERENCE_SERVER_DEVICES}"
 "$SELFPLAY_BIN" \
     --model "$DATA_DIR/models/latest.pt" \
     --output-dir "$DATA_DIR/selfplay" \

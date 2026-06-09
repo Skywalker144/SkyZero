@@ -16,8 +16,11 @@ import sys
 
 import torch
 
+from log_util import tag
 from model_config import net_config_from_name
 from nets import build_model
+
+TAG = tag("Export")
 
 
 def main() -> int:
@@ -49,12 +52,12 @@ def main() -> int:
         swa_sd = state["swa_model_state_dict"]
         stripped = {k[len("module."):]: v for k, v in swa_sd.items() if k.startswith("module.")}
         model.load_state_dict(stripped)
-        print(f"[export_model] loaded SWA weights from {ckpt_path}")
+        print(f"{TAG} loaded SWA weights from {ckpt_path}")
     else:
         if isinstance(state, dict) and "model_state_dict" in state:
             state = state["model_state_dict"]
         model.load_state_dict(state)
-        print(f"[export_model] loaded raw weights from {ckpt_path}")
+        print(f"{TAG} loaded raw weights from {ckpt_path}")
     # TRAP 3 (NOTES.md §3.3): NormMask.scale not in state_dict. Without this,
     # WDL logits magnitude blows up ~10× (overconfident, "model looks broken").
     model.set_norm_scales()
@@ -88,7 +91,7 @@ def main() -> int:
         json.dump(meta, f)
     os.replace(meta_tmp, meta_path)
 
-    print(f"[export_model] wrote {iter_path} and updated {latest}")
+    print(f"{TAG} wrote {iter_path} and updated {latest}")
     return 0
 
 

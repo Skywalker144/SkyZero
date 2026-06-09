@@ -38,6 +38,9 @@ from data_processing import (
     load_npz,
     save_npz,
 )
+from log_util import tag
+
+TAG = tag("Shuffle")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -291,7 +294,7 @@ def main() -> int:
     keep_target_rows = _env_int("KEEP_TARGET_ROWS", 20_000_000)
 
     if not selfplay_dir.exists():
-        print(f"[Shuffle] selfplay dir missing: {selfplay_dir}", file=sys.stderr)
+        print(f"{TAG} selfplay dir missing: {selfplay_dir}", file=sys.stderr)
         return 1
 
     num_workers = max(1, args.num_workers or 1)
@@ -311,7 +314,7 @@ def main() -> int:
         pass
 
     if not files_rows:
-        print("[Shuffle] no selfplay files found", file=sys.stderr)
+        print(f"{TAG} no selfplay files found", file=sys.stderr)
         if pool is not None:
             pool.close()
             pool.join()
@@ -325,7 +328,7 @@ def main() -> int:
     # run.sh treats exit-code 2 as "skipped, not an error" and continues the
     # loop without calling train.py / export.py.
     if total < min_rows:
-        print(f"[Shuffle] total_rows={total} < MIN_ROWS={min_rows} "
+        print(f"{TAG} total_rows={total} < MIN_ROWS={min_rows} "
               f"-- skipping training this iter", file=sys.stderr)
         if shuffled_dir.exists():
             shutil.rmtree(shuffled_dir)
@@ -338,7 +341,7 @@ def main() -> int:
     keep = min(pool_size, keep_target_rows)
     ratio = keep / pool_size if pool_size > 0 else 1.0
 
-    print(f"[Shuffle] total_rows={total} pool={pool_size} keep={keep} "
+    print(f"{TAG} total_rows={total} pool={pool_size} keep={keep} "
           f"ratio={ratio:.4f} (min_rows={min_rows}, exponent={exponent}, "
           f"expand_per_row={expand_per_row}, keep_target={keep_target_rows}) "
           f"discover={t_discover:.2f}s")
@@ -375,17 +378,17 @@ def main() -> int:
                 op.unlink()
                 removed += 1
             except OSError as e:
-                print(f"[Shuffle] OOW cleanup could not remove {op}: {e}",
+                print(f"{TAG} OOW cleanup could not remove {op}: {e}",
                       file=sys.stderr)
         if removed > 0:
-            print(f"[Shuffle] OOW cleanup: deleted {removed} files past pool boundary")
+            print(f"{TAG} OOW cleanup: deleted {removed} files past pool boundary")
 
     shard_rows = args.shard_rows
     K = max(1, math.ceil(covered / shard_rows))
 
     groups = group_files_by_rows(chosen, args.worker_group_size)
     num_groups = len(groups)
-    print(f"[Shuffle] pass1: {covered} rows from {len(chosen)} files -> "
+    print(f"{TAG} pass1: {covered} rows from {len(chosen)} files -> "
           f"{num_groups} groups x {K} buckets (workers={num_workers})")
 
     # Fresh scatter dir.
@@ -412,7 +415,7 @@ def main() -> int:
     else:
         pass1_total = sum(_shardify_job(a) for a in shardify_args)
     t_pass1 = time.perf_counter() - t1
-    print(f"[Shuffle] pass1 done: {pass1_total} rows scattered in {t_pass1:.2f}s")
+    print(f"{TAG} pass1 done: {pass1_total} rows scattered in {t_pass1:.2f}s")
 
     # Pass 2: per-bucket merge.
     if shuffled_dir.exists():
@@ -449,9 +452,9 @@ def main() -> int:
     shutil.rmtree(scatter_dir, ignore_errors=True)
 
     total_t = time.perf_counter() - t0
-    print(f"[Shuffle] pass2 done: {num_shards_written} shards, "
+    print(f"{TAG} pass2 done: {num_shards_written} shards, "
           f"{total_written} rows in {t_pass2:.2f}s")
-    print(f"[Shuffle] wrote {num_shards_written} shards, "
+    print(f"{TAG} wrote {num_shards_written} shards, "
           f"{total_written} rows total to {shuffled_dir} "
           f"(total={total_t:.2f}s)")
     return 0

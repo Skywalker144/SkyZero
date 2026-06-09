@@ -27,6 +27,19 @@ import pathlib
 import sys
 
 from bucket import read_cum_rows
+from log_util import tag
+
+TAG = tag("Schedule", sys.stderr)
+
+
+def _sci(x: int) -> str:
+    """Match run.sh's fmt_sci: 1200000 -> '1.2e6', 0 -> '0'."""
+    if x == 0:
+        return "0"
+    m, e = f"{x:.1e}".split("e")
+    if m.endswith(".0"):
+        m = m[:-2]
+    return f"{m}e{int(e)}"
 
 
 def parse_networks(s: str) -> list[str]:
@@ -74,7 +87,7 @@ def main() -> int:
     if args.cmd == "active":
         cum_rows = read_cum_rows(pathlib.Path(args.data_dir) / "logs" / "selfplay.tsv")
         name = active_network(networks, thresholds, cum_rows)
-        print(f"[schedule] cum_rows={cum_rows} -> active={name}", file=sys.stderr)
+        print(f"{TAG} cum_rows={_sci(cum_rows)} -> active={name}", file=sys.stderr)
         print(name)
     elif args.cmd == "list":
         if len(networks) != len(thresholds):

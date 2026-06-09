@@ -1,8 +1,18 @@
 // gomoku_elo — headless model-A-vs-model-B match runner.
 //
-// Loads two TorchScript models, plays N games alternating colors (A-black on
-// even game indices, B-black on odd), and appends one JSON line per game to
-// the output file. Designed to feed python/elo.py.
+// Two modes:
+//   * single pair  : --model-a P --model-b P --num-games N
+//     Plays N games alternating colors (A-black on even game indices), appends
+//     one JSON line per game to --output. The original behavior.
+//   * tournament   : --match-schedule FILE
+//     FILE has one "pathA|pathB|games" line per pair. Every DISTINCT checkpoint
+//     is loaded ONCE (shared per-model batched inference server), and a single
+//     global worker pool plays games drawn from ALL pairs concurrently. This
+//     keeps one GPU saturated across a many-pair tournament (the multi-network
+//     Elo case) without paying per-pair process/model-load overhead.
+//
+// Both modes emit the same JSON schema (a, b, a_black, winner_a, plies,
+// opening_plies) and feed python/elo.py.
 //
 // Shares config/inference scaffolding with gomoku_play_main.cpp.
 
@@ -92,6 +102,7 @@ struct CliArgs {
     std::string model_b;
     std::string config;
     std::string output;
+    std::string match_schedule;   // when set: tournament mode (model-a/b ignored)
     int num_games = 40;
     int num_simulations_override = -1;
     uint64_t seed = 0;
@@ -110,15 +121,21 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--model-b") a.model_b = need("--model-b");
         else if (k == "--config") a.config = need("--config");
         else if (k == "--output") a.output = need("--output");
+        else if (k == "--match-schedule") a.match_schedule = need("--match-schedule");
         else if (k == "--num-games") a.num_games = std::stoi(need("--num-games"));
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
         else if (k == "--seed") { a.seed = std::stoull(need("--seed")); a.seed_set = true; }
         else throw std::runtime_error("unknown arg: " + k);
     }
-    if (a.model_a.empty() || a.model_b.empty() || a.config.empty() || a.output.empty()) {
+    if (a.config.empty() || a.output.empty()) {
         throw std::runtime_error(
-            "usage: gomoku_elo --model-a PATH --model-b PATH --config PATH --output PATH "
-            "[--num-games N] [--num-simulations N] [--seed S]");
+            "usage: gomoku_elo --config PATH --output PATH "
+            "(--model-a PATH --model-b PATH [--num-games N] | --match-schedule FILE) "
+            "[--num-simulations N] [--seed S]");
+    }
+    if (a.match_schedule.empty() && (a.model_a.empty() || a.model_b.empty())) {
+        throw std::runtime_error("single-pair mode needs --model-a and --model-b "
+                                 "(or use --match-schedule FILE for tournament mode)");
     }
     return a;
 }
@@ -140,9 +157,9 @@ static std::unique_ptr<ModelHandle> load_model(const std::string& path, const to
 
 // Batched inference server: one thread that drains a request queue, builds a
 // tensor batch (capped at batch_size, waiting up to wait_us for fill-up), runs
-// one forward pass under the model's mutex, and scatters results back via
-// per-request promises. Thread-safe; multiple game threads may submit
-// concurrently. Owns one ModelHandle (caller-supplied).
+// one forward, and fans the outputs back to the per-request promises. Thread-
+// safe; multiple game threads may submit concurrently. Owns one ModelHandle
+// (caller-supplied).
 class BatchedInferenceServer {
 public:
     using Output = std::pair<std::vector<float>, std::array<float, 3>>;
@@ -327,6 +344,132 @@ private:
 };
 
 
+struct GameResult {
+    int winner_a = 0;      // +1 A won, -1 B won, 0 draw
+    int plies = 0;
+    int opening_plies = 0;
+};
+
+// Play one full game between two inference callables (infer_a / infer_b), with
+// `a_is_black` deciding which side A takes. Constructs its own MCTS trees and
+// (optionally) a balanced opening, so it is self-contained and reentrant: any
+// worker can call it for any (model-a, model-b) pair. Templated on the infer
+// callables so single-pair and tournament modes pass their lambdas with zero
+// type erasure.
+template <typename InferA, typename InferB>
+static GameResult play_one_game(Gomoku& game, const SkyZeroConfig& cfg,
+                                bool enable_balanced_opening, int search_threads,
+                                InferA infer_a, InferB infer_b,
+                                bool a_is_black, std::mt19937& rng) {
+    TreeParallelMCTS<Gomoku> mcts_a(game, cfg, search_threads, infer_a, rng());
+    TreeParallelMCTS<Gomoku> mcts_b(game, cfg, search_threads, infer_b, rng());
+    std::unique_ptr<MCTSNode> root_a, root_b;
+
+    // KataGomo-style balanced opening with two judges. RandomOpening coin-flips
+    // A vs B as the value-judging network at the top of each try_once, so over a
+    // pair both sides judge ~half the openings — bias-symmetric for Elo.
+    std::unique_ptr<RandomOpening<Gomoku>> opening;
+    if (enable_balanced_opening) {
+        opening.reset(new RandomOpening<Gomoku>(game, infer_a, infer_b, cfg, rng()));
+    }
+
+    auto init = game.get_initial_state(rng);
+    std::vector<int8_t> state = std::move(init.board);
+    int to_play = init.to_play;
+    int last_action = -1;
+    int last_player = 0;
+    int plies = 0;
+    int opening_plies = 0;
+    if (opening) {
+        opening->initialize(state, to_play);
+        for (int8_t v : state) if (v != 0) ++opening_plies;
+    }
+
+    while (!game.is_terminal(state, last_action, last_player)) {
+        const bool a_to_move = (a_is_black && to_play == 1)
+                            || (!a_is_black && to_play == -1);
+        auto& mcts = a_to_move ? mcts_a : mcts_b;
+        auto& root = a_to_move ? root_a : root_b;
+
+        root.reset(new MCTSNode(state, to_play));
+        const auto res = mcts.search(state, to_play, cfg.num_simulations, root);
+        // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
+        // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate at the
+        // boundary, mirroring gomoku_play_main.cpp:635.
+        int action = (res.gumbel_action >= 0)
+            ? Gomoku::canvas_pos_to_loc(res.gumbel_action, game.board_size)
+            : -1;
+        if (action < 0) {
+            const auto legal = game.get_is_legal_actions(state, to_play);
+            for (int i = 0; i < static_cast<int>(legal.size()); ++i) {
+                if (legal[i]) { action = i; break; }
+            }
+        }
+        if (action < 0) break;
+
+        state = game.get_next_state(state, action, to_play);
+        last_action = action;
+        last_player = to_play;
+        to_play = -to_play;
+        ++plies;
+    }
+
+    const int winner = game.get_winner(state, last_action, last_player);
+    int winner_a = 0;
+    if (winner != 0) {
+        const int a_side = a_is_black ? 1 : -1;
+        winner_a = (winner == a_side) ? 1 : -1;
+    }
+    return {winner_a, plies, opening_plies};
+}
+
+// One scheduled pairing for tournament mode.
+struct PairSpec {
+    std::string a;
+    std::string b;
+    int games;
+};
+
+static std::string basename_of(const std::string& p) {
+    const auto slash = p.find_last_of('/');
+    return slash == std::string::npos ? p : p.substr(slash + 1);
+}
+
+// Parse a match-schedule file: one "pathA|pathB|games" line per pairing.
+// Blank lines and '#' comments are skipped.
+static std::vector<PairSpec> parse_schedule(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) throw std::runtime_error("cannot open match schedule: " + path);
+    std::vector<PairSpec> pairs;
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        const auto a0 = line.find_first_not_of(" \t\r");
+        if (a0 == std::string::npos) continue;
+        const auto p1 = line.find('|');
+        const auto p2 = (p1 == std::string::npos) ? std::string::npos : line.find('|', p1 + 1);
+        if (p1 == std::string::npos || p2 == std::string::npos) {
+            throw std::runtime_error("bad schedule line (want pathA|pathB|games): " + line);
+        }
+        PairSpec ps;
+        ps.a = line.substr(0, p1);
+        ps.b = line.substr(p1 + 1, p2 - p1 - 1);
+        ps.games = std::stoi(line.substr(p2 + 1));
+        // trim whitespace on the paths
+        auto trim = [](std::string& s) {
+            const auto b = s.find_first_not_of(" \t\r");
+            const auto e = s.find_last_not_of(" \t\r");
+            s = (b == std::string::npos) ? std::string() : s.substr(b, e - b + 1);
+        };
+        trim(ps.a);
+        trim(ps.b);
+        if (ps.games > 0 && !ps.a.empty() && !ps.b.empty()) pairs.push_back(std::move(ps));
+    }
+    return pairs;
+}
+
+
 int main(int argc, char** argv) {
     try {
         std::setvbuf(stdout, nullptr, _IOLBF, 0);
@@ -398,9 +541,6 @@ int main(int argc, char** argv) {
                                               : torch::Device(torch::kCPU);
         cfg.device = device;
 
-        auto ha = load_model(cli.model_a, device);
-        auto hb = load_model(cli.model_b, device);
-
         // V5: NUM_SPATIAL_PLANES_V5 planes on a MAX_BOARD_SIZE canvas,
         // regardless of game.board_size (padded).
         const int c = Gomoku::NUM_SPATIAL_PLANES_V5;
@@ -416,16 +556,127 @@ int main(int argc, char** argv) {
             1, cfg_get<int>(cfg_map, "ELO_SEARCH_THREADS_PER_TREE",
                              default_search_threads));
 
+        const uint64_t seed = cli.seed_set ? cli.seed : std::random_device{}();
+
+        std::ofstream out(cli.output, std::ios::app);
+        if (!out) throw std::runtime_error("cannot open output: " + cli.output);
+
+        // =================================================================
+        // Tournament mode: --match-schedule
+        // =================================================================
+        if (!cli.match_schedule.empty()) {
+            const std::vector<PairSpec> pairs = parse_schedule(cli.match_schedule);
+            if (pairs.empty()) {
+                std::cerr << "[gomoku_elo] schedule empty; nothing to do\n";
+                return 0;
+            }
+
+            // Load each DISTINCT checkpoint once; one shared server per model.
+            std::unordered_map<std::string, std::unique_ptr<ModelHandle>> handles;
+            std::unordered_map<std::string, std::unique_ptr<BatchedInferenceServer>> servers;
+            auto ensure_model = [&](const std::string& p) {
+                if (servers.count(p)) return;
+                handles[p] = load_model(p, device);
+                servers[p] = std::make_unique<BatchedInferenceServer>(
+                    handles[p].get(), device, c, board, infer_batch, infer_wait_us, &game);
+            };
+            for (const auto& ps : pairs) { ensure_model(ps.a); ensure_model(ps.b); }
+
+            // Flatten pairs into individual game units (color alternates within
+            // a pair: even index -> A black). One global queue feeds the pool,
+            // so concurrent games span many pairs and every model's server
+            // batches across all of them.
+            struct Unit { int pair_idx; int g; };
+            std::vector<Unit> units;
+            long long total = 0;
+            for (int pi = 0; pi < static_cast<int>(pairs.size()); ++pi) total += pairs[pi].games;
+            units.reserve(static_cast<size_t>(total));
+            for (int pi = 0; pi < static_cast<int>(pairs.size()); ++pi)
+                for (int g = 0; g < pairs[pi].games; ++g) units.push_back({pi, g});
+
+            std::cerr << "[gomoku_elo] tournament: " << pairs.size() << " pairs, "
+                      << servers.size() << " distinct models, " << total << " games"
+                      << " | device=" << (use_cuda ? "cuda" : "cpu")
+                      << " sims=" << cfg.num_simulations
+                      << " threads=" << search_threads
+                      << " concurrent=" << num_concurrent
+                      << " infer_batch=" << infer_batch
+                      << " seed=" << seed
+                      << " balanced_opening=" << (enable_balanced_opening ? 1 : 0) << "\n";
+
+            std::atomic<int> next_unit{0};
+            std::atomic<long long> done{0};
+            std::mutex out_mu, log_mu, err_mu;
+            std::atomic<bool> abort_flag{false};
+            std::exception_ptr first_err;
+
+            auto worker = [&](int tid) {
+                try {
+                    std::mt19937 rng(seed
+                        + 0x9E3779B97F4A7C15ULL * static_cast<uint64_t>(tid + 1));
+                    while (!abort_flag.load()) {
+                        const int u = next_unit.fetch_add(1);
+                        if (u >= static_cast<int>(units.size())) break;
+                        const Unit& unit = units[static_cast<size_t>(u)];
+                        const PairSpec& ps = pairs[static_cast<size_t>(unit.pair_idx)];
+                        const bool a_is_black = (unit.g % 2 == 0);
+
+                        auto& sa = *servers.at(ps.a);
+                        auto& sb = *servers.at(ps.b);
+                        auto infer_a = [&sa](const std::vector<int8_t>& e) { return sa.infer(e); };
+                        auto infer_b = [&sb](const std::vector<int8_t>& e) { return sb.infer(e); };
+
+                        const GameResult r = play_one_game(
+                            game, cfg, enable_balanced_opening, search_threads,
+                            infer_a, infer_b, a_is_black, rng);
+
+                        {
+                            std::lock_guard<std::mutex> lk(out_mu);
+                            out << "{\"a\":\"" << ps.a << "\","
+                                << "\"b\":\"" << ps.b << "\","
+                                << "\"a_black\":" << (a_is_black ? "true" : "false") << ","
+                                << "\"winner_a\":" << r.winner_a << ","
+                                << "\"plies\":" << r.plies << ","
+                                << "\"opening_plies\":" << r.opening_plies << "}\n";
+                            out.flush();
+                        }
+                        const long long d = done.fetch_add(1) + 1;
+                        if (d == total || d % 50 == 0) {
+                            std::lock_guard<std::mutex> lk(log_mu);
+                            std::cerr << "[gomoku_elo] " << d << "/" << total << " games"
+                                      << " (last: " << basename_of(ps.a) << " vs "
+                                      << basename_of(ps.b) << ", winner_a=" << r.winner_a << ")\n";
+                        }
+                    }
+                } catch (...) {
+                    std::lock_guard<std::mutex> lk(err_mu);
+                    if (!first_err) first_err = std::current_exception();
+                    abort_flag.store(true);
+                }
+            };
+
+            std::vector<std::thread> workers;
+            workers.reserve(num_concurrent);
+            for (int t = 0; t < num_concurrent; ++t) workers.emplace_back(worker, t);
+            for (auto& w : workers) w.join();
+            if (first_err) std::rethrow_exception(first_err);
+
+            std::cerr << "[gomoku_elo] tournament done. " << done.load() << " games written to "
+                      << cli.output << "\n";
+            return 0;
+        }
+
+        // =================================================================
+        // Single-pair mode: --model-a / --model-b
+        // =================================================================
+        auto ha = load_model(cli.model_a, device);
+        auto hb = load_model(cli.model_b, device);
+
         BatchedInferenceServer server_a(ha.get(), device, c, board, infer_batch, infer_wait_us, &game);
         BatchedInferenceServer server_b(hb.get(), device, c, board, infer_batch, infer_wait_us, &game);
 
         auto infer_a = [&](const std::vector<int8_t>& e) { return server_a.infer(e); };
         auto infer_b = [&](const std::vector<int8_t>& e) { return server_b.infer(e); };
-
-        const uint64_t seed = cli.seed_set ? cli.seed : std::random_device{}();
-
-        std::ofstream out(cli.output, std::ios::app);
-        if (!out) throw std::runtime_error("cannot open output: " + cli.output);
 
         std::cerr << "[gomoku_elo] A=" << cli.model_a << "\n"
                   << "              B=" << cli.model_b << "\n"
@@ -450,75 +701,18 @@ int main(int argc, char** argv) {
             try {
                 std::mt19937 rng(seed
                     + 0x9E3779B97F4A7C15ULL * static_cast<uint64_t>(tid + 1));
-                TreeParallelMCTS<Gomoku> mcts_a(game, cfg, search_threads, infer_a, rng());
-                TreeParallelMCTS<Gomoku> mcts_b(game, cfg, search_threads, infer_b, rng());
-                std::unique_ptr<MCTSNode> root_a, root_b;
-
-                // KataGomo-style balanced opening with two judges. RandomOpening
-                // coin-flips A vs B as the value-judging network at the top of
-                // each try_once, so over a 30-game pair each side judges ~half
-                // the openings — bias-symmetric for Elo.
-                std::unique_ptr<RandomOpening<Gomoku>> opening;
-                if (enable_balanced_opening) {
-                    opening.reset(new RandomOpening<Gomoku>(
-                        game, infer_a, infer_b, cfg, rng()));
-                }
-
                 while (!abort_flag.load()) {
                     const int g = next_game_idx.fetch_add(1);
                     if (g >= cli.num_games) break;
 
                     // Even g: A plays black (to_play=1). Odd g: B plays black.
                     const bool a_is_black = (g % 2 == 0);
-                    auto init = game.get_initial_state(rng);
-                    std::vector<int8_t> state = std::move(init.board);
-                    int to_play = init.to_play;
-                    int last_action = -1;
-                    int last_player = 0;
-                    int plies = 0;
-                    int opening_plies = 0;
-                    if (opening) {
-                        opening->initialize(state, to_play);
-                        for (int8_t v : state) if (v != 0) ++opening_plies;
-                    }
+                    const GameResult r = play_one_game(
+                        game, cfg, enable_balanced_opening, search_threads,
+                        infer_a, infer_b, a_is_black, rng);
 
-                    while (!game.is_terminal(state, last_action, last_player)) {
-                        const bool a_to_move = (a_is_black && to_play == 1)
-                                            || (!a_is_black && to_play == -1);
-                        auto& mcts = a_to_move ? mcts_a : mcts_b;
-                        auto& root = a_to_move ? root_a : root_b;
-
-                        root.reset(new MCTSNode(state, to_play));
-                        const auto res = mcts.search(state, to_play, cfg.num_simulations, root);
-                        // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
-                        // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
-                        // at the boundary, mirroring gomoku_play_main.cpp:635.
-                        int action = (res.gumbel_action >= 0)
-                            ? Gomoku::canvas_pos_to_loc(res.gumbel_action, game.board_size)
-                            : -1;
-                        if (action < 0) {
-                            const auto legal = game.get_is_legal_actions(state, to_play);
-                            for (int i = 0; i < static_cast<int>(legal.size()); ++i) {
-                                if (legal[i]) { action = i; break; }
-                            }
-                        }
-                        if (action < 0) break;
-
-                        state = game.get_next_state(state, action, to_play);
-                        last_action = action;
-                        last_player = to_play;
-                        to_play = -to_play;
-                        ++plies;
-                    }
-
-                    const int winner = game.get_winner(state, last_action, last_player);
-                    int winner_a = 0;
-                    if (winner != 0) {
-                        const int a_side = a_is_black ? 1 : -1;
-                        winner_a = (winner == a_side) ? 1 : -1;
-                    }
-                    if (winner_a > 0) a_wins.fetch_add(1);
-                    else if (winner_a < 0) b_wins.fetch_add(1);
+                    if (r.winner_a > 0) a_wins.fetch_add(1);
+                    else if (r.winner_a < 0) b_wins.fetch_add(1);
                     else draws.fetch_add(1);
                     const int aw = a_wins.load();
                     const int bw = b_wins.load();
@@ -529,17 +723,17 @@ int main(int argc, char** argv) {
                         out << "{\"a\":\"" << cli.model_a << "\","
                             << "\"b\":\"" << cli.model_b << "\","
                             << "\"a_black\":" << (a_is_black ? "true" : "false") << ","
-                            << "\"winner_a\":" << winner_a << ","
-                            << "\"plies\":" << plies << ","
-                            << "\"opening_plies\":" << opening_plies << "}\n";
+                            << "\"winner_a\":" << r.winner_a << ","
+                            << "\"plies\":" << r.plies << ","
+                            << "\"opening_plies\":" << r.opening_plies << "}\n";
                         out.flush();
                     }
                     {
                         std::lock_guard<std::mutex> lk(log_mu);
                         std::cerr << "[gomoku_elo] game " << (g + 1) << "/" << cli.num_games
                                   << " a_black=" << (a_is_black ? 1 : 0)
-                                  << " winner_a=" << winner_a
-                                  << " plies=" << plies
+                                  << " winner_a=" << r.winner_a
+                                  << " plies=" << r.plies
                                   << " | A:" << aw << " D:" << dr << " B:" << bw << "\n";
                     }
                 }

@@ -10,12 +10,14 @@
 #   GPU_NUM<=1 -> exits with a hint (daemon not needed in single-GPU mode).
 set -euo pipefail
 
-trap 'trap - INT TERM; echo "[daemon-watchdog] stopping."; kill 0 2>/dev/null; exit 130' INT TERM
+trap 'trap - INT TERM; echo "$(_tag Daemon) stopping."; kill 0 2>/dev/null; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 SCRIPTS_DIR="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPTS_DIR/.." &> /dev/null && pwd)"
 cd "$ROOT"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/log_common.sh"
 
 CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
 [[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
@@ -35,7 +37,7 @@ PY=${PY:-python}
 SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
-    echo "[daemon] binary not found or not executable: $SELFPLAY_BIN" >&2
+    echo "$(_tag Daemon) binary not found or not executable: $SELFPLAY_BIN" >&2
     echo "Build it first: bash scripts/build.sh" >&2
     exit 1
 fi
@@ -45,7 +47,7 @@ GPU_NUM="${GPU_NUM:-1}"
 # Derive SELFPLAY_DAEMON_GPUS from GPU_NUM if user didn't pin it.
 if [[ -z "${SELFPLAY_DAEMON_GPUS:-}" ]]; then
     if [[ "$GPU_NUM" -le 1 ]]; then
-        echo "[daemon] GPU_NUM<=1, daemon not needed; exiting."
+        echo "$(_tag Daemon) GPU_NUM<=1, daemon not needed; exiting."
         exit 1
     fi
     gpus=""
@@ -65,7 +67,7 @@ gpus = [g for g in gpus if g.strip() != '']
 print(len(gpus))
 ")
 if [[ "$GPU_COUNT" -le 0 ]]; then
-    echo "[daemon] no GPUs selected for SELFPLAY_DAEMON_GPUS='$SELFPLAY_DAEMON_GPUS'" >&2
+    echo "$(_tag Daemon) no GPUs selected for SELFPLAY_DAEMON_GPUS='$SELFPLAY_DAEMON_GPUS'" >&2
     exit 1
 fi
 SV_PER_GPU="${INFERENCE_SERVERS_PER_GPU:-2}"
@@ -91,8 +93,8 @@ POLL_MS="${DAEMON_RELOAD_POLL_MS:-2000}"
 # resolution for the main loop. Empty string disables (cfg fallback wins).
 SIMS_WARMUP_CMD="cd $ROOT/python && $PY warmup.py num-simulations --data-dir $DATA_DIR"
 
-echo "[daemon-watchdog] gpus=$SELFPLAY_DAEMON_GPUS servers=$DSV per_gpu=$SV_PER_GPU workers=$DWK devices=$INFERENCE_SERVER_DEVICES"
-echo "[daemon-watchdog] poll_ms=$POLL_MS"
+echo "$(_tag Daemon) gpus=$SELFPLAY_DAEMON_GPUS servers=$DSV per_gpu=$SV_PER_GPU workers=$DWK devices=$INFERENCE_SERVER_DEVICES"
+echo "$(_tag Daemon) poll_ms=$POLL_MS"
 
 while true; do
     "$SELFPLAY_BIN" --daemon \
@@ -106,10 +108,10 @@ while true; do
     rc=${rc:-0}
     if [[ "$rc" -eq 130 ]]; then
         # SIGINT: user-initiated shutdown.
-        echo "[daemon-watchdog] interrupted; exiting."
+        echo "$(_tag Daemon) interrupted; exiting."
         exit 0
     fi
-    echo "[daemon-watchdog] selfplay_main exited rc=$rc; restarting in 5s"
+    echo "$(_tag Daemon) selfplay_main exited rc=$rc; restarting in 5s"
     unset rc
     sleep 5
 done

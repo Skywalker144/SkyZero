@@ -30,6 +30,10 @@ import os
 import pathlib
 import sys
 
+from log_util import tag
+
+TAG = tag("Bucket", sys.stderr)
+
 
 def _env_int(name: str, default: int) -> int:
     return int(float(os.environ.get(name, str(default))))
@@ -122,7 +126,7 @@ def main() -> int:
     save_state(state_path, state)
 
     print(
-        f"[bucket] cum_rows={cum_rows} new_rows={new_rows} "
+        f"{TAG} cum_rows={cum_rows} new_rows={new_rows} "
         f"fill=+{fill:.0f} bucket={bucket:.0f}/{cap} epochs={epochs} "
         f"-> train_steps={train_steps}",
         file=sys.stderr,

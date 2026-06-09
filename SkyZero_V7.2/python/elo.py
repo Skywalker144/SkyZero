@@ -26,6 +26,11 @@ from scipy.optimize import minimize
 
 ITER_RE = re.compile(r"(\d+)")
 
+# Default series key: the network-name segment in a checkpoint path,
+# e.g. ".../nets/b4c96/scripted_iter_000312.pt" -> "b4c96". Override via
+# --series-regex (e.g. "(nsim\\d+)" to group a wallclock sweep by sim count).
+DEFAULT_SERIES_RE = r"/nets/([^/]+)/"
+
 
 def parse_iter(path: str) -> int | None:
     """Extract a trailing iteration number from a model filename, if any."""
@@ -33,6 +38,18 @@ def parse_iter(path: str) -> int | None:
     # Prefer the last numeric run in the stem (so 'anchor_iter_200' -> 200).
     matches = ITER_RE.findall(name)
     return int(matches[-1]) if matches else None
+
+
+def series_of(path: str, pattern: re.Pattern) -> str:
+    """The plot-series label for a model path (one curve per distinct series).
+
+    Uses the first capture group of `pattern`; falls back to the parent dir
+    name when the pattern does not match (so legacy $DATA_DIR/models/ paths
+    still group sensibly)."""
+    m = pattern.search(path.replace("\\", "/"))
+    if m and m.groups():
+        return m.group(1)
+    return Path(path).parent.name or "models"
 
 
 def load_games(path: Path) -> list[dict]:
@@ -135,7 +152,12 @@ def main() -> int:
                     help="Also write the ratings table (one row per model) to this text file")
     ap.add_argument("--min-games", type=int, default=1,
                     help="Drop models with fewer than this many total games")
+    ap.add_argument("--series-regex", default=DEFAULT_SERIES_RE,
+                    help="Regex whose first group labels each plot series "
+                         "(default groups by /nets/<name>/; e.g. '(nsim\\d+)' "
+                         "to group a wallclock sweep by sim count).")
     args = ap.parse_args()
+    series_re = re.compile(args.series_regex)
 
     games = load_games(args.games)
     if not games:
@@ -168,18 +190,21 @@ def main() -> int:
     w = max(len(os.path.basename(m)) for m in models)
     rows = []
     for m, e, es in zip(models, elo, elo_se):
-        rows.append((m, counts[m], e, es, parse_iter(m)))
-    # Sort table by iteration (anchors first by their iter number too).
-    rows.sort(key=lambda x: (x[4] if x[4] is not None else -1, x[0]))
+        ser = "anchor" if "/anchors/" in m else series_of(m, series_re)
+        rows.append((m, counts[m], e, es, parse_iter(m), ser))
+    sw = max([len(r[5]) for r in rows] + [len("series")])
+    # Group by series (anchors first), then by iteration — so each network's
+    # ceiling is easy to read off as a contiguous block.
+    rows.sort(key=lambda x: (x[5] != "anchor", x[5], x[4] if x[4] is not None else -1, x[0]))
 
     # Build the table once, then both print it and (optionally) write it to a
     # file so a run leaves a machine-readable record of every model's Elo
     # alongside the PNG curve.
-    lines = [f"{'model':<{w}}  {'games':>6}  {'Elo':>8}  {'±se':>6}  {'iter':>6}"]
-    for m, c, e, es, it in rows:
+    lines = [f"{'series':<{sw}}  {'model':<{w}}  {'games':>6}  {'Elo':>8}  {'±se':>6}  {'iter':>6}"]
+    for m, c, e, es, it, ser in rows:
         it_str = str(it) if it is not None else "-"
         tag = " [anchor]" if "/anchors/" in m else ""
-        lines.append(f"{os.path.basename(m):<{w}}  {c:>6}  {e:>+8.1f}  {es:>6.1f}  {it_str:>6}{tag}")
+        lines.append(f"{ser:<{sw}}  {os.path.basename(m):<{w}}  {c:>6}  {e:>+8.1f}  {es:>6.1f}  {it_str:>6}{tag}")
     table = "\n".join(lines)
     print(table)
 
@@ -199,16 +224,22 @@ def main() -> int:
             return 0
 
         fig, ax = plt.subplots(figsize=(8, 5))
-        trained = [(it, e, es, m) for m, c, e, es, it in rows
-                   if it is not None and "/anchors/" not in m]
-        trained.sort()
-        if trained:
-            its = [t[0] for t in trained]
-            es_ = [t[1] for t in trained]
-            err = [t[2] for t in trained]
-            ax.errorbar(its, es_, yerr=err, fmt="-o", capsize=3, label="training run")
+        # One curve per series (network size for the capacity study, sim count
+        # for a wallclock sweep). Grouping is by series_of(); within a series
+        # points are ordered by training iteration.
+        by_series: dict[str, list] = defaultdict(list)
+        for m, c, e, es, it, ser in rows:
+            if it is None or "/anchors/" in m:
+                continue
+            by_series[ser].append((it, e, es))
+        for label in sorted(by_series):
+            pts = sorted(by_series[label])
+            its = [p[0] for p in pts]
+            es_ = [p[1] for p in pts]
+            err = [p[2] for p in pts]
+            ax.errorbar(its, es_, yerr=err, fmt="-o", capsize=3, markersize=4, label=label)
         # Anchors as horizontal dashed lines.
-        for m, c, e, es, it in rows:
+        for m, c, e, es, it, ser in rows:
             if "/anchors/" not in m:
                 continue
             ax.axhline(e, linestyle="--", alpha=0.6,

@@ -18,17 +18,38 @@
 set -euo pipefail
 
 DAEMON_PID=""
-trap 'trap - INT TERM; echo "[run.sh] interrupted; stopping."; [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null; kill 0 2>/dev/null; exit 130' INT TERM
+trap 'trap - INT TERM; persist_runtime 2>/dev/null || true; echo "$(_tag Run) interrupted; stopping."; [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null; kill 0 2>/dev/null; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 cd "$ROOT"
 
+# Shared color/centered logging tags ($(_tag Run) etc).
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/internal/log_common.sh"
+
+# Cumulative wall-clock that survives Ctrl+C / resume. Persisted as plain
+# seconds in data/logs/runtime_seconds.txt; each run adds its own session
+# time on top of the stored total. Defined here (before any trap can fire)
+# but the file lives under $DATA_DIR, populated once that's known below.
+RUNTIME_FILE=""
+PREV_RUNTIME=0
+LOOP_START_SECONDS=0
+persist_runtime() {
+    [[ -n "$RUNTIME_FILE" ]] || return 0
+    local total=$(( PREV_RUNTIME + SECONDS - LOOP_START_SECONDS ))
+    printf '%d' "$total" > "$RUNTIME_FILE.tmp" && mv "$RUNTIME_FILE.tmp" "$RUNTIME_FILE"
+}
+fmt_hms() {  # seconds -> "12h03m41s"
+    local s=$1
+    printf '%dh%02dm%02ds' $(( s / 3600 )) $(( s % 3600 / 60 )) $(( s % 60 ))
+}
+
 # Pick experiment config. Default = configs/baseline; override with:
 #   CONFIG_DIR=configs/nsim_64 bash scripts/run.sh
 CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
 [[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
-[[ -d "$CONFIG_DIR" ]] || { echo "[run.sh] no config dir at $CONFIG_DIR" >&2; exit 1; }
+[[ -d "$CONFIG_DIR" ]] || { echo "$(_tag Run) no config dir at $CONFIG_DIR" >&2; exit 1; }
 export CONFIG_DIR  # children (internal/*.sh) read this
 
 # Load experiment config: run.cfg + paths.cfg (set -a exports to subprocesses).
@@ -46,14 +67,14 @@ set +a
 export DATA_DIR
 
 if [[ -z "${NETWORKS:-}" || -z "${SELFPLAY_SCHEDULE:-}" ]]; then
-    echo "[run.sh] NETWORKS and SELFPLAY_SCHEDULE must be set in run.cfg" >&2
+    echo "$(_tag Run) NETWORKS and SELFPLAY_SCHEDULE must be set in run.cfg" >&2
     exit 1
 fi
 
 # Networks list (supports comma and/or whitespace separators).
 read -ra NET_ARR <<< "$(echo "$NETWORKS" | tr ',' ' ')"
 if [[ "${#NET_ARR[@]}" -eq 0 ]]; then
-    echo "[run.sh] NETWORKS parsed to empty list" >&2
+    echo "$(_tag Run) NETWORKS parsed to empty list" >&2
     exit 1
 fi
 FIRST_NET="${NET_ARR[0]}"
@@ -77,7 +98,7 @@ if [[ -z "${GPU_NUM:-}" ]]; then
 fi
 GPU_NUM="${GPU_NUM:-1}"
 export GPU_NUM
-echo "[run.sh] detected GPU_NUM=$GPU_NUM"
+echo "$(_tag Run) detected GPU_NUM=$GPU_NUM"
 
 # Keep C++ binaries in sync with run.cfg / sources. cmake parses MAX_BOARD_SIZE
 # from run.cfg via CONFIGURE_DEPENDS and bakes it in as -DSKYZERO_MAX_BOARD_SIZE.
@@ -90,7 +111,7 @@ _cache="$ROOT/cpp/build/CMakeCache.txt"
 if [[ -f "$_cache" ]]; then
     _cached_cfg=$(sed -n 's|^SKYZERO_CONFIG_DIR:PATH=||p' "$_cache")
     if [[ -n "$_cached_cfg" && "$_cached_cfg" != "$CONFIG_DIR" ]]; then
-        echo "[run.sh] CONFIG_DIR changed ($_cached_cfg -> $CONFIG_DIR); reconfiguring cmake"
+        echo "$(_tag Run) CONFIG_DIR changed ($_cached_cfg -> $CONFIG_DIR); reconfiguring cmake"
         cmake -S "$ROOT/cpp" -B "$ROOT/cpp/build" -DSKYZERO_CONFIG_DIR="$CONFIG_DIR"
     fi
 fi
@@ -120,7 +141,7 @@ iter=$((max_iter + 1))
 # Bootstrap any missing per-network random-init artifacts.
 for net in "${NET_ARR[@]}"; do
     if [[ ! -f "$DATA_DIR/nets/$net/latest.pt" ]]; then
-        echo "[run.sh] bootstrapping random-init model for $net"
+        echo "$(_tag Run) bootstrapping random-init model for $net"
         ( cd "$ROOT/python" && "$PY" init_model.py --data-dir "$DATA_DIR" --network "$net" )
     fi
 done
@@ -170,11 +191,11 @@ if [[ "$max_iter" -ge 0 ]]; then
             fi
             if [[ -z "$CATCHUP_STEPS" || "$CATCHUP_STEPS" -le 0 ]]; then
                 CATCHUP_STEPS=$(( ${TRAIN_SAMPLES_PER_EPOCH:-100000} / ${BATCH_SIZE:-128} ))
-                echo "[run.sh] catch-up: lead steps unavailable, falling back to 1 epoch ($CATCHUP_STEPS steps)"
+                echo "$(_tag Run) catch-up: lead steps unavailable, falling back to 1 epoch ($CATCHUP_STEPS steps)"
             fi
-            echo "[run.sh] resume catch-up: lagging=(${LAGGING[*]}) at iter=$max_iter steps=$CATCHUP_STEPS (using existing shuffled/current/)"
+            echo "$(_tag Run) resume catch-up: lagging=(${LAGGING[*]}) at iter=$max_iter steps=$CATCHUP_STEPS (using existing shuffled/current/)"
             for net in "${LAGGING[@]}"; do
-                echo "[run.sh] catch-up: training $net at iter=$max_iter"
+                echo "$(_tag Run) catch-up: training $net at iter=$max_iter"
                 TRAIN_STEPS_PER_EPOCH="$CATCHUP_STEPS" \
                     bash "$SCRIPT_DIR/internal/train.sh" "$max_iter" "$net"
                 bash "$SCRIPT_DIR/internal/export.sh" "$max_iter" "$net"
@@ -182,7 +203,7 @@ if [[ "$max_iter" -ge 0 ]]; then
             # Re-mirror in case the active network was among the lagging.
             mirror_active_to_models "$INITIAL_ACTIVE"
         else
-            echo "[run.sh] WARNING: lagging networks (${LAGGING[*]}) behind max_iter=$max_iter but shuffled/current/ is empty; cannot catch up — those iters stay as gaps in train.tsv"
+            echo "$(_tag Run) WARNING: lagging networks (${LAGGING[*]}) behind max_iter=$max_iter but shuffled/current/ is empty; cannot catch up — those iters stay as gaps in train.tsv"
         fi
     fi
 fi
@@ -191,7 +212,7 @@ fi
 # Daemon hot-reloads $DATA_DIR/models/latest.pt — the mirror above keeps that
 # path always pointing at the current active network's TorchScript.
 if [[ "$GPU_NUM" -gt 1 ]]; then
-    echo "[run.sh] starting selfplay daemon on GPUs 1..$((GPU_NUM-1))"
+    echo "$(_tag Run) starting selfplay daemon on GPUs 1..$((GPU_NUM-1))"
     bash "$SCRIPT_DIR/internal/selfplay_daemon.sh" &
     DAEMON_PID=$!
 fi
@@ -207,18 +228,27 @@ if [[ ! -f "$SCHEDULE_LOG" ]]; then
 fi
 
 # Wall-clock budget: capture start right before entering the loop so cmake
-# rebuild and model bootstrap above are excluded.
+# rebuild and model bootstrap above are excluded. PREV_RUNTIME carries the
+# accumulated seconds from earlier (interrupted) sessions; the cumulative
+# total = PREV_RUNTIME + this session's elapsed.
+RUNTIME_FILE="$DATA_DIR/logs/runtime_seconds.txt"
+PREV_RUNTIME=$(cat "$RUNTIME_FILE" 2>/dev/null || true)
+[[ "$PREV_RUNTIME" =~ ^[0-9]+$ ]] || PREV_RUNTIME=0
 LOOP_START_SECONDS=$SECONDS
 
 while true; do
+    # Persist + report cumulative wall-clock (survives Ctrl+C / resume).
+    persist_runtime
+    _total_rt=$(( PREV_RUNTIME + SECONDS - LOOP_START_SECONDS ))
+    _session_rt=$(( SECONDS - LOOP_START_SECONDS ))
+
     echo ""
     echo "=================================================================="
-    echo "[run.sh] === iter $iter ==="
-    date
+    echo "$(_tag Run) === iter $iter ===   runtime $(fmt_hms "$_total_rt") (session $(fmt_hms "$_session_rt"))"
 
     # Cumulative selfplay totals so far (through previous iter).
     # selfplay.tsv schema: producer iter_or_version games rows ...
-    awk '
+    awk -v tag="$(_tag Run)" '
         function fmt_sci(x,   s, n, m, e) {
             if (x+0 == 0) return "0"
             s = sprintf("%.1e", x)
@@ -229,9 +259,9 @@ while true; do
             return m "e" e
         }
         NR>1 {g+=$3; r+=$4}
-        END {printf "[run.sh] cumulative so far: games=%s samples=%s (main+daemon)\n", fmt_sci(g+0), fmt_sci(r+0)}
+        END {printf "%s cumulative so far: games=%s samples=%s (main+daemon)\n", tag, fmt_sci(g+0), fmt_sci(r+0)}
     ' "$DATA_DIR/logs/selfplay.tsv" 2>/dev/null \
-        || echo "[run.sh] cumulative so far: games=0 samples=0"
+        || echo "$(_tag Run) cumulative so far: games=0 samples=0"
 
     # Decide active network for this iter and refresh the mirror.
     ACTIVE_NETWORK=$( cd "$ROOT/python" && "$PY" schedule.py active --data-dir "$DATA_DIR" )
@@ -252,7 +282,7 @@ while true; do
         # training step that follows therefore trains on a 1-iter-lagged
         # window. Selfplay's new iter-N files are written but ignored by this
         # shuffle (shuffle.py snapshots the file list once at start).
-        echo "[run.sh] shuffle (bg) || selfplay (fg)"
+        echo "$(_tag Run) shuffle (bg) || selfplay (fg)"
         bash "$SCRIPT_DIR/internal/shuffle.sh" &
         SHUFFLE_PID=$!
         bash "$SCRIPT_DIR/internal/selfplay.sh" "$iter" "$GAMES"
@@ -263,26 +293,26 @@ while true; do
     fi
 
     if [[ "$SHUFFLE_RC" -eq 2 ]]; then
-        echo "[run.sh] shuffle skipped (N < MIN_ROWS); skipping train+export this iter"
+        echo "$(_tag Run) shuffle skipped (N < MIN_ROWS); skipping train+export this iter"
     elif [[ "$SHUFFLE_RC" -ne 0 ]]; then
-        echo "[run.sh] shuffle failed with code $SHUFFLE_RC"
+        echo "$(_tag Run) shuffle failed with code $SHUFFLE_RC"
         exit "$SHUFFLE_RC"
     else
         # (2) Token bucket: fill from disk row delta, decide train_steps.
         TRAIN_STEPS=$( cd "$ROOT/python" && "$PY" bucket.py --data-dir "$DATA_DIR" )
         if [[ "$TRAIN_STEPS" -le 0 ]]; then
-            echo "[run.sh] bucket below epoch threshold; skipping train+export this iter"
+            echo "$(_tag Run) bucket below epoch threshold; skipping train+export this iter"
         else
             # (3) train each network on the same shuffled pool (serial).
             for net in "${NET_ARR[@]}"; do
-                echo "[run.sh] ---- training $net (steps=$TRAIN_STEPS) ----"
+                echo "$(_tag Run) ---- training $net (steps=$TRAIN_STEPS) ----"
                 TRAIN_STEPS_PER_EPOCH="$TRAIN_STEPS" \
                     bash "$SCRIPT_DIR/internal/train.sh" "$iter" "$net"
             done
 
             # (4) export TorchScript for each network.
             for net in "${NET_ARR[@]}"; do
-                echo "[run.sh] ---- exporting $net ----"
+                echo "$(_tag Run) ---- exporting $net ----"
                 bash "$SCRIPT_DIR/internal/export.sh" "$iter" "$net"
             done
 
@@ -297,29 +327,36 @@ while true; do
                 --config "$CONFIG_DIR/run.cfg" \
                 --iter "$iter" \
                 --log "$DATA_DIR/logs/probe.tsv" \
-                || echo "[run.sh] mcts_probe failed (non-fatal)"
+                || echo "$(_tag Run) mcts_probe failed (non-fatal)"
 
             # (5) plot loss curve (combined plot for all networks)
             ( cd "$ROOT/python" && "$PY" view_loss.py --data-dir "$DATA_DIR" --plot >/dev/null )
         fi
     fi
 
+    # Snapshot cumulative runtime at the end of each iter so a Ctrl+C in the
+    # *next* iter resumes from a fresh-as-possible total.
+    persist_runtime
+
     iter=$((iter + 1))
     if [[ -n "$max_iters" && "$iter" -ge "$max_iters" ]]; then
-        echo "[run.sh] reached max_iters=$max_iters; stopping."
+        echo "$(_tag Run) reached max_iters=$max_iters; stopping."
         break
     fi
     if [[ "$MAX_TIME_SECONDS" -gt 0 ]]; then
-        elapsed=$((SECONDS - LOOP_START_SECONDS))
-        if [[ "$elapsed" -ge "$MAX_TIME_SECONDS" ]]; then
-            echo "[run.sh] reached MAX_TIME_SECONDS=$MAX_TIME_SECONDS (elapsed=${elapsed}s); stopping."
+        # Budget is cumulative across sessions (PREV_RUNTIME + this session).
+        total_rt=$(( PREV_RUNTIME + SECONDS - LOOP_START_SECONDS ))
+        if [[ "$total_rt" -ge "$MAX_TIME_SECONDS" ]]; then
+            echo "$(_tag Run) reached MAX_TIME_SECONDS=$MAX_TIME_SECONDS (cumulative=${total_rt}s); stopping."
             break
         fi
     fi
 done
 
+persist_runtime  # final snapshot on clean exit
+
 if [[ -n "$DAEMON_PID" ]]; then
-    echo "[run.sh] stopping selfplay daemon (pid=$DAEMON_PID)"
+    echo "$(_tag Run) stopping selfplay daemon (pid=$DAEMON_PID)"
     kill "$DAEMON_PID" 2>/dev/null || true
     wait "$DAEMON_PID" 2>/dev/null || true
 fi

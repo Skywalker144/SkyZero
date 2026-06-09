@@ -104,11 +104,14 @@ public:
 
     // Print resolved (normalized) distribution. Called once at selfplay startup
     // so the user can eyeball that BOARD_SIZE_RELPROBS / RULE_RELPROBS map onto
-    // the percentages they intended.
-    void log_distribution(std::ostream& os) const {
+    // the percentages they intended. `prefix` is the caller's colored tag;
+    // `balance_opening_prob` is the fraction of games seeded from a balanced
+    // opening (rest start empty).
+    void log_distribution(std::ostream& os, const std::string& prefix,
+                          float balance_opening_prob) const {
         const auto size_probs = size_dist_.probabilities();
         const auto rule_probs = rule_dist_.probabilities();
-        os << "[GameInit] board_mix={";
+        os << prefix << " board_mix={";
         for (size_t i = 0; i < sizes_.size(); ++i) {
             if (i) os << ", ";
             os << sizes_[i] << ":" << std::fixed << std::setprecision(1)
@@ -121,7 +124,8 @@ public:
                << std::fixed << std::setprecision(1)
                << (rule_probs[i] * 100.0) << "%";
         }
-        os << "} (per-game)" << std::endl;
+        os << "} balanced_opening=" << std::fixed << std::setprecision(1)
+           << (balance_opening_prob * 100.0) << "%" << std::endl;
     }
 
 private:

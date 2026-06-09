@@ -44,6 +44,22 @@ namespace fs = std::filesystem;
 using namespace skyzero;
 
 // ---------------------------------------------------------------------------
+// Bracketed, color-tagged log prefix (matches scripts/internal/log_common.sh).
+// Color auto-disables when stdout is not a TTY or NO_COLOR is set, so
+// redirected logs stay plain text.
+// ---------------------------------------------------------------------------
+static std::string make_tag(const std::string& name, const char* color) {
+    const std::string plain = "[" + name + "]";
+    static const bool use_color = isatty(fileno(stdout)) && std::getenv("NO_COLOR") == nullptr;
+    if (use_color) return std::string("\033[") + color + "m" + plain + "\033[0m";
+    return plain;
+}
+// Set once in main() (depends on runtime isatty); used by all selfplay/daemon logs.
+static std::string g_tag_sp;
+static std::string g_tag_dm;
+static std::string g_tag_gi;
+
+// ---------------------------------------------------------------------------
 // Config parser (KEY=VALUE, shell-style) with bash-compatible quoting-lite.
 // ---------------------------------------------------------------------------
 static std::unordered_map<std::string, std::string> parse_cfg(const std::string& path) {
@@ -278,6 +294,9 @@ static int read_meta_iter(const std::string& meta_path) {
 
 int main(int argc, char** argv) {
     try {
+        g_tag_sp = make_tag("SelfPlay", "32");   // green
+        g_tag_dm = make_tag("Daemon", "92");     // bright green
+        g_tag_gi = make_tag("GameInfo", "33");   // yellow
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
         torch::NoGradGuard no_grad;
@@ -290,7 +309,7 @@ int main(int argc, char** argv) {
         // than crash inside torch::jit::load.
         if (cli.daemon) {
             while (!stop_requested.load() && !fs::exists(cli.model)) {
-                std::cout << "[Daemon] waiting for " << cli.model << " ...\n";
+                std::cout << g_tag_dm << " waiting for " << cli.model << " ...\n";
                 std::this_thread::sleep_for(std::chrono::seconds(2));
             }
             if (stop_requested.load()) return 0;
@@ -322,10 +341,10 @@ int main(int argc, char** argv) {
             const int v = popen_int(cli.sims_warmup_cmd);
             if (v > 0) {
                 cfg.num_simulations = v;
-                std::cout << "[Daemon] startup num_simulations=" << v
+                std::cout << g_tag_dm << " startup num_simulations=" << v
                           << " (from warmup cmd)\n";
             } else {
-                std::cerr << "[Daemon] warmup cmd failed; keeping num_simulations="
+                std::cerr << g_tag_dm << " warmup cmd failed; keeping num_simulations="
                           << cfg.num_simulations << "\n";
             }
         }
@@ -494,7 +513,7 @@ int main(int argc, char** argv) {
             std::chrono::high_resolution_clock::now().time_since_epoch().count()
         ) ^ (static_cast<uint64_t>(cli.iter) * 0x9E3779B97F4A7C15ULL);
         GameInitializer game_init(sizes, size_probs, rules, rule_probs, init_seed);
-        game_init.log_distribution(std::cout);
+        game_init.log_distribution(std::cout, g_tag_gi, cfg.balance_opening_prob);
 
         const int max_rows_per_npz = cfg_get<int>(cfg_map, "MAX_ROWS_PER_NPZ", 25000);
 
@@ -553,7 +572,7 @@ int main(int argc, char** argv) {
                 std::ofstream of(tsv_path, std::ios::trunc);
                 if (had_header) of << header_line << "\n";
                 for (const auto& l : kept_lines) of << l << "\n";
-                std::cout << "[SelfPlay] dropped " << dropped
+                std::cout << g_tag_sp << " dropped " << dropped
                           << " stale main row(s) with iter >= "
                           << cli.iter << " (resume after interrupted train)\n";
             }
@@ -599,7 +618,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (removed > 0) {
-                std::cout << "[SelfPlay] removed " << removed
+                std::cout << g_tag_sp << " removed " << removed
                           << " leftover " << (cli.daemon ? "daemon_pending" : "iter part")
                           << " file(s)\n";
             }
@@ -613,7 +632,7 @@ int main(int argc, char** argv) {
                          max_rows_per_npz, /*max_pending_jobs=*/4,
                          num_global_features, state_row);
 
-        std::cout << "[SelfPlay] model=" << cli.model
+        std::cout << g_tag_sp << " model=" << cli.model
                   << (cli.daemon ? " mode=daemon" : "")
                   << " iter=" << cli.iter
                   << " max_games=" << cli.max_games
@@ -629,7 +648,7 @@ int main(int argc, char** argv) {
         if (!cli.daemon) {
             // Cumulative across both producers (main + daemon). Shuffle.py
             // computes the real window from disk-scanned row counts.
-            std::cout << "[SelfPlay] TotalGames=" << cum_games
+            std::cout << g_tag_sp << " TotalGames=" << cum_games
                       << " TotalSamples=" << cum_rows << "\n";
         }
 
@@ -745,7 +764,7 @@ int main(int argc, char** argv) {
                 v_main_sum_len = 0.0;
             };
 
-            std::cout << "[Daemon] starting at v=" << cur_version
+            std::cout << g_tag_dm << " starting at v=" << cur_version
                       << " prefix=" << make_prefix(cur_version)
                       << " poll_ms=" << cli.model_watch_poll_ms << "\n";
 
@@ -778,7 +797,7 @@ int main(int argc, char** argv) {
                                 writer.rotate(make_prefix(cur_version));
                                 reset_version_counters();
                                 last_mtime_ns = m3;
-                                std::cout << "[Daemon] reload_model: v=" << cur_version
+                                std::cout << g_tag_dm << " reload_model: v=" << cur_version
                                           << " prefix=" << make_prefix(cur_version) << "\n";
                                 // Re-poll warmup. Engine's cfg_ is a ref to
                                 // this cfg, so workers pick up the new value
@@ -786,14 +805,14 @@ int main(int argc, char** argv) {
                                 if (!cli.sims_warmup_cmd.empty()) {
                                     const int v = popen_int(cli.sims_warmup_cmd);
                                     if (v > 0 && v != cfg.num_simulations) {
-                                        std::cout << "[Daemon] num_simulations "
+                                        std::cout << g_tag_dm << " num_simulations "
                                                   << cfg.num_simulations
                                                   << " -> " << v << " (warmup)\n";
                                         cfg.num_simulations = v;
                                     }
                                 }
                             } catch (const std::exception& e) {
-                                std::cerr << "[Daemon] reload failed: " << e.what() << "\n";
+                                std::cerr << g_tag_dm << " reload failed: " << e.what() << "\n";
                                 last_mtime_ns = m3;  // don't retry the same broken file
                             }
                         }
@@ -838,7 +857,7 @@ int main(int argc, char** argv) {
                     const double dt = std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - t_global).count();
                     const double sps = dt > 0.0 ? total_rows / dt : 0.0;
-                    std::cout << "[Daemon] v=" << cur_version
+                    std::cout << g_tag_dm << " v=" << cur_version
                               << " total_games=" << total_games
                               << " total_rows=" << total_rows
                               << " sps=" << std::fixed << std::setprecision(1) << sps
@@ -849,7 +868,7 @@ int main(int argc, char** argv) {
             engine.stop();
             writer.flush();
             append_stats_row(cur_version);
-            std::cout << "[Daemon] shutdown clean. total_games=" << total_games
+            std::cout << g_tag_dm << " shutdown clean. total_games=" << total_games
                       << " total_rows=" << total_rows << "\n";
             return 0;
         }
@@ -922,7 +941,7 @@ int main(int argc, char** argv) {
                 const double sps = (dt > 0.0) ? (static_cast<double>(total_rows) / dt) : 0.0;
                 const int gw = static_cast<int>(std::to_string(cli.max_games).size());
 
-                std::cout << "[SelfPlay] Games=" << std::setw(gw) << std::setfill('0') << games_done
+                std::cout << g_tag_sp << " Games=" << std::setw(gw) << std::setfill('0') << games_done
                           << std::setfill(' ') << "/" << cli.max_games
                           << " Sps=" << std::fixed << std::setprecision(1) << sps
                           << " main(" << main_board_size << "×" << rule_to_string(main_rule)
@@ -970,13 +989,13 @@ int main(int argc, char** argv) {
             main_black, main_white, main_draw,
             start_unix, end_unix);
 
-        std::cout << "[SelfPlay] done. games=" << games_done
+        std::cout << g_tag_sp << " done. games=" << games_done
                   << " rows=" << total_rows
                   << " t=" << std::fixed << std::setprecision(1) << dt << "s\n";
 
         auto print_board = [&](const char* tag, const SelfplayEngine<Gomoku>::SelfplayResult& r) {
             const char* opening = r.balanced_opening ? "balanced" : "empty";
-            std::cout << "[SelfPlay] " << tag
+            std::cout << g_tag_sp << " " << tag
                       << " opening=" << opening
                       << " game_len=" << r.game_len
                       << " winner=" << r.winner
@@ -1007,7 +1026,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[SelfPlay] fatal: " << e.what() << "\n";
+        std::cerr << g_tag_sp << " fatal: " << e.what() << "\n";
         return 2;
     }
 }
