@@ -151,3 +151,7 @@ gomocup
 configs/*
 !configs/baseline/
 !configs/minimal_test/
+
+
+wallclock_sims/
+wallclock_puct_vs_gumbel/
