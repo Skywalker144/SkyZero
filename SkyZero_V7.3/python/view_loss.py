@@ -245,6 +245,64 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
     print(f"saved plot to {out}")
 
 
+def _plot_ratio(data_dir: pathlib.Path, plt) -> None:
+    """Effective replay ratio per iter from logs/ratio.tsv (written by
+    compute_selfplay_target.py), against the TARGET_REPLAY_RATIO soft bound."""
+    log = data_dir / "logs" / "ratio.tsv"
+    if not log.exists():
+        print(f"no ratio log at {log}", file=sys.stderr)
+        return
+    header, rows = _read_tsv(log)
+    if not rows:
+        print("empty ratio log", file=sys.stderr)
+        return
+    idx = {name: i for i, name in enumerate(header)}
+    if not all(k in idx for k in ("iter", "cum_rows", "eff_ratio")):
+        print("ratio.tsv missing expected columns; skipping ratio plot",
+              file=sys.stderr)
+        return
+
+    # Keep the last row per iter (a resumed iter appends a duplicate row).
+    by_iter: dict[int, list[str]] = {}
+    for r in rows:
+        try:
+            by_iter[int(float(r[idx["iter"]]))] = r
+        except (ValueError, IndexError):
+            continue
+    if not by_iter:
+        return
+    ordered = [by_iter[k] for k in sorted(by_iter)]
+
+    def col(name):
+        out = []
+        for r in ordered:
+            v = r[idx[name]] if idx[name] < len(r) else ""
+            out.append(float(v) if v else float("nan"))
+        return out
+
+    x = col("cum_rows")
+    ratio = col("eff_ratio")
+    target = float(os.environ.get("TARGET_REPLAY_RATIO", "0") or 0.0)
+
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+    ax.plot(x, ratio, color="C4", label="effective ratio (trained/produced)")
+    if target > 0:
+        ax.axhline(target, ls="--", color="gray", alpha=0.6,
+                   label=f"target {target:g}")
+    ax.set_ylabel("replay ratio")
+    ax.set_xlabel("cumulative selfplay samples")
+    ax.set_title("replay ratio (target = soft upper bound)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best")
+
+    _add_iter_axis(ax, _load_schedule(data_dir))
+
+    fig.tight_layout()
+    out = data_dir / "logs" / "ratio.png"
+    fig.savefig(out, dpi=200)
+    print(f"saved plot to {out}")
+
+
 def _read_network_cols(net_dir: pathlib.Path) -> dict[str, list[float]] | None:
     log = net_dir / "train.tsv"
     if not log.exists():
@@ -351,6 +409,7 @@ def main() -> int:
 
     _plot_selfplay(data_dir, plt)
     _plot_probe(data_dir, plt)
+    _plot_ratio(data_dir, plt)
     return 0
 
 

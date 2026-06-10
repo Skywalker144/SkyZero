@@ -5,11 +5,18 @@
 #   1. Compute ACTIVE_NETWORK from cumulative selfplay samples + SELFPLAY_SCHEDULE.
 #   2. Mirror data/nets/$ACTIVE_NETWORK/{latest.pt,latest.meta.json} -> data/models/
 #      so C++ selfplay (main + daemon) keeps reading a stable path.
-#   3. selfplay  -> shuffle  -> bucket (decide train_steps)
-#   4. For each network in NETWORKS: train -> export (all train on the SAME
-#      shuffled data this iter).
-#   5. Re-mirror active network's freshly-exported weights -> data/models/.
-#   6. mcts_probe + view_loss + log a row to data/logs/schedule.tsv.
+#   3. Production gate: every card selfplays continuously (per-card daemons on
+#      train cards, persistent daemon on the rest; C++ settles stats into
+#      selfplay.tsv every DAEMON_SETTLE_SECONDS). compute_selfplay_target
+#      --wait advances the cumulative target (TRAIN_SAMPLES_PER_EPOCH /
+#      TARGET_REPLAY_RATIO rows per iter) and blocks until settled cum_rows
+#      reach it. Then shuffle.
+#   4. Train (FIXED steps = TRAIN_SAMPLES_PER_EPOCH / BATCH_SIZE): networks run
+#      in parallel on their LPT-assigned GPUs, active network first on its
+#      card; each net exports right after it trains, and the active export
+#      re-mirrors latest.pt immediately (selfplay cards hot-reload it). A card
+#      that finished its whole list runs per-card selfplay until re-drafted.
+#   5. mcts_probe + view_loss + log a row to data/logs/schedule.tsv.
 #
 # Usage: bash scripts/run.sh [max_iters]
 #   max_iters (CLI arg): stop after this many iters.
@@ -18,7 +25,15 @@
 set -euo pipefail
 
 DAEMON_PID=""
-trap 'trap - INT TERM; persist_runtime 2>/dev/null || true; echo "$(_tag Run) interrupted; stopping."; [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null; kill 0 2>/dev/null; exit 130' INT TERM
+# EXIT backstop for the persistent selfplay daemon. A `set -e` failure or an
+# explicit abort `exit` (shuffle/train failure paths below) goes through
+# neither the INT/TERM trap nor the normal shutdown, which would orphan the
+# daemon (+ its inference servers) onto the spare GPUs — and unlike per-card
+# selfplay the daemon has no startup reap, so the next run would stack a second
+# one. Idempotent (kills an already-dead pid harmlessly). The INT/TERM handler
+# disables it (trap - ... EXIT) since it kills the daemon itself.
+trap '[[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null || true' EXIT
+trap 'trap - INT TERM EXIT; persist_runtime 2>/dev/null || true; echo "$(_tag Run) interrupted; stopping."; [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null; kill 0 2>/dev/null; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
@@ -158,12 +173,114 @@ mirror_active_to_models() {
     fi
 }
 
+# Print a card's network list with the active network moved to the front:
+# only its weights drive selfplay, so training it first shortens the window
+# where cards already back in selfplay produce on stale weights (design §2.5).
+order_card_nets() {
+    local active="$1"; shift
+    local head="" tail="" n
+    for n in "$@"; do
+        if [[ "$n" == "$active" ]]; then head="$n"; else tail+=" $n"; fi
+    done
+    echo "$head$tail"
+}
+
+# --- Per-card transient selfplay (design §2.5; gate model) ---
+# Every train card runs internal/card_selfplay.sh (selfplay_main --daemon +
+# watchdog, pinned to that card) whenever it isn't training: from startup,
+# and again as soon as it finishes its serial network list. Cards are only
+# evicted right before the train phase re-drafts them. SIGTERM is a clean
+# shutdown chain (wrapper forwards to selfplay_main, which flushes NPZs and
+# settles its selfplay.tsv row), so the production accounting stays intact.
+# PID files (wrapper pids) live under $DATA_DIR/logs/ so a crashed run's
+# orphans get reaped at next startup.
+card_selfplay_pidfile() { echo "$DATA_DIR/logs/card_selfplay.gpu$1.pid"; }
+
+start_card_selfplay() {
+    local g="$1"
+    echo "$(_tag Run) gpu $g -> per-card selfplay (until re-drafted for training)"
+    bash "$SCRIPT_DIR/internal/card_selfplay.sh" "$g" &
+    echo $! > "$(card_selfplay_pidfile "$g")"
+}
+
+kill_card_selfplay() {
+    local g="$1" pidfile pid i
+    pidfile="$(card_selfplay_pidfile "$g")"
+    [[ -f "$pidfile" ]] || return 0
+    pid=$(cat "$pidfile" 2>/dev/null)
+    if [[ "$pid" =~ ^[0-9]+$ ]] && \
+       [[ "$(ps -p "$pid" -o args= 2>/dev/null)" == *internal/card_selfplay.sh* ]]; then
+        echo "$(_tag Run) stopping per-card selfplay on gpu $g (pid=$pid)"
+        kill "$pid" 2>/dev/null || true
+        # Started inside a train subshell, so it's not our direct child and
+        # `wait` won't work — poll until the clean shutdown chain (npz flush +
+        # tsv settle) releases the card, then SIGKILL wrapper AND child as a
+        # last resort (npz writes are tmp+rename, so no torn file behind).
+        for ((i=0; i<150; i++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.2
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "$(_tag Run) per-card selfplay on gpu $g did not exit in 30s; SIGKILL"
+            pkill -KILL -P "$pid" 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$pidfile"
+}
+
+kill_all_card_selfplay() {
+    local f g
+    for f in "$DATA_DIR"/logs/card_selfplay.gpu*.pid; do
+        [[ -e "$f" ]] || continue
+        g="${f##*card_selfplay.gpu}"
+        kill_card_selfplay "${g%.pid}"
+    done
+}
+
+# The persistent daemon (internal/selfplay_daemon.sh, owns the spare cards) gets
+# the same pidfile + startup-reap treatment as per-card selfplay, so a run that
+# died without cleanup (SIGKILL — the EXIT trap can't run) doesn't leave it
+# orphaned on the spare GPUs and stack a second daemon next startup.
+daemon_pidfile() { echo "$DATA_DIR/logs/selfplay_daemon.pid"; }
+
+reap_orphan_daemon() {
+    local pidfile pid i
+    pidfile="$(daemon_pidfile)"
+    [[ -f "$pidfile" ]] || return 0
+    pid=$(cat "$pidfile" 2>/dev/null)
+    # ps-args check guards against killing an unrelated process that reused the
+    # pid after a clean exit (where the daemon is already gone).
+    if [[ "$pid" =~ ^[0-9]+$ ]] && \
+       [[ "$(ps -p "$pid" -o args= 2>/dev/null)" == *internal/selfplay_daemon.sh* ]]; then
+        echo "$(_tag Run) reaping orphan selfplay daemon from a previous run (pid=$pid)"
+        kill "$pid" 2>/dev/null || true
+        for ((i=0; i<150; i++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.2
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "$(_tag Run) orphan daemon did not exit in 30s; SIGKILL"
+            pkill -KILL -P "$pid" 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$pidfile"
+}
+
 # Now that all networks have init artifacts, populate the canonical mirror
 # at data/models/ so selfplay (main + daemon) has something to load before
 # we even enter the loop.
 INITIAL_ACTIVE=$( cd "$ROOT/python" && "$PY" schedule.py active --data-dir "$DATA_DIR" 2>/dev/null )
 INITIAL_ACTIVE="${INITIAL_ACTIVE:-$FIRST_NET}"
 mirror_active_to_models "$INITIAL_ACTIVE"
+
+# Reap selfplay (per-card + persistent daemon) orphaned by a previous run that
+# didn't exit through the clean paths (e.g. run.sh got SIGKILLed). Must happen
+# before any training below (catch-up included) and before we start our own
+# daemon — an orphan would collide on the card / stack a second daemon.
+kill_all_card_selfplay
+reap_orphan_daemon
 
 # --- Catch-up for mid-iter Ctrl+C ---
 # Any net with iter < max_iter was interrupted before training that iter.
@@ -236,9 +353,17 @@ if [[ "${#DAEMON_GPUS[@]}" -gt 0 ]]; then
     echo "$(_tag Run) starting selfplay daemon on GPUs $SELFPLAY_DAEMON_GPUS"
     bash "$SCRIPT_DIR/internal/selfplay_daemon.sh" &
     DAEMON_PID=$!
+    echo "$DAEMON_PID" > "$(daemon_pidfile)"
 else
     echo "$(_tag Run) all $GPU_NUM GPU(s) used for training (N<=M); no selfplay daemon"
 fi
+
+# Gate model: every card produces from t=0. Train cards run per-card selfplay
+# until the train phase re-drafts them (kill_all_card_selfplay there); they
+# come back via start_card_selfplay as each finishes its list.
+for g in "${TRAIN_GPUS[@]}"; do
+    start_card_selfplay "$g"
+done
 
 max_iters="${1:-}"
 OVERLAP_SHUFFLE="${OVERLAP_SHUFFLE:-0}"
@@ -295,30 +420,27 @@ while true; do
     CUM_SAMPLES=$(awk 'NR>1 {r+=$4} END {printf "%d", r+0}' "$DATA_DIR/logs/selfplay.tsv" 2>/dev/null || echo 0)
     printf "%d\t%d\t%s\n" "$iter" "$CUM_SAMPLES" "$ACTIVE_NETWORK" >> "$SCHEDULE_LOG"
 
-    # (1) selfplay [+ overlapped shuffle]. GAMES = main-loop top-up from the
-    # accounting (compute_selfplay_target.py): the deficit vs TARGET_REPLAY_RATIO.
-    # 0 => daemon already over-produced this iter; skip main selfplay but still
-    # shuffle in whatever the daemon wrote.
-    GAMES=$( cd "$ROOT/python" && "$PY" compute_selfplay_target.py --data-dir "$DATA_DIR" )
+    # (1) Production gate [+ overlapped shuffle]. No per-card orders: all
+    # cards selfplay continuously (per-card + persistent daemons, settling
+    # into selfplay.tsv every DAEMON_SETTLE_SECONDS); compute_selfplay_target
+    # --wait advances target_cum by TRAIN_SAMPLES_PER_EPOCH /
+    # TARGET_REPLAY_RATIO and blocks until settled cum_rows reach it
+    # (instant when production already ran ahead — ratio floats below target).
     # SHUFFLE_RC=0 success, =2 skipped (N < MIN_ROWS), other = failure.
     SHUFFLE_RC=0
-    if [[ "$GAMES" -gt 0 ]]; then
-        if [[ "$OVERLAP_SHUFFLE" == "1" && "$iter" -gt 0 ]]; then
-            # Pipelined: shuffle (CPU) concurrent with selfplay (GPU). Shuffle
-            # sees data through the previous iter; training then uses a 1-iter-
-            # lagged window. Selfplay's new iter-N files are ignored by this
-            # shuffle (it snapshots the file list at start).
-            echo "$(_tag Run) shuffle (bg) || selfplay $GAMES (fg)"
-            bash "$SCRIPT_DIR/internal/shuffle.sh" &
-            SHUFFLE_PID=$!
-            bash "$SCRIPT_DIR/internal/selfplay.sh" "$iter" "$GAMES"
-            wait "$SHUFFLE_PID" || SHUFFLE_RC=$?
-        else
-            bash "$SCRIPT_DIR/internal/selfplay.sh" "$iter" "$GAMES"
-            bash "$SCRIPT_DIR/internal/shuffle.sh" || SHUFFLE_RC=$?
-        fi
+    if [[ "$OVERLAP_SHUFFLE" == "1" && "$iter" -gt 0 ]]; then
+        # Pipelined: shuffle (CPU) concurrent with the gate wait (GPU cards
+        # keep producing). Shuffle sees data through the previous iter;
+        # training then uses a 1-iter-lagged window. Rows produced during the
+        # wait are ignored by this shuffle (it snapshots the file list at
+        # start) and counted next iter.
+        echo "$(_tag Run) shuffle (bg) || production gate (fg)"
+        bash "$SCRIPT_DIR/internal/shuffle.sh" &
+        SHUFFLE_PID=$!
+        ( cd "$ROOT/python" && "$PY" compute_selfplay_target.py --data-dir "$DATA_DIR" --iter "$iter" --wait )
+        wait "$SHUFFLE_PID" || SHUFFLE_RC=$?
     else
-        echo "$(_tag Run) main selfplay skipped (deficit<=0; daemon over-produced); shuffle only"
+        ( cd "$ROOT/python" && "$PY" compute_selfplay_target.py --data-dir "$DATA_DIR" --iter "$iter" --wait )
         bash "$SCRIPT_DIR/internal/shuffle.sh" || SHUFFLE_RC=$?
     fi
 
@@ -326,6 +448,7 @@ while true; do
         echo "$(_tag Run) shuffle skipped (N < MIN_ROWS); skipping train+export this iter"
     elif [[ "$SHUFFLE_RC" -ne 0 ]]; then
         echo "$(_tag Run) shuffle failed with code $SHUFFLE_RC"
+        kill_all_card_selfplay
         exit "$SHUFFLE_RC"
     else
         # (2) Fixed train volume: train_steps = SAMPLES_PER_EPOCH / BATCH_SIZE.
@@ -333,17 +456,32 @@ while true; do
         if [[ "$TRAIN_STEPS" -le 0 ]]; then
             echo "$(_tag Run) train_steps=0 (check SAMPLES_PER_EPOCH/BATCH_SIZE); skipping train+export"
         else
-            # (3) train: LPT-assigned networks run in PARALLEL across GPUs; each
-            # GPU trains its list serially (shared shuffled pool, read-only).
+            # (3) train + export: LPT-assigned networks run in PARALLEL across
+            # GPUs; each GPU trains its list serially (shared shuffled pool,
+            # read-only), the ACTIVE network first. Each net exports right
+            # after it trains, on the same card; the active export re-mirrors
+            # latest.pt immediately, so cards already back in selfplay (and
+            # the persistent daemon) hot-reload the new weights while the
+            # slower cards still train. A card that finished its whole list
+            # starts per-card selfplay to fill the wait-for-stragglers window.
             # Wait for all cards; a failure on any aborts the iter.
+            kill_all_card_selfplay   # training re-drafts every card
             TRAIN_PIDS=()
             for g in "${TRAIN_GPUS[@]}"; do
                 (
-                    for net in ${CARD_NETS[$g]}; do
+                    for net in $(order_card_nets "$ACTIVE_NETWORK" ${CARD_NETS[$g]}); do
                         echo "$(_tag Run) ---- training $net on gpu $g (steps=$TRAIN_STEPS) ----"
                         CUDA_VISIBLE_DEVICES="$g" TRAIN_STEPS_PER_EPOCH="$TRAIN_STEPS" \
                             bash "$SCRIPT_DIR/internal/train.sh" "$iter" "$net"
+                        echo "$(_tag Run) ---- exporting $net (gpu $g) ----"
+                        CUDA_VISIBLE_DEVICES="$g" \
+                            bash "$SCRIPT_DIR/internal/export.sh" "$iter" "$net"
+                        if [[ "$net" == "$ACTIVE_NETWORK" ]]; then
+                            mirror_active_to_models "$ACTIVE_NETWORK"
+                            echo "$(_tag Run) active $net mirrored -> latest.pt (selfplay cards hot-reload)"
+                        fi
                     done
+                    start_card_selfplay "$g"
                 ) &
                 TRAIN_PIDS+=("$!")
             done
@@ -353,20 +491,11 @@ while true; do
             done
             if [[ "$TRAIN_FAIL" -ne 0 ]]; then
                 echo "$(_tag Run) a training subprocess failed; aborting." >&2
+                kill_all_card_selfplay
                 exit 1
             fi
 
-            # (4) export TorchScript for each network.
-            for net in "${NET_ARR[@]}"; do
-                echo "$(_tag Run) ---- exporting $net ----"
-                bash "$SCRIPT_DIR/internal/export.sh" "$iter" "$net"
-            done
-
-            # Refresh the active mirror with the freshly-exported weights so
-            # the next selfplay iter (and the probe below) see the new model.
-            mirror_active_to_models "$ACTIVE_NETWORK"
-
-            # (4b) post-export diagnostic: empty-board MCTS rootValue probe
+            # (4) post-export diagnostic: empty-board MCTS rootValue probe
             # on the currently-active network (read via the canonical mirror).
             CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}" "$ROOT/cpp/build/mcts_probe" \
                 --model "$DATA_DIR/models/latest.pt" \
@@ -401,8 +530,10 @@ done
 
 persist_runtime  # final snapshot on clean exit
 
+kill_all_card_selfplay
 if [[ -n "$DAEMON_PID" ]]; then
     echo "$(_tag Run) stopping selfplay daemon (pid=$DAEMON_PID)"
     kill "$DAEMON_PID" 2>/dev/null || true
     wait "$DAEMON_PID" 2>/dev/null || true
+    rm -f "$(daemon_pidfile)"
 fi

@@ -769,6 +769,12 @@ int main(int argc, char** argv) {
                       << " poll_ms=" << cli.model_watch_poll_ms << "\n";
 
             auto last_poll = std::chrono::steady_clock::now();
+            // Periodic settlement (V7.3 production gate): flush this window's
+            // stats into selfplay.tsv every DAEMON_SETTLE_SECONDS so the gate
+            // (compute_selfplay_target.py --wait) sees cum_rows advance
+            // between model reloads. <= 0 disables (reload/exit settle only).
+            const int settle_seconds = cfg_get<int>(cfg_map, "DAEMON_SETTLE_SECONDS", 60);
+            auto last_settle = last_poll;
 
             while (!stop_requested.load()) {
                 // Model-mtime watch.
@@ -796,6 +802,7 @@ int main(int argc, char** argv) {
                                 cur_version = new_version;
                                 writer.rotate(make_prefix(cur_version));
                                 reset_version_counters();
+                                last_settle = now;
                                 last_mtime_ns = m3;
                                 std::cout << g_tag_dm << " reload_model: v=" << cur_version
                                           << " prefix=" << make_prefix(cur_version) << "\n";
@@ -817,6 +824,14 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
+                }
+
+                if (settle_seconds > 0 && v_games > 0
+                    && std::chrono::duration_cast<std::chrono::seconds>(now - last_settle).count()
+                       >= settle_seconds) {
+                    append_stats_row(cur_version);
+                    reset_version_counters();
+                    last_settle = now;
                 }
 
                 SelfplayEngine<Gomoku>::SelfplayResult r;

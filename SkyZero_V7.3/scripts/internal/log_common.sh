@@ -17,6 +17,7 @@ declare -gA _TAG_COLOR=(
     [Run]='1;36'      # bold cyan  — loop banners
     [SelfPlay]='32'   # green
     [Daemon]='92'     # bright green
+    [Card]='92'       # bright green — per-card transient selfplay
     [Shuffle]='34'    # blue
     [Bucket]='94'     # bright blue
     [Schedule]='35'   # magenta

@@ -15,7 +15,9 @@ source "$SCRIPTS_DIR/env_paths.cfg"
 source "$CONFIG_DIR/paths.cfg"
 PY=${PY:-python}
 
-export CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}"
+# run.sh injects CUDA_VISIBLE_DEVICES so each net exports on the card that
+# just trained it; absent that (e.g. catch-up), fall back to MAIN_GPU.
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-${MAIN_GPU:-0}}"
 
 cd "$ROOT/python"
 "$PY" export_model.py \
