@@ -27,6 +27,8 @@ import pathlib
 import sys
 from typing import Callable
 
+from compute_selfplay_target import read_cum_rows
+
 
 def parse_stage_list(s: str | None, cast: Callable = float) -> list:
     """Parse "v1, v2, v3" -> [cast(v1), cast(v2), cast(v3)]."""
@@ -55,27 +57,6 @@ def _fmt_sci(x: float) -> str:
     if mantissa.endswith(".0"):
         mantissa = mantissa[:-2]
     return f"{mantissa}e{int(exp)}"
-
-
-def _read_cum_rows(selfplay_tsv: pathlib.Path) -> int:
-    """Sum the rows column (col 3) across all producers in selfplay.tsv."""
-    if not selfplay_tsv.exists():
-        return 0
-    total = 0
-    try:
-        for ln in selfplay_tsv.read_text().splitlines():
-            if not ln.strip() or ln.startswith("producer"):
-                continue
-            parts = ln.split("\t")
-            if len(parts) < 4:
-                continue
-            try:
-                total += int(float(parts[3]))
-            except ValueError:
-                continue
-    except OSError:
-        pass
-    return total
 
 
 def main() -> int:
@@ -108,7 +89,7 @@ def main() -> int:
         )
         return 1
 
-    cum_rows = _read_cum_rows(selfplay_tsv)
+    cum_rows = read_cum_rows(selfplay_tsv)
     out = staged_value(cum_rows, thresholds, stages)
 
     schedule_str = "[" + ", ".join(_fmt_sci(t) for t in thresholds) + "]"
