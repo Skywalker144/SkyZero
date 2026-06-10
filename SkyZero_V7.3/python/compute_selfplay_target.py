@@ -1,62 +1,92 @@
-"""Fixed-train / adaptive-selfplay production gate (V7.3).
+"""Fixed-train / adaptive-selfplay production ledger (V7.3, order model).
 
-Replaces the V7.2 token bucket (python/bucket.py). Train volume is FIXED
-(train_steps = TRAIN_SAMPLES_PER_EPOCH / BATCH_SIZE every iter); selfplay has
-no per-card orders — every card produces continuously (per-card + persistent
-daemons, run.sh) and the C++ side settles stats into selfplay.tsv every
-DAEMON_SETTLE_SECONDS. This module is the GATE between them.
+Train volume is FIXED (train_steps = TRAIN_SAMPLES_PER_EPOCH / BATCH_SIZE
+every iter); selfplay is ORDERED per iter as a bounded game count.
 
-Each iter (called by run.sh BEFORE shuffle, with --wait):
-    target_cum  += needed                 (needed = TRAIN_SAMPLES_PER_EPOCH / RATIO)
-    trained_cum += TRAIN_SAMPLES_PER_EPOCH
-    block until read_cum_rows(selfplay.tsv) >= target_cum
-        - instant when production already ran ahead (cards over-produced;
-          ratio then floats BELOW the target — fresher data, by design);
-        - otherwise poll while the cards close the deficit.
+Each iter, run.sh calls this module twice:
 
-Cold start (first call): target_cum = max(MIN_ROWS, needed) — produce enough
-for the first shuffle; shuffle skips below MIN_ROWS anyway.
+    --order  (BEFORE the batch selfplay phase)
+        target_cum  += needed             (needed = TRAIN_SAMPLES_PER_EPOCH / RATIO)
+        trained_cum += TRAIN_SAMPLES_PER_EPOCH
+        deficit = target_cum - read_cum_rows(selfplay.tsv)
+        games   = ceil(deficit / rows_per_game)    (0 when production ran ahead)
+        Prints the integer game count on stdout; run.sh splits it across the
+        train cards (selfplay_main --max-games, one batch per card). Spare
+        cards keep producing via the persistent daemon throughout — their
+        settled rows shrink the deficit before it is converted to games.
+
+        rows_per_game = sum(rows)/sum(games) over the last RPG_WINDOW_ROWS
+        ledger rows — NOT avg_len: soft-resign sample weighting writes fewer
+        rows than the game has moves. Cold-start fallback = MAIN_BOARD_SIZE²
+        (board area >= moves >= rows, so it deliberately OVER-estimates
+        rows/game: the first order under-produces, shuffle skips that iter,
+        and the next order re-aims with real ledger data — one lost iter,
+        whereas under-estimating would over-produce several MIN_ROWS worth
+        and freeze orders at 0 for dozens of iters). Later conversion error
+        is harmless: the ledger is cumulative and never reset, so over/
+        under-production rolls into the next iter's deficit.
+
+    --log-row --batch-seconds S  (AFTER the batch barrier)
+        Appends one row to data/logs/ratio.tsv (iter, cum_rows, trained_cum,
+        target_cum, deficit, wait_s=S, eff_ratio) for view_loss.py's
+        replay-ratio panel. Read-only w.r.t. the target state; wait_s now
+        records the batch selfplay duration (the regime signal: >0 means
+        production-bound, 0 means the daemon ran ahead).
+
+Cold start (first --order): target_cum = max(MIN_ROWS, needed) — produce
+enough for the first shuffle; shuffle skips below MIN_ROWS anyway.
 
 cum_rows is read from selfplay.tsv (the single APPEND-ONLY cumulative truth
 across all producers) — NOT by scanning data/selfplay/*.npz, which OOW-cleanup
-keeps trimming to the in-window size (non-monotonic). The ledger is cumulative
-and never reset: over-production rolls into the next iter's balance, so the
-accounting self-corrects and there is no read-clear-write race.
+keeps trimming to the in-window size (non-monotonic).
 
 State persists in data/selfplay_target.json (consume-once family — resume must
 NOT recompute it, or it desyncs from selfplay.tsv's cumulative rows):
     target_cum   — float, cumulative target rows
     trained_cum  — float, cumulative trained samples (for ratio reporting)
     last_iter    — int, iter of the last advance; re-running the same iter
-                   (Ctrl+C between this call and train, then resume) does NOT
-                   advance again, only re-waits on the unchanged target.
+                   (Ctrl+C between --order and train, then resume) does NOT
+                   advance again — it re-orders only the remaining deficit
+                   (an interrupted batch settles its partial rows on SIGTERM,
+                   so the remainder is the true gap).
 
-Each call with --iter also appends a row to data/logs/ratio.tsv (iter,
-cum_rows, trained_cum, target_cum, deficit, wait_s, eff_ratio) for
-view_loss.py's replay-ratio panel.
-
-CLI (one shot, called by run.sh):
-    python compute_selfplay_target.py --data-dir DIR --iter N --wait
-        Advances the target and blocks until the gate passes. Without --wait
-        it only advances + reports (ad-hoc inspection).
+Without --order/--log-row this is a read-only report (no state change).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import pathlib
 import sys
-import time
 
-from bucket import read_cum_rows  # reuse the exact tsv row-sum (col 3, all producers)
 from log_util import tag
 
 TAG = tag("Target", sys.stderr)
 
-POLL_SECONDS = 5
-PROGRESS_EVERY_SECONDS = 30
-STALL_WARN_SECONDS = 300
+RPG_WINDOW_ROWS = 20  # ledger rows used for the rows-per-game estimate
+
+
+def read_cum_rows(selfplay_tsv: pathlib.Path) -> int:
+    """Sum the rows column (col 3) across all producers."""
+    if not selfplay_tsv.exists():
+        return 0
+    total = 0
+    try:
+        for ln in selfplay_tsv.read_text().splitlines():
+            if not ln.strip() or ln.startswith("producer"):
+                continue
+            parts = ln.split("\t")
+            if len(parts) < 4:
+                continue
+            try:
+                total += int(float(parts[3]))
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    return total
 
 
 def _env_float(name: str, default: float) -> float:
@@ -94,40 +124,44 @@ def append_ratio_row(path: pathlib.Path, iter_no: int, cum_rows: int,
                 f"\t{deficit:.0f}\t{wait_s:.1f}\t{eff_ratio:.4f}\n")
 
 
-def wait_for_rows(selfplay_tsv: pathlib.Path, target: float) -> tuple[int, float]:
-    """Block until the settled ledger reaches target. Returns (cum_rows,
-    seconds waited). Warns (but keeps waiting) when the ledger stops moving —
-    daemons settle every DAEMON_SETTLE_SECONDS, so a long flat line means
-    production died (check card_selfplay / daemon logs)."""
-    t0 = time.monotonic()
-    cum = read_cum_rows(selfplay_tsv)
-    last_change = t0
-    last_print = t0
-    last_warn = t0
-    while cum < target:
-        time.sleep(POLL_SECONDS)
-        new = read_cum_rows(selfplay_tsv)
-        now = time.monotonic()
-        if new > cum:
-            last_change = now
-        cum = new
-        if now - last_print >= PROGRESS_EVERY_SECONDS:
-            print(f"{TAG} gate: rows {cum}/{target:.0f} "
-                  f"({100.0 * cum / target:.0f}%)", file=sys.stderr)
-            last_print = now
-        if now - last_change >= STALL_WARN_SECONDS and now - last_warn >= STALL_WARN_SECONDS:
-            print(f"{TAG} WARNING: no settled production for "
-                  f"{int(now - last_change)}s — selfplay daemons dead? "
-                  f"(check card_selfplay / daemon logs)", file=sys.stderr)
-            last_warn = now
-    return cum, time.monotonic() - t0
+def recent_rows_per_game(selfplay_tsv: pathlib.Path, fallback: float) -> float:
+    """sum(rows)/sum(games) over the last RPG_WINDOW_ROWS ledger rows (all
+    producers). rows/games, not avg_len — soft-resign sample weighting writes
+    fewer rows than the game has moves."""
+    try:
+        lines = selfplay_tsv.read_text().splitlines()
+    except OSError:
+        return fallback
+    games = rows = seen = 0
+    for ln in reversed(lines):
+        if seen >= RPG_WINDOW_ROWS:
+            break
+        parts = ln.split("\t")
+        if len(parts) < 4 or parts[0] == "producer":
+            continue
+        try:
+            g = int(float(parts[2]))
+            r = int(float(parts[3]))
+        except ValueError:
+            continue
+        games += g
+        rows += r
+        seen += 1
+    if games <= 0 or rows <= 0:
+        return fallback
+    return rows / games
 
 
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     p.add_argument("--iter", type=int, default=None)
-    p.add_argument("--wait", action="store_true")
+    p.add_argument("--order", action="store_true",
+                   help="advance the target; print the games to order on stdout")
+    p.add_argument("--log-row", action="store_true",
+                   help="append a ratio.tsv row for --iter (no target advance)")
+    p.add_argument("--batch-seconds", type=float, default=0.0,
+                   help="batch selfplay duration, logged as wait_s with --log-row")
     args = p.parse_args()
 
     data_dir = pathlib.Path(args.data_dir)
@@ -142,9 +176,35 @@ def main() -> int:
     state = load_state(state_path)
     cum_rows = read_cum_rows(selfplay_tsv)
 
-    # Advance the cumulative target. First call: cold-start to MIN_ROWS.
-    # Consume-once: a resumed re-run of the same iter must not advance again,
-    # only re-wait against the unchanged target.
+    if args.log_row:
+        # Post-batch report; read-only w.r.t. the target state (--order
+        # already advanced it this iter).
+        target_cum = float(state.get("target_cum", 0.0))
+        trained_cum = float(state.get("trained_cum", 0.0))
+        deficit = target_cum - cum_rows
+        eff_ratio = (trained_cum / cum_rows) if cum_rows > 0 else 0.0
+        if args.iter is not None:
+            append_ratio_row(data_dir / "logs" / "ratio.tsv", args.iter,
+                             cum_rows, trained_cum, target_cum, deficit,
+                             args.batch_seconds, eff_ratio)
+        print(f"{TAG} cum_rows={cum_rows} target_cum={target_cum:.0f} "
+              f"batch_s={args.batch_seconds:.1f} eff_ratio={eff_ratio:.2f}",
+              file=sys.stderr)
+        return 0
+
+    if not args.order:
+        # Read-only report (ad-hoc inspection; no state change).
+        target_cum = float(state.get("target_cum", 0.0))
+        trained_cum = float(state.get("trained_cum", 0.0))
+        eff_ratio = (trained_cum / cum_rows) if cum_rows > 0 else 0.0
+        print(f"{TAG} cum_rows={cum_rows} target_cum={target_cum:.0f} "
+              f"deficit={target_cum - cum_rows:.0f} eff_ratio={eff_ratio:.2f}",
+              file=sys.stderr)
+        return 0
+
+    # --order: advance the cumulative target. First call: cold-start to
+    # MIN_ROWS. Consume-once: a resumed re-run of the same iter must not
+    # advance again, only re-order against the unchanged target.
     if "target_cum" not in state:
         target_cum = max(min_rows, needed)
         trained_cum = samples_per_epoch
@@ -159,25 +219,22 @@ def main() -> int:
     state["trained_cum"] = trained_cum
     if args.iter is not None:
         state["last_iter"] = args.iter
-    # Persist BEFORE waiting: a Ctrl+C mid-wait resumes as a same-iter replay.
+    # Persist BEFORE ordering: a Ctrl+C mid-iter resumes as a same-iter
+    # replay (re-orders only what is still missing).
     save_state(state_path, state)
 
     deficit = target_cum - cum_rows
+    # Fallback = board area: a guaranteed over-estimate of rows/game, so
+    # a cold-start order under-produces (one shuffle-skip iter) instead
+    # of over-producing (orders frozen at 0 for dozens of iters).
+    board = _env_float("MAIN_BOARD_SIZE", 15.0)
+    rpg = recent_rows_per_game(selfplay_tsv, fallback=board * board)
+    games = math.ceil(deficit / rpg) if deficit > 0 else 0
     print(f"{TAG} cum_rows={cum_rows} target_cum={target_cum:.0f} "
-          f"deficit={deficit:.0f}"
-          + ("" if deficit > 0 else " (production ahead; gate passes)"),
+          f"deficit={deficit:.0f} rows/game={rpg:.1f} -> order {games} games"
+          + ("" if deficit > 0 else " (production ahead)"),
           file=sys.stderr)
-
-    wait_s = 0.0
-    if args.wait and deficit > 0:
-        cum_rows, wait_s = wait_for_rows(selfplay_tsv, target_cum)
-
-    eff_ratio = (trained_cum / cum_rows) if cum_rows > 0 else 0.0
-    if args.iter is not None:
-        append_ratio_row(data_dir / "logs" / "ratio.tsv", args.iter, cum_rows,
-                         trained_cum, target_cum, deficit, wait_s, eff_ratio)
-    print(f"{TAG} gate passed: cum_rows={cum_rows} wait={wait_s:.1f}s "
-          f"eff_ratio={eff_ratio:.2f}", file=sys.stderr)
+    print(games)  # stdout: consumed by run.sh
     return 0
 
 

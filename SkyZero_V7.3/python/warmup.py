@@ -17,7 +17,7 @@ as --sims-warmup-cmd for daemon's reload-time re-poll):
     python warmup.py num-simulations --data-dir DATA_DIR
 
 Reads cum_rows from DATA_DIR/logs/selfplay.tsv (sums all producers).
-Train rate is no longer staged — see python/bucket.py.
+Train rate is no longer staged — see python/compute_selfplay_target.py.
 """
 from __future__ import annotations
 

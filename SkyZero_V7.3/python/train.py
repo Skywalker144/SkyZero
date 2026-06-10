@@ -612,7 +612,7 @@ def main() -> int:
     else:
         torch.save(model.state_dict(), snap)
 
-    # State json — per-network now (bucket state lives in data/bucket.json).
+    # State json — per-network.
     # Read-merge-write to preserve any future per-network fields.
     state_json = ckpt_dir / "state.json"
     try:

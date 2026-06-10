@@ -81,12 +81,47 @@ def _list_networks(data_dir: pathlib.Path) -> list[str]:
                   if p.is_dir() and (p / "train.tsv").exists())
 
 
+def _bucket_by_games(xs, weights, series, min_games=500):
+    """Merge consecutive points into buckets of >= min_games games, returning
+    (bucket_xs, bucket_series) with games-weighted averages.
+
+    selfplay.tsv rows are settle windows of wildly varying size (a 60s daemon
+    window vs a 2s TERM flush when train re-drafts the card), so plotting them
+    raw gives tiny-sample rows the same visual weight as large ones and the
+    curves look like noise. Bucketing restores comparable statistical weight
+    per point. The tail bucket is emitted even when short so the plot stays
+    current (the last point may be noisier)."""
+    bx, bys = [], [[] for _ in series]
+    acc_w = 0.0
+    acc_v = [0.0] * len(series)
+    last_x = None
+    for i, (xv, w) in enumerate(zip(xs, weights)):
+        if not (math.isfinite(w) and w > 0
+                and all(math.isfinite(s[i]) for s in series)):
+            continue
+        acc_w += w
+        last_x = xv
+        for k, s in enumerate(series):
+            acc_v[k] += s[i] * w
+        if acc_w >= min_games:
+            bx.append(last_x)
+            for k in range(len(series)):
+                bys[k].append(acc_v[k] / acc_w)
+            acc_w = 0.0
+            acc_v = [0.0] * len(series)
+    if acc_w > 0 and last_x is not None:
+        bx.append(last_x)
+        for k in range(len(series)):
+            bys[k].append(acc_v[k] / acc_w)
+    return bx, bys
+
+
 def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
     """3-panel selfplay plot from selfplay.tsv (main + daemon rows interleaved).
 
     Top:    cumulative rows by producer (stacked).
-    Middle: main-pair avg game length per write event, colored by producer.
-    Bottom: main-pair win rates per write event, colored by producer.
+    Middle: main-pair avg game length, >=500-game buckets, colored by producer.
+    Bottom: main-pair win rates, >=500-game buckets.
     """
     log = data_dir / "logs" / "selfplay.tsv"
     if not log.exists():
@@ -97,7 +132,7 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
         print("empty selfplay log", file=sys.stderr)
         return
     idx = {name: i for i, name in enumerate(header)}
-    required = ("producer", "rows", "main_avg_len",
+    required = ("producer", "rows", "main_games", "main_avg_len",
                 "main_bwr", "main_wwr", "main_dwr")
     if not all(k in idx for k in required):
         print("selfplay.tsv missing expected columns; skipping selfplay plot",
@@ -149,24 +184,30 @@ def _plot_selfplay(data_dir: pathlib.Path, plt) -> None:
     ax1.grid(True, alpha=0.3)
 
     main_avg = col("main_avg_len")
+    main_games = col("main_games")
     for p, c in (("main", "C0"), ("daemon", "C1")):
-        xs = [x[i] for i in range(len(x)) if producer[i] == p]
-        ys = [main_avg[i] for i in range(len(x)) if producer[i] == p]
-        if xs:
-            ax2.plot(xs, ys, "-", label=p, color=c, alpha=0.7)
+        sel = [i for i in range(len(x)) if producer[i] == p]
+        bx, (by,) = _bucket_by_games(
+            [x[i] for i in sel], [main_games[i] for i in sel],
+            [[main_avg[i] for i in sel]])
+        if bx:
+            ax2.plot(bx, by, "-", label=p, color=c, alpha=0.7)
     ax2.set_ylabel("avg game length")
-    ax2.set_title(f"main pair ({main_size}×{main_rule}) game length")
+    ax2.set_title(f"main pair ({main_size}×{main_rule}) game length "
+                  f"(≥500-game buckets)")
     ax2.legend(loc="best")
     ax2.grid(True, alpha=0.3)
 
     bwr, wwr, dwr = col("main_bwr"), col("main_wwr"), col("main_dwr")
-    ax3.plot(x, bwr, "-", label="black", color="C2", alpha=0.7)
-    ax3.plot(x, wwr, "-", label="white", color="C3", alpha=0.7)
-    ax3.plot(x, dwr, "-", label="draw", color="C7", alpha=0.7)
+    bx, (bb, bw, bd) = _bucket_by_games(x, main_games, [bwr, wwr, dwr])
+    ax3.plot(bx, bb, "-", label="black", color="C2", alpha=0.7)
+    ax3.plot(bx, bw, "-", label="white", color="C3", alpha=0.7)
+    ax3.plot(bx, bd, "-", label="draw", color="C7", alpha=0.7)
     ax3.set_ylim(0.0, 1.0)
     ax3.set_ylabel("rate")
     ax3.set_xlabel("cumulative selfplay samples")
-    ax3.set_title(f"main pair ({main_size}×{main_rule}) win rates")
+    ax3.set_title(f"main pair ({main_size}×{main_rule}) win rates "
+                  f"(≥500-game buckets)")
     ax3.legend(loc="best")
     ax3.grid(True, alpha=0.3)
 
@@ -328,6 +369,9 @@ def main() -> int:
     parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "data"))
     parser.add_argument("--tail", type=int, default=20)
     parser.add_argument("--plot", action="store_true")
+    parser.add_argument("--only", default="",
+                        help="comma list of plots to draw "
+                             "(loss,selfplay,probe,ratio); empty = all")
     args = parser.parse_args()
 
     data_dir = pathlib.Path(args.data_dir)
@@ -366,50 +410,57 @@ def main() -> int:
         print("matplotlib not installed; skipping plot", file=sys.stderr)
         return 0
 
-    # Union of loss keys across networks (preserving canonical order below).
-    canonical = ("total_loss", "policy_loss", "opp_policy_loss",
-                 "intermediate_loss", "soft_policy_loss", "soft_opp_policy_loss",
-                 "futurepos_loss", "value_loss", "td_value_loss")
-    keys = [k for k in canonical if any(k in cols for cols in per_net_cols.values())]
-    n = len(keys)
-    if n <= 3:
-        ncols, nrows = 1, n
-        figsize = (8, 2.5 * n)
-    else:
-        ncols = math.ceil(math.sqrt(n))
-        nrows = math.ceil(n / ncols)
-        figsize = (5 * ncols, 2.8 * nrows)
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharex=True, squeeze=False)
-    flat = axes.flatten()
+    wanted = {t for t in args.only.replace(",", " ").split() if t} \
+        or {"loss", "selfplay", "probe", "ratio"}
 
-    color_cycle = [f"C{i}" for i in range(10)]
-    for ax, key in zip(flat, keys):
-        any_xlabel = "iter"
-        for i, (net, cols) in enumerate(per_net_cols.items()):
-            if key not in cols:
-                continue
-            x = cols.get("global_step_samples") or cols.get("iter") or list(range(len(cols[key])))
-            if "global_step_samples" in cols:
-                any_xlabel = "samples"
-            ax.plot(x, cols[key], color=color_cycle[i % len(color_cycle)],
-                    label=net, alpha=0.85)
-        ax.set_yscale("log")
-        ax.set_title(key)
-        ax.grid(True, which="both", alpha=0.3)
-        ax.legend(loc="best", fontsize=8)
-        ax.set_xlabel(any_xlabel)
-    # Hide unused panes.
-    for ax in flat[n:]:
-        ax.set_visible(False)
-    fig.tight_layout()
-    out = data_dir / "logs" / "loss.png"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=200)
-    print(f"saved plot to {out}")
+    if "loss" in wanted:
+        # Union of loss keys across networks (preserving canonical order below).
+        canonical = ("total_loss", "policy_loss", "opp_policy_loss",
+                     "intermediate_loss", "soft_policy_loss", "soft_opp_policy_loss",
+                     "futurepos_loss", "value_loss", "td_value_loss")
+        keys = [k for k in canonical if any(k in cols for cols in per_net_cols.values())]
+        n = len(keys)
+        if n <= 3:
+            ncols, nrows = 1, n
+            figsize = (8, 2.5 * n)
+        else:
+            ncols = math.ceil(math.sqrt(n))
+            nrows = math.ceil(n / ncols)
+            figsize = (5 * ncols, 2.8 * nrows)
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharex=True, squeeze=False)
+        flat = axes.flatten()
 
-    _plot_selfplay(data_dir, plt)
-    _plot_probe(data_dir, plt)
-    _plot_ratio(data_dir, plt)
+        color_cycle = [f"C{i}" for i in range(10)]
+        for ax, key in zip(flat, keys):
+            any_xlabel = "iter"
+            for i, (net, cols) in enumerate(per_net_cols.items()):
+                if key not in cols:
+                    continue
+                x = cols.get("global_step_samples") or cols.get("iter") or list(range(len(cols[key])))
+                if "global_step_samples" in cols:
+                    any_xlabel = "samples"
+                ax.plot(x, cols[key], color=color_cycle[i % len(color_cycle)],
+                        label=net, alpha=0.85)
+            ax.set_yscale("log")
+            ax.set_title(key)
+            ax.grid(True, which="both", alpha=0.3)
+            ax.legend(loc="best", fontsize=8)
+            ax.set_xlabel(any_xlabel)
+        # Hide unused panes.
+        for ax in flat[n:]:
+            ax.set_visible(False)
+        fig.tight_layout()
+        out = data_dir / "logs" / "loss.png"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out, dpi=200)
+        print(f"saved plot to {out}")
+
+    if "selfplay" in wanted:
+        _plot_selfplay(data_dir, plt)
+    if "probe" in wanted:
+        _plot_probe(data_dir, plt)
+    if "ratio" in wanted:
+        _plot_ratio(data_dir, plt)
     return 0
 
 

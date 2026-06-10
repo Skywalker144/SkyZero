@@ -26,7 +26,7 @@ import os
 import pathlib
 import sys
 
-from bucket import read_cum_rows
+from compute_selfplay_target import read_cum_rows
 from log_util import tag
 
 TAG = tag("Schedule", sys.stderr)

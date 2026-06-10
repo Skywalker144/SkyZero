@@ -521,67 +521,39 @@ int main(int argc, char** argv) {
         fs::create_directories(cli.output_dir);
         fs::create_directories(cli.log_dir);
 
-        // Aggregate cumulative games/rows from selfplay.tsv. Counts BOTH
-        // producers (main + daemon) — see python/selfplay_log.py for the
-        // same logic. Used only for the diagnostic print below.
+        // Aggregate cumulative games/rows from selfplay.tsv (read-only; both
+        // producers). Used only for the diagnostic print below.
         //
-        // Resume hygiene: if a prior run finished selfplay (so it appended a
-        // producer=main row) but train/export got interrupted, state.json
-        // still points at the previous iter; resume reruns this same iter,
-        // and the previously-written main row would otherwise double-count.
-        // Drop any main rows with iter >= cli.iter. Daemon rows are not
-        // dropped — they have no iter/resume boundary.
+        // V7.3 order model: the tsv is the append-only cumulative truth
+        // against the cumulative target in selfplay_target.json, and several
+        // same-iter batch runs (one per train card) plus the spare-card
+        // daemon append concurrently. A resumed iter re-orders only the
+        // remaining deficit, so already-settled main rows for this iter are
+        // valid production — the V7.2 "drop main rows with iter >= N"
+        // truncate+rewrite (bucket double-count protection) is retired: it
+        // would discard valid rows and race with concurrent appenders.
         int64_t cum_games = 0;
         int64_t cum_rows = 0;
         if (!cli.daemon) {
-            const fs::path tsv_path = fs::path(cli.log_dir) / "selfplay.tsv";
-            std::vector<std::string> kept_lines;
-            std::string header_line;
-            bool had_header = false;
-            int dropped = 0;
-            {
-                std::ifstream hf(tsv_path);
-                std::string line;
-                bool first = true;
-                while (std::getline(hf, line)) {
-                    if (first) {
-                        first = false;
-                        if (line.rfind("producer", 0) == 0) {
-                            header_line = line;
-                            had_header = true;
-                            continue;
-                        }
-                    }
-                    std::istringstream ls(line);
-                    std::string producer;
-                    int it; int64_t g, r;
-                    if (!(ls >> producer >> it >> g >> r)) {
-                        kept_lines.push_back(line);
-                        continue;
-                    }
-                    if (producer == "main" && it >= cli.iter) {
-                        ++dropped;
-                        continue;
-                    }
-                    cum_games += g;
-                    cum_rows += r;
-                    kept_lines.push_back(line);
-                }
-            }
-            if (dropped > 0) {
-                std::ofstream of(tsv_path, std::ios::trunc);
-                if (had_header) of << header_line << "\n";
-                for (const auto& l : kept_lines) of << l << "\n";
-                std::cout << g_tag_sp << " dropped " << dropped
-                          << " stale main row(s) with iter >= "
-                          << cli.iter << " (resume after interrupted train)\n";
+            std::ifstream hf(fs::path(cli.log_dir) / "selfplay.tsv");
+            std::string line;
+            while (std::getline(hf, line)) {
+                std::istringstream ls(line);
+                std::string producer;
+                int it; int64_t g, r;
+                if (!(ls >> producer >> it >> g >> r)) continue;  // header/junk
+                cum_games += g;
+                cum_rows += r;
             }
         }
 
         // Initial NPZ filename prefix. Daemon picks a placeholder here and
         // rotates to the real "daemon_v<iter>_pid<pid>" prefix after reading
         // latest.meta.json (which we can only do once latest.pt exists; the
-        // cold-start wait above guarantees that).
+        // cold-start wait above guarantees that). Batch (--max-games) runs
+        // are pid-tagged too: run.sh launches one per train card at the SAME
+        // iter, so the pid is what keeps concurrent part files apart
+        // (shuffle.py orders by mtime, so the filename layout is free).
         std::string npz_prefix;
         if (cli.daemon) {
             char buf[64];
@@ -591,27 +563,22 @@ int main(int argc, char** argv) {
             std::ostringstream prefix_os;
             prefix_os << "iter_";
             prefix_os.width(6); prefix_os.fill('0'); prefix_os << cli.iter;
+            prefix_os << "_pid" << static_cast<int>(::getpid());
             npz_prefix = prefix_os.str();
         }
 
-        // Clean leftover part files from a previously interrupted run.
-        //
-        // Main loop: orphans of *this same* iter, so NpzWriter's part counter
-        // re-aligns. selfplay.tsv (producer="main") is only appended on clean
-        // finish, so these orphans are not yet accounted for in cum_rows.
-        //
-        // Daemon: orphans named daemon_pending_pid*_part_*.npz from prior
-        // daemon crashes that died before rotating to a real version prefix.
-        // Real daemon files (daemon_v<NNNNNN>_pid<pid>_part_*.npz) are
-        // intentionally kept across restarts.
-        {
-            const std::string sweep_prefix = cli.daemon
-                ? std::string("daemon_pending_pid")
-                : (npz_prefix + "_part_");
+        // Clean leftover daemon_pending_pid*_part_*.npz from prior daemon
+        // crashes that died before rotating to a real version prefix. Real
+        // daemon files and pid-tagged batch files are kept across restarts:
+        // batch leftovers from a killed run are valid (merely
+        // ledger-unaccounted) games that shuffle's mtime-ordered disk scan
+        // still uses, and any same-iter sweep would race with sibling cards'
+        // live part files.
+        if (cli.daemon) {
             int removed = 0;
             for (const auto& p : fs::directory_iterator(cli.output_dir)) {
                 const auto name = p.path().filename().string();
-                if (name.rfind(sweep_prefix, 0) == 0) {
+                if (name.rfind("daemon_pending_pid", 0) == 0) {
                     std::error_code ec;
                     fs::remove(p.path(), ec);
                     if (!ec) ++removed;
@@ -619,8 +586,7 @@ int main(int argc, char** argv) {
             }
             if (removed > 0) {
                 std::cout << g_tag_sp << " removed " << removed
-                          << " leftover " << (cli.daemon ? "daemon_pending" : "iter part")
-                          << " file(s)\n";
+                          << " leftover daemon_pending file(s)\n";
             }
         }
 

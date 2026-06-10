@@ -24,10 +24,11 @@ if [[ ! -x "$SELFPLAY_BIN" ]]; then
     exit 1
 fi
 
-# Main-loop selfplay always runs on MAIN_GPU only. Multi-GPU spread is the
-# job of selfplay_daemon.sh (it owns the spare GPUs and has its own
-# INFERENCE_SERVER_DEVICES). When INFERENCE_SERVER_DEVICES is already set
-# (e.g. test harness override), respect it.
+# One batch = one GPU: run.sh launches one selfplay.sh per train card with
+# MAIN_GPU=<card>. Multi-GPU spread across the spare cards is the job of
+# selfplay_daemon.sh (it has its own INFERENCE_SERVER_DEVICES). When
+# INFERENCE_SERVER_DEVICES is already set (e.g. test harness override),
+# respect it.
 MAIN_GPU="${MAIN_GPU:-0}"
 GPU_NUM="${GPU_NUM:-1}"
 
