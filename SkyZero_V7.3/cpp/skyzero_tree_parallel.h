@@ -146,6 +146,84 @@ public:
         return out;
     }
 
+    // ---- Analysis / ponder API ------------------------------------------
+    // search() above runs a fixed Gumbel sequential-halving budget and is what
+    // *selects* moves. The methods below instead let a caller accumulate plain
+    // PUCT simulations on a persistent tree and read the current estimate
+    // between chunks — i.e. KataGo-style ponder until the user stops. Play uses
+    // search()/Gumbel; analysis uses these.
+    void ensure_root_expanded(MCTSNode& root) {
+        if (!root.is_expanded()) {
+            auto pair = root_expand(root);
+            backpropagate_from_root(&root, pair.second);
+        }
+    }
+
+    // Run `n` PUCT-root simulations, accumulating into the existing tree.
+    void run_puct_sims(MCTSNode& root, int n) {
+        if (n <= 0) return;
+        current_root_ = &root;
+        std::vector<SimTask> batch(static_cast<size_t>(n));
+        for (auto& t : batch) t.root_action = -1;  // -1 => select root child by PUCT
+        submit_and_wait(batch);
+        current_root_ = nullptr;
+    }
+
+    // Snapshot the current tree as an MCTSSearchOutput: visit distribution,
+    // per-child root-perspective WDL, root value (visit-weighted), and synthetic
+    // Gumbel phases ([all visited, best]) so the existing front-end overlay
+    // renders the analysis unchanged.
+    MCTSSearchOutput report_analysis(MCTSNode& root) {
+        const int action_size = Game::MAX_AREA;
+        MCTSSearchOutput out;
+        out.nn_policy = root.nn_policy;
+        out.nn_value_probs = root.nn_value_probs;
+        out.visit_counts.assign(static_cast<size_t>(action_size), 0.0f);
+        out.root_child_wdl.assign(static_cast<size_t>(action_size), {0.0f, 0.0f, 0.0f});
+        std::vector<float> n_values(static_cast<size_t>(action_size), 0.0f);
+        for (auto& c : root.children) {
+            if (!c) continue;
+            std::lock_guard<std::mutex> lk(node_mutex(c.get()));
+            const int a = c->action_taken;
+            if (a < 0 || a >= action_size || c->n <= 0) continue;
+            const float cw = c->v[0] / static_cast<float>(c->n);
+            const float cd = c->v[1] / static_cast<float>(c->n);
+            const float cl = c->v[2] / static_cast<float>(c->n);
+            out.root_child_wdl[static_cast<size_t>(a)] = {cl, cd, cw};  // root-perspective W,D,L
+            n_values[static_cast<size_t>(a)] = static_cast<float>(c->n);
+            out.visit_counts[static_cast<size_t>(a)] = static_cast<float>(c->n);
+        }
+        const float sum_n = std::accumulate(n_values.begin(), n_values.end(), 0.0f);
+        out.mcts_policy.assign(static_cast<size_t>(action_size), 0.0f);
+        std::array<float, 3> vroot = root.nn_value_probs;
+        if (sum_n > 0.0f) {
+            std::array<float, 3> acc{0.0f, 0.0f, 0.0f};
+            for (int a = 0; a < action_size; ++a) {
+                if (n_values[a] <= 0.0f) continue;
+                out.mcts_policy[static_cast<size_t>(a)] = n_values[a] / sum_n;
+                acc[0] += n_values[a] * out.root_child_wdl[static_cast<size_t>(a)][0];
+                acc[1] += n_values[a] * out.root_child_wdl[static_cast<size_t>(a)][1];
+                acc[2] += n_values[a] * out.root_child_wdl[static_cast<size_t>(a)][2];
+            }
+            vroot = {acc[0] / sum_n, acc[1] / sum_n, acc[2] / sum_n};
+        }
+        out.v_mix = vroot;
+        std::vector<int> visited;
+        int best = -1;
+        float best_n = -1.0f;
+        for (int a = 0; a < action_size; ++a) {
+            if (n_values[a] <= 0.0f) continue;
+            visited.push_back(a);
+            if (n_values[a] > best_n) { best_n = n_values[a]; best = a; }
+        }
+        if (!visited.empty()) {
+            out.gumbel_phases.push_back(std::move(visited));
+            if (best >= 0) out.gumbel_phases.push_back(std::vector<int>{best});
+        }
+        out.gumbel_action = best;
+        return out;
+    }
+
 private:
     // ------------------------------------------------------------------
     // Striped mutex pool for per-node state (n, v[], vloss, children read).
@@ -545,6 +623,13 @@ private:
         if (cfg_.non_root_search_algo == SkyZeroConfig::NonRootSearchAlgo::kGumbel) {
             return gumbel_select_child(node);
         }
+        return puct_select_child(node);
+    }
+
+    // PUCT + FPU + virtual-loss selection: the default non-root policy, also
+    // used to drive the root during analysis/ponder (forced PUCT regardless of
+    // non_root_search_algo).
+    MCTSNode* puct_select_child(MCTSNode& node) {
         // Snapshot parent counters (need the mutex for coherent n + v[] read).
         int parent_n, parent_vloss;
         float parent_q_sum_sq;
@@ -646,17 +731,23 @@ private:
         MCTSNode* root = current_root_;
         if (root == nullptr) return;
 
-        // Pick the fixed root child corresponding to task.root_action.
-        MCTSNode* child = nullptr;
-        for (auto& c : root->children) {
-            if (c && c->action_taken == task.root_action) { child = c.get(); break; }
-        }
-        if (child == nullptr) return;
-
         std::vector<MCTSNode*> path;
         path.reserve(64);
         add_vloss(root);
         path.push_back(root);
+
+        // root_action >= 0: Gumbel SH dictates which root child to simulate.
+        // root_action < 0: analysis/ponder — select the root child by PUCT so
+        // the tree deepens like a normal AlphaZero search.
+        MCTSNode* child = nullptr;
+        if (task.root_action < 0) {
+            child = puct_select_child(*root);
+        } else {
+            for (auto& c : root->children) {
+                if (c && c->action_taken == task.root_action) { child = c.get(); break; }
+            }
+        }
+        if (child == nullptr) { remove_vloss_path(path); return; }
         add_vloss(child);
         path.push_back(child);
 
