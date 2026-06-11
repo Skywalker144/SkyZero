@@ -105,6 +105,30 @@ struct SkyZeroConfig {
     float fast_search_prob = 0.0f;          // cheapSearchProb
     float fast_search_target_weight = 0.0f; // cheapSearchTargetWeight
 
+    // KataGo side positions (sidePositionProb, play.cpp:1594). Selfplay-only:
+    // per move, with side_position_prob, fork ONE *alternative* move off the
+    // main line (chooseRandomForkingMove: 70% temp-1 / 25% temp-2 / 5% random,
+    // the played move banned), search that forked position independently, and
+    // emit it as an extra training row of off-policy policy + search-value data.
+    // Because the row is off the game line it cannot carry the main-line-only
+    // targets: futurepos is masked (weight 0 + zeroed planes, has_futurepos=
+    // false) and opponent-policy is masked (has_opponent_policy=false), exactly
+    // as KataGo passes NULL posHistForFutureBoards / next-policy for side rows
+    // (trainingwrite.cpp:1245-1249). value + TD ARE trained at full weight from
+    // the side search WDL (KataGo valueTargetWeight=tdValueTargetWeight=1.0).
+    // The side search uses the SAME full settings as a main search (root noise
+    // + forced playouts ON, cleaned by target pruning / improved policy), as
+    // KataGo reuses its selfplay bot for side positions (play.cpp:1899). With
+    // 25% probability a searched side position is continued two plies and
+    // re-queued, so the fork can sit on an earlier turn too — KataGo's
+    // geometric continuation (play.cpp:1885/1944). selfplay_main overlays the
+    // KataGo selfplay default 0.02 as its cfg_get default (this struct default
+    // is the inert match-mode value, never read outside selfplay); 0 disables.
+    float side_position_prob = 0.0f;        // sidePositionProb
+    // Visit budget for the side search; <=0 means the full num_simulations
+    // (KataGo searches side positions at full strength, not cheaply).
+    int side_position_visits = 0;
+
     // PUCT / FPU
     float c_puct = 1.1f;
     float c_puct_log = 0.45f;
