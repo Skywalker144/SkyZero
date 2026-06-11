@@ -37,6 +37,59 @@
 
 namespace skyzero {
 
+// KataGo chooseRandomForkingMove (play.cpp:788): pick an ALTERNATIVE move to
+// fork a side position into — 70% a temperature-1 policy sample, 25% temp-2,
+// 5% a uniform random legal move. The actually-played move is banned so the
+// fork diverges from the main line. nn_probs is the root's legal-masked NN
+// policy (canvas-stride), reused from the just-finished search (no extra
+// inference, as in KataGo). Returns a canvas-stride action, or -1 if none.
+template <typename Game>
+inline int choose_forking_move(
+    const Game& game,
+    const std::vector<float>& nn_probs,
+    const std::vector<int8_t>& state,
+    int to_play,
+    int ban_action,
+    std::mt19937& rng
+) {
+    const int area = Game::MAX_AREA;
+    std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+    const float r = u01(rng);
+    if (r < 0.95f && static_cast<int>(nn_probs.size()) == area) {
+        const double temperature = (r < 0.70f) ? 1.0 : 2.0;
+        std::vector<int> actions;
+        std::vector<double> select;
+        double total = 0.0;
+        for (int a = 0; a < area; ++a) {
+            if (a == ban_action) continue;
+            const float p = nn_probs[a];          // 0 for illegal (legal-masked)
+            if (!(p > 0.0f)) continue;
+            const double sv = std::pow(static_cast<double>(p), 1.0 / temperature);
+            actions.push_back(a);
+            select.push_back(sv);
+            total += sv;
+        }
+        if (!actions.empty() && total > 0.0) {
+            const double pick = u01(rng) * total;
+            double acc = 0.0;
+            for (size_t i = 0; i < actions.size(); ++i) {
+                acc += select[i];
+                if (acc >= pick) return actions[i];
+            }
+            return actions.back();
+        }
+        // else: no policy candidate — fall through to a uniform random legal move
+    }
+    const auto legal = game.get_is_legal_actions_canvas(state, to_play);
+    std::vector<int> legal_actions;
+    for (int a = 0; a < area && a < static_cast<int>(legal.size()); ++a) {
+        if (a != ban_action && legal[a]) legal_actions.push_back(a);
+    }
+    if (legal_actions.empty()) return -1;
+    std::uniform_int_distribution<size_t> picki(0, legal_actions.size() - 1);
+    return legal_actions[picki(rng)];
+}
+
 template <typename Game>
 class SelfplayEngine {
 public:
@@ -439,6 +492,11 @@ private:
         const bool reuse_enabled = cfg_.enable_tree_reuse;
 
         std::vector<MemoryStep> memory;
+        // KataGo side positions: forked off the main line, each fully populated
+        // (policy/value/TD from its own search) at creation; merged into
+        // result.samples AFTER the main-line back-fill so those loops don't
+        // overwrite their search-derived targets.
+        std::vector<PolicySurpriseSample> side_samples;
         auto init = game_.get_initial_state(worker_rng);
         std::vector<int8_t> state = std::move(init.board);
         int to_play = init.to_play;
@@ -569,6 +627,106 @@ private:
             if (action < 0) {
                 std::discrete_distribution<int> action_dist(sr.mcts_policy.begin(), sr.mcts_policy.end());
                 action = action_dist(worker_rng);
+            }
+
+            // === KataGo side positions (sidePositionProb, play.cpp:1594) ===
+            // Fork an alternative move off the main line, search it on a fresh
+            // tree (the main `root` is untouched, so tree reuse continues), and
+            // record extra off-policy rows. The side search uses the SAME full
+            // settings as a main search — root noise + forced playouts ON,
+            // cleaned via target pruning (PUCT) / improved policy (Gumbel) —
+            // exactly as KataGo reuses its selfplay bot for side positions
+            // (play.cpp:1899; only playoutDoublingAdvantage, which we lack, is
+            // forced off there). Off-line targets are masked (futurepos /
+            // opponent-policy); value+TD train at full weight from the side
+            // search WDL. With 25% probability a searched side position is
+            // continued two plies (its search-chosen reply + another forked
+            // move) and re-queued, so "weird" moves also appear on earlier
+            // turns — KataGo's geometric continuation (play.cpp:1885 re-reads
+            // size(); sp2 is pushed back, eligible to continue again).
+            if (cfg_.side_position_prob > 0.0f) {
+                std::uniform_real_distribution<float> u01s(0.0f, 1.0f);
+                if (u01s(worker_rng) < cfg_.side_position_prob) {
+                    const int fork_action = choose_forking_move(
+                        game_, sr.nn_policy, state, to_play, action, worker_rng);
+                    if (fork_action >= 0) {
+                        auto fs = game_.get_next_state_canvas(state, fork_action, to_play);
+                        if (!game_.is_terminal_canvas(fs, fork_action, to_play)) {
+                            const int side_sims = cfg_.side_position_visits > 0
+                                ? cfg_.side_position_visits : cfg_.num_simulations;
+
+                            // Search a forked position, emit a side-position row,
+                            // and return its search output (for the continuation).
+                            auto emit_side = [&](const std::vector<int8_t>& s, int p) {
+                                std::unique_ptr<MCTSNode> sroot;
+                                const auto ssr = mcts.search(s, p, side_sims, sroot, /*fast_search=*/false);
+                                int ply = 0;
+                                for (int8_t v : s) if (v != 0) ++ply;
+                                auto gf = game_.compute_global_features(ply, p);
+                                PolicySurpriseSample sp;
+                                sp.state = game_.encode_state_v5(s, p);
+                                for (int j = 0; j < 12; ++j) sp.global_features[j] = gf.data[j];
+                                sp.to_play = static_cast<int8_t>(p);
+                                sp.policy_target = ssr.mcts_policy;
+                                // Off the game line: no next move, no future board.
+                                sp.opponent_policy_target = std::vector<float>(ssr.mcts_policy.size(), 0.0f);
+                                sp.has_opponent_policy = false;
+                                sp.futurepos_target.assign(2 * Game::MAX_AREA, 0);
+                                sp.has_futurepos = false;
+                                // value + TD from the side search WDL (KataGo
+                                // trains these at full weight). No TD chain off
+                                // the line, so all 3 horizons collapse to v_mix.
+                                sp.outcome = ssr.v_mix;
+                                sp.value_target = ssr.v_mix;
+                                for (int h = 0; h < 3; ++h) {
+                                    sp.td_value_target[3 * h + 0] = ssr.v_mix[0];
+                                    sp.td_value_target[3 * h + 1] = ssr.v_mix[1];
+                                    sp.td_value_target[3 * h + 2] = ssr.v_mix[2];
+                                }
+                                sp.nn_policy = ssr.nn_policy;
+                                sp.nn_value_probs = ssr.nn_value_probs;
+                                sp.v_mix = ssr.v_mix;
+                                sp.sample_weight = 1.0f;  // KataGo side rows: full data weight
+                                side_samples.push_back(std::move(sp));
+                                return ssr;
+                            };
+
+                            // Worklist mirrors KataGo's sidePositionsToSearch: a
+                            // continued fork is appended and itself eligible to
+                            // continue. Copy (s, p) per iteration since push_back
+                            // may reallocate the vector mid-loop.
+                            std::vector<std::pair<std::vector<int8_t>, int>> worklist;
+                            worklist.emplace_back(std::move(fs), -to_play);
+                            for (size_t wi = 0; wi < worklist.size(); ++wi) {
+                                const std::vector<int8_t> s = worklist[wi].first;
+                                const int p = worklist[wi].second;
+                                const auto ssr = emit_side(s, p);
+
+                                if (u01s(worker_rng) >= 0.25f) continue;
+                                const int reply = ssr.gumbel_action;   // search-chosen response
+                                if (reply < 0) continue;
+                                auto mid = game_.get_next_state_canvas(s, reply, p);
+                                const int mid_p = -p;
+                                if (game_.is_terminal_canvas(mid, reply, p)) continue;
+                                // NN policy at mid (legal-masked softmax) to pick the 2nd fork.
+                                auto res = infer_fn(game_.encode_state_v5(mid, mid_p));
+                                auto& logits = res.first;
+                                const auto legal = game_.get_is_legal_actions_canvas(mid, mid_p);
+                                for (int a = 0; a < Game::MAX_AREA; ++a) {
+                                    if (a >= static_cast<int>(legal.size()) || !legal[a])
+                                        logits[a] = -std::numeric_limits<float>::infinity();
+                                }
+                                const auto mid_probs = softmax(logits);
+                                const int fork2 = choose_forking_move(
+                                    game_, mid_probs, mid, mid_p, /*ban=*/-1, worker_rng);
+                                if (fork2 < 0) continue;
+                                auto s2 = game_.get_next_state_canvas(mid, fork2, mid_p);
+                                if (game_.is_terminal_canvas(s2, fork2, mid_p)) continue;
+                                worklist.emplace_back(std::move(s2), -mid_p);
+                            }
+                        }
+                    }
+                }
             }
 
             last_action = action;
@@ -745,6 +903,12 @@ private:
                 }
             }
         }
+
+        // Merge side positions now that the main-line value/TD/futurepos
+        // back-fill is done (it iterates result.samples and would otherwise
+        // overwrite their search-derived targets). They flow through the same
+        // surprise-weighting / writer path as main rows.
+        for (auto& sp : side_samples) result.samples.push_back(std::move(sp));
 
         return result;
     }
