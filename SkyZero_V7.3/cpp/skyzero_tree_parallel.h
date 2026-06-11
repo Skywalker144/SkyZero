@@ -208,9 +208,12 @@ private:
 
     void start_workers() {
         for (int i = 0; i < num_threads_; ++i) {
-            worker_rng_seeds_.push_back(rng_());
-            workers_.emplace_back([this, i]() {
-                std::mt19937 local_rng(worker_rng_seeds_[i]);
+            // Seed by value: capturing a reference into a member vector races
+            // with later push_back reallocations (worker threads start reading
+            // while the constructor is still appending).
+            const uint64_t seed = rng_();
+            workers_.emplace_back([this, seed]() {
+                std::mt19937 local_rng(seed);
                 worker_loop(local_rng);
             });
         }
@@ -972,7 +975,6 @@ private:
 
     // Worker pool
     std::vector<std::thread> workers_;
-    std::vector<uint64_t> worker_rng_seeds_;
     std::atomic<bool> stop_{false};
 
     std::mutex task_mutex_;
