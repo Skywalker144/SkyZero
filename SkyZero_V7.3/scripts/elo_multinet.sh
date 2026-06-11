@@ -35,16 +35,18 @@ CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
 
 source "$CONFIG_DIR/paths.cfg"
 source "$SCRIPT_DIR/env_paths.cfg"
-ELO_BIN="${ELO_BIN:-$ROOT/cpp/build/gomoku_elo}"
+BUILD_DIR="${BUILD_DIR:-$DATA_DIR/build}"
+ELO_BIN="${ELO_BIN:-$BUILD_DIR/gomoku_elo}"
 ELO_CFG="${ELO_CFG:-$CONFIG_DIR/elo.cfg}"
 PY="${PY:-python}"
 
-[[ -x "$ELO_BIN" ]] || { echo "build first: cmake --build $ROOT/cpp/build --target gomoku_elo" >&2; exit 1; }
+[[ -x "$ELO_BIN" ]] || { echo "build first: bash scripts/build.sh --target gomoku_elo (-> $BUILD_DIR)" >&2; exit 1; }
 [[ -f "$ELO_CFG" ]] || { echo "no config at $ELO_CFG" >&2; exit 1; }
 
-# --- Read a key from elo.cfg (last occurrence wins, strips comments/quotes).
+# --- Read a key from a cfg file (default elo.cfg; last occurrence wins,
+# strips comments/quotes).
 cfg_get() {
-    local key="$1" default="${2:-}" val
+    local key="$1" default="${2:-}" file="${3:-$ELO_CFG}" val
     val="$(awk -F= -v k="$key" '
         { sub(/#.*/, "") }
         { gsub(/^[ \t]+|[ \t\r]+$/, "") }
@@ -54,9 +56,23 @@ cfg_get() {
           val = substr($0, index($0, "=") + 1); gsub(/^[ \t]+|[ \t]+$/, "", val)
           if (val ~ /^".*"$/ || val ~ /^'\''.*'\''$/) val = substr(val, 2, length(val) - 2)
           last = val }
-        END { print last }' "$ELO_CFG")"
+        END { print last }' "$file")"
     echo "${val:-$default}"
 }
+
+# Board size / rule are single-sourced from run.cfg (MAIN_BOARD_SIZE /
+# MAIN_RULE), not duplicated in elo.cfg. run.cfg.local overrides run.cfg.
+run_cfg_get() {
+    local key="$1" default="${2:-}" val lv
+    val="$(cfg_get "$key" "" "$CONFIG_DIR/run.cfg")"
+    if [[ -f "$CONFIG_DIR/run.cfg.local" ]]; then
+        lv="$(cfg_get "$key" "" "$CONFIG_DIR/run.cfg.local")"
+        [[ -n "$lv" ]] && val="$lv"
+    fi
+    echo "${val:-$default}"
+}
+MAIN_BOARD_SIZE="${MAIN_BOARD_SIZE:-$(run_cfg_get MAIN_BOARD_SIZE 15)}"
+MAIN_RULE="${MAIN_RULE:-$(run_cfg_get MAIN_RULE renju)}"
 
 # Trailing iter number from a model path (matches python/elo.py:parse_iter).
 parse_iter() {
@@ -89,6 +105,8 @@ mkdir -p "$OUT_DIR"
 
 sim_flag=()
 [[ -n "${NUM_SIMULATIONS:-}" ]] && sim_flag=(--num-simulations "$NUM_SIMULATIONS")
+# Board size / rule come from run.cfg (single source of truth), not elo.cfg.
+topo_flag=(--board-size "$MAIN_BOARD_SIZE" --rule "$MAIN_RULE")
 
 # --- Resolve common anchors (optional) ---------------------------------
 anchor_list=()
@@ -198,7 +216,7 @@ if (( pending > 0 )); then
     # Merge whatever the engine produced even on Ctrl+C / crash.
     cleanup() { [[ -s "$SHARD" ]] && grep -E '^\{.*\}$' "$SHARD" >> "$OUT_FILE" 2>/dev/null || true; rm -f "$SHARD"; }
     trap cleanup EXIT
-    "$ELO_BIN" --match-schedule "$SCHED_FILE" --config "$ELO_CFG" --output "$SHARD" "${sim_flag[@]}"
+    "$ELO_BIN" --match-schedule "$SCHED_FILE" --config "$ELO_CFG" --output "$SHARD" "${topo_flag[@]}" "${sim_flag[@]}"
     cleanup
     trap - EXIT
 else
