@@ -58,6 +58,18 @@ if [[ -z "${CUDA_ARCH:-}" ]]; then
     CUDA_ARCH="${CUDA_ARCH:-89}"
 fi
 
+# SKYZERO_CONFIG_DIR is a cmake cache var: only refreshed when we pass -D, not
+# when CONFIG_DIR changes between invocations. Same guard as run.sh — without
+# it, a build dir configured for another experiment keeps that experiment's
+# MAX_BOARD_SIZE baked in (canvas-size mismatch corrupts memory at runtime).
+if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
+    _cached_cfg=$(sed -n 's|^SKYZERO_CONFIG_DIR:PATH=||p' "$BUILD_DIR/CMakeCache.txt")
+    if [[ -n "$_cached_cfg" && "$_cached_cfg" != "$CONFIG_DIR" ]]; then
+        echo "[build.sh] CONFIG_DIR changed ($_cached_cfg -> $CONFIG_DIR); reconfiguring cmake"
+        cmake -S "$SRC_DIR" -B "$BUILD_DIR" -DSKYZERO_CONFIG_DIR="$CONFIG_DIR"
+    fi
+fi
+
 if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
     echo "[build.sh] configure: BUILD_DIR=$BUILD_DIR LIBTORCH=$LIBTORCH NVCC=$NVCC CUDA_ARCH=$CUDA_ARCH CONFIG_DIR=$CONFIG_DIR"
     cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
