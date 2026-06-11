@@ -27,9 +27,11 @@
 # Output then lands in $DATA_DIR/elo/<name>/ so different networks don't
 # share games.jsonl.
 #
-# Multi-GPU: by default every visible GPU runs one worker in parallel
-# (round-robin pair assignment, sharded output merged at the end). Use
-# ELO_GPUS=0,2,5 to pick a subset of physical GPU IDs.
+# Multi-GPU: pending pairs are LPT-packed (by remaining games) into one
+# match-schedule file per visible GPU; each GPU runs a single gomoku_elo
+# tournament process (models loaded once, global game queue), sharded
+# output merged at the end. Use ELO_GPUS=0,2,5 to pick a subset of
+# physical GPU IDs.
 #
 # Env overrides (all optional): NUM_GAMES, NEIGHBOR_K, NEIGHBOR_GAMES,
 # STRIDE, NUM_SIMULATIONS, ANCHOR_DIR, ANCHORS, ELO_BIN, ELO_CFG,
@@ -313,8 +315,9 @@ fi
 echo "[elo.sh] output=$OUT_FILE  anchor_games/pair=$NUM_GAMES  neighbor_games/pair=$NEIGHBOR_GAMES  K=$NEIGHBOR_K"
 echo "[elo.sh] schedule: ${#TARGETS[@]} target(s) x ${#anchor_list[@]} anchor(s) + ${#NEIGHBOR_PAIRS[@]} neighbor pair(s); ${#PENDING[@]} pending across ${NUM_GPUS} GPU(s): ${GPU_IDS[*]}"
 
-# --- Run sharded workers ------------------------------------------------
+# --- Run sharded tournament workers --------------------------------------
 SHARDS=()
+SCHEDS=()
 # Trap merges any partial shards back into OUT_FILE on exit (Ctrl+C safe).
 # gomoku_elo flushes after each game under a mutex, so a worker killed mid-
 # game leaves at most one incomplete trailing line; grep filters to lines
@@ -327,42 +330,49 @@ cleanup_shards() {
         fi
         rm -f "$shard"
     done
+    rm -f "${SCHEDS[@]:-}"
 }
 trap cleanup_shards EXIT
 
 if (( ${#PENDING[@]} > 0 )); then
-    # Round-robin distribute pairs across GPUs. Pairs differ wildly in cost
-    # (neighbor vs anchor, different NUM_SIMULATIONS doesn't change here but
-    # board fill varies), so round-robin gives a roughly even mix.
-    declare -a BUCKETS
-    for ((g = 0; g < NUM_GPUS; g++)); do BUCKETS[g]=""; done
-    i=0
-    for w in "${PENDING[@]}"; do
-        BUCKETS[i % NUM_GPUS]+="$w"$'\n'
-        i=$((i + 1))
+    # LPT-pack pairs into one match-schedule file per GPU: walk pairs by
+    # remaining games (descending), always assign to the least-loaded GPU.
+    # Each GPU then runs a single gomoku_elo tournament process — every
+    # distinct model is loaded once and the global game queue keeps
+    # NUM_CONCURRENT_GAMES saturated across pair boundaries.
+    declare -a BUCKET_GAMES
+    for ((g = 0; g < NUM_GPUS; g++)); do
+        BUCKET_GAMES[g]=0
+        sched="$OUT_FILE.sched.gpu${GPU_IDS[g]}"
+        : > "$sched"
+        SCHEDS+=("$sched")
     done
+    while IFS='|' read -r a b remaining label; do
+        [[ -z "$a" ]] && continue
+        best=0
+        for ((g = 1; g < NUM_GPUS; g++)); do
+            (( BUCKET_GAMES[g] < BUCKET_GAMES[best] )) && best=$g
+        done
+        printf '%s|%s|%d\n' "$a" "$b" "$remaining" >> "${SCHEDS[best]}"
+        BUCKET_GAMES[best]=$(( BUCKET_GAMES[best] + remaining ))
+    done < <(printf '%s\n' "${PENDING[@]}" | sort -t'|' -k3,3nr)
 
     PIDS=()
     for ((g = 0; g < NUM_GPUS; g++)); do
-        work_list="${BUCKETS[g]}"
-        [[ -z "$work_list" ]] && continue
+        sched="${SCHEDS[g]}"
+        [[ -s "$sched" ]] || continue
         gpu="${GPU_IDS[g]}"
         shard="$OUT_FILE.shard.gpu${gpu}.jsonl"
         : > "$shard"
         SHARDS+=("$shard")
+        echo "[elo.sh] gpu $gpu: $(wc -l < "$sched") pair(s), ${BUCKET_GAMES[g]} games"
         (
             export CUDA_VISIBLE_DEVICES="$gpu"
-            while IFS='|' read -r a b remaining label; do
-                [[ -z "$a" ]] && continue
-                echo "=== $(basename "$a") vs $(basename "$b") ($label, $remaining games) ==="
-                "$ELO_BIN" \
-                    --model-a "$a" \
-                    --model-b "$b" \
-                    --config "$ELO_CFG" \
-                    --output "$shard" \
-                    --num-games "$remaining" \
-                    "${sim_flag[@]}"
-            done <<< "$work_list"
+            "$ELO_BIN" \
+                --match-schedule "$sched" \
+                --config "$ELO_CFG" \
+                --output "$shard" \
+                "${sim_flag[@]}"
         ) 2>&1 | sed -u "s/^/[gpu $gpu] /" &
         PIDS+=($!)
     done
@@ -373,6 +383,12 @@ if (( ${#PENDING[@]} > 0 )); then
     done
     (( fail )) && echo "[elo.sh] WARNING: one or more workers exited non-zero"
 fi
+
+# Merge shards now so the fit below sees this run's games (previously only
+# the EXIT trap merged, i.e. one run late). Trap stays off afterwards —
+# there is nothing left to clean.
+cleanup_shards
+trap - EXIT
 
 # --- Regenerate Elo table + curve ---------------------------------------
 echo "[elo.sh] updating Elo: $PLOT_FILE (+ $TEXT_FILE)"
