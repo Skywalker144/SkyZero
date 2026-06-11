@@ -47,15 +47,17 @@ CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
 
 source "$CONFIG_DIR/paths.cfg"
 source "$SCRIPT_DIR/env_paths.cfg"
-ELO_BIN="${ELO_BIN:-$ROOT/cpp/build/gomoku_elo}"
+BUILD_DIR="${BUILD_DIR:-$DATA_DIR/build}"
+ELO_BIN="${ELO_BIN:-$BUILD_DIR/gomoku_elo}"
 ELO_CFG="${ELO_CFG:-$CONFIG_DIR/elo.cfg}"
 
-[[ -x "$ELO_BIN" ]] || { echo "build first: cmake --build $ROOT/cpp/build --target gomoku_elo"; exit 1; }
+[[ -x "$ELO_BIN" ]] || { echo "build first: bash scripts/build.sh --target gomoku_elo (-> $BUILD_DIR)"; exit 1; }
 [[ -f "$ELO_CFG" ]] || { echo "no config at $ELO_CFG"; exit 1; }
 
-# --- Read a key from elo.cfg (last occurrence wins, strips comments/quotes).
+# --- Read a key from a cfg file (default elo.cfg; last occurrence wins,
+# strips comments/quotes).
 cfg_get() {
-    local key="$1" default="${2:-}"
+    local key="$1" default="${2:-}" file="${3:-$ELO_CFG}"
     local val
     val="$(awk -F= -v k="$key" '
         { sub(/#.*/, "") }                       # strip comments
@@ -71,9 +73,25 @@ cfg_get() {
             last = val
         }
         END { print last }
-    ' "$ELO_CFG")"
+    ' "$file")"
     echo "${val:-$default}"
 }
+
+# Board size / rule are single-sourced from run.cfg (MAIN_BOARD_SIZE /
+# MAIN_RULE) so Elo always matches the trained board — they used to be
+# duplicated as BOARD_SIZE in elo.cfg and silently drifted. run.cfg.local
+# overrides run.cfg (last wins), mirroring run.sh / play_web.py.
+run_cfg_get() {
+    local key="$1" default="${2:-}" val lv
+    val="$(cfg_get "$key" "" "$CONFIG_DIR/run.cfg")"
+    if [[ -f "$CONFIG_DIR/run.cfg.local" ]]; then
+        lv="$(cfg_get "$key" "" "$CONFIG_DIR/run.cfg.local")"
+        [[ -n "$lv" ]] && val="$lv"
+    fi
+    echo "${val:-$default}"
+}
+MAIN_BOARD_SIZE="${MAIN_BOARD_SIZE:-$(run_cfg_get MAIN_BOARD_SIZE 15)}"
+MAIN_RULE="${MAIN_RULE:-$(run_cfg_get MAIN_RULE renju)}"
 
 # Parse the trailing iter number from a model path (matches the regex used
 # by python/elo.py:parse_iter). Returns 999999999 for paths with no digits
@@ -254,6 +272,8 @@ sim_flag=()
 if [[ -n "${NUM_SIMULATIONS:-}" ]]; then
     sim_flag=(--num-simulations "$NUM_SIMULATIONS")
 fi
+# Board size / rule come from run.cfg (single source of truth), not elo.cfg.
+topo_flag=(--board-size "$MAIN_BOARD_SIZE" --rule "$MAIN_RULE")
 
 # --- Count existing games for a pair (sums both orderings) --------------
 count_existing() {
@@ -372,6 +392,7 @@ if (( ${#PENDING[@]} > 0 )); then
                 --match-schedule "$sched" \
                 --config "$ELO_CFG" \
                 --output "$shard" \
+                "${topo_flag[@]}" \
                 "${sim_flag[@]}"
         ) 2>&1 | sed -u "s/^/[gpu $gpu] /" &
         PIDS+=($!)
