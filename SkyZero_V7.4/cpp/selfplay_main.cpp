@@ -388,6 +388,8 @@ int main(int argc, char** argv) {
         cfg.fast_search_prob = cfg_get<float>(cfg_map, "FAST_SEARCH_PROB", 0.0f);
         cfg.fast_search_target_weight =
             cfg_get<float>(cfg_map, "FAST_SEARCH_TARGET_WEIGHT", 0.0f);
+        cfg.side_position_prob = cfg_get<float>(cfg_map, "SIDE_POSITION_PROB", 0.02f);
+        cfg.side_position_visits = cfg_get<int>(cfg_map, "SIDE_POSITION_VISITS", 0);
         cfg.validate();
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
