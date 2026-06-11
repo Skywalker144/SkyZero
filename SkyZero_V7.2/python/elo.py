@@ -156,6 +156,16 @@ def main() -> int:
                     help="Regex whose first group labels each plot series "
                          "(default groups by /nets/<name>/; e.g. '(nsim\\d+)' "
                          "to group a wallclock sweep by sim count).")
+    ap.add_argument("--x-map", type=Path, default=None,
+                    help="TSV 'model_path<TAB>x' replacing the iteration x-axis "
+                         "(e.g. wall-clock hours); models absent from the map "
+                         "are left off the plot")
+    ap.add_argument("--x-label", default="training iteration",
+                    help="X-axis label (set alongside --x-map)")
+    ap.add_argument("--plot-max-se", type=float, default=None,
+                    help="Hide plot points with Elo std error above this "
+                         "(saturated early checkpoints have unidentified "
+                         "ratings that wreck the y-range); table keeps them")
     args = ap.parse_args()
     series_re = re.compile(args.series_regex)
 
@@ -223,15 +233,28 @@ def main() -> int:
             print("[elo] matplotlib not installed; skipping plot", file=sys.stderr)
             return 0
 
+        xmap = None
+        if args.x_map:
+            xmap = {}
+            for line in args.x_map.read_text().splitlines():
+                if line.strip():
+                    p, _, x = line.partition("\t")
+                    xmap[p] = float(x)
+
         fig, ax = plt.subplots(figsize=(8, 5))
         # One curve per series (network size for the capacity study, sim count
         # for a wallclock sweep). Grouping is by series_of(); within a series
-        # points are ordered by training iteration.
+        # points are ordered by training iteration (or the --x-map value).
         by_series: dict[str, list] = defaultdict(list)
         for m, c, e, es, it, ser in rows:
-            if it is None or "/anchors/" in m:
+            if "/anchors/" in m:
                 continue
-            by_series[ser].append((it, e, es))
+            if args.plot_max_se is not None and es > args.plot_max_se:
+                continue
+            x = xmap.get(m) if xmap is not None else it
+            if x is None:
+                continue
+            by_series[ser].append((x, e, es))
         for label in sorted(by_series):
             pts = sorted(by_series[label])
             its = [p[0] for p in pts]
@@ -244,9 +267,9 @@ def main() -> int:
                 continue
             ax.axhline(e, linestyle="--", alpha=0.6,
                        label=f"anchor {os.path.basename(m)} (Elo={e:+.0f})")
-        ax.set_xlabel("training iteration")
+        ax.set_xlabel(args.x_label)
         ax.set_ylabel("Elo (ref = 0)")
-        ax.set_title("Model Elo vs training iteration")
+        ax.set_title(f"Model Elo vs {args.x_label}")
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best", fontsize=8)
         fig.tight_layout()
