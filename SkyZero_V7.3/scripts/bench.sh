@@ -26,7 +26,8 @@ source "$CONFIG_DIR/paths.cfg"
 source "$SCRIPT_DIR/env_paths.cfg"
 
 MODEL="${MODEL:-$DATA_DIR/models/latest.pt}"
-BENCH_BIN="${BENCH_BIN:-$ROOT/cpp/build/mcts_bench}"
+BUILD_DIR="${BUILD_DIR:-$DATA_DIR/build}"
+BENCH_BIN="${BENCH_BIN:-$BUILD_DIR/mcts_bench}"
 BENCH_CFG="${BENCH_CFG:-$CONFIG_DIR/run.cfg}"
 SIMS="${SIMS:-400}"
 SEARCHES="${SEARCHES:-16}"
@@ -37,7 +38,7 @@ LOG_FILE="${LOG_FILE:-}"
 
 [[ -f "$MODEL" ]]     || { echo "no model at $MODEL"; exit 1; }
 [[ -f "$BENCH_CFG" ]] || { echo "no config at $BENCH_CFG"; exit 1; }
-[[ -x "$BENCH_BIN" ]] || { echo "build first: cmake --build $ROOT/cpp/build --target mcts_bench"; exit 1; }
+[[ -x "$BENCH_BIN" ]] || { echo "build first: bash scripts/build.sh --target mcts_bench (-> $BUILD_DIR)"; exit 1; }
 
 CMD=(
     "$BENCH_BIN"
