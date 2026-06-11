@@ -40,6 +40,7 @@ struct TrainSample {
     std::vector<int8_t> futurepos_target;                   // 2*MAX_AREA int8
     float sample_weight = 1.0f;
     bool has_opponent_policy = true;  // false for the last position in a game
+    bool has_futurepos = true;        // false for off-line side positions
 };
 
 // ---------------------------------------------------------------------------
@@ -61,6 +62,7 @@ struct PolicySurpriseSample {
     std::vector<int8_t> futurepos_target;
     float sample_weight = 1.0f;
     bool has_opponent_policy = true;
+    bool has_futurepos = true;
 };
 
 inline float clampf(float v, float lo, float hi) {
@@ -240,6 +242,7 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.sample_weight = (game_data[i].sample_weight > 0.0f)
                 ? game_data[i].sample_weight : 1.0f;
             ts.has_opponent_policy = game_data[i].has_opponent_policy;
+            ts.has_futurepos = game_data[i].has_futurepos;
             return ts;
         };
 
