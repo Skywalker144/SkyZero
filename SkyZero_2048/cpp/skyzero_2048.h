@@ -351,10 +351,12 @@ private:
         return root.logits[a] + g_[a] + sigma(root, q, stats);
     }
 
+    // Final action comes from the sequential-halving SURVIVORS only (paper
+    // semantics, matches az2048/mcts.py): an eliminated action's q is frozen
+    // at a low-visit estimate and must not re-enter the final argmax.
     int gumbel_best_action(const DecisionNode& root, const MinMaxStats& stats) const {
         int best = -1; float bs = -std::numeric_limits<float>::infinity();
-        for (int a = 0; a < 4; ++a) {
-            if (!root.children[a]) continue;
+        for (int a : active_) {
             const float s = root_score(root, a, stats);
             if (s > bs) { bs = s; best = a; }
         }
