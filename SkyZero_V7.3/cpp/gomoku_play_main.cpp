@@ -25,6 +25,8 @@
 #include <utility>
 #include <vector>
 
+#include <poll.h>  // non-blocking stdin check during analysis ponder
+
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -580,6 +582,101 @@ int main(int argc, char** argv) {
             return true;
         };
 
+        // --- Diagnostic printing shared by the AI move and analysis paths ---
+        constexpr int MA = Gomoku::MAX_BOARD_SIZE;
+        auto print_value_table = [&](const MCTSSearchOutput& o) {
+            const float root_value = o.v_mix[0] - o.v_mix[2];
+            const float nn_value = o.nn_value_probs[0] - o.nn_value_probs[2];
+            std::cout
+                << "          "
+                << std::setw(7) << "Win" << "  " << std::setw(7) << "Draw" << "  "
+                << std::setw(7) << "Loss" << "  " << std::setw(7) << "W-L" << '\n'
+                << "  root:   "
+                << std::setw(6) << std::fixed << std::setprecision(2) << (o.v_mix[0] * 100.0f) << "%  "
+                << std::setw(6) << std::fixed << std::setprecision(2) << (o.v_mix[1] * 100.0f) << "%  "
+                << std::setw(6) << std::fixed << std::setprecision(2) << (o.v_mix[2] * 100.0f) << "%  "
+                << std::showpos << std::fixed << std::setprecision(2) << root_value << std::noshowpos << '\n'
+                << "  nn:     "
+                << std::setw(6) << std::fixed << std::setprecision(2) << (o.nn_value_probs[0] * 100.0f) << "%  "
+                << std::setw(6) << std::fixed << std::setprecision(2) << (o.nn_value_probs[1] * 100.0f) << "%  "
+                << std::setw(6) << std::fixed << std::setprecision(2) << (o.nn_value_probs[2] * 100.0f) << "%  "
+                << std::showpos << std::fixed << std::setprecision(2) << nn_value << std::noshowpos << '\n';
+        };
+        auto print_phases = [&](const MCTSSearchOutput& o) {
+            for (size_t i = 0; i < o.gumbel_phases.size(); ++i) {
+                std::cout << "Gumbel Phase " << i << " (" << o.gumbel_phases[i].size() << "):";
+                for (int a : o.gumbel_phases[i]) {
+                    std::cout << ' ' << (a / MA) << ',' << (a % MA);
+                }
+                std::cout << '\n';
+            }
+        };
+        auto print_winrate = [&](const MCTSSearchOutput& o) {
+            // Per-candidate win rate (expected score, draws = 0.5) from the root
+            // player's view, canvas-stride. Unvisited cells print blank.
+            std::vector<float> winrate(o.root_child_wdl.size(), 0.0f);
+            for (size_t i = 0; i < o.root_child_wdl.size(); ++i) {
+                const auto& w = o.root_child_wdl[i];
+                if (w[0] + w[1] + w[2] > 0.5f) winrate[i] = (w[0] - w[2] + 1.0f) * 0.5f;
+            }
+            print_policy_grid(winrate, game.board_size, MA, "Gumbel WinRate:");
+        };
+
+        // --- Analysis / ponder: continuous PUCT search on the current position
+        //     (side to move) until the front-end sends `stop`. Does NOT play a
+        //     move. Returns 1 if the client asked to quit, else 0. ----------
+        const int analyze_chunk = cfg_get<int>(cfg_map, "ANALYZE_CHUNK_SIMS", 128);
+        auto stdin_has_input = []() -> bool {
+            struct pollfd pfd;
+            pfd.fd = 0; pfd.events = POLLIN; pfd.revents = 0;
+            return ::poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN);
+        };
+        auto run_analyze = [&]() -> int {
+            root.reset(new MCTSNode(state, to_play));
+            mcts.ensure_root_expanded(*root);
+            std::cout << "Analyze start\n";
+            // NN-only views don't change as the search deepens: emit them once.
+            {
+                std::vector<float> fp8, fp32;
+                auto opp_policy = forward_opp_policy(state, to_play, &fp8, &fp32);
+                print_policy_grid(root->nn_policy, game.board_size, MA, "NN Strategy:");
+                print_policy_grid(opp_policy, game.board_size, MA, "NN Opp Strategy:");
+                print_signed_grid(fp8,  game.board_size, MA, "NN Futurepos +8:");
+                print_signed_grid(fp32, game.board_size, MA, "NN Futurepos +32:");
+            }
+            std::cout.flush();
+            while (true) {
+                if (stdin_has_input()) {
+                    std::string cmd;
+                    if (!std::getline(std::cin, cmd)) return 1;
+                    if (cmd == "stop" || cmd == "s") break;
+                    if (cmd == "q" || cmd == "Q") return 1;
+                    // ignore any other input while analyzing
+                }
+                mcts.run_puct_sims(*root, analyze_chunk);
+                auto out = mcts.report_analysis(*root);
+                print_policy_grid(out.mcts_policy, game.board_size, MA, "MCTS Strategy (improved policy):");
+                std::vector<float> visit_dist(out.visit_counts.size(), 0.0f);
+                {
+                    const float sum_n = std::accumulate(out.visit_counts.begin(), out.visit_counts.end(), 0.0f);
+                    if (sum_n > 0.0f) {
+                        for (size_t i = 0; i < out.visit_counts.size(); ++i) {
+                            visit_dist[i] = out.visit_counts[i] / sum_n;
+                        }
+                    }
+                }
+                print_policy_grid(visit_dist, game.board_size, MA, "MCTS Visits (N(s,a)/sum):");
+                print_value_table(out);
+                print_phases(out);
+                print_winrate(out);
+                std::cout.flush();
+            }
+            std::cout << "Analyze stopped\n";
+            root.reset(new MCTSNode(state, to_play));
+            print_board(state, game.board_size, last_action);
+            return 0;
+        };
+
         while (true) {
             if (game.is_terminal(state, last_action, last_player)) {
                 const int winner = game.get_winner(state, last_action, last_player);
@@ -653,6 +750,11 @@ int main(int argc, char** argv) {
                         }
                     }
 
+                    if (input == "analyze" || input == "a") {
+                        if (run_analyze() == 1) { std::cout << "Exiting game.\n"; return 0; }
+                        continue;  // back to the Human step prompt
+                    }
+
                     int row = -1, col = -1;
                     if (!parse_row_col(input, row, col)) {
                         std::cout << "Invalid input format. Please enter 'row col' (e.g., '7 7').\n";
@@ -723,49 +825,9 @@ int main(int argc, char** argv) {
                     print_signed_grid(fp32, game.board_size, M, "NN Futurepos +32:");
                 }
 
-                const float root_value = out.v_mix[0] - out.v_mix[2];
-                const float nn_value = out.nn_value_probs[0] - out.nn_value_probs[2];
-                std::cout
-                    << "          "
-                    << std::setw(7) << "Win" << "  "
-                    << std::setw(7) << "Draw" << "  "
-                    << std::setw(7) << "Loss" << "  "
-                    << std::setw(7) << "W-L" << '\n'
-                    << "  root:   "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.v_mix[0] * 100.0f) << "%  "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.v_mix[1] * 100.0f) << "%  "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.v_mix[2] * 100.0f) << "%  "
-                    << std::showpos << std::fixed << std::setprecision(2) << root_value << std::noshowpos << '\n'
-                    << "  nn:     "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.nn_value_probs[0] * 100.0f) << "%  "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.nn_value_probs[1] * 100.0f) << "%  "
-                    << std::setw(6) << std::fixed << std::setprecision(2) << (out.nn_value_probs[2] * 100.0f) << "%  "
-                    << std::showpos << std::fixed << std::setprecision(2) << nn_value << std::noshowpos << '\n';
-                for (size_t i = 0; i < out.gumbel_phases.size(); ++i) {
-                    std::cout << "Gumbel Phase " << i
-                              << " (" << out.gumbel_phases[i].size() << "):";
-                    for (int a : out.gumbel_phases[i]) {
-                        // a is a canvas-stride position; for in-board canvas
-                        // cells, canvas (r, c) coincides with board (r, c).
-                        std::cout << ' ' << (a / M)
-                                  << ',' << (a % M);
-                    }
-                    std::cout << '\n';
-                }
-                {
-                    // Per-candidate win rate (expected score, draws = 0.5) from the
-                    // root player's view, canvas-stride like visit_counts. Unvisited
-                    // cells (WDL sums to 0) print as blanks; the web UI only reads
-                    // the cells that appear in the Gumbel phases.
-                    std::vector<float> winrate(out.root_child_wdl.size(), 0.0f);
-                    for (size_t i = 0; i < out.root_child_wdl.size(); ++i) {
-                        const auto& w = out.root_child_wdl[i];
-                        if (w[0] + w[1] + w[2] > 0.5f) {
-                            winrate[i] = (w[0] - w[2] + 1.0f) * 0.5f;
-                        }
-                    }
-                    print_policy_grid(winrate, game.board_size, M, "Gumbel WinRate:");
-                }
+                print_value_table(out);
+                print_phases(out);
+                print_winrate(out);
                 std::cout << "AI move: (" << row << ", " << col << ")\n";
 
                 state = game.get_next_state(state, action, to_play);
