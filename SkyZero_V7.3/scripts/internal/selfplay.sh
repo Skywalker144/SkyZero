@@ -13,9 +13,10 @@ games="${2:?games required}"
 CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
 [[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
 
-SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
 source "$SCRIPTS_DIR/env_paths.cfg"
 source "$CONFIG_DIR/paths.cfg"
+BUILD_DIR="${BUILD_DIR:-$DATA_DIR/build}"
+SELFPLAY_BIN="${SELFPLAY_BIN:-$BUILD_DIR/selfplay_main}"
 PY="${PY:-python}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
