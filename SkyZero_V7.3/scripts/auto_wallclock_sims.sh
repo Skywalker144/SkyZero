@@ -46,16 +46,11 @@ PER_RUN_SECONDS=18000      # 5h wall-clock budget per run
 mkdir -p "$EXP_ROOT"
 
 # Build once up front (board size 9) so a compile error surfaces now, not five
-# hours into the first run. build.sh owns the first-time configure
-# (libtorch/nvcc/arch flags) but does NOT re-point an existing build dir at a
-# new experiment — so afterwards we force this experiment's CONFIG_DIR (and thus
-# MAX_BOARD_SIZE=9) into the cmake cache exactly as run.sh does. Without this,
-# the cache can keep a previous experiment's board size and build the wrong one.
+# hours into the first run. build.sh configures this experiment's own per-DATA_DIR
+# build dir (libtorch/nvcc/arch + MAX_BOARD_SIZE from run.cfg); with one build dir
+# per experiment there is no shared cache to point at the wrong board size.
 echo "[auto] building C++ for this experiment (board size 9) ..."
 bash "$SCRIPT_DIR/build.sh"
-source "$SCRIPT_DIR/env_paths.cfg"
-cmake -S "$ROOT/cpp" -B "$ROOT/cpp/build" -DSKYZERO_CONFIG_DIR="$CONFIG_DIR"
-cmake --build "$ROOT/cpp/build" -j
 echo "[auto] board-9 build ready."
 
 total=${#SIMS[@]}
