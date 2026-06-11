@@ -131,6 +131,7 @@ public:
         out.nn_value_probs = nn_value_probs;
         out.gumbel_action = gumbel.gumbel_action;
         out.gumbel_phases = std::move(gumbel.phase_survivors);
+        out.root_child_wdl = std::move(gumbel.q_wdl);
         {
             const int action_size = Game::MAX_AREA;
             out.visit_counts.assign(static_cast<size_t>(action_size), 0.0f);
@@ -741,6 +742,7 @@ private:
         int gumbel_action = -1;
         std::array<float, 3> v_mix{0.0f, 1.0f, 0.0f};
         std::vector<std::vector<int>> phase_survivors;  // snapshots: [0]=initial m, then after each halving
+        std::vector<std::array<float, 3>> q_wdl;        // per-action root-perspective mean WDL ({0,0,0} if unvisited)
     };
 
     GumbelResult gumbel_sequential_halving(MCTSNode& root, int num_simulations) {
@@ -936,7 +938,7 @@ private:
             ));
         }
         if (gumbel_action >= 0) phase_survivors.push_back({gumbel_action});
-        return {improved_policy, gumbel_action, v_mix, std::move(phase_survivors)};
+        return {improved_policy, gumbel_action, v_mix, std::move(phase_survivors), std::move(q_wdl)};
     }
 
     float max_child_n(const MCTSNode& root) {
