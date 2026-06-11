@@ -180,6 +180,7 @@ def _slice_batch(b: NpzBatch, s: int, e: int) -> NpzBatch:
         value_target=b.value_target[s:e],
         td_value_target=b.td_value_target[s:e],
         futurepos_target=b.futurepos_target[s:e],
+        futurepos_mask=b.futurepos_mask[s:e],
         sample_weight=b.sample_weight[s:e],
     )
 
