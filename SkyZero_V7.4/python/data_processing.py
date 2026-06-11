@@ -9,6 +9,7 @@ NPZ schema (V5; written by C++ selfplay, read by Python):
     value_target:           float32,(N, 3)    # bootstrapped WDL
     td_value_target:        float32,(N, 9)    # 3 horizons (long/mid/short) × WLD
     futurepos_target:       int8,   (N, 2, H, W)  # +8 / +32 step occupancy {-1,0,+1}
+    futurepos_mask:         float32,(N,)   # 0 = off-line side row (skip futurepos loss)
     sample_weight:          float32,(N,)
 """
 from __future__ import annotations
@@ -30,6 +31,7 @@ NPZ_KEYS = (
     "value_target",
     "td_value_target",
     "futurepos_target",
+    "futurepos_mask",
     "sample_weight",
 )
 
@@ -44,6 +46,7 @@ class NpzBatch:
     value_target: np.ndarray
     td_value_target: np.ndarray
     futurepos_target: np.ndarray
+    futurepos_mask: np.ndarray
     sample_weight: np.ndarray
 
     def __len__(self) -> int:
@@ -59,14 +62,22 @@ class NpzBatch:
             value_target=self.value_target[idx],
             td_value_target=self.td_value_target[idx],
             futurepos_target=self.futurepos_target[idx],
+            futurepos_mask=self.futurepos_mask[idx],
             sample_weight=self.sample_weight[idx],
         )
 
 
 def load_npz(path: str | pathlib.Path) -> NpzBatch:
     with np.load(path) as f:
+        state = np.asarray(f["state"], dtype=np.int8)
+        # Backward compat: npz written before the side-position feature has no
+        # futurepos_mask column → default to all-ones (train futurepos as before).
+        if "futurepos_mask" in f.files:
+            futurepos_mask = np.asarray(f["futurepos_mask"], dtype=np.float32)
+        else:
+            futurepos_mask = np.ones(state.shape[0], dtype=np.float32)
         return NpzBatch(
-            state=np.asarray(f["state"], dtype=np.int8),
+            state=state,
             global_features=np.asarray(f["global_features"], dtype=np.float32),
             policy_target=np.asarray(f["policy_target"], dtype=np.float32),
             opponent_policy_target=np.asarray(f["opponent_policy_target"], dtype=np.float32),
@@ -74,6 +85,7 @@ def load_npz(path: str | pathlib.Path) -> NpzBatch:
             value_target=np.asarray(f["value_target"], dtype=np.float32),
             td_value_target=np.asarray(f["td_value_target"], dtype=np.float32),
             futurepos_target=np.asarray(f["futurepos_target"], dtype=np.int8),
+            futurepos_mask=futurepos_mask,
             sample_weight=np.asarray(f["sample_weight"], dtype=np.float32),
         )
 
@@ -89,6 +101,7 @@ def save_npz(path: str | pathlib.Path, batch: NpzBatch) -> None:
         value_target=batch.value_target.astype(np.float32, copy=False),
         td_value_target=batch.td_value_target.astype(np.float32, copy=False),
         futurepos_target=batch.futurepos_target.astype(np.int8, copy=False),
+        futurepos_mask=batch.futurepos_mask.astype(np.float32, copy=False),
         sample_weight=batch.sample_weight.astype(np.float32, copy=False),
     )
 
@@ -106,6 +119,7 @@ def concat_batches(batches: Iterable[NpzBatch]) -> NpzBatch:
         value_target=np.concatenate([b.value_target for b in batches], axis=0),
         td_value_target=np.concatenate([b.td_value_target for b in batches], axis=0),
         futurepos_target=np.concatenate([b.futurepos_target for b in batches], axis=0),
+        futurepos_mask=np.concatenate([b.futurepos_mask for b in batches], axis=0),
         sample_weight=np.concatenate([b.sample_weight for b in batches], axis=0),
     )
 
