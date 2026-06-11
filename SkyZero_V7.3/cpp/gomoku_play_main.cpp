@@ -752,6 +752,20 @@ int main(int argc, char** argv) {
                     }
                     std::cout << '\n';
                 }
+                {
+                    // Per-candidate win rate (expected score, draws = 0.5) from the
+                    // root player's view, canvas-stride like visit_counts. Unvisited
+                    // cells (WDL sums to 0) print as blanks; the web UI only reads
+                    // the cells that appear in the Gumbel phases.
+                    std::vector<float> winrate(out.root_child_wdl.size(), 0.0f);
+                    for (size_t i = 0; i < out.root_child_wdl.size(); ++i) {
+                        const auto& w = out.root_child_wdl[i];
+                        if (w[0] + w[1] + w[2] > 0.5f) {
+                            winrate[i] = (w[0] - w[2] + 1.0f) * 0.5f;
+                        }
+                    }
+                    print_policy_grid(winrate, game.board_size, M, "Gumbel WinRate:");
+                }
                 std::cout << "AI move: (" << row << ", " << col << ")\n";
 
                 state = game.get_next_state(state, action, to_play);
