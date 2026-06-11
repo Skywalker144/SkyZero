@@ -84,6 +84,10 @@ source "$SCRIPT_DIR/env_paths.cfg"
 set +a
 export DATA_DIR
 
+# Per-experiment build tree (see build.sh): keeps this run's binaries isolated
+# from other experiments' (different MAX_BOARD_SIZE) in their own build dirs.
+BUILD_DIR="${BUILD_DIR:-$DATA_DIR/build}"
+
 if [[ -z "${NETWORKS:-}" || -z "${SELFPLAY_SCHEDULE:-}" ]]; then
     echo "$(_tag Run) NETWORKS and SELFPLAY_SCHEDULE must be set in run.cfg" >&2
     exit 1
@@ -117,22 +121,12 @@ GPU_NUM="${GPU_NUM:-1}"
 export GPU_NUM
 echo "$(_tag Run) detected GPU_NUM=$GPU_NUM"
 
-# Keep C++ binaries in sync with run.cfg / sources. cmake parses MAX_BOARD_SIZE
-# from run.cfg via CONFIGURE_DEPENDS and bakes it in as -DSKYZERO_MAX_BOARD_SIZE.
-# This is a no-op (~<1s) when nothing has changed.
-#
-# SKYZERO_CONFIG_DIR is a cmake cache var: only refreshed when we pass -D, not
-# when CONFIG_DIR changes between invocations. Detect a switched experiment
-# and update the cache so MAX_BOARD_SIZE is re-read from the new run.cfg.
-_cache="$ROOT/cpp/build/CMakeCache.txt"
-if [[ -f "$_cache" ]]; then
-    _cached_cfg=$(sed -n 's|^SKYZERO_CONFIG_DIR:PATH=||p' "$_cache")
-    if [[ -n "$_cached_cfg" && "$_cached_cfg" != "$CONFIG_DIR" ]]; then
-        echo "$(_tag Run) CONFIG_DIR changed ($_cached_cfg -> $CONFIG_DIR); reconfiguring cmake"
-        cmake -S "$ROOT/cpp" -B "$ROOT/cpp/build" -DSKYZERO_CONFIG_DIR="$CONFIG_DIR"
-    fi
-fi
-cmake --build "$ROOT/cpp/build" -j
+# Keep this experiment's C++ binaries in sync with run.cfg / sources. build.sh
+# owns the first-time configure (libtorch/nvcc/arch + MAX_BOARD_SIZE from
+# run.cfg) and the reconfigure-on-CONFIG_DIR-change guard, building into this
+# experiment's BUILD_DIR. No-op (~<1s) when nothing changed. CONFIG_DIR is
+# already exported above, so build.sh resolves the same BUILD_DIR we do.
+bash "$SCRIPT_DIR/build.sh"
 
 # Resume iter — read EVERY network's state.json. Training within an iter is
 # serial in NET_ARR order, so a mid-iter Ctrl+C can leave nets earlier in
@@ -474,7 +468,7 @@ while true; do
 
             # (4) post-export diagnostic: empty-board MCTS rootValue probe
             # on the currently-active network (read via the canonical mirror).
-            CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}" "$ROOT/cpp/build/mcts_probe" \
+            CUDA_VISIBLE_DEVICES="${MAIN_GPU:-0}" "$BUILD_DIR/mcts_probe" \
                 --model "$DATA_DIR/models/latest.pt" \
                 --config "$CONFIG_DIR/run.cfg" \
                 --iter "$iter" \
