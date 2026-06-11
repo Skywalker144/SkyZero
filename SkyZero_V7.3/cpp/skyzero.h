@@ -187,6 +187,7 @@ struct MCTSSearchOutput {
     int gumbel_action = -1;                                 // selected action by Gumbel (selfplay/eval/play)
     std::vector<float> visit_counts;                        // raw root-child visit counts N(s,a)
     std::vector<std::vector<int>> gumbel_phases;            // surviving actions at each halving phase (16,8,4,2,1)
+    std::vector<std::array<float, 3>> root_child_wdl;       // per-action root-perspective mean WDL ({0,0,0} if unvisited); canvas-stride
 };
 
 // ---------------------------------------------------------------------------
