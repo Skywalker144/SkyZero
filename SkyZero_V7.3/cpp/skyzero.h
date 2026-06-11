@@ -202,7 +202,8 @@ inline float wdl_utility(const std::array<float, 3>& v) {
 
 // ---------------------------------------------------------------------------
 // PUCT + FPU helpers.
-// (Dynamic variance-scaled cPUCT removed: stdev_factor is fixed at 1.0.)
+// Variance-scaled cPUCT is active when cfg.cpuct_utility_stdev_scale != 0
+// (KataGo searchexplorehelpers.cpp:280-297); set scale=0 to fix factor at 1.0.
 // ---------------------------------------------------------------------------
 
 struct SelectParams {
