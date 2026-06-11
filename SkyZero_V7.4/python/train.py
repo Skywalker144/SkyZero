@@ -46,6 +46,7 @@ def _collate_to_device(batch, s: int, e: int, device: torch.device, non_blocking
         "value_target": torch.from_numpy(batch.value_target[s:e]).to(device, non_blocking=non_blocking),
         "td_value_target": torch.from_numpy(batch.td_value_target[s:e]).to(device, non_blocking=non_blocking),
         "futurepos_target": torch.from_numpy(batch.futurepos_target[s:e]).to(device, non_blocking=non_blocking),
+        "futurepos_mask": torch.from_numpy(batch.futurepos_mask[s:e]).to(device, non_blocking=non_blocking),
         "sample_weight": torch.from_numpy(batch.sample_weight[s:e]).to(device, non_blocking=non_blocking),
     }
 
@@ -441,6 +442,9 @@ def main() -> int:
         td_value_target = batch["td_value_target"].view(-1, 3, 3)
         # int8 → float32 (KataGomo target is in {-1,0,+1}, matches tanh range)
         futurepos_target = batch["futurepos_target"].float()
+        # 0 for off-line side positions (no future board); masks the futurepos
+        # loss for those rows while policy/value/TD still train on them.
+        futurepos_mask = batch["futurepos_mask"]
         sample_weight = batch["sample_weight"]
 
         # D4 augmentation transforms all spatial channels (incl. mask plane ch 0
@@ -461,6 +465,7 @@ def main() -> int:
         soft_main_target = soft_policy_target(policy_target, on_board_flat)
         soft_opp_target = soft_policy_target(opp_policy_target, on_board_flat)
         opp_weight = sample_weight * opp_mask
+        fp_weight = sample_weight * futurepos_mask
         with torch.amp.autocast("cuda", enabled=use_amp):
             out = model(state, global_features)
             # nets.PolicyHead (slim, 4 outputs):
@@ -489,7 +494,7 @@ def main() -> int:
                     weighted_soft_ce(p_soft_opp, soft_opp_target, opp_weight),
                     weighted_soft_ce(v_logits.float(), value_target, sample_weight),
                     weighted_td_value_ce(v_td.view(B, 3, 3).float(), td_value_target, sample_weight),
-                    weighted_futurepos_mse(v_fp.float(), futurepos_target, fp_mask, sample_weight),
+                    weighted_futurepos_mse(v_fp.float(), futurepos_target, fp_mask, fp_weight),
                 )
 
             (policy_loss, opp_policy_loss, soft_policy_loss,
