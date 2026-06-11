@@ -12,8 +12,11 @@
 #   bash scripts/build.sh --target selfplay_main   # extra args go to cmake --build
 #   LIBTORCH=/path/to/libtorch bash scripts/build.sh   # one-off override
 #   CUDA_ARCH=75 bash scripts/build.sh
-#   rm -rf cpp/build && bash scripts/build.sh # force fresh configure
+#   rm -rf "$DATA_DIR/build" && bash scripts/build.sh  # force fresh configure
+#   BUILD_DIR=/tmp/b bash scripts/build.sh             # one-off build dir override
 #
+# Builds into $DATA_DIR/build (per experiment, from paths.cfg) so concurrent
+# experiments with different compile-time MAX_BOARD_SIZE never share a build dir.
 # See SETUP.md for first-time setup.
 
 set -euo pipefail
@@ -21,7 +24,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
 SRC_DIR="$ROOT/cpp"
-BUILD_DIR="$SRC_DIR/build"
 
 # Pull LIBTORCH / NVCC (and any .local overrides) from env_paths.cfg. Env vars
 # set before invocation still win — env_paths.cfg uses ${VAR:-default} for each.
@@ -34,6 +36,12 @@ source "$SCRIPT_DIR/env_paths.cfg"
 #   CONFIG_DIR=configs/nsim_64 bash scripts/build.sh
 CONFIG_DIR="${CONFIG_DIR:-$ROOT/configs/baseline}"
 [[ "$CONFIG_DIR" = /* ]] || CONFIG_DIR="$ROOT/$CONFIG_DIR"
+
+# BUILD_DIR lives under this experiment's DATA_DIR (from paths.cfg), so two
+# experiments with different compile-time MAX_BOARD_SIZE never share — and
+# clobber — one build dir. Override with BUILD_DIR=... for a one-off.
+source "$CONFIG_DIR/paths.cfg"
+BUILD_DIR="${BUILD_DIR:-$DATA_DIR/build}"
 
 if [[ ! -d "$LIBTORCH" ]]; then
     echo "[build.sh] ERROR: LIBTORCH=$LIBTORCH does not exist." >&2
