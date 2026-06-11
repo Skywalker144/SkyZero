@@ -53,6 +53,7 @@ class EngineSession:
         self.nn_futurepos_8 = None   # 15x15, signed in [-1,+1]; +own / -opp future stone
         self.nn_futurepos_32 = None  # 15x15, signed in [-1,+1]; +32 step horizon
         self.gumbel_phases = None  # list of list of [r,c], index 0 = initial 16, last = final 1
+        self.gumbel_winrate = None  # 15x15, per-candidate win rate in [0,1] (expected score, draws=0.5)
 
         self._pending_rows = None
         self._pending_grid_key = None
@@ -134,6 +135,10 @@ class EngineSession:
             self._pending_grid_key = "nn_policy"
             self._pending_grid_rows = []
             return
+        if "Gumbel WinRate" in line:
+            self._pending_grid_key = "gumbel_winrate"
+            self._pending_grid_rows = []
+            return
         if self._pending_grid_key is not None:
             row = self._try_parse_grid_row(line)
             if row is not None:
@@ -208,6 +213,7 @@ class EngineSession:
             self.nn_futurepos_8 = None
             self.nn_futurepos_32 = None
             self.gumbel_phases = None
+            self.gumbel_winrate = None
             return
         if "Human step" in line:
             if not self.game_over:
@@ -216,6 +222,7 @@ class EngineSession:
         if "SkyZero thinking" in line:
             self.status = "AI thinking..."
             self.gumbel_phases = None
+            self.gumbel_winrate = None
             return
         if "Invalid move" in line or "Invalid input" in line:
             self.status = line.strip()
@@ -282,6 +289,7 @@ class EngineSession:
             self.nn_futurepos_8 = None
             self.nn_futurepos_32 = None
             self.gumbel_phases = None
+            self.gumbel_winrate = None
             self._pending_rows = None
             self._pending_grid_key = None
             self._pending_grid_rows = None
@@ -309,6 +317,7 @@ class EngineSession:
                 "nn_futurepos_8": self.nn_futurepos_8,
                 "nn_futurepos_32": self.nn_futurepos_32,
                 "gumbel_phases": self.gumbel_phases,
+                "gumbel_winrate": self.gumbel_winrate,
             }
 
 
@@ -373,19 +382,13 @@ HTML_PAGE = r"""<!doctype html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script>
-  // Set theme before first paint to avoid flash. Tri-state: auto / light / dark.
+  // Resolve light/dark from the OS before first paint to avoid a flash.
   (function(){
     try {
-      var saved = localStorage.getItem('skz_theme');
-      var mode = (saved === 'light' || saved === 'dark') ? saved : 'auto';
-      var resolved = (mode === 'auto')
-        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-        : mode;
-      document.documentElement.dataset.theme = resolved;
-      document.documentElement.dataset.themeMode = mode;
+      document.documentElement.dataset.theme =
+        window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     } catch(e) {
       document.documentElement.dataset.theme = 'light';
-      document.documentElement.dataset.themeMode = 'auto';
     }
   })();
 </script>
@@ -496,36 +499,6 @@ HTML_PAGE = r"""<!doctype html>
   }
 
   .app { max-width: 2000px; margin: 0 auto; padding: 16px 24px 48px; }
-
-  /* ---------- Top bar ---------- */
-  .topbar {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 0 20px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 24px;
-  }
-  .brand { display: flex; flex-direction: column; gap: 2px; }
-  .brand-title {
-    font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
-    color: var(--fg);
-  }
-  .brand-sub {
-    font-size: 12px; color: var(--fg-muted); letter-spacing: 0.01em;
-  }
-  .icon-btn {
-    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
-    background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
-    color: var(--fg-muted); cursor: pointer;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-  }
-  .icon-btn:hover { background: var(--surface-2); color: var(--fg); border-color: var(--border-strong); }
-  .icon-btn svg { width: 16px; height: 16px; display: block; }
-  .icon-btn .sun-icon,
-  .icon-btn .moon-icon,
-  .icon-btn .auto-icon { display: none; }
-  html[data-theme-mode="light"] .icon-btn .sun-icon,
-  html[data-theme-mode="dark"]  .icon-btn .moon-icon,
-  html[data-theme-mode="auto"]  .icon-btn .auto-icon { display: inline-block; }
 
   /* ---------- Layout ---------- */
   .main {
@@ -888,26 +861,6 @@ HTML_PAGE = r"""<!doctype html>
 <body>
 <div class="app">
 
-  <header class="topbar">
-    <div class="brand">
-      <div class="brand-title">SkyZero Gomoku</div>
-      <div class="brand-sub">SkyZero self-play · local inspector</div>
-    </div>
-    <button class="icon-btn" id="theme_toggle" aria-label="Toggle color theme" title="Toggle theme">
-      <svg class="sun-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="8" cy="8" r="3"></circle>
-        <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"></path>
-      </svg>
-      <svg class="moon-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
-      </svg>
-      <svg class="auto-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-        <circle cx="8" cy="8" r="6"></circle>
-        <path d="M8 2 a6 6 0 0 1 0 12 z" fill="currentColor" stroke="none"></path>
-      </svg>
-    </button>
-  </header>
-
   <div class="main">
     <aside class="side-col" id="left_col">
       <div class="card status-card">
@@ -1033,6 +986,7 @@ HTML_PAGE = r"""<!doctype html>
           <span class="chip"><span class="dot" style="background:#10b981;"></span>4</span>
           <span class="chip"><span class="dot" style="background:#f59e0b;"></span>2</span>
           <span class="chip"><span class="dot" style="background:#ef4444;"></span>1 (picked)</span>
+          <span class="chip" style="opacity:.7;">number = win%</span>
         </div>
       </div>
       <div class="board-actions">
@@ -1349,22 +1303,12 @@ pruneToggle.addEventListener('change', () => {
   sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
 });
 
-/* ---------- Theme toggle (tri-state: auto / light / dark) ---------- */
-const themeBtn = document.getElementById('theme_toggle');
-const THEME_NEXT = { auto: 'light', light: 'dark', dark: 'auto' };
-function resolveTheme(mode) {
-  if (mode === 'light' || mode === 'dark') return mode;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-}
-function setThemeTooltip(mode) {
-  const label = mode.charAt(0).toUpperCase() + mode.slice(1);
-  const nxt = THEME_NEXT[mode];
-  themeBtn.title = 'Theme: ' + label + ' (click for ' + nxt.charAt(0).toUpperCase() + nxt.slice(1) + ')';
-}
-function applyTheme(mode) {
-  document.documentElement.dataset.theme = resolveTheme(mode);
-  document.documentElement.dataset.themeMode = mode;
-  setThemeTooltip(mode);
+/* ---------- Follow OS dark/light theme ---------- */
+// CSS variables flip automatically via [data-theme]; the canvases bake colors
+// in at draw time, so they need an explicit repaint when the OS theme changes.
+function applySystemTheme() {
+  document.documentElement.dataset.theme =
+    window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   draw();
   drawValueChart();
   if (state) {
@@ -1384,25 +1328,10 @@ function applyTheme(mode) {
   }
   paintHeatModal();
 }
-setThemeTooltip(document.documentElement.dataset.themeMode || 'auto');
-themeBtn.addEventListener('click', () => {
-  const cur = document.documentElement.dataset.themeMode || 'auto';
-  const next = THEME_NEXT[cur] || 'auto';
-  try {
-    if (next === 'auto') localStorage.removeItem('skz_theme');
-    else localStorage.setItem('skz_theme', next);
-  } catch(e) {}
-  applyTheme(next);
-});
-// Follow OS dark/light changes live, but only while in auto mode.
 try {
   const mql = window.matchMedia('(prefers-color-scheme: dark)');
-  const onSystemThemeChange = () => {
-    if ((document.documentElement.dataset.themeMode || 'auto') !== 'auto') return;
-    applyTheme('auto');
-  };
-  if (mql.addEventListener) mql.addEventListener('change', onSystemThemeChange);
-  else if (mql.addListener) mql.addListener(onSystemThemeChange); // Safari < 14
+  if (mql.addEventListener) mql.addEventListener('change', applySystemTheme);
+  else if (mql.addListener) mql.addListener(applySystemTheme); // Safari < 14
 } catch(e) {}
 
 /* ---------- Heat map ---------- */
@@ -1554,6 +1483,7 @@ function draw() {
   const shadowDy  = Math.max(1, Math.round(CELL * 0.045));
   const gradInner = Math.max(1, Math.round(CELL * 0.11));
   const gumbelFontPx = Math.max(8, Math.round(CELL * 0.28));
+  const gumbelWrFontPx = Math.max(7, Math.round(CELL * 0.24));
 
   const phases = state.gumbel_phases;
   if (showGumbel && phases && phases.length > 0) {
@@ -1579,9 +1509,19 @@ function draw() {
       ctx.lineWidth = 1;
       if (state.board[r][c] === 0) {
         ctx.fillStyle = COLORS[bucket];
-        ctx.font = `bold ${gumbelFontPx}px ${MONO_FONT}`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(sizeLabel, x, y);
+        // Win rate of playing this candidate (root player's view, 0..100).
+        // Falls back to the survival-round size label if the engine didn't
+        // emit win rates (e.g. an older gomoku_play binary).
+        const wrGrid = state.gumbel_winrate;
+        const wr = (wrGrid && wrGrid[r]) ? wrGrid[r][c] : null;
+        if (wr != null) {
+          ctx.font = `bold ${gumbelWrFontPx}px ${MONO_FONT}`;
+          ctx.fillText(Math.round(wr * 100), x, y);
+        } else {
+          ctx.font = `bold ${gumbelFontPx}px ${MONO_FONT}`;
+          ctx.fillText(sizeLabel, x, y);
+        }
       }
     }
   }
@@ -2091,7 +2031,8 @@ class Handler(BaseHTTPRequestHandler):
                                       "game_over": False, "human_side": 1,
                                       "mcts_policy": None, "mcts_visits": None, "nn_policy": None,
                                       "nn_opp_policy": None, "nn_futurepos_8": None,
-                                      "nn_futurepos_32": None, "gumbel_phases": None})
+                                      "nn_futurepos_32": None, "gumbel_phases": None,
+                                      "gumbel_winrate": None})
                 return
             self._send_json(200, sess.snapshot())
             return
