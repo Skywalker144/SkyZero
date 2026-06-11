@@ -34,7 +34,8 @@ export DATA_DIR
 mkdir -p "$DATA_DIR"/{models,selfplay,logs}
 
 PY=${PY:-python}
-SELFPLAY_BIN="${SELFPLAY_BIN:-$ROOT/cpp/build/selfplay_main}"
+BUILD_DIR="${BUILD_DIR:-$DATA_DIR/build}"
+SELFPLAY_BIN="${SELFPLAY_BIN:-$BUILD_DIR/selfplay_main}"
 
 if [[ ! -x "$SELFPLAY_BIN" ]]; then
     echo "$(_tag Daemon) binary not found or not executable: $SELFPLAY_BIN" >&2
