@@ -54,6 +54,10 @@ class EngineSession:
         self.nn_futurepos_32 = None  # 15x15, signed in [-1,+1]; +32 step horizon
         self.gumbel_phases = None  # list of list of [r,c], index 0 = initial 16, last = final 1
         self.gumbel_winrate = None  # 15x15, per-candidate win rate in [0,1] (expected score, draws=0.5)
+        self.analyzing = False        # True while the engine is pondering (analyze loop)
+        self.awaiting_human = False   # True while the engine waits at the human-move prompt
+        self.last_move_winrate = None     # win rate (0..1) of the move just played, mover's view
+        self.last_move_winrate_rc = None  # [r,c] it belongs to; drawn only when == last_move
 
         self._pending_rows = None
         self._pending_grid_key = None
@@ -170,7 +174,17 @@ class EngineSession:
             return
         m = AI_MOVE_RE.search(line)
         if m:
-            self.status = f"AI played ({m.group(1)}, {m.group(2)})"
+            r, c = int(m.group(1)), int(m.group(2))
+            self.status = f"AI played ({r}, {c})"
+            # Pin the chosen move's win rate (mover's view) to its cell so the
+            # board can label that one stone; cleared automatically once the
+            # last move moves on (rc no longer matches).
+            wr = None
+            if self.gumbel_winrate and 0 <= r < len(self.gumbel_winrate) \
+                    and 0 <= c < len(self.gumbel_winrate[r]):
+                wr = self.gumbel_winrate[r][c]
+            self.last_move_winrate = wr
+            self.last_move_winrate_rc = [r, c] if wr is not None else None
             return
         m = RESULT_RE.search(line)
         if m:
@@ -214,15 +228,29 @@ class EngineSession:
             self.nn_futurepos_32 = None
             self.gumbel_phases = None
             self.gumbel_winrate = None
+            self.last_move_winrate = None
+            self.last_move_winrate_rc = None
             return
         if "Human step" in line:
+            self.awaiting_human = True
             if not self.game_over:
                 self.status = "Your turn"
             return
         if "SkyZero thinking" in line:
             self.status = "AI thinking..."
+            self.awaiting_human = False
             self.gumbel_phases = None
             self.gumbel_winrate = None
+            return
+        if "Analyze start" in line:
+            self.analyzing = True
+            self.awaiting_human = False
+            self.status = "Analyzing… (engine pondering)"
+            return
+        if "Analyze stopped" in line:
+            self.analyzing = False
+            self.awaiting_human = True
+            self.status = "Your turn"
             return
         if "Invalid move" in line or "Invalid input" in line:
             self.status = line.strip()
@@ -290,6 +318,10 @@ class EngineSession:
             self.nn_futurepos_32 = None
             self.gumbel_phases = None
             self.gumbel_winrate = None
+            self.analyzing = False
+            self.awaiting_human = False
+            self.last_move_winrate = None
+            self.last_move_winrate_rc = None
             self._pending_rows = None
             self._pending_grid_key = None
             self._pending_grid_rows = None
@@ -318,6 +350,10 @@ class EngineSession:
                 "nn_futurepos_32": self.nn_futurepos_32,
                 "gumbel_phases": self.gumbel_phases,
                 "gumbel_winrate": self.gumbel_winrate,
+                "analyzing": self.analyzing,
+                "awaiting_human": self.awaiting_human,
+                "last_move_winrate": self.last_move_winrate,
+                "last_move_winrate_rc": list(self.last_move_winrate_rc) if self.last_move_winrate_rc else None,
             }
 
 
@@ -558,6 +594,7 @@ HTML_PAGE = r"""<!doctype html>
     box-shadow: var(--shadow-xs);
   }
   .card-body { padding: 14px 16px; }
+  .setup-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
   .card-title {
     font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
     text-transform: uppercase; color: var(--fg-subtle);
@@ -871,42 +908,38 @@ HTML_PAGE = r"""<!doctype html>
       </div>
 
       <div class="card">
-        <div class="card-body">
-          <div class="card-title">Model</div>
-          <select id="model_select" class="num" style="width:100%; height:32px; text-align:left; font-family: var(--font-mono);"></select>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-body side-row">
-          <div class="card-title" style="margin:0;">Human side</div>
-          <div class="seg-row">
-            <button class="seg-btn" id="side_black" aria-pressed="true" onclick="setSide(1)">
-              <span class="seg-stone black"></span>Black
-            </button>
-            <button class="seg-btn" id="side_white" aria-pressed="false" onclick="setSide(-1)">
-              <span class="seg-stone white"></span>White
-            </button>
+        <div class="card-body setup-body">
+          <div class="side-row">
+            <div class="card-title" style="margin:0;">Model</div>
+            <select id="model_select" class="num" style="flex:1; min-width:0; max-width:180px; height:30px; text-align:left; font-family: var(--font-mono);"></select>
           </div>
-        </div>
-      </div>
 
-      <div class="card">
-        <div class="card-body side-row">
-          <div class="card-title" style="margin:0;">Board size</div>
-          <select id="size_select" class="num"
-                  style="width:auto; min-width:84px; height:32px; text-align:left; font-family: var(--font-mono);">
-          </select>
-        </div>
-      </div>
+          <div class="side-row">
+            <div class="card-title" style="margin:0;">Human side</div>
+            <div class="seg-row">
+              <button class="seg-btn" id="side_black" aria-pressed="true" onclick="setSide(1)">
+                <span class="seg-stone black"></span>Black
+              </button>
+              <button class="seg-btn" id="side_white" aria-pressed="false" onclick="setSide(-1)">
+                <span class="seg-stone white"></span>White
+              </button>
+            </div>
+          </div>
 
-      <div class="card">
-        <div class="card-body">
-          <div class="card-title">Rule</div>
-          <div class="seg-row">
-            <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="false" onclick="setRule('renju')">Renju</button>
-            <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" onclick="setRule('standard')">Standard</button>
-            <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false" onclick="setRule('freestyle')">Freestyle</button>
+          <div class="side-row">
+            <div class="card-title" style="margin:0;">Board size</div>
+            <select id="size_select" class="num"
+                    style="min-width:84px; height:30px; text-align:left; font-family: var(--font-mono);">
+            </select>
+          </div>
+
+          <div class="side-row">
+            <div class="card-title" style="margin:0;">Rule</div>
+            <div class="seg-row" style="max-width:none; gap:4px;">
+              <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="false" onclick="setRule('renju')">Renju</button>
+              <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" onclick="setRule('standard')">Standard</button>
+              <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false" onclick="setRule('freestyle')">Freestyle</button>
+            </div>
           </div>
         </div>
       </div>
@@ -928,13 +961,6 @@ HTML_PAGE = r"""<!doctype html>
             <span>Gumbel overlay</span>
             <span style="display:inline-flex;">
               <input type="checkbox" id="gumbel_toggle" checked>
-              <span class="track"></span>
-            </span>
-          </label>
-          <label class="toggle">
-            <span>Root symmetry prune</span>
-            <span style="display:inline-flex;">
-              <input type="checkbox" id="prune_toggle">
               <span class="track"></span>
             </span>
           </label>
@@ -990,8 +1016,10 @@ HTML_PAGE = r"""<!doctype html>
         </div>
       </div>
       <div class="board-actions">
-        <button class="btn primary" onclick="newGame()">New game</button>
-        <button class="btn danger-ghost" onclick="sendCmd('u')">Undo</button>
+        <button class="btn primary" id="newgame_btn" onclick="newGame()">New game</button>
+        <button class="btn danger-ghost" id="undo_btn" onclick="sendCmd('u')">Undo</button>
+        <button class="btn" id="analyze_btn" onclick="startAnalyze()">Analyze</button>
+        <button class="btn" id="stop_btn" onclick="stopAnalyze()" disabled>Stop</button>
       </div>
     </section>
 
@@ -1132,21 +1160,11 @@ const boardCol = document.querySelector('.board-col');
 const boardCard = document.querySelector('.board-card');
 const boardActions = document.querySelector('.board-actions');
 const mainEl = document.querySelector('.main');
+const appEl = document.querySelector('.app');
+// Auto-scale the board to the viewport height (it resizes live with the
+// window), capped by the width available in the current layout.
 function syncBoardSize() {
-  if (window.matchMedia('(max-width: 1399px)').matches) {
-    rightCol.style.height = '';
-    rightCol.style.width = '';
-    if (BOARD_LOGICAL !== 560) {
-      CELL = 36;
-      BOARD_LOGICAL = MARGIN*2 + CELL*(N-1);
-      setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
-      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-      draw();
-    }
-    return;
-  }
-  // Make .board-col total height match #left_col by reverse-computing the
-  // canvas size from measured surroundings (no hard-coded constants).
+  const narrow = window.matchMedia('(max-width: 1399px)').matches;
   const cardCS = getComputedStyle(boardCard);
   const cardPadX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
   const cardPadY = parseFloat(cardCS.paddingTop) + parseFloat(cardCS.paddingBottom);
@@ -1154,23 +1172,43 @@ function syncBoardSize() {
   const legendH = gumbelLegend.classList.contains('hidden')
       ? 0
       : gumbelLegend.offsetHeight + parseFloat(legendCS.marginTop || 0);
-  // Match .board-card height (canvas + legend + padding) to leftCol height.
-  // Actions row sits below and is intentionally excluded.
-  const sizeByHeight = leftCol.offsetHeight - cardPadY - legendH;
-  // Cap by available width so the board doesn't overflow into adjacent
-  // columns. right_col is sized to boardCard.offsetWidth, so the two auto
-  // tracks together need 2 * (BOARD_LOGICAL + cardPadX) of room.
+  const colCS = getComputedStyle(boardCol);
+  const colGap = parseFloat(colCS.rowGap || colCS.gap) || 12;
+  // Vertical chrome around the canvas: card padding + legend + the actions row
+  // (with its gap) below the card.
+  const chromeY = cardPadY + legendH + boardActions.offsetHeight + colGap;
   const mainCS = getComputedStyle(mainEl);
+  const appCS = getComputedStyle(appEl);
   const gap = parseFloat(mainCS.columnGap || mainCS.gap) || 20;
-  const remaining = mainEl.clientWidth - leftCol.offsetWidth - 2 * gap;
-  const sizeByWidth = Math.floor(remaining / 2 - cardPadX);
+  // Empty space below .main that must stay inside the viewport to avoid scroll.
+  const belowMain = parseFloat(mainCS.marginBottom || 0) + parseFloat(appCS.paddingBottom || 0);
+
+  let sizeByWidth, sizeByHeight;
+  if (narrow) {
+    // Stacked single column: fill the content width, but keep within the
+    // viewport height so the board never dwarfs the screen.
+    rightCol.style.height = '';
+    rightCol.style.width = '';
+    sizeByWidth = mainEl.clientWidth - cardPadX;
+    sizeByHeight = window.innerHeight - chromeY - belowMain;
+  } else {
+    // 3-column row: the board sits beside the controls, top-aligned. Fit it to
+    // the viewport height; cap by the width the two auto tracks share (the
+    // right column mirrors the board's width).
+    const colTop = Math.max(0, boardCol.getBoundingClientRect().top);
+    sizeByHeight = window.innerHeight - colTop - chromeY - belowMain;
+    const remaining = mainEl.clientWidth - leftCol.offsetWidth - 2 * gap;
+    sizeByWidth = Math.floor(remaining / 2 - cardPadX);
+  }
   let size = Math.max(360, Math.min(sizeByHeight, sizeByWidth));
   CELL = Math.max(20, Math.floor((size - 2*MARGIN) / (N-1)));
   BOARD_LOGICAL = MARGIN*2 + CELL*(N-1);
   const canvasNeedsResize = cv.width !== Math.round(BOARD_LOGICAL * DPR);
   if (canvasNeedsResize) setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
-  rightCol.style.height = boardCard.offsetHeight + 'px';
-  rightCol.style.width = boardCard.offsetWidth + 'px';
+  if (!narrow) {
+    rightCol.style.height = boardCard.offsetHeight + 'px';
+    rightCol.style.width = boardCard.offsetWidth + 'px';
+  }
   if (canvasNeedsResize) draw();
 }
 new ResizeObserver(syncBoardSize).observe(leftCol);
@@ -1297,10 +1335,6 @@ gumbelToggle.addEventListener('change', () => {
   gumbelLegend.classList.toggle('hidden', !showGumbel);
   syncBoardSize();
   draw();
-});
-const pruneToggle = document.getElementById('prune_toggle');
-pruneToggle.addEventListener('change', () => {
-  sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
 });
 
 /* ---------- Follow OS dark/light theme ---------- */
@@ -1447,6 +1481,8 @@ function draw() {
   const stoneW1 = cssVar('--stone-white-1');
   const stoneOutline = cssVar('--stone-outline');
   const stoneShadow = cssVar('--stone-shadow') || 'rgba(0,0,0,0.18)';
+  const surface = cssVar('--surface') || '#ffffff';
+  const fg = cssVar('--fg') || '#1f2328';
 
   ctx.strokeStyle = boardLine; ctx.lineWidth = 1;
   for (let i=0;i<N;i++){
@@ -1483,7 +1519,7 @@ function draw() {
   const shadowDy  = Math.max(1, Math.round(CELL * 0.045));
   const gradInner = Math.max(1, Math.round(CELL * 0.11));
   const gumbelFontPx = Math.max(8, Math.round(CELL * 0.28));
-  const gumbelWrFontPx = Math.max(7, Math.round(CELL * 0.24));
+  const gumbelWrFontPx = Math.max(9, Math.round(CELL * 0.30));
 
   const phases = state.gumbel_phases;
   if (showGumbel && phases && phases.length > 0) {
@@ -1502,23 +1538,31 @@ function draw() {
       let bucket = LABELS.indexOf(sizeLabel);
       if (bucket < 0) bucket = Math.min(idx, COLORS.length-1);
       const x = MARGIN+c*CELL, y = MARGIN+r*CELL;
+      const empty = state.board[r][c] === 0;
+      // Win rate of playing this candidate (root player's view, 0..100). Falls
+      // back to the survival-round size label if the engine didn't emit win
+      // rates (e.g. an older gomoku_play binary).
+      const wrGrid = state.gumbel_winrate;
+      const wr = (empty && wrGrid && wrGrid[r]) ? wrGrid[r][c] : null;
+      // Solid disc behind the number so it reads against the wood board and
+      // grid lines; the ring color still encodes the survival round.
+      if (wr != null) {
+        ctx.beginPath(); ctx.arc(x, y, gumbelR, 0, Math.PI*2);
+        ctx.fillStyle = surface; ctx.fill();
+      }
       ctx.beginPath(); ctx.arc(x, y, gumbelR, 0, Math.PI*2);
       ctx.lineWidth = 2.5;
       ctx.strokeStyle = COLORS[bucket];
       ctx.stroke();
       ctx.lineWidth = 1;
-      if (state.board[r][c] === 0) {
-        ctx.fillStyle = COLORS[bucket];
+      if (empty) {
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        // Win rate of playing this candidate (root player's view, 0..100).
-        // Falls back to the survival-round size label if the engine didn't
-        // emit win rates (e.g. an older gomoku_play binary).
-        const wrGrid = state.gumbel_winrate;
-        const wr = (wrGrid && wrGrid[r]) ? wrGrid[r][c] : null;
         if (wr != null) {
+          ctx.fillStyle = fg;
           ctx.font = `bold ${gumbelWrFontPx}px ${MONO_FONT}`;
           ctx.fillText(Math.round(wr * 100), x, y);
         } else {
+          ctx.fillStyle = COLORS[bucket];
           ctx.font = `bold ${gumbelFontPx}px ${MONO_FONT}`;
           ctx.fillText(sizeLabel, x, y);
         }
@@ -1545,8 +1589,19 @@ function draw() {
     ctx.fill();
     ctx.strokeStyle = stoneOutline; ctx.lineWidth = 1; ctx.stroke();
     if (lm && lm[0]===r && lm[1]===c) {
-      ctx.beginPath(); ctx.arc(x, y, lastDotR, 0, Math.PI*2);
-      ctx.fillStyle = '#ef4444'; ctx.fill();
+      const lmwr = state.last_move_winrate;
+      const rc = state.last_move_winrate_rc;
+      if (lmwr != null && rc && rc[0]===r && rc[1]===c) {
+        // Win% of this move for the side that played it (mover's view), drawn
+        // on the stone in a contrasting color in place of the last-move dot.
+        ctx.fillStyle = (v === 1) ? '#ffffff' : '#111111';
+        ctx.font = `bold ${Math.max(9, Math.round(CELL * 0.30))}px ${MONO_FONT}`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(Math.round(lmwr * 100), x, y);
+      } else {
+        ctx.beginPath(); ctx.arc(x, y, lastDotR, 0, Math.PI*2);
+        ctx.fillStyle = '#ef4444'; ctx.fill();
+      }
     }
   }
 }
@@ -1696,6 +1751,7 @@ function renderWDL(prefix, v) {
 function statusVariant(s) {
   if (!s) return 'idle';
   const t = s.toLowerCase();
+  if (t.includes('analyz')) return 'thinking';
   if (t.includes('thinking')) return 'thinking';
   if (t.includes('your turn')) return 'active';
   if (t.includes('wins') || t.includes('draw')) return 'done';
@@ -1732,6 +1788,18 @@ async function refresh() {
     document.getElementById('status').textContent = statusText;
     document.getElementById('status_pill').dataset.variant = statusVariant(statusText);
 
+    // Analysis (ponder) freezes play: only Stop is live; board clicks ignored.
+    const analyzing = !!state.analyzing;
+    const canAnalyze = !!state.awaiting_human && !analyzing && !state.game_over;
+    const setDisabled = (id, v) => { const el = document.getElementById(id); if (el) el.disabled = v; };
+    setDisabled('analyze_btn', !canAnalyze);
+    setDisabled('stop_btn', !analyzing);
+    setDisabled('newgame_btn', analyzing);
+    setDisabled('undo_btn', analyzing);
+    const legendHead = document.querySelector('#gumbel_legend .legend-head');
+    if (legendHead) legendHead.textContent =
+      analyzing ? 'SkyZero Analysis · number = win%' : 'Gumbel Sequential Halving';
+
     if (!sideSynced && (state.human_side === 1 || state.human_side === -1)) {
       selectedSide = state.human_side;
       updateSideButtons();
@@ -1754,7 +1822,7 @@ async function refresh() {
 }
 
 cv.addEventListener('click', async (ev) => {
-  if (!state || state.game_over) return;
+  if (!state || state.game_over || state.analyzing) return;
   const rect = cv.getBoundingClientRect();
   const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
   const c = Math.round((x - MARGIN)/CELL), r = Math.round((y - MARGIN)/CELL);
@@ -1769,6 +1837,14 @@ async function sendCmd(cmd) {
   await fetch('/move', {method:'POST', headers:{'Content-Type':'application/json'},
                         body: JSON.stringify({cmd})});
   refresh();
+}
+function startAnalyze() {
+  if (!state || state.game_over || state.analyzing || !state.awaiting_human) return;
+  sendCmd('analyze');
+}
+function stopAnalyze() {
+  if (!state || !state.analyzing) return;
+  sendCmd('stop');
 }
 function updateSimsModeHint() {
   const el = document.getElementById('sims_input');
@@ -1835,7 +1911,6 @@ async function newGame(side, modelId, boardSize, rule) {
   await fetch('/new', {method:'POST', headers:{'Content-Type':'application/json'},
                        body: JSON.stringify(payload)});
   sendCmd('noise 0');
-  sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
   const sims = parseInt(document.getElementById('sims_input').value, 10);
   if (Number.isFinite(sims) && sims >= 0) sendCmd('sims ' + sims);
   const gm = parseInt(document.getElementById('gm_input').value, 10);
@@ -1937,7 +2012,6 @@ bindNumInput('gm_input', applyGm);
 document.getElementById('sims_input').addEventListener('input', updateSimsModeHint);
 updateSimsModeHint();
 sendCmd('noise 0'); // ensure engine starts with Gumbel noise off
-sendCmd('prune ' + (pruneToggle.checked ? 1 : 0));
 
 draw();
 drawValueChart();
@@ -2032,7 +2106,9 @@ class Handler(BaseHTTPRequestHandler):
                                       "mcts_policy": None, "mcts_visits": None, "nn_policy": None,
                                       "nn_opp_policy": None, "nn_futurepos_8": None,
                                       "nn_futurepos_32": None, "gumbel_phases": None,
-                                      "gumbel_winrate": None})
+                                      "gumbel_winrate": None, "analyzing": False,
+                                      "awaiting_human": False, "last_move_winrate": None,
+                                      "last_move_winrate_rc": None})
                 return
             self._send_json(200, sess.snapshot())
             return
