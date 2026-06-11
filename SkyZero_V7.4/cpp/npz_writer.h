@@ -13,6 +13,7 @@
 //   value_target            (N, 3)                       float32
 //   td_value_target         (N, 9)                       float32  long/mid/short × WLD
 //   futurepos_target        (N, 2, H, W)                 int8     +8/+32 step occupancy
+//   futurepos_mask          (N,)                         float32  0 = off-line side row (don't train futurepos)
 //   sample_weight           (N,)                         float32
 //
 // Threading: append() is called by the main selfplay collection thread.
@@ -158,6 +159,7 @@ public:
         value_buf_.insert(value_buf_.end(), s.value_target.begin(), s.value_target.end());
         td_value_buf_.insert(td_value_buf_.end(), s.td_value_target.begin(), s.td_value_target.end());
         futurepos_buf_.insert(futurepos_buf_.end(), s.futurepos_target.begin(), s.futurepos_target.end());
+        futurepos_mask_buf_.push_back(s.has_futurepos ? 1.0f : 0.0f);
         weight_buf_.push_back(s.sample_weight);
         ++rows_;
         total_rows_written_ += 1;
@@ -209,6 +211,7 @@ private:
         std::vector<float> value_buf;
         std::vector<float> td_value_buf;
         std::vector<int8_t> futurepos_buf;
+        std::vector<float> futurepos_mask_buf;
         std::vector<float> weight_buf;
     };
 
@@ -229,6 +232,7 @@ private:
         job->value_buf = std::move(value_buf_);
         job->td_value_buf = std::move(td_value_buf_);
         job->futurepos_buf = std::move(futurepos_buf_);
+        job->futurepos_mask_buf = std::move(futurepos_mask_buf_);
         job->weight_buf = std::move(weight_buf_);
 
         state_buf_.clear();
@@ -239,6 +243,7 @@ private:
         value_buf_.clear();
         td_value_buf_.clear();
         futurepos_buf_.clear();
+        futurepos_mask_buf_.clear();
         weight_buf_.clear();
         rows_ = 0;
 
@@ -326,6 +331,9 @@ private:
         add_int8_entry(archive, "futurepos_target.npy",
                        {job.rows, 2, state_dim, state_dim},
                        job.futurepos_buf);
+        add_float_entry(archive, "futurepos_mask.npy",
+                        {job.rows},
+                        job.futurepos_mask_buf);
         add_float_entry(archive, "sample_weight.npy",
                         {job.rows},
                         job.weight_buf);
@@ -400,6 +408,7 @@ private:
     std::vector<float> value_buf_;
     std::vector<float> td_value_buf_;
     std::vector<int8_t> futurepos_buf_;
+    std::vector<float> futurepos_mask_buf_;
     std::vector<float> weight_buf_;
     int64_t rows_ = 0;
     int64_t total_rows_written_ = 0;
