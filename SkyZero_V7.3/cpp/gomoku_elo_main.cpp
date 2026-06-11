@@ -105,6 +105,8 @@ struct CliArgs {
     std::string match_schedule;   // when set: tournament mode (model-a/b ignored)
     int num_games = 40;
     int num_simulations_override = -1;
+    int board_size_override = -1;   // <=0: use cfg BOARD_SIZE
+    std::string rule_override;      // empty: use cfg RULE (default renju)
     uint64_t seed = 0;
     bool seed_set = false;
 };
@@ -124,6 +126,8 @@ static CliArgs parse_cli(int argc, char** argv) {
         else if (k == "--match-schedule") a.match_schedule = need("--match-schedule");
         else if (k == "--num-games") a.num_games = std::stoi(need("--num-games"));
         else if (k == "--num-simulations") a.num_simulations_override = std::stoi(need("--num-simulations"));
+        else if (k == "--board-size") a.board_size_override = std::stoi(need("--board-size"));
+        else if (k == "--rule") a.rule_override = need("--rule");
         else if (k == "--seed") { a.seed = std::stoull(need("--seed")); a.seed_set = true; }
         else throw std::runtime_error("unknown arg: " + k);
     }
@@ -131,7 +135,7 @@ static CliArgs parse_cli(int argc, char** argv) {
         throw std::runtime_error(
             "usage: gomoku_elo --config PATH --output PATH "
             "(--model-a PATH --model-b PATH [--num-games N] | --match-schedule FILE) "
-            "[--num-simulations N] [--seed S]");
+            "[--num-simulations N] [--board-size N] [--rule {renju,standard,freestyle}] [--seed S]");
     }
     if (a.match_schedule.empty() && (a.model_a.empty() || a.model_b.empty())) {
         throw std::runtime_error("single-pair mode needs --model-a and --model-b "
@@ -528,8 +532,19 @@ int main(int argc, char** argv) {
             cfg_get<float>(cfg_map, "BALANCED_OPENING_VALUE_EXPONENT", 10.0f);
 
         if (cli.num_simulations_override > 0) cfg.num_simulations = cli.num_simulations_override;
+        // Board size / rule come from run.cfg (MAIN_BOARD_SIZE / MAIN_RULE),
+        // passed by scripts/elo.sh as --board-size / --rule so Elo always
+        // matches the trained board. The cfg BOARD_SIZE/RULE keys remain as
+        // fallbacks for a manual --config-only invocation.
+        if (cli.board_size_override > 0) {
+            if (cli.board_size_override > Gomoku::MAX_BOARD_SIZE) {
+                throw std::runtime_error("--board-size exceeds compile-time MAX_BOARD_SIZE");
+            }
+            cfg.board_size = cli.board_size_override;
+        }
 
         const std::string rule_str = ([&]() -> std::string {
+            if (!cli.rule_override.empty()) return cli.rule_override;
             auto it = cfg_map.find("RULE");
             return (it != cfg_map.end()) ? it->second : "renju";
         })();
