@@ -55,6 +55,9 @@ class EngineSession:
         self.gumbel_phases = None  # list of list of [r,c], index 0 = initial 16, last = final 1
         self.gumbel_winrate = None  # 15x15, per-candidate win rate in [0,1] (expected score, draws=0.5)
         self.analyzing = False        # True while the engine is pondering (analyze loop)
+        self.analyze_sims = None      # accumulated sims in the current ponder (None when idle)
+        self.value_persp = None       # perspective of root/nn values: +1 Black, -1 White
+        self.analysis_mode = False    # True in free-analysis board mode (human drives both colors)
         self.awaiting_human = False   # True while the engine waits at the human-move prompt
         self.last_move_winrate = None     # win rate (0..1) of the move just played, mover's view
         self.last_move_winrate_rc = None  # [r,c] it belongs to; drawn only when == last_move
@@ -155,6 +158,12 @@ class EngineSession:
             self._pending_grid_key = None
             self._pending_grid_rows = None
             # fall through to other matchers
+        if line.startswith("Analyze sims:"):
+            try:
+                self.analyze_sims = int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+            return
         m = GUMBEL_PHASE_RE.search(line)
         if m:
             idx = int(m.group(1))
@@ -197,6 +206,12 @@ class EngineSession:
                 "w": float(m.group(1)), "d": float(m.group(2)),
                 "l": float(m.group(3)), "wl": float(m.group(4)),
             }
+            # Lock the perspective NOW: the value table is emitted before the
+            # searched move is applied/printed, so self.board still holds the
+            # search position and its side-to-move IS this value's perspective
+            # (+1 Black / -1 White). Deriving it later from the advanced board
+            # would mis-sign a stale value after the opponent's reply.
+            self.value_persp = 1 if self._black_to_move() else -1
             return
         m = NN_VALUE_RE.search(line)
         if m:
@@ -210,6 +225,9 @@ class EngineSession:
                 self.human_side = int(line.strip().split("=")[-1])
             except ValueError:
                 pass
+            return
+        if "[setting] mode=" in line:
+            self.analysis_mode = line.strip().split("=")[-1] == "analysis"
             return
         if "Undo successful" in line:
             self.game_over = False
@@ -244,11 +262,13 @@ class EngineSession:
             return
         if "Analyze start" in line:
             self.analyzing = True
+            self.analyze_sims = 0
             self.awaiting_human = False
             self.status = "Analyzing… (engine pondering)"
             return
         if "Analyze stopped" in line:
             self.analyzing = False
+            self.analyze_sims = None
             self.awaiting_human = True
             self.status = "Your turn"
             # Analyze values are side-to-move (human) perspective; drop them so
@@ -278,6 +298,18 @@ class EngineSession:
                     last = (r, c)
         self.board = new_board
         self.last_move = last
+
+    def _black_to_move(self):
+        # Black plays first and colors strictly alternate, so equal stone counts
+        # mean it is Black's turn.
+        b = w = 0
+        for row in self.board:
+            for v in row:
+                if v == 1:
+                    b += 1
+                elif v == -1:
+                    w += 1
+        return b == w
 
     def send(self, text):
         if self.proc.poll() is not None:
@@ -323,6 +355,8 @@ class EngineSession:
             self.gumbel_phases = None
             self.gumbel_winrate = None
             self.analyzing = False
+            self.analyze_sims = None
+            self.value_persp = None
             self.awaiting_human = False
             self.last_move_winrate = None
             self.last_move_winrate_rc = None
@@ -355,6 +389,9 @@ class EngineSession:
                 "gumbel_phases": self.gumbel_phases,
                 "gumbel_winrate": self.gumbel_winrate,
                 "analyzing": self.analyzing,
+                "analyze_sims": self.analyze_sims,
+                "analysis_mode": self.analysis_mode,
+                "value_persp": self.value_persp,
                 "awaiting_human": self.awaiting_human,
                 "last_move_winrate": self.last_move_winrate,
                 "last_move_winrate_rc": list(self.last_move_winrate_rc) if self.last_move_winrate_rc else None,
@@ -538,30 +575,56 @@ HTML_PAGE = r"""<!doctype html>
     border-radius: 4px;
   }
 
-  .app { max-width: 2000px; margin: 0 auto; padding: 16px 24px 48px; }
+  .app {
+    max-width: 2100px; margin: 0 auto; padding: 12px 16px;
+    display: flex; flex-direction: column; gap: 12px;
+    min-height: 100vh;
+  }
 
-  /* ---------- Layout ---------- */
+  /* ---------- Top toolbar ---------- */
+  .topbar {
+    display: flex; align-items: center; flex-wrap: wrap;
+    gap: 8px 16px; padding: 8px 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow-xs);
+  }
+  .tb-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .tb-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--fg-subtle); white-space: nowrap;
+  }
+  .tb-select { height: 30px; text-align: left; max-width: 200px;
+    font-family: var(--font-mono); }
+  .tb-spacer { flex: 1 1 auto; }
+  .tb-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .tb-sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 0; }
+
+  /* ---------- Main: win-rate chart + board + analysis ---------- */
   .main {
     display: grid;
-    grid-template-columns: 260px minmax(0, auto) minmax(0, auto);
-    gap: 20px;
-    align-items: start;
-    margin-bottom: 20px;
+    grid-template-columns: 320px minmax(0, 1fr) 340px;
+    gap: 12px; align-items: start;
   }
-  @media (max-width: 1399px) {
+  @media (max-width: 1180px) {
     .main { grid-template-columns: 1fr; }
+    .board-col { order: -1; }
   }
   .board-col {
-    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    display: flex; flex-direction: column; align-items: center;
     min-width: 0;
   }
-  .side-col {
+  .analysis-col {
     display: flex; flex-direction: column; gap: 12px;
-    min-width: 0;
+    min-width: 0; min-height: 0; overflow-y: auto;
   }
-  .seg-row { display: flex; gap: 8px; }
-  .side-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .side-row .seg-row { flex: 1; max-width: 180px; }
+  /* Left column: the win-rate-over-moves chart fills the board's height. */
+  .winrate-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .winrate-col .card { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .winrate-col .card-body {
+    display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;
+    padding: 10px 14px;
+  }
+  .seg-row { display: flex; gap: 6px; }
   .seg-btn {
     flex: 1; height: 34px; font-size: 13px; font-weight: 500;
     background: var(--surface); color: var(--fg);
@@ -586,9 +649,6 @@ HTML_PAGE = r"""<!doctype html>
   }
   .seg-stone.black { background: radial-gradient(circle at 30% 30%, var(--stone-black-0), var(--stone-black-1)); }
   .seg-stone.white { background: radial-gradient(circle at 30% 30%, var(--stone-white-0), var(--stone-white-1)); }
-  .board-actions {
-    display: flex; gap: 8px; width: 100%; max-width: 560px; justify-content: center;
-  }
 
   /* ---------- Card ---------- */
   .card {
@@ -598,7 +658,6 @@ HTML_PAGE = r"""<!doctype html>
     box-shadow: var(--shadow-xs);
   }
   .card-body { padding: 14px 16px; }
-  .setup-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
   .card-title {
     font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
     text-transform: uppercase; color: var(--fg-subtle);
@@ -606,7 +665,6 @@ HTML_PAGE = r"""<!doctype html>
   }
 
   /* ---------- Status pill ---------- */
-  .status-card { padding: 12px 16px; }
   .status-pill {
     display: inline-flex; align-items: center; gap: 8px;
     padding: 4px 10px 4px 8px;
@@ -658,38 +716,7 @@ HTML_PAGE = r"""<!doctype html>
   .btn.danger-ghost:hover { color: var(--danger); border-color: var(--danger); }
   .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
 
-  /* ---------- Toggle ---------- */
-  .toggle {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 12px; cursor: pointer; user-select: none;
-    font-size: 13px; color: var(--fg);
-    padding: 6px 0;
-  }
-  .toggle input { position: absolute; opacity: 0; pointer-events: none; }
-  .toggle .track {
-    width: 30px; height: 18px; background: var(--border-strong); border-radius: 999px;
-    position: relative; transition: background 0.15s; flex-shrink: 0;
-  }
-  .toggle .track::after {
-    content: ""; position: absolute; top: 2px; left: 2px;
-    width: 14px; height: 14px; border-radius: 50%; background: #fff;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform 0.15s;
-  }
-  .toggle input:checked + .track { background: var(--accent); }
-  .toggle input:checked + .track::after { transform: translateX(12px); }
-  @media (prefers-reduced-motion: reduce) {
-    .toggle .track, .toggle .track::after { transition: none; }
-  }
-
   /* ---------- Number input ---------- */
-  .field-row {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 12px; padding: 6px 0;
-  }
-  .field-row label {
-    font-size: 13px; color: var(--fg-muted);
-    font-family: var(--font-mono);
-  }
   .num {
     width: 80px; height: 28px; padding: 0 8px; font-size: 13px;
     background: var(--surface); color: var(--fg);
@@ -710,10 +737,6 @@ HTML_PAGE = r"""<!doctype html>
     text-align: right;
     padding: 2px 0 4px 0;
     letter-spacing: 0.4px;
-  }
-
-  .divider {
-    height: 1px; background: var(--border); margin: 4px 0;
   }
 
   /* ---------- WDL ---------- */
@@ -757,24 +780,17 @@ HTML_PAGE = r"""<!doctype html>
     min-height: 18px;
   }
   .wdl-detail .k { color: var(--fg-subtle); }
-  .value-chart-wrap {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    min-height: 160px;
-  }
+  /* ---------- Win-rate-over-moves chart (left column) ---------- */
   .value-chart-legend {
     display: flex; align-items: center; gap: 12px;
     font-size: 11px; color: var(--fg-muted);
     font-family: var(--font-mono);
-    margin-bottom: 6px;
+    margin-bottom: 4px;
   }
   .vc-item { display: inline-flex; align-items: center; gap: 5px; }
   .vc-swatch { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
   .vc-axis { margin-left: auto; color: var(--fg-subtle); font-size: 10.5px; }
-  #value_chart { display: block; width: 100%; height: 140px; min-height: 120px; }
+  #value_chart { display: block; width: 100%; flex: 1 1 auto; min-height: 0; }
   /* ---------- Board ---------- */
   .board-card {
     padding: 16px;
@@ -784,40 +800,62 @@ HTML_PAGE = r"""<!doctype html>
     background: var(--board-bg); border-radius: var(--radius-sm);
     display: block; cursor: crosshair;
   }
-  #gumbel_legend {
-    font-size: 11.5px; color: var(--fg-muted);
-    margin-top: 14px;
-    display: flex; align-items: center; justify-content: center;
-    flex-wrap: wrap; gap: 6px 10px;
+  /* ---------- Candidate move list ---------- */
+  .cand-card { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+  .cand-body { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; padding: 12px 14px; }
+  .cand-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 8px; margin-bottom: 8px;
   }
-  #gumbel_legend .legend-head {
-    font-weight: 600; color: var(--fg-subtle);
-    text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px;
-    margin-right: 2px;
+  .cand-legend {
+    font-size: 10.5px; color: var(--fg-subtle); font-family: var(--font-mono);
+    text-transform: none; letter-spacing: 0; font-weight: 500;
   }
-  #gumbel_legend .chip {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 2px 8px; border-radius: 999px;
-    background: var(--surface-2);
-    font-family: var(--font-mono);
-    font-size: 11px;
+  .cand-list {
+    display: flex; flex-direction: column; gap: 2px;
+    overflow-y: auto; min-height: 0; flex: 1 1 auto;
   }
-  #gumbel_legend .dot {
-    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+  .cand-empty { color: var(--fg-subtle); font-size: 12px; text-align: center; padding: 18px 0; }
+  .cand-row {
+    display: grid; grid-template-columns: 16px 42px 40px minmax(0,1fr) 46px;
+    align-items: center; gap: 8px;
+    padding: 5px 8px; border-radius: var(--radius-sm); cursor: pointer;
+    font-family: var(--font-mono); font-size: 12.5px;
+    border: 1px solid transparent;
   }
+  .cand-row:hover { background: var(--surface-2); border-color: var(--border); }
+  .cand-row.best { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .cand-rank { font-weight: 600; color: var(--fg-muted); text-align: center; }
+  .cand-row.best .cand-rank { color: var(--accent); }
+  .cand-coord { color: var(--fg-muted); }
+  .cand-wr { font-weight: 600; color: var(--fg); text-align: right; }
+  .cand-track { height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+  .cand-track > span { display: block; height: 100%; background: var(--fg-subtle); }
+  .cand-row.best .cand-track > span { background: var(--accent); }
+  .cand-visits { color: var(--fg-subtle); text-align: right; font-size: 11.5px; }
+
+  /* ---------- Heatmap drawer ---------- */
+  .drawer { overflow: hidden; flex: 0 0 auto; }
+  .drawer-toggle {
+    width: 100%; display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px; background: transparent; border: none; cursor: pointer;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--fg-subtle); font-family: var(--font-sans);
+  }
+  .drawer-toggle:hover { color: var(--fg); }
+  .drawer-toggle .chev { width: 12px; height: 12px; transition: transform 0.15s; flex-shrink: 0; }
+  .drawer-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+  .drawer-count { margin-left: auto; color: var(--fg-subtle); font-weight: 500; }
+  .drawer-body { padding: 0 12px 12px; }
+  @media (prefers-reduced-motion: reduce) { .drawer-toggle .chev { transition: none; } }
 
   /* ---------- Heat grid ---------- */
-  #right_col { min-width: 0; }
   .grids {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-    height: 100%;
+    gap: 10px;
   }
-  @media (max-width: 1399px) {
-    .grids { grid-template-columns: repeat(2, minmax(0, 1fr)); height: auto; }
-  }
-  @media (max-width: 720px) {
+  .drawer .grid-card { height: 168px; }
+  @media (max-width: 520px) {
     .grids { grid-template-columns: 1fr; }
   }
   .grid-card {
@@ -902,78 +940,84 @@ HTML_PAGE = r"""<!doctype html>
 <body>
 <div class="app">
 
+  <header class="topbar">
+    <div class="status-pill" id="status_pill" data-variant="idle">
+      <span class="dot"></span>
+      <span id="status">idle</span>
+    </div>
+    <div class="tb-sep"></div>
+    <div class="tb-group">
+      <span class="tb-label">Mode</span>
+      <div class="seg-row">
+        <button class="seg-btn" id="mode_play" aria-pressed="true" onclick="setMode('play')">对弈</button>
+        <button class="seg-btn" id="mode_analysis" aria-pressed="false" onclick="setMode('analysis')">分析</button>
+      </div>
+    </div>
+    <div class="tb-group">
+      <span class="tb-label">Model</span>
+      <select id="model_select" class="num tb-select"></select>
+    </div>
+    <div class="tb-group" id="side_row">
+      <span class="tb-label">Side</span>
+      <div class="seg-row">
+        <button class="seg-btn" id="side_black" aria-pressed="true" onclick="setSide(1)">
+          <span class="seg-stone black"></span>Black
+        </button>
+        <button class="seg-btn" id="side_white" aria-pressed="false" onclick="setSide(-1)">
+          <span class="seg-stone white"></span>White
+        </button>
+      </div>
+    </div>
+    <div class="tb-group">
+      <span class="tb-label">Board</span>
+      <select id="size_select" class="num tb-select" style="min-width:72px;"></select>
+    </div>
+    <div class="tb-group">
+      <span class="tb-label">Rule</span>
+      <div class="seg-row">
+        <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="false" onclick="setRule('renju')">Renju</button>
+        <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" onclick="setRule('standard')">Standard</button>
+        <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false" onclick="setRule('freestyle')">Freestyle</button>
+      </div>
+    </div>
+    <div class="tb-group">
+      <span class="tb-label">sims</span>
+      <input class="num" type="number" id="sims_input" min="0" step="1" value="800" style="width:72px;">
+      <span id="sims_mode_hint" class="mode-hint" hidden>Pure NN</span>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-actions">
+      <button class="btn primary" id="newgame_btn" onclick="newGame()">New game</button>
+      <button class="btn danger-ghost" id="undo_btn" onclick="sendCmd('u')">Undo</button>
+      <button class="btn" id="analyze_btn" onclick="startAnalyze()">Analyze</button>
+      <button class="btn" id="stop_btn" onclick="stopAnalyze()" disabled>Stop</button>
+    </div>
+  </header>
+
   <div class="main">
-    <aside class="side-col" id="left_col">
-      <div class="card status-card">
-        <div class="status-pill" id="status_pill" data-variant="idle">
-          <span class="dot"></span>
-          <span id="status">idle</span>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-body setup-body">
-          <div class="side-row">
-            <div class="card-title" style="margin:0;">Model</div>
-            <select id="model_select" class="num" style="flex:1; min-width:0; max-width:180px; height:30px; text-align:left; font-family: var(--font-mono);"></select>
-          </div>
-
-          <div class="side-row">
-            <div class="card-title" style="margin:0;">Human side</div>
-            <div class="seg-row">
-              <button class="seg-btn" id="side_black" aria-pressed="true" onclick="setSide(1)">
-                <span class="seg-stone black"></span>Black
-              </button>
-              <button class="seg-btn" id="side_white" aria-pressed="false" onclick="setSide(-1)">
-                <span class="seg-stone white"></span>White
-              </button>
-            </div>
-          </div>
-
-          <div class="side-row">
-            <div class="card-title" style="margin:0;">Board size</div>
-            <select id="size_select" class="num"
-                    style="min-width:84px; height:30px; text-align:left; font-family: var(--font-mono);">
-            </select>
-          </div>
-
-          <div class="side-row">
-            <div class="card-title" style="margin:0;">Rule</div>
-            <div class="seg-row" style="max-width:none; gap:4px;">
-              <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="false" onclick="setRule('renju')">Renju</button>
-              <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" onclick="setRule('standard')">Standard</button>
-              <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false" onclick="setRule('freestyle')">Freestyle</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
+    <aside class="winrate-col" id="winrate_col">
       <div class="card">
         <div class="card-body">
-          <div class="card-title">Search</div>
-          <div class="field-row">
-            <label for="sims_input">sims</label>
-            <input class="num" type="number" id="sims_input" min="0" step="1" value="800">
+          <div class="value-chart-legend">
+            <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span>root</span>
+            <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span>nn</span>
+            <span class="vc-axis">Black ↑ / White ↓</span>
           </div>
-          <div id="sims_mode_hint" class="mode-hint" hidden>Pure NN — argmax of policy head</div>
-          <div class="field-row">
-            <label for="gm_input">gumbel_m</label>
-            <input class="num" type="number" id="gm_input" min="1" step="1" value="16">
-          </div>
-          <div class="divider"></div>
-          <label class="toggle">
-            <span>Gumbel overlay</span>
-            <span style="display:inline-flex;">
-              <input type="checkbox" id="gumbel_toggle" checked>
-              <span class="track"></span>
-            </span>
-          </label>
+          <canvas id="value_chart"></canvas>
         </div>
       </div>
+    </aside>
 
+    <section class="board-col">
+      <div class="card board-card">
+        <canvas id="board"></canvas>
+      </div>
+    </section>
+
+    <aside class="analysis-col" id="analysis_col">
       <div class="card">
         <div class="card-body">
-          <div class="card-title">Value estimates</div>
+          <div class="card-title">Win rate · Black ↑ / White ↓</div>
           <div class="wdl-row">
             <span class="wdl-label">root</span>
             <div class="wdl-bar" id="wdl_root_bar">
@@ -994,41 +1038,31 @@ HTML_PAGE = r"""<!doctype html>
             <span class="wdl-wl" id="wdl_nn_wl">—</span>
           </div>
           <div class="wdl-detail" id="wdl_nn_detail"></div>
-          <div class="value-chart-wrap">
-            <div class="value-chart-legend">
-              <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span>root</span>
-              <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span>nn</span>
-              <span class="vc-axis">W/L · −1…+1</span>
-            </div>
-            <canvas id="value_chart"></canvas>
+        </div>
+      </div>
+
+      <div class="card cand-card">
+        <div class="card-body cand-body">
+          <div class="card-title cand-head">
+            <span>Candidate moves</span>
+            <span class="cand-legend">win% · visits</span>
+          </div>
+          <div class="cand-list" id="cand_list">
+            <div class="cand-empty">No analysis yet</div>
           </div>
         </div>
       </div>
-    </aside>
 
-    <section class="board-col">
-      <div class="card board-card">
-        <canvas id="board"></canvas>
-        <div id="gumbel_legend">
-          <span class="legend-head">Gumbel Sequential Halving</span>
-          <span class="chip"><span class="dot" style="background:#9ca3af;"></span>16</span>
-          <span class="chip"><span class="dot" style="background:#3b82f6;"></span>8</span>
-          <span class="chip"><span class="dot" style="background:#10b981;"></span>4</span>
-          <span class="chip"><span class="dot" style="background:#f59e0b;"></span>2</span>
-          <span class="chip"><span class="dot" style="background:#ef4444;"></span>1 (picked)</span>
-          <span class="chip" style="opacity:.7;">number = win%</span>
-        </div>
-      </div>
-      <div class="board-actions">
-        <button class="btn primary" id="newgame_btn" onclick="newGame()">New game</button>
-        <button class="btn danger-ghost" id="undo_btn" onclick="sendCmd('u')">Undo</button>
-        <button class="btn" id="analyze_btn" onclick="startAnalyze()">Analyze</button>
-        <button class="btn" id="stop_btn" onclick="stopAnalyze()" disabled>Stop</button>
-      </div>
-    </section>
-
-    <aside class="side-col" id="right_col">
-      <div class="grids">
+      <div class="card drawer" id="heat_drawer">
+        <button class="drawer-toggle" id="heat_drawer_btn" aria-expanded="false" aria-controls="heat_drawer_body">
+          <svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 3l5 5-5 5"/>
+          </svg>
+          <span>NN 热力图</span>
+          <span class="drawer-count">6</span>
+        </button>
+        <div class="drawer-body hidden" id="heat_drawer_body">
+          <div class="grids">
         <div class="card grid-card">
           <div class="grid-title">
             <span class="grid-title-text">Improved Policy</span>
@@ -1095,6 +1129,8 @@ HTML_PAGE = r"""<!doctype html>
           </div>
           <canvas class="heat" id="h_nn_futurepos_32"></canvas>
         </div>
+          </div>
+        </div>
       </div>
     </aside>
   </div>
@@ -1145,77 +1181,59 @@ function clearLogical(ctx) { ctx.clearRect(0, 0, ctx._logicalW, ctx._logicalH); 
 const cv = document.getElementById('board');
 const ctx = setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
 const vcCanvas = document.getElementById('value_chart');
-let vctx = setupCanvas(vcCanvas, 280, 160);
-vcCanvas.style.width = '100%';
-vcCanvas.style.height = '100%';
+// setStyle=false: the canvas is CSS-sized (width:100% / flex height) by the
+// bottom bar; only its backing store is managed in JS (see resizeValueChart).
+let vctx = setupCanvas(vcCanvas, 280, 160, false);
 function resizeValueChart() {
   const rect = vcCanvas.getBoundingClientRect();
   const w = Math.max(120, Math.floor(rect.width));
-  const h = Math.max(120, Math.floor(rect.height));
+  const h = Math.max(80, Math.floor(rect.height));
   if (vctx._logicalW === w && vctx._logicalH === h) return;
-  vctx = setupCanvas(vcCanvas, w, h);
+  // setStyle=false: keep the canvas CSS-sized (width:100% / flex height) so it
+  // tracks the bottom bar on window resize; only the backing store updates here.
+  vctx = setupCanvas(vcCanvas, w, h, false);
   drawValueChart();
 }
 new ResizeObserver(resizeValueChart).observe(vcCanvas);
 
-const leftCol = document.getElementById('left_col');
-const rightCol = document.getElementById('right_col');
 const boardCol = document.querySelector('.board-col');
 const boardCard = document.querySelector('.board-card');
-const boardActions = document.querySelector('.board-actions');
+const winrateCol = document.getElementById('winrate_col');
+const analysisCol = document.getElementById('analysis_col');
+const topbarEl = document.querySelector('.topbar');
 const mainEl = document.querySelector('.main');
 const appEl = document.querySelector('.app');
-// Auto-scale the board to the viewport height (it resizes live with the
-// window), capped by the width available in the current layout.
+// Fit the board into the space below the top toolbar, capped by the board
+// column's width — so the whole page never scrolls. The win-rate chart (left)
+// and analysis panel (right) are both pinned to the board's height; the
+// analysis panel scrolls internally.
 function syncBoardSize() {
-  const narrow = window.matchMedia('(max-width: 1399px)').matches;
+  const narrow = window.matchMedia('(max-width: 1180px)').matches;
   const cardCS = getComputedStyle(boardCard);
   const cardPadX = parseFloat(cardCS.paddingLeft) + parseFloat(cardCS.paddingRight);
   const cardPadY = parseFloat(cardCS.paddingTop) + parseFloat(cardCS.paddingBottom);
-  const legendCS = getComputedStyle(gumbelLegend);
-  const legendH = gumbelLegend.classList.contains('hidden')
-      ? 0
-      : gumbelLegend.offsetHeight + parseFloat(legendCS.marginTop || 0);
-  const colCS = getComputedStyle(boardCol);
-  const colGap = parseFloat(colCS.rowGap || colCS.gap) || 12;
-  // Vertical chrome around the canvas: card padding + legend + the actions row
-  // (with its gap) below the card.
-  const chromeY = cardPadY + legendH + boardActions.offsetHeight + colGap;
-  const mainCS = getComputedStyle(mainEl);
   const appCS = getComputedStyle(appEl);
-  const gap = parseFloat(mainCS.columnGap || mainCS.gap) || 20;
-  // Empty space below .main that must stay inside the viewport to avoid scroll.
-  const belowMain = parseFloat(mainCS.marginBottom || 0) + parseFloat(appCS.paddingBottom || 0);
-
-  let sizeByWidth, sizeByHeight;
-  if (narrow) {
-    // Stacked single column: fill the content width, but keep within the
-    // viewport height so the board never dwarfs the screen.
-    rightCol.style.height = '';
-    rightCol.style.width = '';
-    sizeByWidth = mainEl.clientWidth - cardPadX;
-    sizeByHeight = window.innerHeight - chromeY - belowMain;
-  } else {
-    // 3-column row: the board sits beside the controls, top-aligned. Fit it to
-    // the viewport height; cap by the width the two auto tracks share (the
-    // right column mirrors the board's width).
-    const colTop = Math.max(0, boardCol.getBoundingClientRect().top);
-    sizeByHeight = window.innerHeight - colTop - chromeY - belowMain;
-    const remaining = mainEl.clientWidth - leftCol.offsetWidth - 2 * gap;
-    sizeByWidth = Math.floor(remaining / 2 - cardPadX);
-  }
+  const appGap = parseFloat(appCS.rowGap || appCS.gap) || 12;
+  const appPadY = parseFloat(appCS.paddingTop) + parseFloat(appCS.paddingBottom);
+  // Vertical budget: viewport − app padding − topbar − the gap between the two
+  // app rows (topbar / main) − this card's own padding.
+  const chromeY = appPadY + topbarEl.offsetHeight + appGap + cardPadY;
+  const sizeByHeight = window.innerHeight - chromeY;
+  const sizeByWidth = narrow
+      ? mainEl.clientWidth - cardPadX
+      : boardCol.clientWidth - cardPadX;
   let size = Math.max(360, Math.min(sizeByHeight, sizeByWidth));
   CELL = Math.max(20, Math.floor((size - 2*MARGIN) / (N-1)));
   BOARD_LOGICAL = MARGIN*2 + CELL*(N-1);
   const canvasNeedsResize = cv.width !== Math.round(BOARD_LOGICAL * DPR);
   if (canvasNeedsResize) setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
-  if (!narrow) {
-    rightCol.style.height = boardCard.offsetHeight + 'px';
-    rightCol.style.width = boardCard.offsetWidth + 'px';
-  }
+  const colH = narrow ? '' : boardCard.offsetHeight + 'px';
+  winrateCol.style.height = colH;
+  analysisCol.style.height = colH;
   if (canvasNeedsResize) draw();
 }
-new ResizeObserver(syncBoardSize).observe(leftCol);
+new ResizeObserver(syncBoardSize).observe(mainEl);
+new ResizeObserver(syncBoardSize).observe(topbarEl);
 window.addEventListener('resize', syncBoardSize);
 
 let valueHistory = []; // [{step, root, nn}]  step = stone count when recorded
@@ -1313,32 +1331,133 @@ for (const id of Object.keys(heatCtxs)) {
 }
 
 let state = null;
-let showGumbel = true;
-// Side-swap perspective tracking. `side X` only flips human_side in the engine;
-// it does not trigger a new search, so the cached root_value/nn_value in the
-// snapshot remain in the OLD AI's perspective until the next AI think. To keep
-// display consistent, we record (a) the snapshot values at the moment the user
-// swapped and (b) the parity of pending swaps. While incoming snapshot values
-// still match that baseline, we flip them for display iff parity is odd. Once
-// the engine emits new values (mismatch), we drop the pending state.
-let pendingSwapBaseline = null;
-let pendingSwapParity = 0;
-function valuesEqual(a, b) {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  return a.w === b.w && a.d === b.d && a.l === b.l && a.wl === b.wl;
+let hoverCand = null;       // {r,c} candidate row under the pointer → board highlight
+const MAX_CANDS = 12;       // board overlay + list cap (lizzie shows the strongest few)
+// Value display is fixed to BLACK's frame (Black ahead → +, drawn up; White
+// ahead → −, drawn down), so no per-side flipping is ever needed. The engine
+// wrapper stamps each root/nn value with the perspective of the side that
+// searched it (value_persp: +1 Black / -1 White) at the moment it was produced
+// — deriving it from the live board would mis-sign a stale value after the
+// opponent's reply.
+function valuePerspective(st) {
+  return (st && (st.value_persp === 1 || st.value_persp === -1)) ? st.value_persp : 1;
 }
-function flipWDL(v) {
+// Re-express a side-to-move {w,d,l,wl} in Black's frame.
+function toBlack(v, persp) {
   if (!v) return null;
-  return {w: v.l, d: v.d, l: v.w, wl: -v.wl};
+  return persp === 1 ? v : { w: v.l, d: v.d, l: v.w, wl: -v.wl };
 }
-const gumbelToggle = document.getElementById('gumbel_toggle');
-const gumbelLegend = document.getElementById('gumbel_legend');
-gumbelToggle.addEventListener('change', () => {
-  showGumbel = gumbelToggle.checked;
-  gumbelLegend.classList.toggle('hidden', !showGumbel);
-  syncBoardSize();
+/* ---------- Candidate moves (lizzie-style overlay + side list) ---------- */
+// Rank the side-to-move's candidates from the engine's visit distribution
+// (mcts_visits = N(s,a)/sum) and per-candidate win rate (gumbel_winrate, root
+// player's view ∈ [0,1]). Sorted by visits desc; capped at MAX_CANDS.
+function computeCandidates() {
+  if (!state || !state.board) return [];
+  const vis = state.mcts_visits, wrG = state.gumbel_winrate;
+  if (!vis && !wrG) return [];
+  const out = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (state.board[r][c] !== 0) continue;
+    const vf = (vis && vis[r]) ? (vis[r][c] || 0) : 0;
+    const wr = (wrG && wrG[r] && wrG[r][c] != null) ? wrG[r][c] : null;
+    if (vf > 0 || (wr != null && wr > 0)) out.push({r, c, vf, wr});
+  }
+  if (out.length === 0) return [];
+  out.sort((a, b) => (b.vf - a.vf) || ((b.wr ?? -1) - (a.wr ?? -1)));
+  const maxV = out[0].vf || 0;
+  out.forEach((o, i) => { o.frac = maxV > 0 ? o.vf / maxV : 1; o.best = (i === 0); });
+  return out.slice(0, MAX_CANDS);
+}
+// Total root visits — turns a visit fraction back into a count for display.
+function totalVisits() {
+  if (state && state.analyzing && Number.isFinite(state.analyze_sims) && state.analyze_sims > 0)
+    return state.analyze_sims;
+  const s = parseInt(document.getElementById('sims_input').value, 10);
+  return (Number.isFinite(s) && s > 0) ? s : 0;
+}
+function fmtVisits(vf) {
+  const tot = totalVisits();
+  if (tot > 0) {
+    const n = Math.round(vf * tot);
+    return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n);
+  }
+  return Math.round(vf * 100) + '%';
+}
+// Visit-rank color: best move blue, others lerp gray → green by visit share.
+function candColor(frac, best) {
+  if (best) return {fill: '#2b7fff', text: '#ffffff'};
+  const g0 = [156, 163, 175], g1 = [34, 165, 89];  // gray → green
+  const t = Math.max(0, Math.min(1, frac));
+  const c = g0.map((a, i) => Math.round(a + (g1[i] - a) * t));
+  return {fill: `rgb(${c[0]},${c[1]},${c[2]})`, text: t > 0.45 ? '#ffffff' : '#1f2328'};
+}
+
+/* ---------- Heatmap drawer (collapsed by default) ---------- */
+const heatDrawerBtn = document.getElementById('heat_drawer_btn');
+const heatDrawerBody = document.getElementById('heat_drawer_body');
+heatDrawerBtn.addEventListener('click', () => {
+  const open = heatDrawerBody.classList.toggle('hidden') === false;
+  heatDrawerBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    // The canvases measure 0 while hidden — refit + repaint now that they show.
+    for (const id of Object.keys(heatCtxs)) {
+      if (id === 'h_modal') continue;
+      fitHeatCanvas(id);
+      drawHeatById(id, state ? state[HEAT_GRID_KEYS[id]] : null);
+    }
+  }
+});
+
+/* ---------- Candidate move list (right panel) ---------- */
+const candListEl = document.getElementById('cand_list');
+let candSig = '';
+// 0-indexed (r,c), matching the board's edge labels and the engine's "AI move".
+function coordLabel(r, c) { return r + ',' + c; }
+function canPlaceNow() {
+  return state && !state.game_over && !(state.analyzing && !state.analysis_mode);
+}
+function renderCandidates() {
+  const cands = state ? computeCandidates() : [];
+  // Only rebuild when the data actually changed, so a row's :hover stays put.
+  const sig = cands.map(o =>
+    o.r+','+o.c+':'+Math.round((o.wr ?? -1)*1000)+':'+Math.round(o.vf*1000)).join('|');
+  if (sig === candSig) return;
+  candSig = sig;
+  if (cands.length === 0) {
+    candListEl.innerHTML = '<div class="cand-empty">No analysis yet</div>';
+    return;
+  }
+  candListEl.innerHTML = cands.map((o, i) => {
+    const rank = String.fromCharCode(65 + i);            // A, B, C, …
+    const wr = o.wr != null ? Math.round(o.wr * 100) + '%' : '—';
+    const barW = o.wr != null ? Math.round(o.wr * 100) : 0;
+    return '<div class="cand-row' + (o.best ? ' best' : '') +
+             '" data-r="' + o.r + '" data-c="' + o.c + '">' +
+             '<span class="cand-rank">' + rank + '</span>' +
+             '<span class="cand-coord">' + coordLabel(o.r, o.c) + '</span>' +
+             '<span class="cand-wr">' + wr + '</span>' +
+             '<span class="cand-track"><span style="width:' + barW + '%"></span></span>' +
+             '<span class="cand-visits">' + fmtVisits(o.vf) + '</span>' +
+           '</div>';
+  }).join('');
+}
+candListEl.addEventListener('mouseover', (ev) => {
+  const row = ev.target.closest('.cand-row'); if (!row) return;
+  hoverCand = {r: +row.dataset.r, c: +row.dataset.c};
   draw();
+});
+candListEl.addEventListener('mouseout', (ev) => {
+  if (!ev.target.closest('.cand-row')) return;
+  if (hoverCand) { hoverCand = null; draw(); }
+});
+candListEl.addEventListener('click', async (ev) => {
+  const row = ev.target.closest('.cand-row'); if (!row) return;
+  if (!canPlaceNow()) return;
+  const r = +row.dataset.r, c = +row.dataset.c;
+  if (!state.board[r] || state.board[r][c] !== 0) return;
+  await fetch('/move', {method:'POST', headers:{'Content-Type':'application/json'},
+                        body: JSON.stringify({r, c})});
+  refresh();
 });
 
 /* ---------- Follow OS dark/light theme ---------- */
@@ -1485,8 +1604,6 @@ function draw() {
   const stoneW1 = cssVar('--stone-white-1');
   const stoneOutline = cssVar('--stone-outline');
   const stoneShadow = cssVar('--stone-shadow') || 'rgba(0,0,0,0.18)';
-  const surface = cssVar('--surface') || '#ffffff';
-  const fg = cssVar('--fg') || '#1f2328';
 
   ctx.strokeStyle = boardLine; ctx.lineWidth = 1;
   for (let i=0;i<N;i++){
@@ -1517,61 +1634,48 @@ function draw() {
   if (!state) return;
 
   const stoneR    = Math.max(6, Math.round(CELL * 0.39));
-  const gumbelR   = Math.max(6, Math.round(CELL * 0.34));
+  const candR     = Math.max(7, Math.round(CELL * 0.44));
   const lastDotR  = Math.max(2, Math.round(CELL * 0.11));
   const shadowDx  = Math.max(0, Math.round(CELL * 0.015));
   const shadowDy  = Math.max(1, Math.round(CELL * 0.045));
   const gradInner = Math.max(1, Math.round(CELL * 0.11));
-  const gumbelFontPx = Math.max(8, Math.round(CELL * 0.28));
-  const gumbelWrFontPx = Math.max(9, Math.round(CELL * 0.30));
+  const wrFontPx  = Math.max(9, Math.round(CELL * 0.30));
+  const visFontPx = Math.max(7, Math.round(CELL * 0.21));
 
-  const phases = state.gumbel_phases;
-  if (showGumbel && phases && phases.length > 0) {
-    const COLORS = ['#9ca3af', '#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
-    const LABELS = ['16','8','4','2','1'];
-    const deepest = new Map();
-    for (let i = 0; i < phases.length; i++) {
-      for (const rc of phases[i]) {
-        const key = rc[0]*N + rc[1];
-        if (!deepest.has(key) || deepest.get(key) < i) deepest.set(key, i);
-      }
+  // Lizzie-style candidate overlay: one colored disc per candidate move (best =
+  // blue, others fade gray→green by visit share), big win% + small visit count.
+  for (const o of computeCandidates()) {
+    const x = MARGIN + o.c*CELL, y = MARGIN + o.r*CELL;
+    const col = candColor(o.frac, o.best);
+    ctx.globalAlpha = o.best ? 0.92 : (0.45 + 0.45 * o.frac);
+    ctx.beginPath(); ctx.arc(x, y, candR, 0, Math.PI*2);
+    ctx.fillStyle = col.fill; ctx.fill();
+    ctx.globalAlpha = 1;
+    if (o.best) {
+      ctx.beginPath(); ctx.arc(x, y, candR, 0, Math.PI*2);
+      ctx.lineWidth = 2; ctx.strokeStyle = '#1d4ed8'; ctx.stroke(); ctx.lineWidth = 1;
     }
-    for (const [key, idx] of deepest) {
-      const r = Math.floor(key / N), c = key % N;
-      const sizeLabel = String(phases[idx].length);
-      let bucket = LABELS.indexOf(sizeLabel);
-      if (bucket < 0) bucket = Math.min(idx, COLORS.length-1);
-      const x = MARGIN+c*CELL, y = MARGIN+r*CELL;
-      const empty = state.board[r][c] === 0;
-      // Win rate of playing this candidate (root player's view, 0..100). Falls
-      // back to the survival-round size label if the engine didn't emit win
-      // rates (e.g. an older gomoku_play binary).
-      const wrGrid = state.gumbel_winrate;
-      const wr = (empty && wrGrid && wrGrid[r]) ? wrGrid[r][c] : null;
-      // Solid disc behind the number so it reads against the wood board and
-      // grid lines; the ring color still encodes the survival round.
-      if (wr != null) {
-        ctx.beginPath(); ctx.arc(x, y, gumbelR, 0, Math.PI*2);
-        ctx.fillStyle = surface; ctx.fill();
-      }
-      ctx.beginPath(); ctx.arc(x, y, gumbelR, 0, Math.PI*2);
-      ctx.lineWidth = 2.5;
-      ctx.strokeStyle = COLORS[bucket];
-      ctx.stroke();
-      ctx.lineWidth = 1;
-      if (empty) {
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        if (wr != null) {
-          ctx.fillStyle = fg;
-          ctx.font = `bold ${gumbelWrFontPx}px ${MONO_FONT}`;
-          ctx.fillText(Math.round(wr * 100), x, y);
-        } else {
-          ctx.fillStyle = COLORS[bucket];
-          ctx.font = `bold ${gumbelFontPx}px ${MONO_FONT}`;
-          ctx.fillText(sizeLabel, x, y);
-        }
-      }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = col.text;
+    const hasWr = o.wr != null, hasVis = o.vf > 0;
+    if (hasWr && hasVis) {
+      ctx.font = `bold ${wrFontPx}px ${MONO_FONT}`;
+      ctx.fillText(Math.round(o.wr * 100), x, y - wrFontPx * 0.42);
+      ctx.font = `${visFontPx}px ${MONO_FONT}`;
+      ctx.globalAlpha = 0.85;
+      ctx.fillText(fmtVisits(o.vf), x, y + visFontPx * 0.75);
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.font = `bold ${wrFontPx}px ${MONO_FONT}`;
+      ctx.fillText(hasWr ? Math.round(o.wr * 100) : fmtVisits(o.vf), x, y);
     }
+  }
+  // Hover highlight driven by the candidate list on the right.
+  if (hoverCand && state.board[hoverCand.r] && state.board[hoverCand.r][hoverCand.c] === 0) {
+    const x = MARGIN + hoverCand.c*CELL, y = MARGIN + hoverCand.r*CELL;
+    ctx.beginPath(); ctx.arc(x, y, candR + 2, 0, Math.PI*2);
+    ctx.lineWidth = 2.5; ctx.strokeStyle = cssVar('--accent') || '#0969da';
+    ctx.stroke(); ctx.lineWidth = 1;
   }
 
   const b = state.board, lm = state.last_move;
@@ -1625,8 +1729,9 @@ function normWL(v) {
 function recordValues(st) {
   if (!st || !st.board) return;
   const step = stoneCount(st.board);
-  const rw = normWL(st.root_value);
-  const nw = normWL(st.nn_value);
+  const persp = valuePerspective(st);
+  const rw = st.root_value ? normWL(st.root_value) * persp : null;
+  const nw = st.nn_value   ? normWL(st.nn_value)   * persp : null;
   while (valueHistory.length && valueHistory[valueHistory.length - 1].step > step) {
     valueHistory.pop();
   }
@@ -1775,48 +1880,44 @@ async function refresh() {
       const ss = document.getElementById('size_select');
       if (ss && ss.value !== String(N)) ss.value = String(N);
     }
-    if (pendingSwapBaseline) {
-      const stale = valuesEqual(state.root_value, pendingSwapBaseline.root)
-                 && valuesEqual(state.nn_value,   pendingSwapBaseline.nn);
-      if (stale) {
-        if (pendingSwapParity === 1) {
-          state.root_value = flipWDL(state.root_value);
-          state.nn_value   = flipWDL(state.nn_value);
-        }
-      } else {
-        pendingSwapBaseline = null;
-        pendingSwapParity = 0;
-      }
+    const analysisMode = !!state.analysis_mode;
+    if (!modeSynced) {
+      currentMode = analysisMode ? 'analysis' : 'play';
+      updateModeButtons();
+      modeSynced = true;
     }
-    const statusText = state.status || 'idle';
+    const analyzing = !!state.analyzing;
+    let statusText = state.status || 'idle';
+    // Surface how deep the ponder is so analysis mode isn't a black box.
+    if (analyzing && Number.isFinite(state.analyze_sims)) {
+      statusText = '分析中 · 模拟 ' + state.analyze_sims.toLocaleString();
+    }
     document.getElementById('status').textContent = statusText;
     document.getElementById('status_pill').dataset.variant = statusVariant(statusText);
 
-    // Analysis (ponder) freezes play: only Stop is live; board clicks ignored.
-    const analyzing = !!state.analyzing;
+    // Play-mode ponder freezes the board; the analysis board stays interactive
+    // (a click places the next stone and restarts the ponder).
+    const frozen = analyzing && !analysisMode;
     const canAnalyze = !!state.awaiting_human && !analyzing && !state.game_over;
     const setDisabled = (id, v) => { const el = document.getElementById(id); if (el) el.disabled = v; };
     setDisabled('analyze_btn', !canAnalyze);
     setDisabled('stop_btn', !analyzing);
-    setDisabled('newgame_btn', analyzing);
-    setDisabled('undo_btn', analyzing);
-    const legendHead = document.querySelector('#gumbel_legend .legend-head');
-    if (legendHead) legendHead.textContent =
-      analyzing ? 'SkyZero Analysis · number = win%' : 'Gumbel Sequential Halving';
+    setDisabled('newgame_btn', frozen);
+    setDisabled('undo_btn', frozen);
 
     if (!sideSynced && (state.human_side === 1 || state.human_side === -1)) {
       selectedSide = state.human_side;
       updateSideButtons();
       sideSynced = true;
     }
-    renderWDL('root', state.root_value);
-    renderWDL('nn', state.nn_value);
-    // Analyze values are side-to-move (human) perspective: recording them
-    // would overwrite the AI-perspective chart point with a sign flip.
-    if (!analyzing) recordValues(state);
+    const persp = valuePerspective(state);
+    renderWDL('root', toBlack(state.root_value, persp));
+    renderWDL('nn', toBlack(state.nn_value, persp));
+    recordValues(state);
     drawValueChart();
 
     draw();
+    renderCandidates();
     drawHeat('h_mcts_policy', state.mcts_policy);
     drawHeat('h_mcts_visits', state.mcts_visits);
     drawHeat('h_nn_policy',   state.nn_policy);
@@ -1828,7 +1929,9 @@ async function refresh() {
 }
 
 cv.addEventListener('click', async (ev) => {
-  if (!state || state.game_over || state.analyzing) return;
+  if (!state || state.game_over) return;
+  // Analysis board: a click places the next stone even while pondering.
+  if (state.analyzing && !state.analysis_mode) return;
   const rect = cv.getBoundingClientRect();
   const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
   const c = Math.round((x - MARGIN)/CELL), r = Math.round((y - MARGIN)/CELL);
@@ -1865,10 +1968,24 @@ function applySims() {
   if (Number.isFinite(n) && n >= 0) sendCmd('sims ' + n);
   updateSimsModeHint();
 }
-function applyGm() {
-  const el = document.getElementById('gm_input');
-  const m = parseInt(el.value, 10);
-  if (Number.isFinite(m) && m >= 1) sendCmd('gm ' + m);
+let currentMode = 'play';
+let modeSynced = false;
+function updateModeButtons() {
+  document.getElementById('mode_play').setAttribute('aria-pressed', currentMode === 'play' ? 'true' : 'false');
+  document.getElementById('mode_analysis').setAttribute('aria-pressed', currentMode === 'analysis' ? 'true' : 'false');
+  const inAnalysis = currentMode === 'analysis';
+  // Free-analysis board drives both colors and ponders automatically, so the
+  // human-side picker and the manual Analyze/Stop buttons are meaningless.
+  document.getElementById('side_row').classList.toggle('hidden', inAnalysis);
+  document.getElementById('analyze_btn').classList.toggle('hidden', inAnalysis);
+  document.getElementById('stop_btn').classList.toggle('hidden', inAnalysis);
+}
+function setMode(m) {
+  if (m !== 'play' && m !== 'analysis') return;
+  if (currentMode === m) return;
+  currentMode = m;
+  updateModeButtons();
+  sendCmd('mode ' + m);
 }
 let selectedSide = 1;
 let sideSynced = false;
@@ -1888,27 +2005,14 @@ function setSide(side) {
   }
   selectedSide = side;
   updateSideButtons();
-  // Historical values were from the previous AI's perspective; flip so chart stays AI-relative.
-  for (const p of valueHistory) {
-    if (p.root != null) p.root = -p.root;
-    if (p.nn != null) p.nn = -p.nn;
-  }
-  if (pendingSwapBaseline === null && state) {
-    pendingSwapBaseline = {
-      root: state.root_value ? {...state.root_value} : null,
-      nn:   state.nn_value   ? {...state.nn_value}   : null,
-    };
-  }
-  pendingSwapParity ^= 1;
-  drawValueChart();
+  // Black-framed values don't depend on which color the human controls, so a
+  // side swap needs no history rewrite — just tell the engine.
   sendCmd('side ' + side);
 }
 async function newGame(side, modelId, boardSize, rule) {
   if (side === undefined) side = selectedSide;
   else { selectedSide = side; updateSideButtons(); }
   valueHistory = [];
-  pendingSwapBaseline = null;
-  pendingSwapParity = 0;
   drawValueChart();
   const payload = {human_side: side};
   if (modelId) payload.model = modelId;
@@ -1919,8 +2023,9 @@ async function newGame(side, modelId, boardSize, rule) {
   sendCmd('noise 0');
   const sims = parseInt(document.getElementById('sims_input').value, 10);
   if (Number.isFinite(sims) && sims >= 0) sendCmd('sims ' + sims);
-  const gm = parseInt(document.getElementById('gm_input').value, 10);
-  if (Number.isFinite(gm) && gm >= 1) sendCmd('gm ' + gm);
+  // A model/board/rule change spawns a fresh engine that defaults to play mode;
+  // re-assert the client's mode so the analysis board survives a New game.
+  sendCmd('mode ' + currentMode);
   refresh();
 }
 
@@ -2014,7 +2119,6 @@ function bindNumInput(id, apply) {
   });
 }
 bindNumInput('sims_input', applySims);
-bindNumInput('gm_input', applyGm);
 document.getElementById('sims_input').addEventListener('input', updateSimsModeHint);
 updateSimsModeHint();
 sendCmd('noise 0'); // ensure engine starts with Gumbel noise off
@@ -2113,6 +2217,8 @@ class Handler(BaseHTTPRequestHandler):
                                       "nn_opp_policy": None, "nn_futurepos_8": None,
                                       "nn_futurepos_32": None, "gumbel_phases": None,
                                       "gumbel_winrate": None, "analyzing": False,
+                                      "analyze_sims": None, "analysis_mode": False,
+                                      "value_persp": None,
                                       "awaiting_human": False, "last_move_winrate": None,
                                       "last_move_winrate_rc": None})
                 return
