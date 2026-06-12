@@ -252,7 +252,7 @@ int main(int argc, char** argv) {
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
         cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
         cfg.fpu_pow = cfg_get<float>(cfg_map, "FPU_POW", 1.0f);
-        cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.25f);
+        cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.08f);
         cfg.fpu_loss_prop = cfg_get<float>(cfg_map, "FPU_LOSS_PROP", 0.0f);
         cfg.cpuct_utility_stdev_prior = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR", 0.40f);
         cfg.cpuct_utility_stdev_prior_weight = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 2.0f);
@@ -261,10 +261,11 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
+        // Default false, matching every shipped cfg (all set 0 explicitly).
         cfg.enable_symmetry_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", true);
+            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
         cfg.enable_symmetry_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", true);
+            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
         cfg.root_symmetry_pruning =
             cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
@@ -642,7 +643,14 @@ int main(int argc, char** argv) {
         //     (side to move) until the front-end sends `stop`. Does NOT play a
         //     move. Returns 1 if the client asked to quit, else 0. ----------
         const int analyze_chunk = cfg_get<int>(cfg_map, "ANALYZE_CHUNK_SIMS", 128);
+        // Command received mid-analyze; replayed by the human-step loop after
+        // the analyze loop exits, as if freshly typed.
+        std::string pending_cmd;
         auto stdin_has_input = []() -> bool {
+            // Lines already slurped into the stdio buffer (e.g. a client that
+            // pipelined "analyze\nstop\n" in one write) are invisible to
+            // poll(2) on the fd — check the buffer first.
+            if (std::cin.rdbuf()->in_avail() > 0) return true;
             struct pollfd pfd;
             pfd.fd = 0; pfd.events = POLLIN; pfd.revents = 0;
             return ::poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN);
@@ -667,7 +675,10 @@ int main(int argc, char** argv) {
                     if (!std::getline(std::cin, cmd)) return 1;
                     if (cmd == "stop" || cmd == "s") break;
                     if (cmd == "q" || cmd == "Q") return 1;
-                    // ignore any other input while analyzing
+                    // Any other command (side / newgame / a move) means "stop
+                    // analyzing, then do that". Dropping it would silently
+                    // desync the client, which gets no reply otherwise.
+                    if (!cmd.empty()) { pending_cmd = cmd; break; }
                 }
                 mcts.run_puct_sims(*root, analyze_chunk);
                 auto out = mcts.report_analysis(*root);
@@ -727,10 +738,15 @@ int main(int argc, char** argv) {
 
             if (to_play == human_side) {
                 while (true) {
-                    std::cout << "Human step (row col / 'u' for undo / 'q' for quit):\n";
-                    std::cout.flush();
                     std::string input;
-                    if (!std::getline(std::cin, input)) return 0;
+                    if (!pending_cmd.empty()) {
+                        input = pending_cmd;
+                        pending_cmd.clear();
+                    } else {
+                        std::cout << "Human step (row col / 'u' for undo / 'q' for quit):\n";
+                        std::cout.flush();
+                        if (!std::getline(std::cin, input)) return 0;
+                    }
 
                     if (input == "u" || input == "U") {
                         if (undo_two_moves()) {
