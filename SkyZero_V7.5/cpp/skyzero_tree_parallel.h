@@ -394,6 +394,13 @@ private:
         bool is_root
     ) {
         auto encoded = game_.encode_state_v5(state, to_play);   // V5: 5-plane padded
+        // 8-fold symmetry averaging; the stochastic transform wins when both
+        // are requested, mirroring ParallelMCTS::inference.
+        const bool use_symmetry = is_root ? cfg_.enable_symmetry_inference_for_root
+                                          : cfg_.enable_symmetry_inference_for_child;
+        if (use_symmetry && !(use_stochastic_transform && local_rng != nullptr)) {
+            return symmetry_inference(state, to_play, encoded, is_root);
+        }
         int k = 0;
         bool do_flip = false;
         if (use_stochastic_transform && local_rng != nullptr) {
@@ -430,6 +437,79 @@ private:
 
         if (use_stochastic_transform) {
             logits = undo_transform_flat(logits, Game::MAX_BOARD_SIZE, k, do_flip);
+        }
+
+        const auto legal = (is_root && cfg_.root_symmetry_pruning)
+            ? game_.get_canonical_legal_actions_canvas(state, to_play)
+            : game_.get_is_legal_actions_canvas(state, to_play);
+        for (size_t i = 0; i < logits.size(); ++i) {
+            if (i >= legal.size() || !legal[i]) {
+                logits[i] = -std::numeric_limits<float>::infinity();
+            }
+        }
+        return {softmax(logits), value, logits};
+    }
+
+    // 8-fold symmetry-averaged inference (mirrors ParallelMCTS::inference's
+    // symmetry path). All 8 transforms are submitted to the batcher in one
+    // queue push, so the cost is one extra batch rather than 8 round-trips.
+    InferenceResult symmetry_inference(
+        const std::vector<int8_t>& state,
+        int to_play,
+        const std::vector<int8_t>& encoded,
+        bool is_root
+    ) {
+        const int area = Game::MAX_AREA;
+        std::vector<std::vector<int8_t>> encoded_batch;
+        encoded_batch.reserve(8);
+        for (int fi = 0; fi < 2; ++fi) {
+            const bool do_flip = (fi == 1);
+            for (int k = 0; k < 4; ++k) {
+                encoded_batch.push_back(transform_encoded_state(
+                    encoded, game_.num_planes, Game::MAX_BOARD_SIZE, k, do_flip));
+            }
+        }
+
+        std::vector<std::pair<std::vector<float>, std::array<float, 3>>> infer_results;
+        infer_results.reserve(8);
+        if (batch_infer_fn_) {
+            std::vector<std::shared_ptr<InferRequest>> reqs;
+            reqs.reserve(8);
+            {
+                std::lock_guard<std::mutex> lk(queue_mu_);
+                for (auto& e : encoded_batch) {
+                    auto req = std::make_shared<InferRequest>();
+                    req->encoded = std::move(e);
+                    infer_queue_.push_back(req);
+                    reqs.push_back(std::move(req));
+                }
+            }
+            queue_cv_.notify_one();
+            for (auto& req : reqs) {
+                std::unique_lock<std::mutex> lk(req->m);
+                req->cv.wait(lk, [&]() { return req->done; });
+                if (req->failed) throw std::runtime_error("batched inference failed");
+                infer_results.emplace_back(std::move(req->policy), req->value);
+            }
+        } else {
+            for (const auto& e : encoded_batch) {
+                infer_results.push_back(infer_fn_(e));
+            }
+        }
+
+        std::vector<float> logits(static_cast<size_t>(area), 0.0f);
+        std::array<float, 3> value{0.0f, 0.0f, 0.0f};
+        for (int i = 0; i < 8; ++i) {
+            const int k = i % 4;
+            const bool do_flip = i >= 4;
+            auto restored = undo_transform_flat(
+                infer_results[static_cast<size_t>(i)].first, Game::MAX_BOARD_SIZE, k, do_flip);
+            for (int j = 0; j < area; ++j) {
+                logits[static_cast<size_t>(j)] += restored[static_cast<size_t>(j)] / 8.0f;
+            }
+            value[0] += infer_results[static_cast<size_t>(i)].second[0] / 8.0f;
+            value[1] += infer_results[static_cast<size_t>(i)].second[1] / 8.0f;
+            value[2] += infer_results[static_cast<size_t>(i)].second[2] / 8.0f;
         }
 
         const auto legal = (is_root && cfg_.root_symmetry_pruning)
@@ -574,10 +654,13 @@ private:
     }
 
     std::pair<std::vector<float>, std::array<float, 3>> root_expand(MCTSNode& node) {
+        // root_expand only runs on the engine's main thread (search /
+        // ensure_root_expanded), so rng_ is safe here; passing nullptr would
+        // silently disable the root stochastic transform.
         const auto ir = inference(
             node.state, node.to_play,
             cfg_.enable_stochastic_transform_inference_for_root,
-            /*local_rng=*/nullptr,
+            /*local_rng=*/&rng_,
             /*is_root=*/true
         );
         std::lock_guard<std::mutex> lk(node_mutex(&node));
@@ -673,7 +756,6 @@ private:
         snap.v = parent_v;
         snap.q_sum_sq = parent_q_sum_sq;
         snap.nn_value_probs = parent_nn_value;
-        snap.parent = node.parent;
         const int effective_parent_n = parent_n + parent_vloss;
         // fastSearch: root FPU falls back to the non-root FPU and forced
         // playouts are off (KataGo play.cpp:1201-1203).
@@ -1115,7 +1197,6 @@ private:
             snap.v = root.v;
             snap.q_sum_sq = root.q_sum_sq;
             snap.nn_value_probs = root.nn_value_probs;
-            snap.parent = root.parent;
         }
         const auto sp = compute_select_params(
             snap, snap.n, visited_policy_mass, cfg_, /*is_root=*/!fast_search_);
