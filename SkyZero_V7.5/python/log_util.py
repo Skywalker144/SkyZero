@@ -16,7 +16,7 @@ _COLORS = {
     "SelfPlay": "32",
     "Daemon": "92",
     "Shuffle": "34",
-    "Bucket": "94",
+    "Target": "94",
     "Schedule": "35",
     "Train": "36",
     "Export": "95",
