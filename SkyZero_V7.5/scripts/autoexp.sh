@@ -117,7 +117,7 @@ for i in "${!EXP_NAMES[@]}"; do
     # run.sh self-terminates on its MAX_TIME_SECONDS / MAX_ITERS. Don't let one
     # failed run abort the whole sweep; Ctrl+C (rc 130) DOES stop the sweep.
     set +e
-    CONFIG_DIR="$dir" bash "$SCRIPT_DIR/run.sh" ${MAX_ITERS:+"$MAX_ITERS"} 2>&1 | tee "$log"
+    CONFIG_DIR="$dir" bash "$SCRIPT_DIR/run.sh" ${MAX_ITERS:+"$MAX_ITERS"} 2>&1 | tee -a "$log"
     rc=${PIPESTATUS[0]}
     set -e
 
