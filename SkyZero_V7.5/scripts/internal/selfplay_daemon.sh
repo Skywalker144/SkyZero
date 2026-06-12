@@ -10,7 +10,11 @@
 #   GPU_NUM<=1 -> exits with a hint (daemon not needed in single-GPU mode).
 set -euo pipefail
 
-trap 'trap - INT TERM; echo "$(_tag Daemon) stopping."; kill 0 2>/dev/null; exit 130' INT TERM
+# Kill only our own selfplay child — NOT `kill 0`: the daemon shares run.sh's
+# process group, so a group kill here cascades back into run.sh (and autoexp)
+# during a clean shutdown.
+CHILD_PID=""
+trap 'trap - INT TERM; echo "$(_tag Daemon) stopping."; if [[ -n "$CHILD_PID" ]]; then kill "$CHILD_PID" 2>/dev/null || true; wait "$CHILD_PID" 2>/dev/null || true; fi; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 SCRIPTS_DIR="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
@@ -98,21 +102,26 @@ echo "$(_tag Daemon) gpus=$SELFPLAY_DAEMON_GPUS servers=$DSV per_gpu=$SV_PER_GPU
 echo "$(_tag Daemon) poll_ms=$POLL_MS"
 
 while true; do
+    # Background + `wait` (not foreground): bash defers trap execution while a
+    # foreground command runs, which would leave the binary orphaned (and
+    # run.sh's shutdown `wait` hung) when run.sh TERMs us. `wait` is
+    # interruptible, so the trap fires promptly and reaps the child.
     "$SELFPLAY_BIN" --daemon \
         --model "$DATA_DIR/models/latest.pt" \
         --output-dir "$DATA_DIR/selfplay" \
         --config "$CONFIG_DIR/run.cfg" \
         --log-dir "$DATA_DIR/logs" \
         --model-watch-poll-ms "$POLL_MS" \
-        --sims-warmup-cmd "$SIMS_WARMUP_CMD" \
-        || rc=$?
-    rc=${rc:-0}
+        --sims-warmup-cmd "$SIMS_WARMUP_CMD" &
+    CHILD_PID=$!
+    rc=0
+    wait "$CHILD_PID" || rc=$?
+    CHILD_PID=""
     if [[ "$rc" -eq 130 ]]; then
         # SIGINT: user-initiated shutdown.
         echo "$(_tag Daemon) interrupted; exiting."
         exit 0
     fi
     echo "$(_tag Daemon) selfplay_main exited rc=$rc; restarting in 5s"
-    unset rc
-    sleep 5
+    sleep 5 & wait $! || true
 done
