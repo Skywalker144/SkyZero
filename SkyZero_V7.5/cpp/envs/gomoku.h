@@ -78,7 +78,6 @@ public:
 
     int board_size;
     int num_planes;
-    bool use_renju;                          // legacy: derived from rule
     bool enable_forbidden_point_plane;
     RuleType rule;
 
@@ -86,7 +85,6 @@ public:
     Gomoku(int size, RuleType r, bool forbidden_plane)
         : board_size(size),
           num_planes(NUM_SPATIAL_PLANES_V5),
-          use_renju(r == RuleType::RENJU),
           enable_forbidden_point_plane(forbidden_plane && r == RuleType::RENJU),
           rule(r) {}
 
@@ -268,75 +266,6 @@ public:
         const std::vector<int8_t>& state, int last_canvas_pos = -1, int last_player = 0
     ) const {
         return get_winner_canvas(state, last_canvas_pos, last_player) != 2;
-    }
-
-    std::vector<int8_t> encode_state(const std::vector<int8_t>& state, int to_play) const {
-        const int area = board_size * board_size;
-        std::vector<int8_t> encoded(num_planes * area, 0);
-        // Plane 0: current player's stones
-        // Plane 1: opponent's stones
-        for (int i = 0; i < area; ++i) {
-            encoded[i] = (state[i] == to_play) ? 1 : 0;
-            encoded[area + i] = (state[i] == -to_play) ? 1 : 0;
-        }
-
-        // Plane 2: forbidden points when current player is Black (to_play == 1)
-        // Plane 3: forbidden points when current player is White (to_play == -1)
-        // The populated plane implicitly indicates whose turn it is.
-        if (enable_forbidden_point_plane && use_renju) {
-            ForbiddenPointFinder fpf(board_size);
-            for (int i = 0; i < area; ++i) {
-                if (state[i] == 0) {
-                    continue;
-                }
-                fpf.set_stone(i / board_size, i % board_size, state[i] == 1 ? C_BLACK : C_WHITE);
-            }
-            const int forbidden_plane = (to_play == 1) ? 2 : 3;
-            for (int i = 0; i < area; ++i) {
-                if (state[i] != 0) {
-                    continue;
-                }
-                const int r = i / board_size;
-                const int c = i % board_size;
-                encoded[forbidden_plane * area + i] = fpf.is_forbidden(r, c) ? 1 : 0;
-            }
-        }
-
-        return encoded;
-    }
-
-    std::vector<int8_t> encode_state_batch(
-        const std::vector<std::vector<int8_t>>& states,
-        const std::vector<int8_t>& to_plays
-    ) const {
-        const int batch = static_cast<int>(states.size());
-        const int area = board_size * board_size;
-        std::vector<int8_t> out(batch * num_planes * area, 0);
-        for (int b = 0; b < batch; ++b) {
-            const int8_t tp = to_plays[b];
-            const size_t base = static_cast<size_t>(b) * num_planes * area;
-            for (int i = 0; i < area; ++i) {
-                out[base + i] = (states[b][i] == tp) ? 1 : 0;
-                out[base + area + i] = (states[b][i] == -tp) ? 1 : 0;
-            }
-
-            if (enable_forbidden_point_plane && use_renju) {
-                ForbiddenPointFinder fpf(board_size);
-                for (int i = 0; i < area; ++i) {
-                    if (states[b][i] == 0) continue;
-                    fpf.set_stone(i / board_size, i % board_size,
-                                  states[b][i] == 1 ? C_BLACK : C_WHITE);
-                }
-                const int forbidden_plane = (tp == 1) ? 2 : 3;
-                for (int i = 0; i < area; ++i) {
-                    if (states[b][i] != 0) continue;
-                    if (fpf.is_forbidden(i / board_size, i % board_size)) {
-                        out[base + forbidden_plane * area + i] = 1;
-                    }
-                }
-            }
-        }
-        return out;
     }
 
     // ============================================================
