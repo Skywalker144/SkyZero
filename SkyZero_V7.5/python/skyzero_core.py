@@ -31,6 +31,9 @@ NOT in this file (intentionally):
   * Multi-headed parallel MCTS (thread/virtual-loss machinery is in C++)
   * Replay buffer internals & shuffle/data pipeline
   * Optimizer scaffolding (AMP / SWA / Lookahead / LR warmup)
+  * V7.4 additions: KataGo PUCT root (ROOT_SEARCH_ALGO=puct: Dirichlet noise,
+    forced playouts, target pruning, chosen-move temperature), fastSearch
+    (playout cap randomization), side positions (futurepos_mask off-line rows)
 """
 from __future__ import annotations
 
@@ -104,6 +107,9 @@ def wdl_utility(v) -> float:
 
 
 def temperature_transform(probs: np.ndarray, temp: float) -> np.ndarray:
+    """p^(1/T) renormalized. Not exercised by this file's selfplay loop (the
+    gumbel path plays gumbel_action directly); kept as the reference for the
+    C++ PUCT-root chosen-move temperature (puct_root_assemble)."""
     probs = np.asarray(probs, dtype=np.float64)
     if temp <= 1e-10:
         m = (probs == probs.max())
@@ -555,8 +561,16 @@ class BalancedOpening:
         otherwise. Returns a flat action index."""
         N = self.game.board_size
         if np.all(state == 0):
-            xd = np.clip(np.random.randn(), -1.5, 1.5) / 3.0
-            yd = np.clip(np.random.randn(), -1.5, 1.5) / 3.0
+            # Rejection-sampled truncated N(0,1), NOT clip — clipping puts
+            # ~13% point mass at the boundary (cpp rand_truncated_gaussian).
+            def trunc_gauss(bound: float) -> float:
+                for _ in range(64):
+                    x = float(np.random.randn())
+                    if -bound < x < bound:
+                        return x
+                return 0.0
+            xd = trunc_gauss(1.5 * 0.999) / 3.0
+            yd = trunc_gauss(1.5 * 0.999) / 3.0
             x = int(round(xd * N + 0.5 * (N - 1)))
             y = int(round(yd * N + 0.5 * (N - 1)))
             x = np.clip(x, 0, N - 1); y = np.clip(y, 0, N - 1)
@@ -566,15 +580,19 @@ class BalancedOpening:
         nonzero = np.argwhere(state.reshape(N, N) != 0)
         if len(nonzero) == 0:
             return -1
-        # 1/d² distance weighting from nearest stone, with a mild center bonus.
+        # 1/d² distance weighting from each stone, scaled by a center bonus of
+        # up to 2.5× (middleBonusFactor=1.5, Chebyshev distance from center) —
+        # mirrors cpp/random_opening.h:129-148.
+        half = 0.5 * (N - 1)
         for r in range(N):
             for c in range(N):
                 if state.reshape(N, N)[r, c] != 0:
                     continue
+                middle_bonus = 1.5 * (half - max(abs(c - half), abs(r - half))) / half
                 d2_acc = 0.0
                 for (rr, cc) in nonzero:
                     d2 = (r - rr) ** 2 + (c - cc) ** 2 + avg_dist ** 2
-                    d2_acc += d2 ** -2.0
+                    d2_acc += (1.0 + middle_bonus) * d2 ** -2.0
                 prob[r * N + c] = d2_acc
         s = prob.sum()
         return int(np.random.choice(N * N, p=prob / s)) if s > 0 else -1
@@ -664,7 +682,10 @@ def soft_resign(history_v_mix_fixed: list[float], num_simulations: int, cfg: Con
     if len(history_v_mix_fixed) < cfg.soft_resign_step_threshold:
         return num_simulations, 1.0
     window = history_v_mix_fixed[-cfg.soft_resign_step_threshold:]
-    signed_extreme = max(max(window), -min(window))
+    # max(min, -max): fires only when the SAME player is past the threshold on
+    # ALL K plies (selfplay_manager.h). max(max, -min) would fire on any
+    # single-ply spike — the opposite semantics.
+    signed_extreme = max(min(window), -max(window))
     amount = signed_extreme - cfg.soft_resign_threshold
     if amount <= 0.0:
         return num_simulations, 1.0
