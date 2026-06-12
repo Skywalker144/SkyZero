@@ -13,7 +13,7 @@ multiplied by `target_weight_ownership=0` for Gomoku so they're never trained):
 Kept (= what we have selfplay targets + losses for):
 
     policy: 4 outputs reordered → idx 0 main / 1 opp / 2 soft_main / 3 soft_opp
-    value:  WDL (3) + td_value (9 = 3 horizons × WLD) + futurepos (2×H×W)
+    value:  WDL (3) + td_value (9 = 3 horizons × WDL) + futurepos (2×H×W)
 
 The trunk (stem + NestedBottleneckResBlocks + final BiasMask + intermediate
 LastBatchNorm) is identical to `full_nets`; we reuse the primitives from
@@ -124,8 +124,8 @@ class ValueHead(nn.Module):
     """Slim ValueHead — drops linear_moremiscvaluehead and conv_ownership.
 
     Outputs (3-tuple):
-        wdl:                 (B, 3)         W/L/draw logits
-        td_value:            (B, 9)         3 horizons × WLD (long/mid/short)
+        wdl:                 (B, 3)         W/D/L logits (win/draw/loss — index 1 is DRAW)
+        td_value:            (B, 9)         3 horizons × WDL (long/mid/short)
         futurepos_pretanh:   (B, 2, H, W)   +8 / +32 step occupancy
     """
 
