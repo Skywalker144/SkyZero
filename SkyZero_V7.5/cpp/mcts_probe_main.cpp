@@ -137,6 +137,36 @@ int main(int argc, char** argv) {
         cfg.gumbel_c_scale = cfg_get<float>(cfg_map, "GUMBEL_C_SCALE", 1.0f);
         cfg.non_root_search_algo = SkyZeroConfig::parse_non_root_search_algo(
             cfg_get<std::string>(cfg_map, "NON_ROOT_SEARCH_ALGO", "puct"));
+        // Mirror selfplay_main's root parsing (same run.cfg, selfplay defaults)
+        // so the probe measures the same root search the training run uses —
+        // without this, a ROOT_SEARCH_ALGO=puct arm probes with a gumbel root.
+        cfg.root_search_algo = SkyZeroConfig::parse_root_search_algo(
+            cfg_get<std::string>(cfg_map, "ROOT_SEARCH_ALGO", "gumbel"));
+        cfg.gumbel_noise_enabled = cfg_get_bool(cfg_map, "GUMBEL_NOISE_ENABLED", true);
+        {
+            const int mbs = cfg.board_size;
+            cfg.root_noise_enabled = cfg_get_bool(cfg_map, "ROOT_NOISE_ENABLED", true);
+            cfg.root_dirichlet_noise_weight =
+                cfg_get<float>(cfg_map, "ROOT_DIRICHLET_NOISE_WEIGHT", 0.25f);
+            cfg.root_dirichlet_total_concentration = cfg_get<float>(
+                cfg_map, "ROOT_DIRICHLET_TOTAL_CONCENTRATION",
+                0.03f * static_cast<float>(mbs * mbs));
+            cfg.root_policy_temperature =
+                cfg_get<float>(cfg_map, "ROOT_POLICY_TEMPERATURE", 1.0f);
+            cfg.root_policy_temperature_early =
+                cfg_get<float>(cfg_map, "ROOT_POLICY_TEMPERATURE_EARLY", 1.0f);
+            cfg.root_fpu_reduction_max =
+                cfg_get<float>(cfg_map, "ROOT_FPU_REDUCTION_MAX", 0.0f);
+            cfg.root_desired_per_child_visits_coeff =
+                cfg_get<float>(cfg_map, "ROOT_DESIRED_PER_CHILD_VISITS_COEFF", 2.0f);
+            cfg.chosen_move_temperature =
+                cfg_get<float>(cfg_map, "CHOSEN_MOVE_TEMPERATURE", 0.15f);
+            cfg.chosen_move_temperature_early =
+                cfg_get<float>(cfg_map, "CHOSEN_MOVE_TEMPERATURE_EARLY", 0.75f);
+            cfg.chosen_move_temperature_halflife =
+                cfg_get<float>(cfg_map, "CHOSEN_MOVE_TEMPERATURE_HALFLIFE", 19.0f);
+        }
+        cfg.validate();
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
         cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
