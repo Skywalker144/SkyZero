@@ -515,7 +515,7 @@ int main(int argc, char** argv) {
         cfg.c_puct_log = cfg_get<float>(cfg_map, "C_PUCT_LOG", 0.45f);
         cfg.c_puct_base = cfg_get<float>(cfg_map, "C_PUCT_BASE", 500.0f);
         cfg.fpu_pow = cfg_get<float>(cfg_map, "FPU_POW", 1.0f);
-        cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.25f);
+        cfg.fpu_reduction_max = cfg_get<float>(cfg_map, "FPU_REDUCTION_MAX", 0.08f);
         cfg.fpu_loss_prop = cfg_get<float>(cfg_map, "FPU_LOSS_PROP", 0.0f);
         cfg.cpuct_utility_stdev_prior = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR", 0.40f);
         cfg.cpuct_utility_stdev_prior_weight = cfg_get<float>(cfg_map, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 2.0f);
@@ -524,10 +524,13 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
+        // Default false: every shipped cfg sets these to 0, and until V7.5 the
+        // tree-parallel engine ignored them entirely — true would silently 8x
+        // the eval cost on any cfg that omits the keys.
         cfg.enable_symmetry_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", true);
+            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
         cfg.enable_symmetry_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", true);
+            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
         cfg.root_symmetry_pruning =
             cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
