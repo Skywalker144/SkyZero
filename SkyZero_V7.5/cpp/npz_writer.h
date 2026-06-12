@@ -11,7 +11,7 @@
 //   opponent_policy_target  (N, H*W)                     float32
 //   opponent_policy_mask    (N,)                         float32
 //   value_target            (N, 3)                       float32
-//   td_value_target         (N, 9)                       float32  long/mid/short × WLD
+//   td_value_target         (N, 9)                       float32  long/mid/short × WDL (index 1 = draw)
 //   futurepos_target        (N, 2, H, W)                 int8     +8/+32 step occupancy
 //   futurepos_mask          (N,)                         float32  0 = off-line side row (don't train futurepos)
 //   sample_weight           (N,)                         float32
@@ -162,7 +162,6 @@ public:
         futurepos_mask_buf_.push_back(s.has_futurepos ? 1.0f : 0.0f);
         weight_buf_.push_back(s.sample_weight);
         ++rows_;
-        total_rows_written_ += 1;
 
         if (rows_ >= max_rows_) {
             enqueue_current_chunk_locked(lock);
@@ -182,11 +181,6 @@ public:
             writer_error_ = nullptr;
             std::rethrow_exception(e);
         }
-    }
-
-    int64_t total_rows_written() const {
-        std::lock_guard<std::mutex> lock(m_);
-        return total_rows_written_;
     }
 
     // Daemon mode: drain the current chunk + writer queue, then switch to a
@@ -411,7 +405,6 @@ private:
     std::vector<float> futurepos_mask_buf_;
     std::vector<float> weight_buf_;
     int64_t rows_ = 0;
-    int64_t total_rows_written_ = 0;
     int part_counter_ = 0;
 
     // Writer thread plumbing.
