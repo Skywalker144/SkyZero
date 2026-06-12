@@ -203,12 +203,14 @@ def main() -> int:
         return 0
 
     # --order: advance the cumulative target. First call: cold-start to
-    # MIN_ROWS. Consume-once: a resumed re-run of the same iter must not
-    # advance again, only re-order against the unchanged target.
+    # MIN_ROWS. Consume-once: a resumed re-run of the same iter — or of any
+    # earlier iter (Ctrl+C in the pre-first-train phase resumes from iter 0
+    # while last_iter is already ahead) — must not advance again, only
+    # re-order against the unchanged target.
     if "target_cum" not in state:
         target_cum = max(min_rows, needed)
         trained_cum = samples_per_epoch
-    elif args.iter is not None and state.get("last_iter") == args.iter:
+    elif args.iter is not None and int(state.get("last_iter", -1)) >= args.iter:
         target_cum = float(state["target_cum"])
         trained_cum = float(state.get("trained_cum", 0.0))
     else:
