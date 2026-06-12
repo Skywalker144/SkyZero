@@ -290,6 +290,7 @@ count_existing() {
 # ELO_GPUS=0,2,5 (comma-separated physical IDs) to use a subset. Each worker
 # is launched under CUDA_VISIBLE_DEVICES=<id>, so the C++ binary's hardcoded
 # kCUDA:0 maps to that physical card.
+GPU_IDS=()  # pre-declare: none of the branches may run (e.g. no nvidia-smi), and set -u would trip on ${#GPU_IDS[@]}
 if [[ -n "${ELO_GPUS:-}" ]]; then
     IFS=', ' read -r -a GPU_IDS <<< "$ELO_GPUS"
 elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
@@ -413,4 +414,4 @@ trap - EXIT
 
 # --- Regenerate Elo table + curve ---------------------------------------
 echo "[elo.sh] updating Elo: $PLOT_FILE (+ $TEXT_FILE)"
-python "$ROOT/python/elo.py" --games "$OUT_FILE" --plot "$PLOT_FILE" --out-text "$TEXT_FILE"
+"$PY" "$ROOT/python/elo.py" --games "$OUT_FILE" --plot "$PLOT_FILE" --out-text "$TEXT_FILE"
