@@ -19,7 +19,6 @@ declare -gA _TAG_COLOR=(
     [Daemon]='92'     # bright green
     [Card]='92'       # bright green — per-card transient selfplay
     [Shuffle]='34'    # blue
-    [Bucket]='94'     # bright blue
     [Schedule]='35'   # magenta
     [Train]='36'      # cyan
     [Export]='95'     # bright magenta
