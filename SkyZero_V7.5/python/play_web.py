@@ -595,8 +595,7 @@ HTML_PAGE = r"""<!doctype html>
   }
   .tb-select { height: 30px; text-align: left; max-width: 200px;
     font-family: var(--font-mono); }
-  .tb-spacer { flex: 1 1 auto; }
-  .tb-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .tb-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 auto; }
   .tb-sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 0; }
 
   /* ---------- Main: win-rate chart + board + analysis ---------- */
@@ -739,57 +738,22 @@ HTML_PAGE = r"""<!doctype html>
     letter-spacing: 0.4px;
   }
 
-  /* ---------- WDL ---------- */
-  .wdl-row {
-    display: grid;
-    grid-template-columns: 42px minmax(0,1fr) 64px;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 0;
-  }
-  .wdl-label {
-    font-family: var(--font-mono);
-    font-size: 11.5px; color: var(--fg-muted);
-    text-transform: uppercase; letter-spacing: 0.04em;
-  }
-  .wdl-bar {
-    display: flex; height: 8px; width: 100%;
-    background: var(--surface-2);
-    border-radius: 999px; overflow: hidden;
-  }
-  .wdl-bar .seg { height: 100%; transition: width 0.2s ease-out; }
-  .wdl-bar .seg.w { background: var(--success); }
-  .wdl-bar .seg.d { background: var(--fg-subtle); opacity: 0.45; }
-  .wdl-bar .seg.l { background: var(--danger); }
-  @media (prefers-reduced-motion: reduce) {
-    .wdl-bar .seg { transition: none; }
-  }
-  .wdl-wl {
-    font-family: var(--font-mono);
-    font-size: 12px; text-align: right; color: var(--fg);
-    font-variant-numeric: tabular-nums;
-  }
-  .wdl-wl.pos { color: var(--success); }
-  .wdl-wl.neg { color: var(--danger); }
-  .wdl-empty { color: var(--fg-subtle); font-size: 12px; padding: 8px 0; text-align: center; }
-  .wdl-detail {
-    margin-top: 6px; font-size: 11.5px; color: var(--fg-muted);
-    font-family: var(--font-mono);
-    font-variant-numeric: tabular-nums;
-    display: flex; gap: 10px;
-    min-height: 18px;
-  }
-  .wdl-detail .k { color: var(--fg-subtle); }
-  /* ---------- Win-rate-over-moves chart (left column) ---------- */
-  .value-chart-legend {
+  /* ---------- Win-rate stacked-area chart (left column) ---------- */
+  .vc-tabs { margin-bottom: 8px; }
+  .vc-legend {
     display: flex; align-items: center; gap: 12px;
     font-size: 11px; color: var(--fg-muted);
     font-family: var(--font-mono);
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }
-  .vc-item { display: inline-flex; align-items: center; gap: 5px; }
-  .vc-swatch { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
-  .vc-axis { margin-left: auto; color: var(--fg-subtle); font-size: 10.5px; }
+  .vc-legend .sw {
+    width: 10px; height: 10px; border-radius: 3px;
+    display: inline-block; vertical-align: middle; margin-right: 5px;
+  }
+  .vc-legend .sw.blk { background: var(--stone-black-1); }
+  .vc-legend .sw.drw { background: var(--fg-subtle); }
+  .vc-legend .sw.wht { background: var(--stone-white-0); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .vc-legend b { color: var(--fg); font-weight: 600; }
   #value_chart { display: block; width: 100%; flex: 1 1 auto; min-height: 0; }
   /* ---------- Board ---------- */
   .board-card {
@@ -985,12 +949,10 @@ HTML_PAGE = r"""<!doctype html>
       <input class="num" type="number" id="sims_input" min="0" step="1" value="800" style="width:72px;">
       <span id="sims_mode_hint" class="mode-hint" hidden>Pure NN</span>
     </div>
-    <div class="tb-spacer"></div>
     <div class="tb-actions">
       <button class="btn primary" id="newgame_btn" onclick="newGame()">New game</button>
       <button class="btn danger-ghost" id="undo_btn" onclick="sendCmd('u')">Undo</button>
-      <button class="btn" id="analyze_btn" onclick="startAnalyze()">Analyze</button>
-      <button class="btn" id="stop_btn" onclick="stopAnalyze()" disabled>Stop</button>
+      <button class="btn" id="analyze_btn" onclick="toggleAnalyze()">Analyze</button>
     </div>
   </header>
 
@@ -998,10 +960,14 @@ HTML_PAGE = r"""<!doctype html>
     <aside class="winrate-col" id="winrate_col">
       <div class="card">
         <div class="card-body">
-          <div class="value-chart-legend">
-            <span class="vc-item"><span class="vc-swatch" style="background:#0969da;"></span>root</span>
-            <span class="vc-item"><span class="vc-swatch" style="background:#cf222e;"></span>nn</span>
-            <span class="vc-axis">Black ↑ / White ↓</span>
+          <div class="seg-row vc-tabs">
+            <button class="seg-btn" id="vc_tab_root" aria-pressed="true" onclick="setValueTab('root')">root</button>
+            <button class="seg-btn" id="vc_tab_nn" aria-pressed="false" onclick="setValueTab('nn')">nn</button>
+          </div>
+          <div class="vc-legend">
+            <span><span class="sw blk"></span>黑胜 <b id="vc_w_black">—</b></span>
+            <span><span class="sw drw"></span>平局 <b id="vc_w_draw">—</b></span>
+            <span><span class="sw wht"></span>白胜 <b id="vc_w_white">—</b></span>
           </div>
           <canvas id="value_chart"></canvas>
         </div>
@@ -1015,32 +981,6 @@ HTML_PAGE = r"""<!doctype html>
     </section>
 
     <aside class="analysis-col" id="analysis_col">
-      <div class="card">
-        <div class="card-body">
-          <div class="card-title">Win rate · Black ↑ / White ↓</div>
-          <div class="wdl-row">
-            <span class="wdl-label">root</span>
-            <div class="wdl-bar" id="wdl_root_bar">
-              <span class="seg w" style="width:0"></span>
-              <span class="seg d" style="width:0"></span>
-              <span class="seg l" style="width:0"></span>
-            </div>
-            <span class="wdl-wl" id="wdl_root_wl">—</span>
-          </div>
-          <div class="wdl-detail" id="wdl_root_detail"></div>
-          <div class="wdl-row" style="margin-top:4px;">
-            <span class="wdl-label">nn</span>
-            <div class="wdl-bar" id="wdl_nn_bar">
-              <span class="seg w" style="width:0"></span>
-              <span class="seg d" style="width:0"></span>
-              <span class="seg l" style="width:0"></span>
-            </div>
-            <span class="wdl-wl" id="wdl_nn_wl">—</span>
-          </div>
-          <div class="wdl-detail" id="wdl_nn_detail"></div>
-        </div>
-      </div>
-
       <div class="card cand-card">
         <div class="card-body cand-body">
           <div class="card-title cand-head">
@@ -1181,16 +1121,14 @@ function clearLogical(ctx) { ctx.clearRect(0, 0, ctx._logicalW, ctx._logicalH); 
 const cv = document.getElementById('board');
 const ctx = setupCanvas(cv, BOARD_LOGICAL, BOARD_LOGICAL);
 const vcCanvas = document.getElementById('value_chart');
-// setStyle=false: the canvas is CSS-sized (width:100% / flex height) by the
-// bottom bar; only its backing store is managed in JS (see resizeValueChart).
+// setStyle=false: the canvas is CSS-sized (width:100% / flex height); only its
+// backing store is managed in JS (see resizeValueChart).
 let vctx = setupCanvas(vcCanvas, 280, 160, false);
 function resizeValueChart() {
   const rect = vcCanvas.getBoundingClientRect();
   const w = Math.max(120, Math.floor(rect.width));
   const h = Math.max(80, Math.floor(rect.height));
   if (vctx._logicalW === w && vctx._logicalH === h) return;
-  // setStyle=false: keep the canvas CSS-sized (width:100% / flex height) so it
-  // tracks the bottom bar on window resize; only the backing store updates here.
   vctx = setupCanvas(vcCanvas, w, h, false);
   drawValueChart();
 }
@@ -1236,7 +1174,8 @@ new ResizeObserver(syncBoardSize).observe(mainEl);
 new ResizeObserver(syncBoardSize).observe(topbarEl);
 window.addEventListener('resize', syncBoardSize);
 
-let valueHistory = []; // [{step, root, nn}]  step = stone count when recorded
+let valueTab = 'root'; // which evaluation the chart shows: 'root' | 'nn'
+let valueHistory = []; // [{step, root:{b,d,w}|null, nn:{b,d,w}|null}] — per-ply WDL (Black frame)
 const heatCtxs = {
   h_mcts_policy: setupCanvas(document.getElementById('h_mcts_policy'), HEAT_LOGICAL, HEAT_LOGICAL, false),
   h_mcts_visits: setupCanvas(document.getElementById('h_mcts_visits'), HEAT_LOGICAL, HEAT_LOGICAL, false),
@@ -1714,146 +1653,151 @@ function draw() {
   }
 }
 
-/* ---------- Value chart ---------- */
+
+/* ---------- Win-rate stacked-area chart (over moves, Black's frame) ---------- */
 function stoneCount(board) {
   let n = 0;
-  for (let r=0;r<N;r++) for (let c=0;c<N;c++) if (board[r][c]) n++;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (board[r][c]) n++;
   return n;
 }
-function normWL(v) {
-  if (!v) return null;
-  const s = v.w + v.d + v.l;
-  if (s > 1e-4) return (v.w - v.l) / s;
-  return v.wl;
+// Side-to-move {w,d,l} → Black-frame fractions {b: black-win, d: draw, w: white-win}.
+function wdlBlack(v, persp) {
+  const bv = toBlack(v, persp);
+  if (!bv) return null;
+  const s = bv.w + bv.d + bv.l;
+  if (s <= 1e-4) return null;
+  return { b: bv.w / s, d: bv.d / s, w: bv.l / s };
 }
+// Append the current ply's root/nn WDL to the history (one point per stone count).
 function recordValues(st) {
   if (!st || !st.board) return;
   const step = stoneCount(st.board);
   const persp = valuePerspective(st);
-  const rw = st.root_value ? normWL(st.root_value) * persp : null;
-  const nw = st.nn_value   ? normWL(st.nn_value)   * persp : null;
+  const rv = st.root_value ? wdlBlack(st.root_value, persp) : null;
+  const nv = st.nn_value   ? wdlBlack(st.nn_value,   persp) : null;
   while (valueHistory.length && valueHistory[valueHistory.length - 1].step > step) {
     valueHistory.pop();
   }
   const last = valueHistory[valueHistory.length - 1];
-  if (rw == null && nw == null) {
-    // No fresh AI values. After an undo, root_value/nn_value are cleared, so
-    // we still want each subsequent move to extend the chart with a
-    // carry-forward of the last known eval — matching the normal-play rhythm
-    // where every ply produces a point. (Pre-game has no `last` and is left
-    // empty until the first AI think.)
-    if (last && step > last.step) {
-      valueHistory.push({step, root: last.root, nn: last.nn});
-    }
+  if (!rv && !nv) {
+    // No fresh AI values (e.g. after an undo). Carry the last eval forward so the
+    // chart keeps one point per ply, matching normal play.
+    if (last && step > last.step) valueHistory.push({step, root: last.root, nn: last.nn});
     return;
   }
   if (last && last.step === step) {
-    if (rw != null) last.root = rw;
-    if (nw != null) last.nn = nw;
+    if (rv) last.root = rv;
+    if (nv) last.nn = nv;
   } else if (!last || step > last.step) {
-    valueHistory.push({step, root: rw, nn: nw});
+    valueHistory.push({step, root: rv, nn: nv});
   }
 }
+// Stacked area over moves for the active tab: white (bottom) / draw / black (top),
+// the two band boundaries being the "two lines" the user asked for.
 function drawValueChart() {
   clearLogical(vctx);
   const W = vctx._logicalW, H = vctx._logicalH;
-  const padL = 22, padR = 6, padT = 6, padB = 14;
+  const padL = 26, padR = 6, padT = 6, padB = 14;
   const innerW = W - padL - padR, innerH = H - padT - padB;
   const axis = cssVar('--border') || '#d8dee4';
   const grid = cssVar('--heat-grid') || '#e5e7eb';
-  const muted = cssVar('--fg-muted') || '#59636e';
   const subtle = cssVar('--fg-subtle') || '#8b949e';
+  const muted = cssVar('--fg-muted') || '#59636e';
+  const yOf = f => padT + (1 - f) * innerH;
   vctx.strokeStyle = grid; vctx.lineWidth = 1;
-  for (const v of [-1, 0, 1]) {
-    const y = padT + ((1 - v) / 2) * innerH + 0.5;
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const y = yOf(f) + 0.5;
     vctx.beginPath(); vctx.moveTo(padL, y); vctx.lineTo(W - padR, y); vctx.stroke();
   }
-  vctx.fillStyle = subtle;
-  vctx.font = `10px ${MONO_FONT}`;
+  vctx.fillStyle = subtle; vctx.font = `10px ${MONO_FONT}`;
   vctx.textAlign = 'right'; vctx.textBaseline = 'middle';
-  for (const v of [1, 0, -1]) {
-    const y = padT + ((1 - v) / 2) * innerH;
-    vctx.fillText((v > 0 ? '+' : '') + v.toFixed(0), padL - 4, y);
-  }
+  for (const f of [1, 0.5, 0]) vctx.fillText(Math.round(f * 100), padL - 4, yOf(f));
   vctx.strokeStyle = axis;
   vctx.beginPath();
   vctx.moveTo(padL + 0.5, padT); vctx.lineTo(padL + 0.5, H - padB);
   vctx.lineTo(W - padR, H - padB); vctx.stroke();
 
-  if (valueHistory.length === 0) {
-    vctx.fillStyle = subtle;
-    vctx.font = `11px ${MONO_FONT}`;
+  const pts = valueHistory.filter(p => p[valueTab]).map(p => ({step: p.step, ...p[valueTab]}));
+  if (pts.length === 0) {
+    vctx.fillStyle = subtle; vctx.font = `11px ${MONO_FONT}`;
     vctx.textAlign = 'center'; vctx.textBaseline = 'middle';
-    vctx.fillText('no data', padL + innerW/2, padT + innerH/2);
+    vctx.fillText('no data', padL + innerW / 2, padT + innerH / 2);
     return;
   }
-  const maxStep = Math.max(1, valueHistory[valueHistory.length - 1].step);
-  const xOf = s => padL + (s / maxStep) * innerW;
-  const yOf = v => padT + ((1 - v) / 2) * innerH;
-  vctx.fillStyle = muted;
-  vctx.textAlign = 'center'; vctx.textBaseline = 'top';
-  vctx.fillText('0', xOf(0), H - padB + 2);
-  vctx.fillText(String(maxStep), xOf(maxStep), H - padB + 2);
+  const n = pts.length;
+  // x = data-point index, so the first eval sits at the left edge. (The stone
+  // count at first eval is ≥1, so mapping by absolute step starts mid-chart.)
+  const xAt = i => n <= 1 ? padL : padL + (i / (n - 1)) * innerW;
+  vctx.fillStyle = muted; vctx.textAlign = 'center'; vctx.textBaseline = 'top';
+  vctx.fillText(String(pts[0].step), xAt(0), H - padB + 2);
+  if (n > 1) vctx.fillText(String(pts[n - 1].step), xAt(n - 1), H - padB + 2);
 
-  function plot(key, color) {
-    const pts = valueHistory.filter(p => p[key] != null);
-    if (pts.length === 0) return;
-    vctx.strokeStyle = color; vctx.lineWidth = 1.5;
-    vctx.beginPath();
-    pts.forEach((p, i) => {
-      const x = xOf(p.step), y = yOf(p[key]);
-      if (i === 0) vctx.moveTo(x, y); else vctx.lineTo(x, y);
-    });
-    vctx.stroke();
+  // Fill one stacked band between two cumulative-fraction accessors.
+  function band(lowerFn, upperFn, color) {
     vctx.fillStyle = color;
-    for (const p of pts) {
-      vctx.beginPath();
-      vctx.arc(xOf(p.step), yOf(p[key]), 2, 0, Math.PI*2);
-      vctx.fill();
-    }
+    vctx.beginPath();
+    pts.forEach((p, i) => { const x = xAt(i), y = yOf(upperFn(p)); i === 0 ? vctx.moveTo(x, y) : vctx.lineTo(x, y); });
+    for (let i = n - 1; i >= 0; i--) vctx.lineTo(xAt(i), yOf(lowerFn(pts[i])));
+    vctx.closePath(); vctx.fill();
   }
-  plot('root', '#0969da');
-  plot('nn', '#cf222e');
+  const colBlk = cssVar('--stone-black-1') || '#000';
+  const colWht = cssVar('--stone-white-0') || '#fff';
+  const colDrw = cssVar('--fg-subtle') || '#8b949e';
+  // Faint fills hint at the three bands; the boundary lines carry the structure.
+  vctx.globalAlpha = 0.18;
+  band(p => 0,             p => p.w,       colWht);  // white win — bottom
+  band(p => p.w,           p => p.w + p.d, colDrw);  // draw — middle
+  band(p => p.w + p.d,     p => 1,         colBlk);  // black win — top
+  vctx.globalAlpha = 1;
+  // The two band boundaries (white/draw and draw/black), drawn over the fills.
+  function line(fn) {
+    vctx.beginPath();
+    pts.forEach((p, i) => { const x = xAt(i), y = yOf(fn(p)); i === 0 ? vctx.moveTo(x, y) : vctx.lineTo(x, y); });
+    vctx.stroke();
+  }
+  vctx.strokeStyle = muted; vctx.lineWidth = 1.5;
+  line(p => p.w);
+  line(p => p.w + p.d);
 }
 
-/* ---------- WDL ---------- */
-// Renormalizes raw W/D/L so they display summing to ~100%.
+/* ---------- Win-rate legend (current ply, Black's frame) ---------- */
+// Renormalizes raw W/D/L so the legend numbers sum to ~100%.
 function normalizeVal(v) {
   if (!v) return null;
   const s = v.w + v.d + v.l;
-  if (s > 1e-4) {
-    return { w: v.w/s*100, d: v.d/s*100, l: v.l/s*100,
-             wl: (v.w - v.l)/s, sum: s };
-  }
-  return { w: v.w, d: v.d, l: v.l, wl: v.wl, sum: s };
+  if (s > 1e-4) return { w: v.w/s*100, d: v.d/s*100, l: v.l/s*100 };
+  return { w: v.w, d: v.d, l: v.l };
 }
-
-function renderWDL(prefix, v) {
-  const bar = document.getElementById('wdl_' + prefix + '_bar');
-  const wlEl = document.getElementById('wdl_' + prefix + '_wl');
-  const det = document.getElementById('wdl_' + prefix + '_detail');
+// v is in Black's frame: w = Black win, d = draw, l = White win.
+function renderWinLegend(v) {
+  const bEl = document.getElementById('vc_w_black');
+  const dEl = document.getElementById('vc_w_draw');
+  const wEl = document.getElementById('vc_w_white');
   const n = normalizeVal(v);
-  const segs = bar.querySelectorAll('.seg');
   if (!n) {
-    segs[0].style.width = '0';
-    segs[1].style.width = '100%';
-    segs[2].style.width = '0';
-    wlEl.textContent = '—';
-    wlEl.classList.remove('pos', 'neg');
-    det.textContent = '';
+    bEl.textContent = dEl.textContent = wEl.textContent = '—';
     return;
   }
-  segs[0].style.width = n.w.toFixed(2) + '%';
-  segs[1].style.width = n.d.toFixed(2) + '%';
-  segs[2].style.width = n.l.toFixed(2) + '%';
-  const wl = n.wl;
-  wlEl.textContent = (wl >= 0 ? '+' : '') + wl.toFixed(2);
-  wlEl.classList.toggle('pos', wl > 0.01);
-  wlEl.classList.toggle('neg', wl < -0.01);
-  det.innerHTML =
-    '<span><span class="k">W</span> ' + n.w.toFixed(1) + '%</span>' +
-    '<span><span class="k">D</span> ' + n.d.toFixed(1) + '%</span>' +
-    '<span><span class="k">L</span> ' + n.l.toFixed(1) + '%</span>';
+  bEl.textContent = n.w.toFixed(1) + '%';
+  dEl.textContent = n.d.toFixed(1) + '%';
+  wEl.textContent = n.l.toFixed(1) + '%';
+}
+
+// Switch the chart between the root and nn evaluations.
+function setValueTab(tab) {
+  if (tab !== 'root' && tab !== 'nn') return;
+  valueTab = tab;
+  document.getElementById('vc_tab_root').setAttribute('aria-pressed', tab === 'root' ? 'true' : 'false');
+  document.getElementById('vc_tab_nn').setAttribute('aria-pressed', tab === 'nn' ? 'true' : 'false');
+  renderValuePanel();
+}
+
+// Repaint the active tab's legend (current ply) + stacked-area history.
+function renderValuePanel() {
+  const persp = valuePerspective(state);
+  const raw = state ? (valueTab === 'root' ? state.root_value : state.nn_value) : null;
+  renderWinLegend(toBlack(raw, persp));
+  drawValueChart();
 }
 
 /* ---------- Status pill ---------- */
@@ -1900,8 +1844,9 @@ async function refresh() {
     const frozen = analyzing && !analysisMode;
     const canAnalyze = !!state.awaiting_human && !analyzing && !state.game_over;
     const setDisabled = (id, v) => { const el = document.getElementById(id); if (el) el.disabled = v; };
-    setDisabled('analyze_btn', !canAnalyze);
-    setDisabled('stop_btn', !analyzing);
+    const analyzeBtn = document.getElementById('analyze_btn');
+    analyzeBtn.textContent = analyzing ? 'Stop' : 'Analyze';
+    analyzeBtn.disabled = analyzing ? false : !canAnalyze;
     setDisabled('newgame_btn', frozen);
     setDisabled('undo_btn', frozen);
 
@@ -1910,11 +1855,8 @@ async function refresh() {
       updateSideButtons();
       sideSynced = true;
     }
-    const persp = valuePerspective(state);
-    renderWDL('root', toBlack(state.root_value, persp));
-    renderWDL('nn', toBlack(state.nn_value, persp));
     recordValues(state);
-    drawValueChart();
+    renderValuePanel();
 
     draw();
     renderCandidates();
@@ -1955,6 +1897,11 @@ function stopAnalyze() {
   if (!state || !state.analyzing) return;
   sendCmd('stop');
 }
+// The single Analyze button doubles as Stop while a ponder is running.
+function toggleAnalyze() {
+  if (state && state.analyzing) stopAnalyze();
+  else startAnalyze();
+}
 function updateSimsModeHint() {
   const el = document.getElementById('sims_input');
   const hint = document.getElementById('sims_mode_hint');
@@ -1978,7 +1925,6 @@ function updateModeButtons() {
   // human-side picker and the manual Analyze/Stop buttons are meaningless.
   document.getElementById('side_row').classList.toggle('hidden', inAnalysis);
   document.getElementById('analyze_btn').classList.toggle('hidden', inAnalysis);
-  document.getElementById('stop_btn').classList.toggle('hidden', inAnalysis);
 }
 function setMode(m) {
   if (m !== 'play' && m !== 'analysis') return;
@@ -2013,6 +1959,7 @@ async function newGame(side, modelId, boardSize, rule) {
   if (side === undefined) side = selectedSide;
   else { selectedSide = side; updateSideButtons(); }
   valueHistory = [];
+  renderWinLegend(null);
   drawValueChart();
   const payload = {human_side: side};
   if (modelId) payload.model = modelId;
@@ -2124,6 +2071,7 @@ updateSimsModeHint();
 sendCmd('noise 0'); // ensure engine starts with Gumbel noise off
 
 draw();
+renderWinLegend(null);
 drawValueChart();
 drawHeat('h_mcts_policy', null);
 drawHeat('h_mcts_visits', null);
