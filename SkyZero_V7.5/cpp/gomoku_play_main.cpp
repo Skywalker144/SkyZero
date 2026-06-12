@@ -116,17 +116,21 @@ static int argmax_index(const std::vector<float>& p) {
 
 // `p` is canvas-stride (length MAX_AREA, indexed r*stride+c). We display only
 // the in-board sub-grid [0, board_size) x [0, board_size).
+// precision/thresh: the visits grid prints at 4 decimals with a tiny threshold
+// so a 1-visit child doesn't collapse to "." (the web UI would then show its
+// win rate next to a visit count of zero).
 static void print_policy_grid(const std::vector<float>& p, int board_size, int stride,
-                              const std::string& title) {
+                              const std::string& title,
+                              int precision = 2, float thresh = 0.01f) {
     std::cout << title << "\n";
     for (int r = 0; r < board_size; ++r) {
         for (int c = 0; c < board_size; ++c) {
             const int idx = r * stride + c;
             const float v = (idx >= 0 && idx < static_cast<int>(p.size())) ? p[idx] : 0.0f;
-            if (v < 0.01f) {
+            if (v < thresh) {
                 std::cout << "     . ";  // aligned with "%6.2f "
             } else {
-                std::cout << std::setw(6) << std::fixed << std::setprecision(2) << v << ' ';
+                std::cout << std::setw(6) << std::fixed << std::setprecision(precision) << v << ' ';
             }
         }
         std::cout << '\n';
@@ -263,6 +267,7 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
         cfg.root_symmetry_pruning =
             cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
+        cfg.enable_tree_reuse = cfg_get_bool(cfg_map, "ENABLE_TREE_REUSE", true);
 
         if (cli.num_simulations_override >= 0) cfg.num_simulations = cli.num_simulations_override;
         if (cli.board_size_override > 0) {
@@ -492,6 +497,14 @@ int main(int argc, char** argv) {
         int last_player = 0;
         std::unique_ptr<MCTSNode> root;
         std::vector<Snapshot> history;
+        // Free-analysis board: when true the human drives BOTH colors and the
+        // engine never auto-replies; the play loop ponders each position
+        // instead of waiting at the human prompt. Toggled by `mode analysis`.
+        bool analysis_mode = false;
+        // Sticky pause for the analysis board's auto-ponder: `stop` sets it,
+        // `analyze` clears it; mode switches and newgame clear it so entering
+        // analysis always starts pondering.
+        bool analysis_paused = false;
 
         auto reset_game = [&]() {
             auto init = game.get_initial_state(rng);
@@ -571,6 +584,50 @@ int main(int argc, char** argv) {
             return true;
         };
 
+        // Analysis-board undo: one ply at a time (the human placed both colors,
+        // so popping a whole human+AI pair would feel wrong).
+        auto undo_one_move = [&]() -> bool {
+            if (history.empty()) return false;
+            Snapshot restore = history.back();
+            history.pop_back();
+            state = std::move(restore.state);
+            to_play = restore.to_play;
+            last_action = restore.last_action;
+            last_player = restore.last_player;
+            root.reset(new MCTSNode(state, to_play));
+            return true;
+        };
+
+        // Tree reuse (mirrors selfplay_manager.h:753-774): after a move, keep
+        // the played action's subtree as the new root so the next search /
+        // analyze continues from its accumulated visits instead of from zero.
+        auto advance_root = [&](int canvas_action) {
+            std::unique_ptr<MCTSNode> next;
+            if (cfg.enable_tree_reuse && root) {
+                for (auto& ch : root->children) {
+                    if (ch && ch->action_taken == canvas_action) {
+                        next = std::move(ch);
+                        break;
+                    }
+                }
+            }
+            if (next && next->state == state && next->to_play == to_play) {
+                next->parent = nullptr;
+                root = std::move(next);
+                // Old root + sibling subtrees freed by the unique_ptr move.
+            } else {
+                root.reset(new MCTSNode(state, to_play));
+            }
+        };
+        // Reuse the existing tree when it is already rooted at the current
+        // position; start fresh otherwise (or when ENABLE_TREE_REUSE=0).
+        auto ensure_root = [&]() {
+            if (!cfg.enable_tree_reuse || !root
+                || root->state != state || root->to_play != to_play) {
+                root.reset(new MCTSNode(state, to_play));
+            }
+        };
+
         // `newgame [1|-1]` — reset the board (optionally swapping human side)
         // without tearing down the process. Lets play_web start a fresh game
         // for ~150ms instead of paying ~2.5s to respawn gomoku_play.
@@ -586,6 +643,7 @@ int main(int argc, char** argv) {
                 }
                 human_side = s;
             }
+            analysis_paused = false;
             reset_game();
             std::cout << "[setting] newgame human_side=" << human_side << "\n";
             print_board(state, game.board_size, last_action);
@@ -612,15 +670,6 @@ int main(int argc, char** argv) {
                 << std::setw(6) << std::fixed << std::setprecision(2) << (o.nn_value_probs[2] * 100.0f) << "%  "
                 << std::showpos << std::fixed << std::setprecision(2) << nn_value << std::noshowpos << '\n';
         };
-        auto print_phases = [&](const MCTSSearchOutput& o) {
-            for (size_t i = 0; i < o.gumbel_phases.size(); ++i) {
-                std::cout << "Gumbel Phase " << i << " (" << o.gumbel_phases[i].size() << "):";
-                for (int a : o.gumbel_phases[i]) {
-                    std::cout << ' ' << (a / MA) << ',' << (a % MA);
-                }
-                std::cout << '\n';
-            }
-        };
         auto print_winrate = [&](const MCTSSearchOutput& o) {
             // Per-candidate win rate (expected score, draws = 0.5) from the root
             // player's view, canvas-stride. Unvisited cells print blank.
@@ -630,6 +679,31 @@ int main(int argc, char** argv) {
                 if (w[0] + w[1] + w[2] > 0.5f) winrate[i] = (w[0] - w[2] + 1.0f) * 0.5f;
             }
             print_policy_grid(winrate, game.board_size, MA, "Gumbel WinRate:");
+        };
+        // Emit the full per-move analysis (improved policy, visit distribution,
+        // NN views, value table, per-candidate win rate) for a finished search of
+        // the current (state, to_play). Shared by the AI move and the play-mode
+        // human-turn pre-search. Does not play a move.
+        auto emit_search_grids = [&](const MCTSSearchOutput& o) {
+            print_policy_grid(o.mcts_policy, game.board_size, MA, "MCTS Strategy (improved policy):");
+            std::vector<float> visit_dist(o.visit_counts.size(), 0.0f);
+            const float sum_n = std::accumulate(o.visit_counts.begin(), o.visit_counts.end(), 0.0f);
+            if (sum_n > 0.0f) {
+                for (size_t i = 0; i < o.visit_counts.size(); ++i) visit_dist[i] = o.visit_counts[i] / sum_n;
+            }
+            print_policy_grid(visit_dist, game.board_size, MA, "MCTS Visits (N(s,a)/sum):",
+                              4, 0.00005f);
+            // Total root visits — with tree reuse this exceeds num_simulations,
+            // so the web UI needs it to turn visit fractions back into counts.
+            std::cout << "Search sims: " << static_cast<long long>(sum_n) << "\n";
+            print_policy_grid(o.nn_policy, game.board_size, MA, "NN Strategy:");
+            std::vector<float> fp8, fp32;
+            auto opp_policy = forward_opp_policy(state, to_play, &fp8, &fp32);
+            print_policy_grid(opp_policy, game.board_size, MA, "NN Opp Strategy:");
+            print_signed_grid(fp8,  game.board_size, MA, "NN Futurepos +8:");
+            print_signed_grid(fp32, game.board_size, MA, "NN Futurepos +32:");
+            print_value_table(o);
+            print_winrate(o);
         };
 
         // --- Analysis / ponder: continuous PUCT search on the current position
@@ -649,7 +723,10 @@ int main(int argc, char** argv) {
             return ::poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN);
         };
         auto run_analyze = [&]() -> int {
-            root.reset(new MCTSNode(state, to_play));
+            // Continue from whatever tree already covers this position (the
+            // play-mode pre-search, an earlier analyze of it, or the subtree
+            // kept by advance_root); fresh only for a different position.
+            ensure_root();
             mcts.ensure_root_expanded(*root);
             std::cout << "Analyze start\n";
             // NN-only views don't change as the search deepens: emit them once.
@@ -666,7 +743,13 @@ int main(int argc, char** argv) {
                 if (stdin_has_input()) {
                     std::string cmd;
                     if (!std::getline(std::cin, cmd)) return 1;
-                    if (cmd == "stop" || cmd == "s") break;
+                    if (cmd == "stop" || cmd == "s") {
+                        // In analysis mode the outer loop would re-enter the
+                        // ponder immediately; the pause flag keeps it stopped
+                        // until `analyze` (or a mode switch / newgame).
+                        analysis_paused = true;
+                        break;
+                    }
                     if (cmd == "q" || cmd == "Q") return 1;
                     // Any other command (side / newgame / a move) means "stop
                     // analyzing, then do that". Dropping it would silently
@@ -677,24 +760,38 @@ int main(int argc, char** argv) {
                 auto out = mcts.report_analysis(*root);
                 print_policy_grid(out.mcts_policy, game.board_size, MA, "MCTS Strategy (improved policy):");
                 std::vector<float> visit_dist(out.visit_counts.size(), 0.0f);
-                {
-                    const float sum_n = std::accumulate(out.visit_counts.begin(), out.visit_counts.end(), 0.0f);
-                    if (sum_n > 0.0f) {
-                        for (size_t i = 0; i < out.visit_counts.size(); ++i) {
-                            visit_dist[i] = out.visit_counts[i] / sum_n;
-                        }
+                const float sum_n = std::accumulate(out.visit_counts.begin(), out.visit_counts.end(), 0.0f);
+                if (sum_n > 0.0f) {
+                    for (size_t i = 0; i < out.visit_counts.size(); ++i) {
+                        visit_dist[i] = out.visit_counts[i] / sum_n;
                     }
                 }
-                print_policy_grid(visit_dist, game.board_size, MA, "MCTS Visits (N(s,a)/sum):");
+                // Accumulated simulation count so far (sum of root-child visits);
+                // surfaced to the web UI so the user can see how deep the ponder is.
+                std::cout << "Analyze sims: " << static_cast<long long>(sum_n) << "\n";
+                print_policy_grid(visit_dist, game.board_size, MA, "MCTS Visits (N(s,a)/sum):",
+                                  4, 0.00005f);
                 print_value_table(out);
-                print_phases(out);
                 print_winrate(out);
                 std::cout.flush();
             }
             std::cout << "Analyze stopped\n";
-            root.reset(new MCTSNode(state, to_play));
+            // Keep the tree: resuming analyze (or searching this position)
+            // continues from the accumulated visits.
             print_board(state, game.board_size, last_action);
             return 0;
+        };
+
+        // --- Move search: plain PUCT to the configured budget, then report the
+        //     visit distribution. Same machinery as the analysis ponder, so the
+        //     candidates/win rates shown during analysis are exactly how the
+        //     engine picks its move (Gumbel selection is selfplay/training-only).
+        //     num_simulations<=0 leaves the tree at the root prior (pure NN).
+        auto puct_search = [&]() -> MCTSSearchOutput {
+            ensure_root();
+            mcts.ensure_root_expanded(*root);
+            if (cfg.num_simulations > 0) mcts.run_puct_sims(*root, cfg.num_simulations);
+            return mcts.report_analysis(*root);
         };
 
         while (true) {
@@ -729,20 +826,40 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            if (to_play == human_side) {
+            if (analysis_mode || to_play == human_side) {
                 while (true) {
                     std::string input;
                     if (!pending_cmd.empty()) {
                         input = pending_cmd;
                         pending_cmd.clear();
+                    } else if (analysis_mode && !analysis_paused) {
+                        // Auto-ponder the current position. A board click / command
+                        // arrives over stdin, run_analyze stops and stashes it in
+                        // pending_cmd, and we loop back to process it.
+                        if (run_analyze() == 1) { std::cout << "Exiting game.\n"; return 0; }
+                        continue;
+                    } else if (analysis_mode) {
+                        // Paused analysis board: wait at the prompt without burning
+                        // GPU. A board click still places stones; `analyze` resumes.
+                        std::cout << "Human step (row col / 'u' for undo / 'q' for quit):\n";
+                        std::cout.flush();
+                        if (!std::getline(std::cin, input)) return 0;
                     } else {
+                        // Search the current (human-to-move) position so the web UI
+                        // shows the same candidates / win rate / heatmaps as for an AI
+                        // move (and the chart gets a data point every ply). Does not
+                        // play — the human still chooses. puct_search() continues from
+                        // the subtree kept by advance_root; undo/newgame reset it, so
+                        // a stale tree can't leak in after re-loops.
+                        const auto out = puct_search();
+                        emit_search_grids(out);
                         std::cout << "Human step (row col / 'u' for undo / 'q' for quit):\n";
                         std::cout.flush();
                         if (!std::getline(std::cin, input)) return 0;
                     }
 
                     if (input == "u" || input == "U") {
-                        if (undo_two_moves()) {
+                        if (analysis_mode ? undo_one_move() : undo_two_moves()) {
                             std::cout << "Undo successful.\n";
                             print_board(state, game.board_size, last_action);
                         } else {
@@ -774,8 +891,26 @@ int main(int argc, char** argv) {
                             break;  // re-check whose turn it is
                         }
                     }
+                    {
+                        std::istringstream iss(input);
+                        std::string kw, m;
+                        if ((iss >> kw) && kw == "mode") {
+                            if (!(iss >> m) || (m != "play" && m != "analysis")) {
+                                std::cout << "Invalid input: mode requires play or analysis.\n";
+                                continue;
+                            }
+                            analysis_mode = (m == "analysis");
+                            analysis_paused = false;
+                            std::cout << "[setting] mode=" << m << "\n";
+                            break;  // re-enter play loop: re-check turn / start ponder
+                        }
+                    }
 
                     if (input == "analyze" || input == "a") {
+                        if (analysis_mode) {
+                            analysis_paused = false;  // resume the auto-ponder
+                            continue;
+                        }
                         if (run_analyze() == 1) { std::cout << "Exiting game.\n"; return 0; }
                         continue;  // back to the Human step prompt
                     }
@@ -803,20 +938,19 @@ int main(int argc, char** argv) {
                     last_action = action;
                     last_player = to_play;
                     to_play = -to_play;
-                    root.reset(new MCTSNode(state, to_play));
+                    advance_root(Gomoku::loc_to_canvas_pos(action, game.board_size));
                     break;
                 }
             } else {
                 push_history();
                 std::cout << "SkyZero thinking...\n";
 
-                const auto out = mcts.search(state, to_play, cfg.num_simulations, root);
+                const auto out = puct_search();
                 // MCTS / NN outputs are canvas-stride (length MAX_AREA, indexed
                 // r*MAX_BOARD_SIZE+c). game state stays board-stride. Translate
                 // at the boundary, mirroring selfplay_manager.h:577.
-                constexpr int M = Gomoku::MAX_BOARD_SIZE;
-                int canvas_action = out.gumbel_action;
-                if (canvas_action < 0) canvas_action = argmax_index(out.mcts_policy);
+                int canvas_action = out.gumbel_action;  // most-visited root child
+                if (canvas_action < 0) canvas_action = argmax_index(out.nn_policy);  // pure NN (sims=0)
                 if (canvas_action < 0) {
                     std::cout << "No legal action found. Exiting game.\n";
                     return 1;
@@ -830,36 +964,14 @@ int main(int argc, char** argv) {
                 const int row = action / game.board_size;
                 const int col = action % game.board_size;
 
-                print_policy_grid(out.mcts_policy, game.board_size, M, "MCTS Strategy (improved policy):");
-                std::vector<float> visit_dist(out.visit_counts.size(), 0.0f);
-                {
-                    const float sum_n = std::accumulate(out.visit_counts.begin(), out.visit_counts.end(), 0.0f);
-                    if (sum_n > 0.0f) {
-                        for (size_t i = 0; i < out.visit_counts.size(); ++i) {
-                            visit_dist[i] = out.visit_counts[i] / sum_n;
-                        }
-                    }
-                }
-                print_policy_grid(visit_dist, game.board_size, M, "MCTS Visits (N(s,a)/sum):");
-                print_policy_grid(out.nn_policy, game.board_size, M, "NN Strategy:");
-                {
-                    std::vector<float> fp8, fp32;
-                    auto opp_policy = forward_opp_policy(state, to_play, &fp8, &fp32);
-                    print_policy_grid(opp_policy, game.board_size, M, "NN Opp Strategy:");
-                    print_signed_grid(fp8,  game.board_size, M, "NN Futurepos +8:");
-                    print_signed_grid(fp32, game.board_size, M, "NN Futurepos +32:");
-                }
-
-                print_value_table(out);
-                print_phases(out);
-                print_winrate(out);
+                emit_search_grids(out);
                 std::cout << "AI move: (" << row << ", " << col << ")\n";
 
                 state = game.get_next_state(state, action, to_play);
                 last_action = action;
                 last_player = to_play;
                 to_play = -to_play;
-                root.reset(new MCTSNode(state, to_play));
+                advance_root(canvas_action);
             }
 
             print_board(state, game.board_size, last_action);

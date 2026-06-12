@@ -2,14 +2,15 @@
 """Minimal HTTP front-end for cpp/build/gomoku_play.
 
 Single-user, single-process. Spawns the C++ engine as a subprocess, parses
-its stdout into a JSON state blob, and serves a page that polls /state and
-posts to /move. Intended for local use behind VSCode port forwarding.
+its stdout into a JSON state blob, and serves a page that long-polls /state
+and posts to /move. Intended for local use behind VSCode port forwarding.
 """
 import argparse
 import json
 import re
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -24,7 +25,19 @@ ROOT_VALUE_RE = re.compile(
 NN_VALUE_RE = re.compile(
     r"nn:\s+([\d.]+)%\s+([\d.]+)%\s+([\d.]+)%\s+([+-]?[\d.]+)"
 )
-GUMBEL_PHASE_RE = re.compile(r"Gumbel Phase (\d+) \((\d+)\):(.*)$")
+
+# Long-poll support: GET /state?since=N blocks until this global version moves
+# past N (or times out). Monotonic across engine session swaps, so a client's
+# cursor stays valid through New game / model / board changes.
+_STATE_COND = threading.Condition()
+_GLOBAL_VERSION = 0
+
+
+def _bump_state():
+    global _GLOBAL_VERSION
+    with _STATE_COND:
+        _GLOBAL_VERSION += 1
+        _STATE_COND.notify_all()
 
 
 class EngineSession:
@@ -39,9 +52,9 @@ class EngineSession:
         self.rule = rule
 
         self.lock = threading.Lock()
-        self.version = 0
         self.board = [[0] * board_size for _ in range(board_size)]
         self.last_move = None
+        self.move_history = []  # [[r, c, color]] in play order, from board diffs
         self.status = "Launching engine..."
         self.root_value = None  # {w,d,l,wl}
         self.nn_value = None
@@ -52,10 +65,10 @@ class EngineSession:
         self.nn_opp_policy = None
         self.nn_futurepos_8 = None   # 15x15, signed in [-1,+1]; +own / -opp future stone
         self.nn_futurepos_32 = None  # 15x15, signed in [-1,+1]; +32 step horizon
-        self.gumbel_phases = None  # list of list of [r,c], index 0 = initial 16, last = final 1
         self.gumbel_winrate = None  # 15x15, per-candidate win rate in [0,1] (expected score, draws=0.5)
         self.analyzing = False        # True while the engine is pondering (analyze loop)
         self.analyze_sims = None      # accumulated sims in the current ponder (None when idle)
+        self.search_sims = None       # total root visits of the last regular search
         self.value_persp = None       # perspective of root/nn values: +1 Black, -1 White
         self.analysis_mode = False    # True in free-analysis board mode (human drives both colors)
         self.awaiting_human = False   # True while the engine waits at the human-move prompt
@@ -77,7 +90,7 @@ class EngineSession:
         self.reader.start()
 
     def _bump(self):
-        self.version += 1
+        _bump_state()
 
     def _read_loop(self):
         try:
@@ -164,22 +177,11 @@ class EngineSession:
             except (ValueError, IndexError):
                 pass
             return
-        m = GUMBEL_PHASE_RE.search(line)
-        if m:
-            idx = int(m.group(1))
-            coords = []
-            for tok in m.group(3).split():
-                rc = tok.split(",")
-                if len(rc) == 2:
-                    try:
-                        coords.append([int(rc[0]), int(rc[1])])
-                    except ValueError:
-                        pass
-            if self.gumbel_phases is None or idx == 0:
-                self.gumbel_phases = []
-            while len(self.gumbel_phases) <= idx:
-                self.gumbel_phases.append([])
-            self.gumbel_phases[idx] = coords
+        if line.startswith("Search sims:"):
+            try:
+                self.search_sims = int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
             return
         m = AI_MOVE_RE.search(line)
         if m:
@@ -244,8 +246,8 @@ class EngineSession:
             self.nn_opp_policy = None
             self.nn_futurepos_8 = None
             self.nn_futurepos_32 = None
-            self.gumbel_phases = None
             self.gumbel_winrate = None
+            self.search_sims = None
             self.last_move_winrate = None
             self.last_move_winrate_rc = None
             return
@@ -257,8 +259,8 @@ class EngineSession:
         if "SkyZero thinking" in line:
             self.status = "AI thinking..."
             self.awaiting_human = False
-            self.gumbel_phases = None
             self.gumbel_winrate = None
+            self.search_sims = None
             return
         if "Analyze start" in line:
             self.analyzing = True
@@ -296,6 +298,22 @@ class EngineSession:
                     new_board[r][c] = -1
                 if body[base] == "[":
                     last = (r, c)
+        # The engine reprints the board after every single move or undo, so a
+        # diff against the previous snapshot is one added stone (a move) or
+        # 1-2 removed stones (an undo) — enough to maintain the move list.
+        removed = set()
+        added = []
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                old, new = self.board[r][c], new_board[r][c]
+                if old != 0 and new == 0:
+                    removed.add((r, c))
+                elif old == 0 and new != 0:
+                    added.append([r, c, new])
+        if removed:
+            self.move_history = [m for m in self.move_history
+                                 if (m[0], m[1]) not in removed]
+        self.move_history.extend(added)
         self.board = new_board
         self.last_move = last
 
@@ -342,6 +360,7 @@ class EngineSession:
             self.human_side = human_side
             self.board = [[0] * bs for _ in range(bs)]
             self.last_move = None
+            self.move_history = []
             self.status = "New game starting..."
             self.root_value = None
             self.nn_value = None
@@ -352,10 +371,10 @@ class EngineSession:
             self.nn_opp_policy = None
             self.nn_futurepos_8 = None
             self.nn_futurepos_32 = None
-            self.gumbel_phases = None
             self.gumbel_winrate = None
             self.analyzing = False
             self.analyze_sims = None
+            self.search_sims = None
             self.value_persp = None
             self.awaiting_human = False
             self.last_move_winrate = None
@@ -368,13 +387,17 @@ class EngineSession:
         return True
 
     def snapshot(self):
+        # Capture the version before the state: a bump landing mid-build then
+        # makes the next ?since= poll return immediately instead of being lost.
+        ver = _GLOBAL_VERSION
         with self.lock:
             return {
-                "version": self.version,
+                "version": ver,
                 "board": self.board,
                 "board_size": self.board_size,
                 "rule": self.rule,
                 "last_move": list(self.last_move) if self.last_move else None,
+                "move_history": [list(m) for m in self.move_history],
                 "status": self.status,
                 "root_value": self.root_value,
                 "nn_value": self.nn_value,
@@ -386,10 +409,10 @@ class EngineSession:
                 "nn_opp_policy": self.nn_opp_policy,
                 "nn_futurepos_8": self.nn_futurepos_8,
                 "nn_futurepos_32": self.nn_futurepos_32,
-                "gumbel_phases": self.gumbel_phases,
                 "gumbel_winrate": self.gumbel_winrate,
                 "analyzing": self.analyzing,
                 "analyze_sims": self.analyze_sims,
+                "search_sims": self.search_sims,
                 "analysis_mode": self.analysis_mode,
                 "value_persp": self.value_persp,
                 "awaiting_human": self.awaiting_human,
@@ -439,6 +462,7 @@ class App:
             self.session = EngineSession(self.play_bin, self.model, self.config,
                                          human_side, self.current_board_size,
                                          self.current_rule)
+            _bump_state()
 
     def current(self):
         with self.session_lock:
@@ -596,7 +620,32 @@ HTML_PAGE = r"""<!doctype html>
   .tb-select { height: 30px; text-align: left; max-width: 200px;
     font-family: var(--font-mono); }
   .tb-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 auto; }
+  /* Same width for 分析/停止 so the centered group doesn't shift. */
+  #analyze_btn { min-width: 72px; }
   .tb-sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 0; }
+
+  /* ---------- Settings popover ---------- */
+  .settings-wrap { position: relative; }
+  .settings-pop {
+    position: absolute; right: 0; top: calc(100% + 8px); z-index: 500;
+    width: 300px; padding: 14px 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .settings-pop .tb-select { max-width: none; width: 100%; }
+  .set-row { display: flex; flex-direction: column; gap: 6px; }
+  .btn[aria-pressed="true"] {
+    background: var(--accent); color: var(--accent-fg); border-color: var(--accent);
+  }
+
+  /* ---------- Review bar (read-only navigation above the board) ---------- */
+  .review-bar {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+    font-size: 12.5px; color: var(--fg-muted); font-family: var(--font-mono);
+  }
+  .review-bar .btn { height: 26px; padding: 0 10px; }
 
   /* ---------- Main: win-rate chart + board + analysis ---------- */
   .main {
@@ -671,6 +720,12 @@ HTML_PAGE = r"""<!doctype html>
     font-size: 12.5px; font-weight: 500;
     background: var(--surface-2); color: var(--fg);
     border: 1px solid var(--border);
+    /* Fixed width so a longer status (e.g. "分析中 · 模拟 256") can't widen the
+       toolbar and wrap the action buttons onto a second row. */
+    width: 200px; justify-content: flex-start; overflow: hidden;
+  }
+  .status-pill #status {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .status-pill .dot {
     width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
@@ -907,52 +962,60 @@ HTML_PAGE = r"""<!doctype html>
   <header class="topbar">
     <div class="status-pill" id="status_pill" data-variant="idle">
       <span class="dot"></span>
-      <span id="status">idle</span>
+      <span id="status">空闲</span>
     </div>
     <div class="tb-sep"></div>
     <div class="tb-group">
-      <span class="tb-label">Mode</span>
+      <span class="tb-label">模式</span>
       <div class="seg-row">
         <button class="seg-btn" id="mode_play" aria-pressed="true" onclick="setMode('play')">对弈</button>
         <button class="seg-btn" id="mode_analysis" aria-pressed="false" onclick="setMode('analysis')">分析</button>
       </div>
     </div>
-    <div class="tb-group">
-      <span class="tb-label">Model</span>
-      <select id="model_select" class="num tb-select"></select>
-    </div>
     <div class="tb-group" id="side_row">
-      <span class="tb-label">Side</span>
+      <span class="tb-label">执子</span>
       <div class="seg-row">
         <button class="seg-btn" id="side_black" aria-pressed="true" onclick="setSide(1)">
-          <span class="seg-stone black"></span>Black
+          <span class="seg-stone black"></span>执黑
         </button>
         <button class="seg-btn" id="side_white" aria-pressed="false" onclick="setSide(-1)">
-          <span class="seg-stone white"></span>White
+          <span class="seg-stone white"></span>执白
         </button>
       </div>
     </div>
-    <div class="tb-group">
-      <span class="tb-label">Board</span>
-      <select id="size_select" class="num tb-select" style="min-width:72px;"></select>
-    </div>
-    <div class="tb-group">
-      <span class="tb-label">Rule</span>
-      <div class="seg-row">
-        <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="false" onclick="setRule('renju')">Renju</button>
-        <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" onclick="setRule('standard')">Standard</button>
-        <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false" onclick="setRule('freestyle')">Freestyle</button>
-      </div>
-    </div>
-    <div class="tb-group">
-      <span class="tb-label">sims</span>
-      <input class="num" type="number" id="sims_input" min="0" step="1" value="800" style="width:72px;">
-      <span id="sims_mode_hint" class="mode-hint" hidden>Pure NN</span>
-    </div>
     <div class="tb-actions">
-      <button class="btn primary" id="newgame_btn" onclick="newGame()">New game</button>
-      <button class="btn danger-ghost" id="undo_btn" onclick="sendCmd('u')">Undo</button>
-      <button class="btn" id="analyze_btn" onclick="toggleAnalyze()">Analyze</button>
+      <button class="btn primary" id="newgame_btn" onclick="newGame()">新对局</button>
+      <button class="btn danger-ghost" id="undo_btn" onclick="sendCmd('u')">悔棋</button>
+      <button class="btn" id="analyze_btn" onclick="toggleAnalyze()">分析</button>
+      <button class="btn" id="movenum_btn" aria-pressed="false" onclick="toggleMoveNumbers()">手数</button>
+    </div>
+    <div class="settings-wrap">
+      <button class="btn" id="settings_btn" aria-expanded="false">设置</button>
+      <div class="settings-pop hidden" id="settings_pop">
+        <div class="set-row">
+          <span class="tb-label">模型</span>
+          <select id="model_select" class="num tb-select"></select>
+        </div>
+        <div class="set-row">
+          <span class="tb-label">棋盘</span>
+          <select id="size_select" class="num tb-select"></select>
+        </div>
+        <div class="set-row">
+          <span class="tb-label">规则</span>
+          <div class="seg-row">
+            <button class="seg-btn" id="rule_renju"     data-rule="renju"     aria-pressed="false" onclick="setRule('renju')">Renju</button>
+            <button class="seg-btn" id="rule_standard"  data-rule="standard"  aria-pressed="false" onclick="setRule('standard')">Standard</button>
+            <button class="seg-btn" id="rule_freestyle" data-rule="freestyle" aria-pressed="false" onclick="setRule('freestyle')">Freestyle</button>
+          </div>
+        </div>
+        <div class="set-row">
+          <span class="tb-label">模拟数 (sims)</span>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input class="num" type="number" id="sims_input" min="0" step="1" value="800" style="width:88px;">
+            <span id="sims_mode_hint" class="mode-hint" hidden>纯 NN</span>
+          </div>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -976,6 +1039,12 @@ HTML_PAGE = r"""<!doctype html>
 
     <section class="board-col">
       <div class="card board-card">
+        <div class="review-bar hidden" id="review_bar">
+          <button class="btn" onclick="stepReview(-1)" title="上一手 (←)">◀</button>
+          <span id="review_label">回看</span>
+          <button class="btn" onclick="stepReview(1)" title="下一手 (→)">▶</button>
+          <button class="btn" onclick="exitReview()">回到当前 (Esc)</button>
+        </div>
         <canvas id="board"></canvas>
       </div>
     </section>
@@ -984,11 +1053,11 @@ HTML_PAGE = r"""<!doctype html>
       <div class="card cand-card">
         <div class="card-body cand-body">
           <div class="card-title cand-head">
-            <span>Candidate moves</span>
-            <span class="cand-legend">win% · visits</span>
+            <span>候选着法</span>
+            <span class="cand-legend">胜率 · 访问</span>
           </div>
           <div class="cand-list" id="cand_list">
-            <div class="cand-empty">No analysis yet</div>
+            <div class="cand-empty">暂无分析</div>
           </div>
         </div>
       </div>
@@ -1133,6 +1202,16 @@ function resizeValueChart() {
   drawValueChart();
 }
 new ResizeObserver(resizeValueChart).observe(vcCanvas);
+// Click a point on the chart to review that ply on the board.
+vcCanvas.style.cursor = 'pointer';
+vcCanvas.addEventListener('click', (ev) => {
+  if (!chartMeta) return;
+  const rect = vcCanvas.getBoundingClientRect();
+  const x = ev.clientX - rect.left;
+  const i = chartMeta.n <= 1 ? 0
+      : Math.round((x - chartMeta.padL) / chartMeta.innerW * (chartMeta.n - 1));
+  enterReview(chartMeta.pts[Math.max(0, Math.min(chartMeta.n - 1, i))].step);
+});
 
 const boardCol = document.querySelector('.board-col');
 const boardCard = document.querySelector('.board-card');
@@ -1155,7 +1234,10 @@ function syncBoardSize() {
   const appPadY = parseFloat(appCS.paddingTop) + parseFloat(appCS.paddingBottom);
   // Vertical budget: viewport − app padding − topbar − the gap between the two
   // app rows (topbar / main) − this card's own padding.
-  const chromeY = appPadY + topbarEl.offsetHeight + appGap + cardPadY;
+  const reviewBarEl = document.getElementById('review_bar');
+  const reviewH = reviewBarEl && reviewBarEl.offsetHeight
+      ? reviewBarEl.offsetHeight + 10 /* its margin-bottom */ : 0;
+  const chromeY = appPadY + topbarEl.offsetHeight + appGap + cardPadY + reviewH;
   const sizeByHeight = window.innerHeight - chromeY;
   const sizeByWidth = narrow
       ? mainEl.clientWidth - cardPadX
@@ -1270,6 +1352,12 @@ for (const id of Object.keys(heatCtxs)) {
 }
 
 let state = null;
+let lastVersion = -1;       // long-poll cursor for /state?since=
+let pending = null;         // optimistic stone {r,c,v} awaiting the engine echo
+let hoverGhost = null;      // snapped empty intersection under the pointer
+let reviewIdx = null;       // null = live; k = read-only review of first k moves
+let moveNumbersOn = false;  // draw move numbers on stones (review forces them on)
+let chartMeta = null;       // {pts,n,padL,innerW,xAt} of the last chart paint
 let hoverCand = null;       // {r,c} candidate row under the pointer → board highlight
 const MAX_CANDS = 12;       // board overlay + list cap (lizzie shows the strongest few)
 // Value display is fixed to BLACK's frame (Black ahead → +, drawn up; White
@@ -1308,9 +1396,13 @@ function computeCandidates() {
   return out.slice(0, MAX_CANDS);
 }
 // Total root visits — turns a visit fraction back into a count for display.
+// Prefer the engine-reported totals (exact even with tree reuse, where the
+// root accumulates more visits than the configured sims).
 function totalVisits() {
   if (state && state.analyzing && Number.isFinite(state.analyze_sims) && state.analyze_sims > 0)
     return state.analyze_sims;
+  if (state && Number.isFinite(state.search_sims) && state.search_sims > 0)
+    return state.search_sims;
   const s = parseInt(document.getElementById('sims_input').value, 10);
   return (Number.isFinite(s) && s > 0) ? s : 0;
 }
@@ -1350,10 +1442,29 @@ heatDrawerBtn.addEventListener('click', () => {
 /* ---------- Candidate move list (right panel) ---------- */
 const candListEl = document.getElementById('cand_list');
 let candSig = '';
-// 0-indexed (r,c), matching the board's edge labels and the engine's "AI move".
-function coordLabel(r, c) { return r + ',' + c; }
+// Board-game notation matching the edge labels: columns A.. left→right,
+// rows N..1 top→bottom (e.g. H8 = center of a 15 board).
+function colLetter(c) { return String.fromCharCode(65 + c); }
+function coordLabel(r, c) { return colLetter(c) + (N - r); }
+// True when a click may place a stone right now. Play mode requires the engine
+// to be at its human prompt (awaiting_human) — a click during "AI thinking"
+// would otherwise queue in the stdin pipe and fire as a phantom move later.
+// The analysis board stays clickable while pondering (the engine polls stdin).
 function canPlaceNow() {
-  return state && !state.game_over && !(state.analyzing && !state.analysis_mode);
+  if (!state || state.game_over || reviewIdx !== null) return false;
+  return state.analysis_mode ? (state.analyzing || !!state.awaiting_human)
+                             : !!state.awaiting_human;
+}
+function sideToMoveColor(board) {
+  let b = 0, w = 0;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (board[r][c] === 1) b++; else if (board[r][c] === -1) w++;
+  }
+  return b === w ? 1 : -1;
+}
+// Color of the stone the human is about to place (analysis board drives both).
+function humanMoveColor() {
+  return state.analysis_mode ? sideToMoveColor(state.board) : state.human_side;
 }
 function renderCandidates() {
   const cands = state ? computeCandidates() : [];
@@ -1363,7 +1474,7 @@ function renderCandidates() {
   if (sig === candSig) return;
   candSig = sig;
   if (cands.length === 0) {
-    candListEl.innerHTML = '<div class="cand-empty">No analysis yet</div>';
+    candListEl.innerHTML = '<div class="cand-empty">暂无分析</div>';
     return;
   }
   candListEl.innerHTML = cands.map((o, i) => {
@@ -1389,14 +1500,12 @@ candListEl.addEventListener('mouseout', (ev) => {
   if (!ev.target.closest('.cand-row')) return;
   if (hoverCand) { hoverCand = null; draw(); }
 });
-candListEl.addEventListener('click', async (ev) => {
+candListEl.addEventListener('click', (ev) => {
   const row = ev.target.closest('.cand-row'); if (!row) return;
-  if (!canPlaceNow()) return;
+  if (!canPlaceNow() || pending) return;
   const r = +row.dataset.r, c = +row.dataset.c;
   if (!state.board[r] || state.board[r][c] !== 0) return;
-  await fetch('/move', {method:'POST', headers:{'Content-Type':'application/json'},
-                        body: JSON.stringify({r, c})});
-  refresh();
+  placeMove(r, c);
 });
 
 /* ---------- Follow OS dark/light theme ---------- */
@@ -1567,8 +1676,8 @@ function draw() {
   ctx.font = `11px ${MONO_FONT}`;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   for (let i=0;i<N;i++){
-    ctx.fillText(i, MARGIN + i*CELL, 12);
-    ctx.fillText(i, 10, MARGIN + i*CELL);
+    ctx.fillText(colLetter(i), MARGIN + i*CELL, 12);
+    ctx.fillText(String(N - i), 10, MARGIN + i*CELL);
   }
   if (!state) return;
 
@@ -1581,68 +1690,96 @@ function draw() {
   const wrFontPx  = Math.max(9, Math.round(CELL * 0.30));
   const visFontPx = Math.max(7, Math.round(CELL * 0.21));
 
-  // Lizzie-style candidate overlay: one colored disc per candidate move (best =
-  // blue, others fade gray→green by visit share), big win% + small visit count.
-  for (const o of computeCandidates()) {
-    const x = MARGIN + o.c*CELL, y = MARGIN + o.r*CELL;
-    const col = candColor(o.frac, o.best);
-    ctx.globalAlpha = o.best ? 0.92 : (0.45 + 0.45 * o.frac);
-    ctx.beginPath(); ctx.arc(x, y, candR, 0, Math.PI*2);
-    ctx.fillStyle = col.fill; ctx.fill();
-    ctx.globalAlpha = 1;
-    if (o.best) {
-      ctx.beginPath(); ctx.arc(x, y, candR, 0, Math.PI*2);
-      ctx.lineWidth = 2; ctx.strokeStyle = '#1d4ed8'; ctx.stroke(); ctx.lineWidth = 1;
-    }
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = col.text;
-    const hasWr = o.wr != null, hasVis = o.vf > 0;
-    if (hasWr && hasVis) {
-      ctx.font = `bold ${wrFontPx}px ${MONO_FONT}`;
-      ctx.fillText(Math.round(o.wr * 100), x, y - wrFontPx * 0.42);
-      ctx.font = `${visFontPx}px ${MONO_FONT}`;
-      ctx.globalAlpha = 0.85;
-      ctx.fillText(fmtVisits(o.vf), x, y + visFontPx * 0.75);
-      ctx.globalAlpha = 1;
-    } else {
-      ctx.font = `bold ${wrFontPx}px ${MONO_FONT}`;
-      ctx.fillText(hasWr ? Math.round(o.wr * 100) : fmtVisits(o.vf), x, y);
-    }
-  }
-  // Hover highlight driven by the candidate list on the right.
-  if (hoverCand && state.board[hoverCand.r] && state.board[hoverCand.r][hoverCand.c] === 0) {
-    const x = MARGIN + hoverCand.c*CELL, y = MARGIN + hoverCand.r*CELL;
-    ctx.beginPath(); ctx.arc(x, y, candR + 2, 0, Math.PI*2);
-    ctx.lineWidth = 2.5; ctx.strokeStyle = cssVar('--accent') || '#0969da';
-    ctx.stroke(); ctx.lineWidth = 1;
+  const reviewing = reviewIdx !== null;
+  const hist = state.move_history || [];
+  const b = reviewing ? boardFromHistory(reviewIdx) : state.board;
+  const lm = reviewing
+      ? (reviewIdx > 0 ? [hist[reviewIdx - 1][0], hist[reviewIdx - 1][1]] : null)
+      : state.last_move;
+  const showNums = moveNumbersOn || reviewing;
+  let numMap = null;
+  if (showNums && hist.length) {
+    numMap = new Map();
+    const upto = reviewing ? reviewIdx : hist.length;
+    for (let i = 0; i < upto; i++) numMap.set(hist[i][0] * N + hist[i][1], i + 1);
   }
 
-  const b = state.board, lm = state.last_move;
+  function paintStone(x, y, v, alpha, shadow) {
+    if (alpha !== 1) ctx.globalAlpha = alpha;
+    if (shadow) {
+      ctx.beginPath(); ctx.arc(x+shadowDx, y+shadowDy, stoneR, 0, Math.PI*2);
+      ctx.fillStyle = stoneShadow; ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(x, y, stoneR, 0, Math.PI*2);
+    const grad = ctx.createRadialGradient(x-gradInner, y-gradInner, 2, x, y, stoneR);
+    if (v === 1) { grad.addColorStop(0, stoneB0); grad.addColorStop(1, stoneB1); }
+    else { grad.addColorStop(0, stoneW0); grad.addColorStop(1, stoneW1); }
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.strokeStyle = stoneOutline; ctx.lineWidth = 1; ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  if (!reviewing) {
+    // Lizzie-style candidate overlay: one colored disc per candidate move (best =
+    // blue, others fade gray→green by visit share), big win% + small visit count.
+    const cands = computeCandidates();
+    for (const o of cands) {
+      const x = MARGIN + o.c*CELL, y = MARGIN + o.r*CELL;
+      const col = candColor(o.frac, o.best);
+      ctx.globalAlpha = o.best ? 0.92 : (0.45 + 0.45 * o.frac);
+      ctx.beginPath(); ctx.arc(x, y, candR, 0, Math.PI*2);
+      ctx.fillStyle = col.fill; ctx.fill();
+      ctx.globalAlpha = 1;
+      if (o.best) {
+        ctx.beginPath(); ctx.arc(x, y, candR, 0, Math.PI*2);
+        ctx.lineWidth = 2; ctx.strokeStyle = '#1d4ed8'; ctx.stroke(); ctx.lineWidth = 1;
+      }
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = col.text;
+      const hasWr = o.wr != null, hasVis = o.vf > 0;
+      if (hasWr && hasVis) {
+        ctx.font = `bold ${wrFontPx}px ${MONO_FONT}`;
+        ctx.fillText(Math.round(o.wr * 100), x, y - wrFontPx * 0.42);
+        ctx.font = `${visFontPx}px ${MONO_FONT}`;
+        ctx.globalAlpha = 0.85;
+        ctx.fillText(fmtVisits(o.vf), x, y + visFontPx * 0.75);
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.font = `bold ${wrFontPx}px ${MONO_FONT}`;
+        ctx.fillText(hasWr ? Math.round(o.wr * 100) : fmtVisits(o.vf), x, y);
+      }
+    }
+    // Hover highlight driven by the candidate list on the right. Gated on the
+    // move still being a live candidate, so a stale hover (its list row got
+    // rebuilt mid-ponder, swallowing the mouseout) can't leave an empty ring.
+    if (hoverCand && cands.some(o => o.r === hoverCand.r && o.c === hoverCand.c)) {
+      const x = MARGIN + hoverCand.c*CELL, y = MARGIN + hoverCand.r*CELL;
+      ctx.beginPath(); ctx.arc(x, y, candR + 2, 0, Math.PI*2);
+      ctx.lineWidth = 2.5; ctx.strokeStyle = cssVar('--accent') || '#0969da';
+      ctx.stroke(); ctx.lineWidth = 1;
+    }
+  }
+
   for (let r=0;r<N;r++) for (let c=0;c<N;c++){
     const v = b[r][c]; if (!v) continue;
     const x = MARGIN+c*CELL, y = MARGIN+r*CELL;
-    ctx.beginPath(); ctx.arc(x+shadowDx, y+shadowDy, stoneR, 0, Math.PI*2);
-    ctx.fillStyle = stoneShadow; ctx.fill();
-    ctx.beginPath(); ctx.arc(x, y, stoneR, 0, Math.PI*2);
-    if (v === 1) {
-      const grad = ctx.createRadialGradient(x-gradInner, y-gradInner, 2, x, y, stoneR);
-      grad.addColorStop(0, stoneB0); grad.addColorStop(1, stoneB1);
-      ctx.fillStyle = grad;
-    } else {
-      const grad = ctx.createRadialGradient(x-gradInner, y-gradInner, 2, x, y, stoneR);
-      grad.addColorStop(0, stoneW0); grad.addColorStop(1, stoneW1);
-      ctx.fillStyle = grad;
-    }
-    ctx.fill();
-    ctx.strokeStyle = stoneOutline; ctx.lineWidth = 1; ctx.stroke();
-    if (lm && lm[0]===r && lm[1]===c) {
+    paintStone(x, y, v, 1, true);
+    const isLast = lm && lm[0]===r && lm[1]===c;
+    const num = numMap ? numMap.get(r*N + c) : undefined;
+    if (num !== undefined) {
+      // Move number; the latest move's number in red, Lizzie-style.
+      ctx.fillStyle = isLast ? '#ef4444' : (v === 1 ? '#ffffff' : '#111111');
+      ctx.font = `bold ${Math.max(8, Math.round(CELL * 0.28))}px ${MONO_FONT}`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(num, x, y);
+    } else if (isLast && !reviewing) {
       const lmwr = state.last_move_winrate;
       const rc = state.last_move_winrate_rc;
       if (lmwr != null && rc && rc[0]===r && rc[1]===c) {
         // Win% of this move for the side that played it (mover's view), drawn
         // on the stone in a contrasting color in place of the last-move dot.
         ctx.fillStyle = (v === 1) ? '#ffffff' : '#111111';
-        ctx.font = `bold ${Math.max(9, Math.round(CELL * 0.30))}px ${MONO_FONT}`;
+        ctx.font = `bold ${wrFontPx}px ${MONO_FONT}`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(Math.round(lmwr * 100), x, y);
       } else {
@@ -1651,6 +1788,27 @@ function draw() {
       }
     }
   }
+
+  if (!reviewing) {
+    // Optimistic echo of the stone just clicked, until the engine confirms it.
+    if (pending && b[pending.r] && b[pending.r][pending.c] === 0) {
+      paintStone(MARGIN + pending.c*CELL, MARGIN + pending.r*CELL, pending.v, 0.75, false);
+    }
+    // Ghost preview of where a click would land.
+    if (hoverGhost && !pending && b[hoverGhost.r] && b[hoverGhost.r][hoverGhost.c] === 0) {
+      paintStone(MARGIN + hoverGhost.c*CELL, MARGIN + hoverGhost.r*CELL,
+                 humanMoveColor(), 0.35, false);
+    }
+  }
+}
+
+// Board after the first k recorded moves — the review board.
+function boardFromHistory(k) {
+  const bb = Array.from({length: N}, () => Array(N).fill(0));
+  const hist = state.move_history || [];
+  const n = Math.min(k, hist.length);
+  for (let i = 0; i < n; i++) bb[hist[i][0]][hist[i][1]] = hist[i][2];
+  return bb;
 }
 
 
@@ -1719,6 +1877,7 @@ function drawValueChart() {
 
   const pts = valueHistory.filter(p => p[valueTab]).map(p => ({step: p.step, ...p[valueTab]}));
   if (pts.length === 0) {
+    chartMeta = null;
     vctx.fillStyle = subtle; vctx.font = `11px ${MONO_FONT}`;
     vctx.textAlign = 'center'; vctx.textBaseline = 'middle';
     vctx.fillText('no data', padL + innerW / 2, padT + innerH / 2);
@@ -1728,6 +1887,7 @@ function drawValueChart() {
   // x = data-point index, so the first eval sits at the left edge. (The stone
   // count at first eval is ≥1, so mapping by absolute step starts mid-chart.)
   const xAt = i => n <= 1 ? padL : padL + (i / (n - 1)) * innerW;
+  chartMeta = {pts, n, padL, innerW, xAt};  // for click → review hit-testing
   vctx.fillStyle = muted; vctx.textAlign = 'center'; vctx.textBaseline = 'top';
   vctx.fillText(String(pts[0].step), xAt(0), H - padB + 2);
   if (n > 1) vctx.fillText(String(pts[n - 1].step), xAt(n - 1), H - padB + 2);
@@ -1758,6 +1918,17 @@ function drawValueChart() {
   vctx.strokeStyle = muted; vctx.lineWidth = 1.5;
   line(p => p.w);
   line(p => p.w + p.d);
+  if (reviewIdx !== null) {
+    // Marker for the ply being reviewed (nearest recorded point).
+    let j = 0;
+    for (let i = 1; i < n; i++)
+      if (Math.abs(pts[i].step - reviewIdx) < Math.abs(pts[j].step - reviewIdx)) j = i;
+    const x = Math.round(xAt(j)) + 0.5;
+    vctx.strokeStyle = cssVar('--accent') || '#0969da';
+    vctx.setLineDash([3, 3]);
+    vctx.beginPath(); vctx.moveTo(x, padT); vctx.lineTo(x, H - padB); vctx.stroke();
+    vctx.setLineDash([]);
+  }
 }
 
 /* ---------- Win-rate legend (current ply, Black's frame) ---------- */
@@ -1801,6 +1972,29 @@ function renderValuePanel() {
 }
 
 /* ---------- Status pill ---------- */
+// Engine/server statuses are English; map them for display. "AI played (r, c)"
+// additionally gets its coordinate converted to board notation.
+function displayStatus(raw) {
+  if (!raw) return '空闲';
+  const m = raw.match(/^AI played \((\d+),\s*(\d+)\)/);
+  if (m) return 'AI 落子 ' + coordLabel(+m[1], +m[2]);
+  if (raw.startsWith('Invalid move')) return '无效落子';
+  if (raw.startsWith('Invalid input')) return '无效输入';
+  const map = {
+    'Your turn': '轮到你了',
+    'AI thinking...': 'AI 思考中…',
+    'Black wins!': '黑棋胜!',
+    'White wins!': '白棋胜!',
+    'Draw!': '和棋',
+    'Undo': '已悔棋',
+    'Launching engine...': '引擎启动中…',
+    'Engine exited.': '引擎已退出',
+    'New game starting...': '开新对局…',
+    'No game. Click New.': '未开局,点「新对局」',
+    'Analyzing… (engine pondering)': '分析中…',
+  };
+  return map[raw] || raw;
+}
 function statusVariant(s) {
   if (!s) return 'idle';
   const t = s.toLowerCase();
@@ -1814,80 +2008,191 @@ function statusVariant(s) {
   return 'idle';
 }
 
-async function refresh() {
-  try {
-    const r = await fetch('/state'); state = await r.json();
-    if (state && state.board_size && state.board_size !== N) {
-      N = state.board_size;
-      valueHistory = [];
-      syncBoardSize();
-      const ss = document.getElementById('size_select');
-      if (ss && ss.value !== String(N)) ss.value = String(N);
-    }
-    const analysisMode = !!state.analysis_mode;
-    if (!modeSynced) {
-      currentMode = analysisMode ? 'analysis' : 'play';
-      updateModeButtons();
-      modeSynced = true;
-    }
-    const analyzing = !!state.analyzing;
-    let statusText = state.status || 'idle';
-    // Surface how deep the ponder is so analysis mode isn't a black box.
-    if (analyzing && Number.isFinite(state.analyze_sims)) {
-      statusText = '分析中 · 模拟 ' + state.analyze_sims.toLocaleString();
-    }
-    document.getElementById('status').textContent = statusText;
-    document.getElementById('status_pill').dataset.variant = statusVariant(statusText);
+function handleState() {
+  if (!state) return;
+  if (state.board_size && state.board_size !== N) {
+    N = state.board_size;
+    valueHistory = [];
+    pending = null; hoverGhost = null; reviewIdx = null;
+    updateReviewBar();
+    syncBoardSize();
+    const ss = document.getElementById('size_select');
+    if (ss && ss.value !== String(N)) ss.value = String(N);
+  }
+  const analysisMode = !!state.analysis_mode;
+  if (!modeSynced) {
+    currentMode = analysisMode ? 'analysis' : 'play';
+    updateModeButtons();
+    modeSynced = true;
+  }
+  const analyzing = !!state.analyzing;
+  let statusText = displayStatus(state.status);
+  // Surface how deep the ponder is so analysis mode isn't a black box.
+  if (analyzing && Number.isFinite(state.analyze_sims)) {
+    statusText = '分析中 · 模拟 ' + state.analyze_sims.toLocaleString();
+  } else if (analysisMode && !analyzing && state.awaiting_human && !state.game_over) {
+    // The analysis board only sits at the human prompt while paused.
+    statusText = '分析已暂停';
+  }
+  document.getElementById('status').textContent = statusText;
+  document.getElementById('status_pill').dataset.variant =
+      analyzing ? 'thinking' : statusVariant(state.status);
 
-    // Play-mode ponder freezes the board; the analysis board stays interactive
-    // (a click places the next stone and restarts the ponder).
-    const frozen = analyzing && !analysisMode;
-    const canAnalyze = !!state.awaiting_human && !analyzing && !state.game_over;
-    const setDisabled = (id, v) => { const el = document.getElementById(id); if (el) el.disabled = v; };
-    const analyzeBtn = document.getElementById('analyze_btn');
-    analyzeBtn.textContent = analyzing ? 'Stop' : 'Analyze';
-    analyzeBtn.disabled = analyzing ? false : !canAnalyze;
-    setDisabled('newgame_btn', frozen);
-    setDisabled('undo_btn', frozen);
+  // While the engine is busy in play mode (thinking or pondering), New game /
+  // Undo would only queue in its stdin pipe and fire late — disable them.
+  const busy = !analysisMode && (analyzing || state.status === 'AI thinking...');
+  const canAnalyze = !!state.awaiting_human && !analyzing && !state.game_over;
+  const setDisabled = (id, v) => { const el = document.getElementById(id); if (el) el.disabled = v; };
+  const analyzeBtn = document.getElementById('analyze_btn');
+  analyzeBtn.textContent = analyzing ? '停止' : '分析';
+  analyzeBtn.disabled = analyzing ? false : !canAnalyze;
+  setDisabled('newgame_btn', busy);
+  setDisabled('undo_btn', busy);
 
-    if (!sideSynced && (state.human_side === 1 || state.human_side === -1)) {
-      selectedSide = state.human_side;
-      updateSideButtons();
-      sideSynced = true;
-    }
-    recordValues(state);
-    renderValuePanel();
+  if (!sideSynced && (state.human_side === 1 || state.human_side === -1)) {
+    selectedSide = state.human_side;
+    updateSideButtons();
+    sideSynced = true;
+  }
 
-    draw();
-    renderCandidates();
-    drawHeat('h_mcts_policy', state.mcts_policy);
-    drawHeat('h_mcts_visits', state.mcts_visits);
-    drawHeat('h_nn_policy',   state.nn_policy);
-    drawHeat('h_nn_opp_policy', state.nn_opp_policy);
-    drawHeatSigned('h_nn_futurepos_8',  state.nn_futurepos_8);
-    drawHeatSigned('h_nn_futurepos_32', state.nn_futurepos_32);
-    paintHeatModal();
-  } catch(e) { /* ignore */ }
+  // The engine echoed (or rejected) the optimistic stone — drop the overlay.
+  if (pending) {
+    const occupied = state.board[pending.r] && state.board[pending.r][pending.c] !== 0;
+    if (occupied || /^Invalid/.test(state.status || '')) pending = null;
+  }
+  // Keep the review cursor inside the (possibly undone/reset) move list.
+  if (reviewIdx !== null) {
+    const hist = state.move_history || [];
+    if (hist.length === 0) reviewIdx = null;
+    else if (reviewIdx > hist.length) reviewIdx = hist.length;
+    updateReviewBar();
+  }
+
+  recordValues(state);
+  renderValuePanel();
+
+  draw();
+  renderCandidates();
+  drawHeat('h_mcts_policy', state.mcts_policy);
+  drawHeat('h_mcts_visits', state.mcts_visits);
+  drawHeat('h_nn_policy',   state.nn_policy);
+  drawHeat('h_nn_opp_policy', state.nn_opp_policy);
+  drawHeatSigned('h_nn_futurepos_8',  state.nn_futurepos_8);
+  drawHeatSigned('h_nn_futurepos_32', state.nn_futurepos_32);
+  paintHeatModal();
 }
 
-cv.addEventListener('click', async (ev) => {
-  if (!state || state.game_over) return;
-  // Analysis board: a click places the next stone even while pondering.
-  if (state.analyzing && !state.analysis_mode) return;
+// Long-poll loop: /state?since=V answers as soon as the engine produces any
+// output, so stones and analysis appear without a polling delay.
+async function pollLoop() {
+  for (;;) {
+    try {
+      const r = await fetch('/state?since=' + lastVersion, {cache: 'no-store'});
+      if (!r.ok) throw new Error('http ' + r.status);
+      state = await r.json();
+      if (Number.isFinite(state.version)) lastVersion = state.version;
+      handleState();
+    } catch (e) {
+      await new Promise(res => setTimeout(res, 1000));  // server gone — retry slowly
+    }
+  }
+}
+
+// Snap a pointer event to the nearest intersection; null when it lands too far
+// from one (margins, between lines) so stray clicks don't place stones.
+function snapToPoint(ev) {
   const rect = cv.getBoundingClientRect();
   const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
   const c = Math.round((x - MARGIN)/CELL), r = Math.round((y - MARGIN)/CELL);
-  if (r<0||r>=N||c<0||c>=N) return;
-  if (state.board[r][c] !== 0) return;
-  await fetch('/move', {method:'POST', headers:{'Content-Type':'application/json'},
-                        body: JSON.stringify({r, c})});
-  refresh();
+  if (r<0||r>=N||c<0||c>=N) return null;
+  const dx = x - (MARGIN + c*CELL), dy = y - (MARGIN + r*CELL);
+  if (dx*dx + dy*dy > (0.45*CELL)*(0.45*CELL)) return null;
+  return {r, c};
+}
+
+async function placeMove(r, c) {
+  pending = {r, c, v: humanMoveColor()};
+  hoverGhost = null;
+  draw();
+  let ok = false;
+  try {
+    const resp = await fetch('/move', {method:'POST', headers:{'Content-Type':'application/json'},
+                                       body: JSON.stringify({r, c})});
+    ok = resp.ok;
+  } catch (e) {}
+  if (!ok) { pending = null; draw(); return; }
+  // Fallback: if the engine never echoes this stone, unstick the overlay.
+  setTimeout(() => {
+    if (pending && pending.r === r && pending.c === c) { pending = null; draw(); }
+  }, 4000);
+}
+
+cv.addEventListener('click', (ev) => {
+  if (reviewIdx !== null) { exitReview(); return; }
+  if (!canPlaceNow() || pending) return;
+  const pt = snapToPoint(ev);
+  if (!pt || state.board[pt.r][pt.c] !== 0) return;
+  placeMove(pt.r, pt.c);
+});
+cv.addEventListener('mousemove', (ev) => {
+  let g = null;
+  if (canPlaceNow() && !pending) {
+    const pt = snapToPoint(ev);
+    if (pt && state.board[pt.r][pt.c] === 0) g = pt;
+  }
+  const changed = (g === null) !== (hoverGhost === null)
+      || (g && hoverGhost && (g.r !== hoverGhost.r || g.c !== hoverGhost.c));
+  if (changed) { hoverGhost = g; draw(); }
+});
+cv.addEventListener('mouseleave', () => {
+  if (hoverGhost) { hoverGhost = null; draw(); }
 });
 
 async function sendCmd(cmd) {
   await fetch('/move', {method:'POST', headers:{'Content-Type':'application/json'},
                         body: JSON.stringify({cmd})});
-  refresh();
+}
+
+/* ---------- Review: read-only navigation through the move list ---------- */
+function updateReviewBar() {
+  const bar = document.getElementById('review_bar');
+  const on = reviewIdx !== null;
+  bar.classList.toggle('hidden', !on);
+  if (on) {
+    const hist = state ? (state.move_history || []) : [];
+    document.getElementById('review_label').textContent =
+        '第 ' + reviewIdx + ' 手 / 共 ' + hist.length + ' 手';
+  }
+  syncBoardSize();
+}
+function enterReview(k) {
+  const hist = state ? (state.move_history || []) : [];
+  if (!hist.length) return;
+  if (k >= hist.length) { exitReview(); return; }
+  reviewIdx = Math.max(0, k);
+  hoverGhost = null;
+  updateReviewBar(); draw(); drawValueChart();
+}
+function exitReview() {
+  if (reviewIdx === null) return;
+  reviewIdx = null;
+  updateReviewBar(); draw(); drawValueChart();
+}
+function stepReview(d) {
+  const hist = state ? (state.move_history || []) : [];
+  if (reviewIdx === null) {
+    if (d < 0 && hist.length) enterReview(hist.length - 1);
+    return;
+  }
+  const k = reviewIdx + d;
+  if (k >= hist.length) exitReview();
+  else if (k >= 0) { reviewIdx = k; updateReviewBar(); draw(); drawValueChart(); }
+}
+function toggleMoveNumbers() {
+  moveNumbersOn = !moveNumbersOn;
+  document.getElementById('movenum_btn')
+      .setAttribute('aria-pressed', moveNumbersOn ? 'true' : 'false');
+  draw();
 }
 function startAnalyze() {
   if (!state || state.game_over || state.analyzing || !state.awaiting_human) return;
@@ -1921,10 +2226,9 @@ function updateModeButtons() {
   document.getElementById('mode_play').setAttribute('aria-pressed', currentMode === 'play' ? 'true' : 'false');
   document.getElementById('mode_analysis').setAttribute('aria-pressed', currentMode === 'analysis' ? 'true' : 'false');
   const inAnalysis = currentMode === 'analysis';
-  // Free-analysis board drives both colors and ponders automatically, so the
-  // human-side picker and the manual Analyze/Stop buttons are meaningless.
+  // Free-analysis board drives both colors, so the human-side picker is
+  // meaningless. The Analyze/Stop button stays: it pauses/resumes the ponder.
   document.getElementById('side_row').classList.toggle('hidden', inAnalysis);
-  document.getElementById('analyze_btn').classList.toggle('hidden', inAnalysis);
 }
 function setMode(m) {
   if (m !== 'play' && m !== 'analysis') return;
@@ -1959,6 +2263,8 @@ async function newGame(side, modelId, boardSize, rule) {
   if (side === undefined) side = selectedSide;
   else { selectedSide = side; updateSideButtons(); }
   valueHistory = [];
+  pending = null; hoverGhost = null; reviewIdx = null;
+  updateReviewBar();
   renderWinLegend(null);
   drawValueChart();
   const payload = {human_side: side};
@@ -1973,7 +2279,6 @@ async function newGame(side, modelId, boardSize, rule) {
   // A model/board/rule change spawns a fresh engine that defaults to play mode;
   // re-assert the client's mode so the analysis board survives a New game.
   sendCmd('mode ' + currentMode);
-  refresh();
 }
 
 async function loadModels() {
@@ -2088,8 +2393,43 @@ document.getElementById('heat_modal_close').addEventListener('click', closeHeatM
 document.getElementById('heat_modal').addEventListener('click', (ev) => {
   if (ev.target === ev.currentTarget) closeHeatModal();
 });
+
+/* ---------- Settings popover ---------- */
+const settingsWrap = document.querySelector('.settings-wrap');
+const settingsPop = document.getElementById('settings_pop');
+const settingsBtn = document.getElementById('settings_btn');
+function closeSettings() {
+  settingsPop.classList.add('hidden');
+  settingsBtn.setAttribute('aria-expanded', 'false');
+}
+settingsBtn.addEventListener('click', () => {
+  const open = settingsPop.classList.toggle('hidden') === false;
+  settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+});
+document.addEventListener('click', (ev) => {
+  if (settingsPop.classList.contains('hidden')) return;
+  if (!settingsWrap.contains(ev.target)) closeSettings();
+});
+
+/* ---------- Keyboard shortcuts ---------- */
 document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && expandedSourceId !== null) closeHeatModal();
+  const tag = ev.target && ev.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (ev.key === 'Escape') {
+    if (!settingsPop.classList.contains('hidden')) closeSettings();
+    else if (expandedSourceId !== null) closeHeatModal();
+    else if (reviewIdx !== null) exitReview();
+    return;
+  }
+  if (ev.key === 'ArrowLeft')  { ev.preventDefault(); stepReview(-1); return; }
+  if (ev.key === 'ArrowRight') { ev.preventDefault(); stepReview(1); return; }
+  if (ev.key === 'u' || ev.key === 'U') {
+    if (!document.getElementById('undo_btn').disabled) sendCmd('u');
+    return;
+  }
+  if (ev.key === 'a' || ev.key === 'A') {
+    toggleAnalyze();  // play mode: analyze/stop; analysis mode: resume/pause
+  }
 });
 window.addEventListener('resize', () => {
   if (expandedSourceId !== null) {
@@ -2099,10 +2439,9 @@ window.addEventListener('resize', () => {
 });
 
 syncBoardSize();
-setInterval(refresh, 250);
 loadModels();
 loadConfig();
-refresh();
+pollLoop();
 </script>
 </body></html>
 """
@@ -2151,21 +2490,40 @@ class Handler(BaseHTTPRequestHandler):
                 "current_rule": Handler.app.current_rule,
             })
             return
-        if self.path == "/state":
+        path, _, query = self.path.partition("?")
+        if path == "/state":
+            since = -1
+            for part in query.split("&"):
+                if part.startswith("since="):
+                    try:
+                        since = int(part[len("since="):])
+                    except ValueError:
+                        pass
+            if since >= 0:
+                with _STATE_COND:
+                    _STATE_COND.wait_for(lambda: _GLOBAL_VERSION != since,
+                                         timeout=25.0)
+                # Engine output arrives in bursts (board + seven grids, one
+                # bump per line); a tiny coalesce window merges a burst into
+                # one full-snapshot response instead of dozens.
+                time.sleep(0.025)
             sess = Handler.app.current()
             if sess is None:
                 bs = Handler.app.current_board_size
-                self._send_json(200, {"version": 0, "board": [[0]*bs for _ in range(bs)],
+                self._send_json(200, {"version": _GLOBAL_VERSION,
+                                      "board": [[0]*bs for _ in range(bs)],
                                       "board_size": bs,
                                       "rule": Handler.app.current_rule,
-                                      "last_move": None, "status": "No game. Click New.",
+                                      "last_move": None, "move_history": [],
+                                      "status": "No game. Click New.",
                                       "root_value": None, "nn_value": None,
                                       "game_over": False, "human_side": 1,
                                       "mcts_policy": None, "mcts_visits": None, "nn_policy": None,
                                       "nn_opp_policy": None, "nn_futurepos_8": None,
-                                      "nn_futurepos_32": None, "gumbel_phases": None,
+                                      "nn_futurepos_32": None,
                                       "gumbel_winrate": None, "analyzing": False,
-                                      "analyze_sims": None, "analysis_mode": False,
+                                      "analyze_sims": None, "search_sims": None,
+                                      "analysis_mode": False,
                                       "value_persp": None,
                                       "awaiting_human": False, "last_move_winrate": None,
                                       "last_move_winrate_rc": None})
@@ -2204,7 +2562,22 @@ class Handler(BaseHTTPRequestHandler):
                 sess.send(str(body["cmd"]))
             else:
                 r, c = int(body["r"]), int(body["c"])
+                # Gate on the engine actually being at its human prompt —
+                # otherwise the move would sit in the stdin pipe and fire as a
+                # phantom move after the AI replies. The analysis board also
+                # accepts moves mid-ponder (the engine polls stdin between
+                # chunks). Clearing awaiting_human here, not at the engine's
+                # echo, closes the double-click race window.
+                with sess.lock:
+                    allowed = sess.awaiting_human or (sess.analysis_mode
+                                                      and sess.analyzing)
+                    if allowed:
+                        sess.awaiting_human = False
+                if not allowed:
+                    self._send_json(409, {"ok": False, "err": "not your turn"})
+                    return
                 sess.send(f"{r} {c}")
+                _bump_state()
             self._send_json(200, {"ok": True})
             return
         self.send_response(404); self.end_headers()
