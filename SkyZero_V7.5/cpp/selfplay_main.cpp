@@ -664,7 +664,8 @@ int main(int argc, char** argv) {
         // Unified selfplay.tsv writer. Both the main loop (one row per iter,
         // producer="main") and the daemon (one row per model version,
         // producer="daemon") append through here, so consumers
-        // (bucket.py, view_loss.py) have a single source of truth.
+        // (compute_selfplay_target.py, schedule.py, shuffle.py, view_loss.py)
+        // have a single source of truth.
         auto write_selfplay_row = [&](
             const std::string& producer, int iter_or_version,
             int games, int64_t rows, double seconds,
@@ -802,17 +803,23 @@ int main(int argc, char** argv) {
                             try {
                                 engine.reload_model(cli.model);
                                 const int new_version = std::max(0, read_meta_iter(meta_path));
-                                append_stats_row(cur_version);
-                                cur_version = new_version;
-                                writer.rotate(make_prefix(cur_version));
-                                reset_version_counters();
+                                // run.sh re-mirrors latest.pt at every iter top, so
+                                // mtime can change without a version bump. Rotating on
+                                // a same-version reload would reset part numbering and
+                                // overwrite this window's already-written npz parts.
+                                if (new_version != cur_version) {
+                                    append_stats_row(cur_version);
+                                    cur_version = new_version;
+                                    writer.rotate(make_prefix(cur_version));
+                                    reset_version_counters();
+                                }
                                 last_settle = now;
                                 last_mtime_ns = m3;
                                 std::cout << g_tag_dm << " reload_model: v=" << cur_version
                                           << " prefix=" << make_prefix(cur_version) << "\n";
-                                // Re-poll warmup. Engine's cfg_ is a ref to
-                                // this cfg, so workers pick up the new value
-                                // on their next selfplay_once iteration.
+                                // Re-poll warmup. Workers load the engine's
+                                // atomic copy at the top of every move; cfg
+                                // itself is daemon-thread bookkeeping only.
                                 if (!cli.sims_warmup_cmd.empty()) {
                                     const int v = popen_int(cli.sims_warmup_cmd);
                                     if (v > 0 && v != cfg.num_simulations) {
@@ -820,6 +827,7 @@ int main(int argc, char** argv) {
                                                   << cfg.num_simulations
                                                   << " -> " << v << " (warmup)\n";
                                         cfg.num_simulations = v;
+                                        engine.set_num_simulations(v);
                                     }
                                 }
                             } catch (const std::exception& e) {
@@ -902,7 +910,7 @@ int main(int argc, char** argv) {
         int black_wins = 0, white_wins = 0, draws = 0;
         int min_len = std::numeric_limits<int>::max();
         int max_len = 0;
-        double sum_len = 0.0, sum_sq_len = 0.0;
+        double sum_len = 0.0;
         SelfplayEngine<Gomoku>::SelfplayResult min_game, max_game;
 
         int main_games = 0;
@@ -910,7 +918,6 @@ int main(int argc, char** argv) {
         int main_min_len = std::numeric_limits<int>::max();
         int main_max_len = 0;
         double main_sum_len = 0.0, main_sum_sq_len = 0.0;
-        SelfplayEngine<Gomoku>::SelfplayResult main_min_game, main_max_game;
 
         const auto t0 = std::chrono::steady_clock::now();
         int last_report = 0;
@@ -932,7 +939,6 @@ int main(int argc, char** argv) {
             }
             const int L = r.game_len;
             sum_len += L;
-            sum_sq_len += static_cast<double>(L) * L;
             if (L < min_len) { min_len = L; min_game = r; }
             if (L > max_len) { max_len = L; max_game = r; }
 
@@ -945,8 +951,8 @@ int main(int argc, char** argv) {
             if (is_main) {
                 main_sum_len += L;
                 main_sum_sq_len += static_cast<double>(L) * L;
-                if (L < main_min_len) { main_min_len = L; main_min_game = r; }
-                if (L > main_max_len) { main_max_len = L; main_max_game = r; }
+                if (L < main_min_len) main_min_len = L;
+                if (L > main_max_len) main_max_len = L;
                 main_games += 1;
                 if (r.winner == 1) ++main_black;
                 else if (r.winner == -1) ++main_white;
