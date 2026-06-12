@@ -24,7 +24,7 @@
 forward 签名: model(input_spatial, input_global) → Dict[str, Tensor]
 返回 dict 平铺所有输出 (适合 torch.jit.trace):
     policy:                     (B, 6, H*W)         # main/aux/soft/soft_aux/opt/opp
-    value_wdl:                  (B, 3)              # W/L/draw logits
+    value_wdl:                  (B, 3)              # W/D/L logits (index 1 = draw)
     value_td:                   (B, 9)              # 3 horizons (long/mid/short) × 3 wdl
     value_st_error:             (B, 1)              # shortterm value pred error
     value_var_time:             (B, 1)              # variance time (placeholder)
@@ -469,8 +469,8 @@ class ValueHead(nn.Module):
     """简化的 ValueHead — 删去围棋特化的 score-belief / scoring / seki.
 
     输出 6 元 tuple:
-        wdl:                 (B, 3)         W/L/draw logits
-        td_value:            (B, 9)         3 horizons × 3 wdl (long/mid/short × W/L/draw)
+        wdl:                 (B, 3)         W/D/L logits (index 1 = draw)
+        td_value:            (B, 9)         3 horizons × 3 wdl (long/mid/short × W/D/L)
         shortterm_error:     (B, 1)         pretanh, 短 horizon Q 预测误差幅度
         variance_time:       (B, 1)         残留 KataGo 输出 (Gomoku 可选, 占位)
         ownership_pretanh:   (B, 1, H, W)   终局每格占有 ±1
