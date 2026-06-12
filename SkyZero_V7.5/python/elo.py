@@ -109,7 +109,6 @@ def fit_bt(models: list[str], games: list[dict]) -> tuple[np.ndarray, np.ndarray
     # Std errors via numerical Hessian at optimum (central differences).
     h = 1e-3
     hess = np.zeros((n - 1, n - 1))
-    f0 = neg_ll(r_free)
     for i in range(n - 1):
         for j in range(i, n - 1):
             dij = np.zeros(n - 1)
@@ -179,6 +178,12 @@ def main() -> int:
     models = [models[ref_global]] + [m for i, m in enumerate(models) if i != ref_global]
     model_set = set(models)
     games = [g for g in games if g["a"] in model_set and g["b"] in model_set]
+    # Recount on the filtered set: games against dropped (< min-games) models
+    # are excluded from the fit and must not inflate the table's games column.
+    counts = defaultdict(int)
+    for g in games:
+        counts[g["a"]] += 1
+        counts[g["b"]] += 1
 
     r, se = fit_bt(models, games)
     # Convert natural log-odds to Elo (Elo = r * 400 / ln(10)).
