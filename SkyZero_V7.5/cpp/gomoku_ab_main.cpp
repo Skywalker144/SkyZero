@@ -2,11 +2,10 @@
 //
 // Loads ONE TorchScript model and plays N games against itself alternating
 // colors (A-black on even game indices, B-black on odd). A and B differ only
-// in their MCTS / inference search configs (scripts/ab/{a,b}.cfg). Both
+// in their MCTS / inference search configs (--config-a / --config-b). Both
 // sides share a single BatchedInferenceServer to halve GPU memory and
 // improve batch fill-rate. Appends one JSON line per game (model, cfg_a,
-// cfg_b, a_black, winner_a, plies) to the output file. Designed to feed
-// python/ab.py.
+// cfg_b, a_black, winner_a, plies) to the output file.
 //
 // Shares config/inference scaffolding with gomoku_elo_main.cpp.
 
@@ -125,7 +124,7 @@ static SkyZeroConfig build_mcts_cfg(
     c.c_puct_log = cfg_get<float>(m, "C_PUCT_LOG", 0.45f);
     c.c_puct_base = cfg_get<float>(m, "C_PUCT_BASE", 500.0f);
     c.fpu_pow = cfg_get<float>(m, "FPU_POW", 1.0f);
-    c.fpu_reduction_max = cfg_get<float>(m, "FPU_REDUCTION_MAX", 0.16f);
+    c.fpu_reduction_max = cfg_get<float>(m, "FPU_REDUCTION_MAX", 0.08f);
     c.fpu_loss_prop = cfg_get<float>(m, "FPU_LOSS_PROP", 0.0f);
     c.cpuct_utility_stdev_prior = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR", 0.40f);
     c.cpuct_utility_stdev_prior_weight = cfg_get<float>(m, "CPUCT_UTILITY_STDEV_PRIOR_WEIGHT", 2.0f);
@@ -134,10 +133,11 @@ static SkyZeroConfig build_mcts_cfg(
         cfg_get_bool(m, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
     c.enable_stochastic_transform_inference_for_child =
         cfg_get_bool(m, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
+    // Default false, matching every shipped cfg (all set 0 explicitly).
     c.enable_symmetry_inference_for_root =
-        cfg_get_bool(m, "ENABLE_SYMMETRY_ROOT", true);
+        cfg_get_bool(m, "ENABLE_SYMMETRY_ROOT", false);
     c.enable_symmetry_inference_for_child =
-        cfg_get_bool(m, "ENABLE_SYMMETRY_CHILD", true);
+        cfg_get_bool(m, "ENABLE_SYMMETRY_CHILD", false);
     c.root_symmetry_pruning =
         cfg_get_bool(m, "ROOT_SYMMETRY_PRUNING", true);
     c.device = device;
