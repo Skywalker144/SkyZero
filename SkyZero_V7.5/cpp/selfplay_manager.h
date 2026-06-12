@@ -112,7 +112,8 @@ public:
         const std::string& model_path,
         std::vector<torch::Device> devices
     )
-        : game_init_(game_init), cfg_(cfg), pcfg_(pcfg), devices_(std::move(devices)) {
+        : game_init_(game_init), cfg_(cfg), pcfg_(pcfg), devices_(std::move(devices)),
+          num_simulations_(cfg.num_simulations) {
         const int num_servers = std::max(1, pcfg_.num_inference_servers);
         if (static_cast<int>(devices_.size()) != num_servers) {
             throw std::runtime_error(
@@ -230,6 +231,13 @@ public:
             }
             inference_models_[i] = std::move(mod);
         }
+    }
+
+    // Daemon hot-reload channel for warmup stage changes: workers load this at
+    // the top of every move. Mutating cfg_.num_simulations cross-thread (the
+    // previous mechanism) was a data race.
+    void set_num_simulations(int v) {
+        num_simulations_.store(v, std::memory_order_relaxed);
     }
 
 private:
@@ -546,7 +554,8 @@ private:
             // fastSearch (KataGo Playout Cap Randomization, play.cpp:1076-1094)
             // and the reduceVisits soft-resign reduction are mutually exclusive
             // on a move, mirroring KataGo's if / else-if.
-            int num_simulations = cfg_.num_simulations;
+            const int full_sims = num_simulations_.load(std::memory_order_relaxed);
+            int num_simulations = full_sims;
             float step_sample_weight = 1.0f;
             bool fast_search = false;
             if (cfg_.fast_search_prob > 0.0f) {
@@ -571,7 +580,7 @@ private:
                 const int eff_min = std::max(
                     cfg_.reduced_visits_min_floor,
                     static_cast<int>(std::round(
-                        static_cast<float>(cfg_.num_simulations) * cfg_.reduced_visits_fraction
+                        static_cast<float>(full_sims) * cfg_.reduced_visits_fraction
                     ))
                 );
                 const int n_hist = static_cast<int>(historical_v_mix.size());
@@ -588,7 +597,7 @@ private:
                     if (amount_through > 0.0f) {
                         const float prop = amount_through / (1.0f - cfg_.soft_resign_threshold);
                         const float vrp = prop * prop;
-                        const float full = static_cast<float>(cfg_.num_simulations);
+                        const float full = static_cast<float>(full_sims);
                         num_simulations = static_cast<int>(std::round(full + vrp * (eff_min - full)));
                         num_simulations = std::max(num_simulations, eff_min);
                         step_sample_weight = 1.0f + vrp * (cfg_.soft_resign_sample_weight - 1.0f);
@@ -653,7 +662,7 @@ private:
                         auto fs = game_.get_next_state_canvas(state, fork_action, to_play);
                         if (!game_.is_terminal_canvas(fs, fork_action, to_play)) {
                             const int side_sims = cfg_.side_position_visits > 0
-                                ? cfg_.side_position_visits : cfg_.num_simulations;
+                                ? cfg_.side_position_visits : full_sims;
 
                             // Search a forked position, emit a side-position row,
                             // and return its search output (for the continuation).
@@ -915,6 +924,7 @@ private:
 
     GameInitializer& game_init_;
     const SkyZeroConfig& cfg_;
+    std::atomic<int> num_simulations_;  // hot-reloadable copy of cfg_.num_simulations
     SelfplayParallelConfig pcfg_;
     std::vector<torch::Device> devices_;
 
