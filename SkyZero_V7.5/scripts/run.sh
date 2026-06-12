@@ -36,7 +36,10 @@ DAEMON_PID=""
 # one. Idempotent (kills an already-dead pid harmlessly). The INT/TERM handler
 # disables it (trap - ... EXIT) since it kills the daemon itself.
 trap '[[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null || true' EXIT
-trap 'trap - INT TERM EXIT; persist_runtime 2>/dev/null || true; echo "$(_tag Run) interrupted; stopping."; [[ -n "$DAEMON_PID" ]] && kill "$DAEMON_PID" 2>/dev/null; kill 0 2>/dev/null; exit 130' INT TERM
+# `trap "" INT TERM` (ignore) before `kill 0`: we are in our own process
+# group, so the group kill would otherwise SIGTERM this shell mid-trap and we
+# would die with rc=143 before reaching `exit 130`.
+trap 'trap "" INT TERM; trap - EXIT; persist_runtime 2>/dev/null || true; echo "$(_tag Run) interrupted; stopping."; kill 0 2>/dev/null; exit 130' INT TERM
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." &> /dev/null && pwd)"
@@ -163,10 +166,12 @@ mirror_active_to_models() {
     local src_meta="$DATA_DIR/nets/$active/latest.meta.json"
     local dst_pt="$DATA_DIR/models/latest.pt"
     local dst_meta="$DATA_DIR/models/latest.meta.json"
-    cp "$src_pt" "${dst_pt}.tmp" && mv "${dst_pt}.tmp" "$dst_pt"
+    # Meta first, pt last: the daemon triggers on the pt mtime and then reads
+    # the meta, so the meta must already be current when the trigger lands.
     if [[ -f "$src_meta" ]]; then
         cp "$src_meta" "${dst_meta}.tmp" && mv "${dst_meta}.tmp" "$dst_meta"
     fi
+    cp "$src_pt" "${dst_pt}.tmp" && mv "${dst_pt}.tmp" "$dst_pt"
 }
 
 # Print a card's network list with the active network moved to the front:
@@ -214,7 +219,10 @@ reap_orphan_daemon() {
 # Now that all networks have init artifacts, populate the canonical mirror
 # at data/models/ so selfplay (main + daemon) has something to load before
 # we even enter the loop.
-INITIAL_ACTIVE=$( cd "$ROOT/python" && "$PY" schedule.py active --data-dir "$DATA_DIR" 2>/dev/null )
+# `|| true`: under `set -e` a schedule.py failure would otherwise kill the
+# whole run silently (stderr is discarded here); fall back to FIRST_NET and
+# let the in-loop call at the iter top surface the real error.
+INITIAL_ACTIVE=$( cd "$ROOT/python" && "$PY" schedule.py active --data-dir "$DATA_DIR" 2>/dev/null || true )
 INITIAL_ACTIVE="${INITIAL_ACTIVE:-$FIRST_NET}"
 mirror_active_to_models "$INITIAL_ACTIVE"
 
