@@ -556,9 +556,12 @@ def main() -> int:
                 lookahead_counter = 0
                 in_between_lookaheads = False
 
-        if swa_model is not None and not in_between_lookaheads:
+        if swa_model is not None:
             swa_accum_steps += 1
-            if swa_accum_steps >= args.swa_period_steps:
+            # Accumulate every step; only the snapshot itself waits for a
+            # lookahead sync (KataGo train.py:1559-1566). Gating the counter
+            # on sync steps would silently multiply the period by LOOKAHEAD_K.
+            if swa_accum_steps >= args.swa_period_steps and not in_between_lookaheads:
                 swa_accum_steps = 0
                 swa_model.update_parameters(model)
 
