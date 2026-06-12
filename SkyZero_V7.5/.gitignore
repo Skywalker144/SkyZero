@@ -153,5 +153,8 @@ configs/*
 !configs/minimal_test/
 
 
+# Scratch experiment artifacts (run-once scripts, plots, combined jsonl)
+experiments/
+
 wallclock_sims/
 wallclock_puct_vs_gumbel/
