@@ -147,11 +147,9 @@ struct SkyZeroConfig {
     float cpuct_utility_stdev_prior_weight = 2.0f;
     float cpuct_utility_stdev_scale = 0.85f;
 
-    // Stochastic transform / symmetry at inference time
+    // Stochastic transform at inference time
     bool enable_stochastic_transform_inference_for_root = true;
     bool enable_stochastic_transform_inference_for_child = true;
-    bool enable_symmetry_inference_for_root = false;
-    bool enable_symmetry_inference_for_child = false;
 
     // KataGo-style root symmetry pruning. At root, symmetry-equivalent legal
     // moves are masked to -inf logit so only the orbit's canonical

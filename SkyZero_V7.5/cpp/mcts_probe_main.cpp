@@ -177,10 +177,6 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", true);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", true);
-        cfg.enable_symmetry_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
-        cfg.enable_symmetry_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
 
         // Probe-specific simulation budget: PROBE_NUM_SIMULATIONS in run.cfg
         // (falls back to NUM_SIMULATIONS). CLI --num-simulations still wins.

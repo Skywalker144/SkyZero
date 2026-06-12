@@ -261,11 +261,6 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
-        // Default false, matching every shipped cfg (all set 0 explicitly).
-        cfg.enable_symmetry_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
-        cfg.enable_symmetry_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
         cfg.root_symmetry_pruning =
             cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
@@ -473,8 +468,6 @@ int main(int argc, char** argv) {
                   << " search_threads=" << search_threads
                   << " leaf_batch_size=" << leaf_batch_size
                   << " batch_timeout_us=" << batch_timeout_us
-                  << " symmetry_root=" << cfg.enable_symmetry_inference_for_root
-                  << " symmetry_child=" << cfg.enable_symmetry_inference_for_child
                   << "\n";
 
         // --- Prompt human side ------------------------------------------------

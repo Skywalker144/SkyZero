@@ -404,10 +404,6 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", true);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", true);
-        cfg.enable_symmetry_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
-        cfg.enable_symmetry_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
         cfg.policy_surprise_data_weight = cfg_get<float>(cfg_map, "POLICY_SURPRISE_DATA_WEIGHT", 0.5f);
         cfg.value_surprise_data_weight = cfg_get<float>(cfg_map, "VALUE_SURPRISE_DATA_WEIGHT", 0.1f);
         cfg.balance_opening_prob = cfg_get<float>(cfg_map, "BALANCE_OPENING_PROB", 0.8f);

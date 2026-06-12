@@ -133,11 +133,6 @@ static SkyZeroConfig build_mcts_cfg(
         cfg_get_bool(m, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
     c.enable_stochastic_transform_inference_for_child =
         cfg_get_bool(m, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
-    // Default false, matching every shipped cfg (all set 0 explicitly).
-    c.enable_symmetry_inference_for_root =
-        cfg_get_bool(m, "ENABLE_SYMMETRY_ROOT", false);
-    c.enable_symmetry_inference_for_child =
-        cfg_get_bool(m, "ENABLE_SYMMETRY_CHILD", false);
     c.root_symmetry_pruning =
         cfg_get_bool(m, "ROOT_SYMMETRY_PRUNING", true);
     c.device = device;

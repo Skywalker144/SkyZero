@@ -524,13 +524,6 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
-        // Default false: every shipped cfg sets these to 0, and until V7.5 the
-        // tree-parallel engine ignored them entirely — true would silently 8x
-        // the eval cost on any cfg that omits the keys.
-        cfg.enable_symmetry_inference_for_root =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_ROOT", false);
-        cfg.enable_symmetry_inference_for_child =
-            cfg_get_bool(cfg_map, "ENABLE_SYMMETRY_CHILD", false);
         cfg.root_symmetry_pruning =
             cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
