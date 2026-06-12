@@ -251,6 +251,10 @@ class EngineSession:
             self.analyzing = False
             self.awaiting_human = True
             self.status = "Your turn"
+            # Analyze values are side-to-move (human) perspective; drop them so
+            # a later poll cannot record them into the AI-perspective chart.
+            self.root_value = None
+            self.nn_value = None
             return
         if "Invalid move" in line or "Invalid input" in line:
             self.status = line.strip()
@@ -1807,7 +1811,9 @@ async function refresh() {
     }
     renderWDL('root', state.root_value);
     renderWDL('nn', state.nn_value);
-    recordValues(state);
+    // Analyze values are side-to-move (human) perspective: recording them
+    // would overwrite the AI-perspective chart point with a sign flip.
+    if (!analyzing) recordValues(state);
     drawValueChart();
 
     draw();
@@ -2255,7 +2261,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=str(root_dir / "data" / "models" / "latest.pt"))
     ap.add_argument("--bin", default=str(root_dir / "cpp" / "build" / "gomoku_play"))
-    ap.add_argument("--config", default=str(root_dir / "scripts" / "play.cfg"))
+    ap.add_argument("--config", default=str(root_dir / "configs" / "baseline" / "play.cfg"))
     ap.add_argument("--run-config", default=str(root_dir / "configs" / "baseline" / "run.cfg"))
     ap.add_argument("--data-dir", default=str(root_dir / "data"))
     ap.add_argument("--host", default="127.0.0.1")
