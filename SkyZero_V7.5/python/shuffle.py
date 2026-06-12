@@ -30,6 +30,7 @@ import time
 
 import numpy as np
 
+from compute_selfplay_target import read_cum_rows
 from data_processing import (
     NpzBatch,
     concat_batches,
@@ -338,12 +339,24 @@ def main() -> int:
             pool.join()
         return 2
 
-    pool_size = compute_window_size(total, min_rows, exponent, expand_per_row)
-    keep = min(pool_size, keep_target_rows)
-    ratio = keep / pool_size if pool_size > 0 else 1.0
+    # The window law's N must be the CUMULATIVE run size, not what is left on
+    # disk: OOW cleanup below trims disk to ~pool_size every iter, and feeding
+    # that back into W(N) is a contraction that freezes the window near
+    # MIN_ROWS forever (KataGo shuffle.py: when older data has been deleted,
+    # the window must still be computed over the full run size). The tsv
+    # ledger can lag the newest unflushed daemon rows, so take max with disk.
+    cum_rows = max(total, read_cum_rows(data_dir / "logs" / "selfplay.tsv"))
+    pool_size = compute_window_size(cum_rows, min_rows, exponent, expand_per_row)
+    # Disk may hold fewer rows than the window (regrowth after a cleanup, or
+    # manual deletion): sample at the rate of what is actually eligible so
+    # `keep` is still reached when possible.
+    eligible = min(pool_size, total)
+    keep = min(eligible, keep_target_rows)
+    ratio = keep / eligible if eligible > 0 else 1.0
 
-    print(f"{TAG} total_rows={total} pool={pool_size} keep={keep} "
-          f"ratio={ratio:.4f} (min_rows={min_rows}, exponent={exponent}, "
+    print(f"{TAG} total_rows={total} cum_rows={cum_rows} pool={pool_size} "
+          f"eligible={eligible} keep={keep} ratio={ratio:.4f} "
+          f"(min_rows={min_rows}, exponent={exponent}, "
           f"expand_per_row={expand_per_row}, keep_target={keep_target_rows}) "
           f"discover={t_discover:.2f}s")
 
