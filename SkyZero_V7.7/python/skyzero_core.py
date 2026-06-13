@@ -26,7 +26,7 @@ Layers covered:
 
 NOT in this file (intentionally):
   * Network architecture (see python/nets.py)
-  * Stochastic D4 inference transform & root_symmetry_pruning (call site detail)
+  * Stochastic D4 inference transform (call site detail)
   * Policy-init opening tweak (minor variation on balanced opening)
   * Multi-headed parallel MCTS (thread/virtual-loss machinery is in C++)
   * Replay buffer internals & shuffle/data pipeline
