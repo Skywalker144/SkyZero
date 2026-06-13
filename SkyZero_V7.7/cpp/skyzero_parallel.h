@@ -294,11 +294,11 @@ private:
 
             std::vector<MCTSNode*> path;
             path.reserve(64);
-            root.vloss += 1;
+            root.vloss += kVirtualLossWeight;
             path.push_back(&root);
 
             MCTSNode* node = child;
-            node->vloss += 1;
+            node->vloss += kVirtualLossWeight;
             path.push_back(node);
 
             while (node->is_expanded()) {
@@ -307,7 +307,7 @@ private:
                     remove_vloss_on_path(path);
                     break;
                 }
-                node->vloss += 1;
+                node->vloss += kVirtualLossWeight;
                 path.push_back(node);
             }
             if (node == nullptr) continue;
@@ -596,7 +596,16 @@ private:
             apply_root_policy_noise_and_temperature(root, turn_number, board_area, cfg_, rng_);
         }
 
-        int sims_budget = num_simulations;
+        // KataGo total-visit-cap semantics (search.cpp:468-494): num_simulations
+        // is the total root-visit target *including* reused-tree visits, not the
+        // number of fresh playouts. Subtracting root.n (visits already in the
+        // possibly-reused tree; ==1 for a fresh root just seeded by root_expand)
+        // makes "root.n after search == num_simulations", mirroring KataGo's
+        // numNewPlayouts = maxVisits - numNonPlayoutVisits. In particular a
+        // fastSearch on a reused tree whose visits already exceed its (smaller)
+        // cap does zero new playouts and just reads the existing tree, exactly
+        // like a KataGo cheap search.
+        int sims_budget = std::max(0, num_simulations - root.n);
         while (sims_budget > 0) {
             const int before = sims_budget;
             const int chunk = std::min(leaf_batch_size_, sims_budget);
@@ -616,6 +625,7 @@ private:
             s.action = c->action_taken;
             s.n = c->n;
             s.prior = c->prior;
+            s.q_sum_sq = c->q_sum_sq;
             if (c->n > 0) {
                 const float cw = c->v[0] / static_cast<float>(c->n);
                 const float cd = c->v[1] / static_cast<float>(c->n);
@@ -632,8 +642,11 @@ private:
 
         const auto sp = compute_select_params(
             root, root.n, visited_policy_mass, cfg_, /*is_root=*/!fast_search_);
+        // Selfplay (leaf-parallel) never applies LCB: the training target must
+        // stay the pruned-visit distribution and the played move must match it.
         auto pr = puct_root_assemble(
-            stats, action_size, sp.explore_scaling, turn_number, board_area, cfg_, rng_);
+            stats, action_size, sp.explore_scaling, turn_number, board_area, cfg_, rng_,
+            /*use_lcb=*/false);
 
         out.mcts_policy = std::move(pr.target_policy);
         out.gumbel_action = pr.chosen_action;
@@ -654,14 +667,14 @@ private:
 
     static void remove_vloss_on_path(const std::vector<MCTSNode*>& path) {
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
-            if ((*it)->vloss > 0) (*it)->vloss -= 1;
+            if ((*it)->vloss > 0) (*it)->vloss -= kVirtualLossWeight;
         }
     }
 
     static void backpropagate_path_with_vloss(const std::vector<MCTSNode*>& path, std::array<float, 3> value) {
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             (*it)->update(value);
-            (*it)->vloss -= 1;
+            (*it)->vloss -= kVirtualLossWeight;
             value = flip_wdl(value);
         }
     }
