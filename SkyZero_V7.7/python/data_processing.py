@@ -7,7 +7,7 @@ NPZ schema (V5; written by C++ selfplay, read by Python):
     opponent_policy_target: float32,(N, H*W)
     opponent_policy_mask:   float32,(N,)
     value_target:           float32,(N, 3)    # bootstrapped WDL
-    td_value_target:        float32,(N, 9)    # 3 horizons (long/mid/short) × WLD
+    td_value_target:        float32,(N, 9)    # 3 horizons (long/mid/short) × WDL
     futurepos_target:       int8,   (N, 2, H, W)  # +8 / +32 step occupancy {-1,0,+1}
     futurepos_mask:         float32,(N,)   # 0 = off-line side row (skip futurepos loss)
     sample_weight:          float32,(N,)
