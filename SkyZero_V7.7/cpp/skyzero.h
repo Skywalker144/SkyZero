@@ -82,6 +82,13 @@ struct SkyZeroConfig {
     float chosen_move_temperature_early = 0.0f;         // chosenMoveTemperatureEarly
     float chosen_move_temperature_halflife = 19.0f;     // chosenMoveTemperatureHalflife (19×19-equivalent turns)
 
+    // useLcbForSelection — pick the final move by lower-confidence-bound among
+    // adequately-visited root children (KataGo getPlaySelectionValues). EVAL /
+    // PLAY ONLY: only the tree-parallel backend consults this; leaf-parallel
+    // selfplay always passes use_lcb=false, so selfplay data is never affected.
+    // Only active when root_search_algo == kPuct (gumbel root never assembles).
+    bool lcb_for_selection = true;
+
     void validate() const {
         if (root_search_algo == RootSearchAlgo::kPuct &&
             non_root_search_algo == NonRootSearchAlgo::kGumbel) {
@@ -209,6 +216,13 @@ struct SelfplayParallelConfig {
 // ---------------------------------------------------------------------------
 // MCTS Node
 // ---------------------------------------------------------------------------
+// Virtual-loss weight: how many "losses" each in-flight visit charges to a node
+// during parallel descent (KataGo numVirtualLossesPerThread = 3). The vloss
+// counter is bumped by this amount per in-flight visit, so every score formula
+// that reads `n + vloss` / `(v[2]-v[0]) - vloss` picks up the weighting with no
+// further change.
+constexpr int kVirtualLossWeight = 3;
+
 struct MCTSNode {
     std::vector<int8_t> state;
     int to_play = 1;
@@ -224,7 +238,7 @@ struct MCTSNode {
     std::array<float, 3> v{0.0f, 0.0f, 0.0f};
     int n = 0;
     float q_sum_sq = 0.0f;   // Σ u_i² where u_i = value[2]-value[0] per backup; feeds variance-scaled cpuct in compute_select_params.
-    int vloss = 0;
+    int vloss = 0;           // in-flight virtual losses, in units of kVirtualLossWeight
 
     MCTSNode() = default;
     MCTSNode(std::vector<int8_t> s, int p,
@@ -566,6 +580,7 @@ struct PuctRootChildStat {
     float q = 0.0f;                     // root-perspective mean utility (W−L); valid when n > 0
     float prior = 0.0f;                 // selection prior (post noise/temperature)
     std::array<float, 3> wdl{0.0f, 0.0f, 0.0f};  // root-perspective mean W,D,L
+    float q_sum_sq = 0.0f;              // Σ u_i² (u = value[2]-value[0]) for the LCB variance estimate
 };
 
 struct PuctRootMoveResult {
@@ -584,6 +599,11 @@ struct PuctRootMoveResult {
 //      relative probabilities for temperature move sampling.
 // explore_scaling comes from compute_select_params(root, root.n, ..., is_root)
 // at the final root state.
+// use_lcb (eval/play only — leaf-parallel selfplay passes false): after the
+// pruned-visit target_policy is fixed, re-pick the chosen move by KataGo's
+// lower-confidence-bound rule (getPlaySelectionValues + getSelfUtilityLCBAnd
+// Radius). Only the chosen move shifts; target_policy stays the visit
+// distribution, so selfplay data is unaffected even if it were ever set true.
 inline PuctRootMoveResult puct_root_assemble(
     const std::vector<PuctRootChildStat>& stats,
     int action_size,
@@ -591,7 +611,8 @@ inline PuctRootMoveResult puct_root_assemble(
     int turn_number,
     int board_area,
     const SkyZeroConfig& cfg,
-    std::mt19937& rng
+    std::mt19937& rng,
+    bool use_lcb
 ) {
     PuctRootMoveResult out;
     out.target_policy.assign(static_cast<size_t>(action_size), 0.0f);
@@ -650,6 +671,73 @@ inline PuctRootMoveResult puct_root_assemble(
         const int a = stats[i].action;
         if (a >= 0 && a < action_size) {
             out.target_policy[static_cast<size_t>(a)] = w[i] / w_sum;
+        }
+    }
+
+    // LCB move selection (eval/play only — runs AFTER target_policy is fixed, so
+    // the training target stays the pure pruned-visit distribution). Mirrors
+    // KataGo getPlaySelectionValues (searchresults.cpp:197-243) + getSelfUtility
+    // LCBAndRadius (searchhelpers.cpp:555-598), specialized to SkyZero's WDL-only
+    // utility (no score head → no scoreMean/scoreUtility terms, unit per-visit
+    // weights → weightSum == weightSqSum == n). Bumps the best lower-confidence-
+    // bound child's selection weight so it wins the argmax / temperature draw.
+    if (use_lcb) {
+        constexpr float kLcbStdevs = 4.0f;            // KataGo lcbStdevs
+        constexpr float kMinVisitPropForLCB = 0.05f;  // KataGo minVisitPropForLCB
+        constexpr float kUtilityRangeRadius = 1.0f;   // winLossUtilityFactor; WDL utility ∈ [−1,1]
+
+        auto child_lcb_radius = [&](const PuctRootChildStat& s,
+                                    float& out_lcb, float& out_radius) {
+            out_radius = 2.0f * kUtilityRangeRadius * kLcbStdevs;
+            out_lcb = -out_radius;
+            if (s.n <= 0) return;
+            float weight_sum = static_cast<float>(s.n);     // unit per-visit weights
+            float weight_sq_sum = static_cast<float>(s.n);
+            float ess = weight_sum * weight_sum / weight_sq_sum;
+            const float utility_avg = s.q;                  // root-perspective mean
+            float utility_sq_avg = s.q_sum_sq / static_cast<float>(s.n);
+            // KataGo low-visit prior: add a small-weight prior that the variance
+            // is the largest it can be, so the radius behaves at tiny sample sizes.
+            const float prior_weight = weight_sum / (ess * ess * ess);
+            utility_sq_avg = std::max(utility_sq_avg, utility_avg * utility_avg + 1e-8f);
+            utility_sq_avg = (utility_sq_avg * weight_sum
+                              + (utility_sq_avg + kUtilityRangeRadius * kUtilityRangeRadius) * prior_weight)
+                             / (weight_sum + prior_weight);
+            weight_sum += prior_weight;
+            weight_sq_sum += prior_weight * prior_weight;
+            ess = weight_sum * weight_sum / weight_sq_sum;
+            const float variance = std::max(0.0f, utility_sq_avg - utility_avg * utility_avg);
+            out_radius = std::sqrt(variance / ess) * kLcbStdevs;
+            out_lcb = utility_avg - out_radius;
+        };
+
+        std::vector<float> lcb(stats.size(), 0.0f);
+        std::vector<float> radius(stats.size(), 0.0f);
+        float best_lcb = -1e10f;
+        int best_lcb_i = -1;
+        for (size_t i = 0; i < stats.size(); ++i) {
+            child_lcb_radius(stats[i], lcb[i], radius[i]);
+            // Eligible for "best LCB" only with enough pruned weight (KataGo gates
+            // on minVisitPropForLCB * nonLCBBestChildWeight; w_max is that best).
+            if (w[i] > 0.0f && w[i] >= kMinVisitPropForLCB * w_max && lcb[i] > best_lcb) {
+                best_lcb = lcb[i];
+                best_lcb_i = static_cast<int>(i);
+            }
+        }
+        if (best_lcb_i >= 0) {
+            float adjusted = w[static_cast<size_t>(best_lcb_i)];
+            for (size_t i = 0; i < stats.size(); ++i) {
+                if (static_cast<int>(i) == best_lcb_i) continue;
+                const float excess = best_lcb - lcb[i];
+                if (excess < 0.0f) continue;  // this child's gate failed, not actually better
+                // How much wider would i's radius have to be before its lcb loses?
+                // That factor² is the extra weight the best-lcb child deserves.
+                const float radius_factor = (radius[i] + excess) / (radius[i] + 0.20f * excess);
+                const float lbound = radius_factor * radius_factor * w[i];
+                if (lbound > adjusted) adjusted = lbound;
+            }
+            w[static_cast<size_t>(best_lcb_i)] = adjusted;
+            w_max = std::max(w_max, adjusted);
         }
     }
 
