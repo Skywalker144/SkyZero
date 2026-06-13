@@ -524,8 +524,6 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
-        cfg.root_symmetry_pruning =
-            cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
 
         // Balanced random opening (KataGomo randomopening.cpp). For Elo we
         // want match-mode strictness: exponent 10 (vs selfplay's 4), 100% of
