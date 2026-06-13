@@ -107,6 +107,7 @@ static SkyZeroConfig build_mcts_cfg(
         cfg_get<std::string>(m, "NON_ROOT_SEARCH_ALGO", "puct"));
     c.root_search_algo = SkyZeroConfig::parse_root_search_algo(
         cfg_get<std::string>(m, "ROOT_SEARCH_ALGO", "gumbel"));
+    c.lcb_for_selection = cfg_get_bool(m, "ROOT_LCB_SELECTION", true);
     // PUCT-root knobs, match-mode defaults: no Dirichlet noise, no forced
     // playouts, argmax move selection (temperature 0).
     c.root_noise_enabled = cfg_get_bool(m, "ROOT_NOISE_ENABLED", false);
