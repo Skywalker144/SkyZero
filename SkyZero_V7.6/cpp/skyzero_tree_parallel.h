@@ -526,32 +526,6 @@ private:
         }
     }
 
-    static std::vector<float> undo_transform_flat(
-        const std::vector<float>& transformed,
-        int board_size,
-        int k,
-        bool do_flip
-    ) {
-        std::vector<float> out(transformed.size(), 0.0f);
-        for (int r = 0; r < board_size; ++r) {
-            for (int c = 0; c < board_size; ++c) {
-                int rr = r;
-                int cc = c;
-                for (int t = 0; t < k; ++t) {
-                    const int nr = board_size - 1 - cc;
-                    const int nc = rr;
-                    rr = nr;
-                    cc = nc;
-                }
-                if (do_flip) {
-                    cc = board_size - 1 - cc;
-                }
-                out[r * board_size + c] = transformed[rr * board_size + cc];
-            }
-        }
-        return out;
-    }
-
     // Expand a node under the caller's ownership of its stripe mutex.
     // REQUIRES: caller already locked node_mutex(node) AND node is unexpanded.
     void expand_with_locked(const InferenceResult& ir, MCTSNode& node) {
