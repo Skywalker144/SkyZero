@@ -265,8 +265,6 @@ int main(int argc, char** argv) {
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_ROOT", false);
         cfg.enable_stochastic_transform_inference_for_child =
             cfg_get_bool(cfg_map, "ENABLE_STOCHASTIC_TRANSFORM_CHILD", false);
-        cfg.root_symmetry_pruning =
-            cfg_get_bool(cfg_map, "ROOT_SYMMETRY_PRUNING", true);
         cfg.enable_tree_reuse = cfg_get_bool(cfg_map, "ENABLE_TREE_REUSE", true);
 
         if (cli.num_simulations_override >= 0) cfg.num_simulations = cli.num_simulations_override;
@@ -556,16 +554,6 @@ int main(int argc, char** argv) {
                 }
                 cfg.gumbel_noise_enabled = (v == 1);
                 std::cout << "[setting] gumbel_noise_enabled=" << v << "\n";
-                return true;
-            }
-            if (kw == "prune") {
-                int v = -1;
-                if (!(iss >> v) || (v != 0 && v != 1)) {
-                    std::cout << "Invalid input: prune requires 0 or 1.\n";
-                    return true;
-                }
-                cfg.root_symmetry_pruning = (v == 1);
-                std::cout << "[setting] root_symmetry_pruning=" << v << "\n";
                 return true;
             }
             return false;
