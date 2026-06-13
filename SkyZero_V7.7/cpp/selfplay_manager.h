@@ -834,7 +834,7 @@ private:
         }
 
         // KataGomo-aligned TD(λ) value targets and futurepos targets.
-        // TD: 3 horizons (long/mid/short) × WLD. Reverse-recursion equivalent
+        // TD: 3 horizons (long/mid/short) × WDL. Reverse-recursion equivalent
         //     to KataGomo's fillValueTDTargets:
         //       T(anchor) = outcome  (virtual extra slot beyond N-1)
         //       T(i)      = nf*v_mix[i] + (1-nf)*flip(T(i+1))   for i ∈ [0, N-1]
