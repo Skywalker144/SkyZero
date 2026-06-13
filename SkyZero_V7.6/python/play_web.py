@@ -376,6 +376,7 @@ class EngineSession:
             self.analyze_sims = None
             self.search_sims = None
             self.value_persp = None
+            self.analysis_mode = False
             self.awaiting_human = False
             self.last_move_winrate = None
             self.last_move_winrate_rc = None
