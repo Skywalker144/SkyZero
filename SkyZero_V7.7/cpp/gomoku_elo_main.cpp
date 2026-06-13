@@ -494,6 +494,7 @@ int main(int argc, char** argv) {
             cfg_get<std::string>(cfg_map, "NON_ROOT_SEARCH_ALGO", "puct"));
         cfg.root_search_algo = SkyZeroConfig::parse_root_search_algo(
             cfg_get<std::string>(cfg_map, "ROOT_SEARCH_ALGO", "gumbel"));
+        cfg.lcb_for_selection = cfg_get_bool(cfg_map, "ROOT_LCB_SELECTION", true);
         // PUCT-root knobs, match-mode defaults: no Dirichlet noise, no forced
         // playouts, argmax move selection (temperature 0).
         cfg.root_noise_enabled = cfg_get_bool(cfg_map, "ROOT_NOISE_ENABLED", false);
