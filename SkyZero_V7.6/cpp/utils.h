@@ -82,6 +82,36 @@ inline std::vector<int8_t> transform_encoded_state(
     return out;
 }
 
+// Inverse of the flat policy transform: maps a transformed single-plane policy
+// (board_size x board_size, row-major) back to the original orientation. Paired
+// with transform_encoded_state's forward dihedral transform; used to undo the
+// stochastic root transform on NN logits. Hoisted from the two MCTS backends.
+inline std::vector<float> undo_transform_flat(
+    const std::vector<float>& transformed,
+    int board_size,
+    int k,
+    bool do_flip
+) {
+    std::vector<float> out(transformed.size(), 0.0f);
+    for (int r = 0; r < board_size; ++r) {
+        for (int c = 0; c < board_size; ++c) {
+            int rr = r;
+            int cc = c;
+            for (int t = 0; t < k; ++t) {
+                const int nr = board_size - 1 - cc;
+                const int nc = rr;
+                rr = nr;
+                cc = nc;
+            }
+            if (do_flip) {
+                cc = board_size - 1 - cc;
+            }
+            out[r * board_size + c] = transformed[rr * board_size + cc];
+        }
+    }
+    return out;
+}
+
 }  // namespace skyzero
 
 #endif
