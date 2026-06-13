@@ -390,8 +390,7 @@ private:
         const std::vector<int8_t>& state,
         int to_play,
         bool use_stochastic_transform,
-        std::mt19937* local_rng,
-        bool is_root
+        std::mt19937* local_rng
     ) {
         auto encoded = game_.encode_state_v5(state, to_play);   // V5: 5-plane padded
         int k = 0;
@@ -432,9 +431,7 @@ private:
             logits = undo_transform_flat(logits, Game::MAX_BOARD_SIZE, k, do_flip);
         }
 
-        const auto legal = (is_root && cfg_.root_symmetry_pruning)
-            ? game_.get_canonical_legal_actions_canvas(state, to_play)
-            : game_.get_is_legal_actions_canvas(state, to_play);
+        const auto legal = game_.get_is_legal_actions_canvas(state, to_play);
         for (size_t i = 0; i < logits.size(); ++i) {
             if (i >= legal.size() || !legal[i]) {
                 logits[i] = -std::numeric_limits<float>::infinity();
@@ -554,8 +551,7 @@ private:
         const auto ir = inference(
             node.state, node.to_play,
             cfg_.enable_stochastic_transform_inference_for_root,
-            /*local_rng=*/&rng_,
-            /*is_root=*/true
+            /*local_rng=*/&rng_
         );
         std::lock_guard<std::mutex> lk(node_mutex(&node));
         expand_with_locked(ir, node);
@@ -806,8 +802,7 @@ private:
             ir = inference(
                 node->state, node->to_play,
                 cfg_.enable_stochastic_transform_inference_for_child,
-                &local_rng,
-                /*is_root=*/false
+                &local_rng
             );
         } catch (...) {
             finish_expansion(node);
@@ -845,10 +840,9 @@ private:
         if (logits.size() != static_cast<size_t>(action_size)) {
             logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
         }
-        // Derive legal mask from masked logits so root_symmetry_pruning (which
-        // sets non-canonical positions to -inf during root_expand) is honored
-        // here too, and so this mask never disagrees with what expand_with
-        // actually built children for.
+        // Derive the legal mask from the masked logits (root_expand already
+        // set illegal positions to -inf), so this mask never disagrees with
+        // what expand_with actually built children for.
         std::vector<uint8_t> is_legal(static_cast<size_t>(action_size), 0);
         for (int a = 0; a < action_size && a < static_cast<int>(logits.size()); ++a) {
             if (logits[a] > -std::numeric_limits<float>::infinity()) {
