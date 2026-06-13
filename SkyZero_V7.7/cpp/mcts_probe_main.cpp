@@ -142,6 +142,7 @@ int main(int argc, char** argv) {
         // without this, a ROOT_SEARCH_ALGO=puct arm probes with a gumbel root.
         cfg.root_search_algo = SkyZeroConfig::parse_root_search_algo(
             cfg_get<std::string>(cfg_map, "ROOT_SEARCH_ALGO", "gumbel"));
+        cfg.lcb_for_selection = cfg_get_bool(cfg_map, "ROOT_LCB_SELECTION", true);
         cfg.gumbel_noise_enabled = cfg_get_bool(cfg_map, "GUMBEL_NOISE_ENABLED", true);
         {
             const int mbs = cfg.board_size;
