@@ -693,13 +693,13 @@ private:
 
     void add_vloss(MCTSNode* n) {
         std::lock_guard<std::mutex> lk(node_mutex(n));
-        n->vloss += 1;
+        n->vloss += kVirtualLossWeight;
     }
 
     void remove_vloss_path(const std::vector<MCTSNode*>& path) {
         for (auto it = path.rbegin(); it != path.rend(); ++it) {
             std::lock_guard<std::mutex> lk(node_mutex(*it));
-            if ((*it)->vloss > 0) (*it)->vloss -= 1;
+            if ((*it)->vloss > 0) (*it)->vloss -= kVirtualLossWeight;
         }
     }
 
@@ -710,7 +710,7 @@ private:
             {
                 std::lock_guard<std::mutex> lk(node_mutex(*it));
                 (*it)->update(value);
-                if ((*it)->vloss > 0) (*it)->vloss -= 1;
+                if ((*it)->vloss > 0) (*it)->vloss -= kVirtualLossWeight;
             }
             value = flip_wdl(value);
         }
@@ -1061,6 +1061,7 @@ private:
             {
                 std::lock_guard<std::mutex> lk(node_mutex(c));
                 s.n = c->n;
+                s.q_sum_sq = c->q_sum_sq;
                 if (c->n > 0) {
                     const float cw = c->v[0] / static_cast<float>(c->n);
                     const float cd = c->v[1] / static_cast<float>(c->n);
@@ -1089,7 +1090,8 @@ private:
         const auto sp = compute_select_params(
             snap, snap.n, visited_policy_mass, cfg_, /*is_root=*/!fast_search_);
         auto pr = puct_root_assemble(
-            stats, action_size, sp.explore_scaling, turn_number, board_area, cfg_, rng_);
+            stats, action_size, sp.explore_scaling, turn_number, board_area, cfg_, rng_,
+            cfg_.lcb_for_selection);
 
         out.mcts_policy = std::move(pr.target_policy);
         out.gumbel_action = pr.chosen_action;
