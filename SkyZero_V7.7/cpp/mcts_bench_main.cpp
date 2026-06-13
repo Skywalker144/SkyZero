@@ -181,6 +181,7 @@ int main(int argc, char** argv) {
             cfg_get<std::string>(cfg_map, "NON_ROOT_SEARCH_ALGO", "puct"));
         cfg.root_search_algo = SkyZeroConfig::parse_root_search_algo(
             cfg_get<std::string>(cfg_map, "ROOT_SEARCH_ALGO", "gumbel"));
+        cfg.lcb_for_selection = cfg_get_bool(cfg_map, "ROOT_LCB_SELECTION", true);
         cfg.validate();
         cfg.gumbel_noise_enabled = false;   // bench → deterministic
         cfg.c_puct = cfg_get<float>(cfg_map, "C_PUCT", 1.1f);
