@@ -406,12 +406,7 @@ private:
             logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
         }
 
-        // Mirror TreeParallelMCTS: honor root_symmetry_pruning at the Gumbel root
-        // too, so a future ROOT_SYMMETRY_PRUNING=1 prunes non-canonical root moves
-        // here as well (currently off in all shipped cfgs -> no behavior change).
-        const auto is_legal = cfg_.root_symmetry_pruning
-            ? game_.get_canonical_legal_actions_canvas(root.state, root.to_play)
-            : game_.get_is_legal_actions_canvas(root.state, root.to_play);
+        const auto is_legal = game_.get_is_legal_actions_canvas(root.state, root.to_play);
 
         // Gumbel noise (mirrors TreeParallelMCTS: zero vector when disabled
         // collapses to argmax-on-prior at the root, used by deterministic
