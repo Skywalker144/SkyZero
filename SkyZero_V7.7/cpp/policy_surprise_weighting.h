@@ -20,7 +20,7 @@ namespace skyzero {
 // TrainSample — written to NPZ files and consumed by Python training.
 // V5: state is 5-plane padded V5 encoding; global_features is 12-dim.
 //
-// td_value_target: 3 horizons (long/mid/short) × 3 WLD probs, KataGomo TD(λ)
+// td_value_target: 3 horizons (long/mid/short) × 3 WDL probs, KataGomo TD(λ)
 // sweep with nowFactor = 1/(1 + boardArea * c) for c ∈ {0.176, 0.056, 0.016}.
 // Layout: long[0:3], mid[3:6], short[6:9]; each = (P(W), P(D), P(L)) from
 // to_play perspective.
@@ -36,7 +36,7 @@ struct TrainSample {
     std::vector<float> policy_target;
     std::vector<float> opponent_policy_target;
     std::array<float, 3> value_target{0.0f, 0.0f, 0.0f};
-    std::array<float, 9> td_value_target{};                 // 3 horizons × WLD
+    std::array<float, 9> td_value_target{};                 // 3 horizons × WDL
     std::vector<int8_t> futurepos_target;                   // 2*MAX_AREA int8
     float sample_weight = 1.0f;
     bool has_opponent_policy = true;  // false for the last position in a game
