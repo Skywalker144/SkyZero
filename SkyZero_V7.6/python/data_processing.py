@@ -69,6 +69,13 @@ class NpzBatch:
 
 def load_npz(path: str | pathlib.Path) -> NpzBatch:
     with np.load(path) as f:
+        # Schema guard: surface a C++<->Python npz drift as one clear error that
+        # names every missing column, instead of failing on the first f["..."]
+        # access. futurepos_mask is optional (pre-side-position npz lack it; it
+        # is defaulted below), so it is excluded from the required set.
+        missing = [k for k in NPZ_KEYS if k != "futurepos_mask" and k not in f.files]
+        if missing:
+            raise KeyError(f"npz {path} missing columns {missing} (schema drift vs NPZ_KEYS)")
         state = np.asarray(f["state"], dtype=np.int8)
         # Backward compat: npz written before the side-position feature has no
         # futurepos_mask column → default to all-ones (train futurepos as before).
