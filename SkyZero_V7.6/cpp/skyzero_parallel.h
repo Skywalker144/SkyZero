@@ -78,7 +78,7 @@ public:
             auto pair = root_expand(*root);
             nn_policy = pair.first;
             nn_value_probs = pair.second;
-            backpropagate(root.get(), nn_value_probs);
+            root->update(nn_value_probs);  // seed root stats; root has no parent (path backups go through backpropagate_path_with_vloss)
         } else {
             nn_policy = root->nn_policy;
             nn_value_probs = root->nn_value_probs;
@@ -129,32 +129,6 @@ private:
         int gumbel_action = -1;
         std::array<float, 3> v_mix{0.0f, 1.0f, 0.0f};
     };
-
-    static std::vector<float> undo_transform_flat(
-        const std::vector<float>& transformed,
-        int board_size,
-        int k,
-        bool do_flip
-    ) {
-        std::vector<float> out(transformed.size(), 0.0f);
-        for (int r = 0; r < board_size; ++r) {
-            for (int c = 0; c < board_size; ++c) {
-                int rr = r;
-                int cc = c;
-                for (int t = 0; t < k; ++t) {
-                    const int nr = board_size - 1 - cc;
-                    const int nc = rr;
-                    rr = nr;
-                    cc = nc;
-                }
-                if (do_flip) {
-                    cc = board_size - 1 - cc;
-                }
-                out[r * board_size + c] = transformed[rr * board_size + cc];
-            }
-        }
-        return out;
-    }
 
     InferenceResult inference(
         const std::vector<int8_t>& state,
@@ -432,7 +406,12 @@ private:
             logits.assign(static_cast<size_t>(action_size), -std::numeric_limits<float>::infinity());
         }
 
-        const auto is_legal = game_.get_is_legal_actions_canvas(root.state, root.to_play);
+        // Mirror TreeParallelMCTS: honor root_symmetry_pruning at the Gumbel root
+        // too, so a future ROOT_SYMMETRY_PRUNING=1 prunes non-canonical root moves
+        // here as well (currently off in all shipped cfgs -> no behavior change).
+        const auto is_legal = cfg_.root_symmetry_pruning
+            ? game_.get_canonical_legal_actions_canvas(root.state, root.to_play)
+            : game_.get_is_legal_actions_canvas(root.state, root.to_play);
 
         // Gumbel noise (mirrors TreeParallelMCTS: zero vector when disabled
         // collapses to argmax-on-prior at the root, used by deterministic
@@ -689,14 +668,6 @@ private:
             (*it)->update(value);
             (*it)->vloss -= 1;
             value = flip_wdl(value);
-        }
-    }
-
-    static void backpropagate(MCTSNode* node, std::array<float, 3> value) {
-        while (node != nullptr) {
-            node->update(value);
-            value = flip_wdl(value);
-            node = node->parent;
         }
     }
 
