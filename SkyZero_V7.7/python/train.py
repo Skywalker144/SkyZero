@@ -125,7 +125,7 @@ def weighted_td_value_ce(
 ) -> torch.Tensor:
     """Multi-horizon TD value loss (KataGomo metrics_pytorch.py:73-79).
 
-    pred_logits / target_probs: (B, 3, 3) — 3 horizons (long/mid/short) × WLD.
+    pred_logits / target_probs: (B, 3, 3) — 3 horizons (long/mid/short) × WDL.
     Per horizon: CE - H(target). Returns sample-weighted mean over batch.
     """
     log_p = F.log_softmax(pred_logits, dim=-1)               # (B, 3, 3)
