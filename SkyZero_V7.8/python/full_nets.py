@@ -1,0 +1,780 @@
+"""KataGo b28c512nbt v15 完整网络 — 参考 / 全 head 版本.
+
+⚠️ 实际训练用的是 `nets.py`（slim 版，只保留实际接 loss 的 head）。
+本模块保留所有 head 与原版对齐，便于：
+  - 将来载入 KataGo 公开 ckpt 做迁移学习（head 维度需匹配）
+  - 验证 slim 与 full 在共享部分行为一致（tests 打这个文件）
+  - 哪天打开 ownership / st_error / var_time / opt_policy 时不用重写
+
+参考: KataGoModel/model.py (lightvector/KataGo master 对齐)
+基础设计: norm_kind=fixscaleonenorm, trunk_normless=True, bnorm_use_gamma=True,
+         gamma_weight_decay_center_1=True, use_repvgg_init=True, version=15.
+
+使用:
+    from full_nets import build_b8c96, build_b12c128
+
+    # (A) 从零训
+    model = build_b8c96()
+    model.initialize()           # 必调一次
+
+    # (B) 加载 ckpt
+    model.load_state_dict(state_dict, strict=True)
+    model.set_norm_scales()      # 必调一次 (scale 不在 state_dict)
+
+forward 签名: model(input_spatial, input_global) → Dict[str, Tensor]
+返回 dict 平铺所有输出 (适合 torch.jit.trace):
+    policy:                     (B, 6, H*W)         # main/aux/soft/soft_aux/opt/opp
+    value_wdl:                  (B, 3)              # W/D/L logits (index 1 = draw)
+    value_td:                   (B, 9)              # 3 horizons (long/mid/short) × 3 wdl
+    value_st_error:             (B, 1)              # shortterm value pred error
+    value_var_time:             (B, 1)              # variance time (placeholder)
+    value_ownership:            (B, 1, H, W)        # 终局每格 ±1
+    value_futurepos:            (B, 2, H, W)        # +N / +2N 步占据
+    intermediate_*:             同上 (when has_intermediate_head=True)
+
+陷阱（NOTES.md §3）:
+1. NestedBottleneckResBlock.forward 只返残差; 调用方 out + block(out)
+2. gamma 张量是 delta, forward 必须 (gamma + 1)
+3. NormMask.scale 是 plain Python float, 不在 state_dict
+"""
+from __future__ import annotations
+
+import math
+from typing import Optional, Tuple, List, Dict, Any
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# ============================================================
+# 归一化层
+# ============================================================
+
+class FixscaleNorm(nn.Module):
+    """fixscaleonenorm 下非-last 归一化层.
+
+    forward (gamma_center_one=True):  out = (x * (gamma + 1) * scale + beta) [* mask]
+    forward (gamma_center_one=False): out = (x *  gamma      * scale + beta) [* mask]
+    其中 scale 由 set_scale() 设置 (None 时省略), gamma_center_one 由
+    KataGoNet.set_gamma_center_one() 统一设置 (默认 True).
+    gamma 初始化为 0 — 配合 center_one=True (gamma_weight_decay_center_1, weight decay 推向 0).
+    """
+
+    def __init__(self, num_channels: int, use_gamma: bool = True) -> None:
+        super().__init__()
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        if use_gamma:
+            self.gamma = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        else:
+            self.gamma = None
+        self.scale: Optional[float] = None
+        # True → (gamma+1)*scale (gamma 中心 0, 当代 KataGo/b40/自家训练);
+        # False → gamma*scale (gamma 中心 1, 旧约定如官方 b28c512nbt).
+        self.gamma_center_one: bool = True
+
+    def set_scale(self, scale: Optional[float]) -> None:
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if self.gamma is not None:
+            g = self.gamma + 1.0 if self.gamma_center_one else self.gamma
+            if self.scale is not None:
+                out = x * (g * self.scale) + self.beta
+            else:
+                out = x * g + self.beta
+        else:
+            if self.scale is not None:
+                out = x * self.scale + self.beta
+            else:
+                out = x + self.beta
+        if mask is not None:
+            out = out * mask
+        return out
+
+
+class BiasMask(nn.Module):
+    """trunk_normless=True 下 trunk-final 的 normless-bias 层.
+
+    forward: out = (x * scale + beta) [* mask]
+    """
+
+    def __init__(self, num_channels: int) -> None:
+        super().__init__()
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.scale: Optional[float] = None
+
+    def set_scale(self, scale: Optional[float]) -> None:
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if self.scale is not None:
+            out = x * self.scale + self.beta
+        else:
+            out = x + self.beta
+        if mask is not None:
+            out = out * mask
+        return out
+
+
+class LastBatchNorm(nn.Module):
+    """fixscaleonenorm 全网唯一的 batchnorm: 用在 intermediate head 入口.
+
+    训练: mask-aware mini-batch mean/std + running 统计量 EMA 更新.
+    推理: running stats.
+    """
+
+    def __init__(self, num_channels: int, eps: float = 1e-4, momentum: float = 0.001) -> None:
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, num_channels, 1, 1))
+        self.register_buffer("running_mean", torch.zeros(num_channels))
+        self.register_buffer("running_std", torch.ones(num_channels))
+        self.eps = eps
+        self.momentum = momentum
+        self.scale: Optional[float] = None
+        self.gamma_center_one: bool = True  # 见 FixscaleNorm 同名属性
+
+    def set_scale(self, scale: Optional[float]) -> None:
+        self.scale = scale
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        c = x.shape[1]
+        if self.training:
+            mask_sum = mask.sum()
+            mean = (x * mask).sum(dim=(0, 2, 3), keepdim=True) / mask_sum
+            zeromean_x = x - mean
+            var = ((zeromean_x * mask) ** 2).sum(dim=(0, 2, 3), keepdim=True) / mask_sum
+            std = (var + self.eps).sqrt()
+            with torch.no_grad():
+                self.running_mean.add_(self.momentum * (mean.view(c).detach() - self.running_mean))
+                self.running_std.add_(self.momentum * (std.view(c).detach() - self.running_std))
+            normed = zeromean_x / std
+        else:
+            normed = (x - self.running_mean.view(1, c, 1, 1)) / self.running_std.view(1, c, 1, 1)
+        g = self.gamma + 1.0 if self.gamma_center_one else self.gamma
+        if self.scale is not None:
+            out = normed * (g * self.scale) + self.beta
+        else:
+            out = normed * g + self.beta
+        return out * mask
+
+
+# ============================================================
+# 池化模块
+# ============================================================
+
+class KataGPool(nn.Module):
+    """3 个统计量: mean, mean * board_factor, max.
+
+    board_factor = (sqrt(mask_sum_hw) - 14) / 10 — 让网络对棋盘大小有显式感知.
+    15×15 时退化为 0.1 (常数).
+    """
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if mask_sum_hw is None:
+            mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
+        sqrt_off = torch.sqrt(mask_sum_hw) - 14.0
+        # Preserve input dtype for fp16 inference compatibility (downstream linear_g
+        # weight is in input dtype). KataGoModel used fp32 here for precision under
+        # an fp32-only model; SkyZero's selfplay casts the whole module to half.
+        layer_mean = torch.sum(x * mask, dim=(2, 3), keepdim=True) / mask_sum_hw
+        layer_max = (x + (mask - 1.0)).amax(dim=(2, 3), keepdim=True)
+        return torch.cat((
+            layer_mean,
+            layer_mean * (sqrt_off / 10.0),
+            layer_max,
+        ), dim=1)
+
+
+class KataValueHeadGPool(nn.Module):
+    """Value head 专用 GPool: 3 个 mean 统计量 (无 max), 二阶 board factor."""
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if mask_sum_hw is None:
+            mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
+        sqrt_off = torch.sqrt(mask_sum_hw) - 14.0
+        # Preserve input dtype (see KataGPool note above re: fp16 compat).
+        layer_mean = torch.sum(x * mask, dim=(2, 3), keepdim=True) / mask_sum_hw
+        return torch.cat((
+            layer_mean,
+            layer_mean * (sqrt_off / 10.0),
+            layer_mean * ((sqrt_off * sqrt_off) / 100.0 - 0.1),
+        ), dim=1)
+
+
+# ============================================================
+# RepVGG init helpers
+# ============================================================
+
+def compute_gain(activation: str) -> float:
+    """Per KataGo `compute_gain`. Mish gain matches lightvector master."""
+    if activation in ("relu", "hardswish"):
+        return math.sqrt(2.0)
+    if activation == "elu":
+        return math.sqrt(1.55052)
+    if activation == "mish":
+        return math.sqrt(2.210277)
+    if activation == "silu":
+        return math.sqrt(2.0)
+    if activation == "gelu":
+        return math.sqrt(2.351718)
+    if activation == "identity":
+        return 1.0
+    raise ValueError(f"Unknown activation: {activation}")
+
+
+_TRUNC_CORRECTION = 0.87962566103423978   # std correction for trunc_normal a=-2,b=2
+
+
+def init_weights(tensor: torch.Tensor, activation: str, scale: float,
+                 fan_tensor: Optional[torch.Tensor] = None) -> None:
+    """KataGo's truncated-normal init: std = scale * gain / sqrt(fan_in).
+
+    For 1D tensors, reshape to (n, 1) to get fan_in=1 via PyTorch's fan calculation.
+    """
+    gain = compute_gain(activation)
+    src = fan_tensor if fan_tensor is not None else tensor
+
+    # Handle 1D tensors (e.g., bias) which don't work with _calculate_fan_in_and_fan_out
+    # Reshape to (n, 1) so that _calculate_fan_in_and_fan_out gives fan_in=1
+    if src.dim() < 2:
+        src = src.view(-1, 1)
+
+    fan_in, _ = nn.init._calculate_fan_in_and_fan_out(src)
+    target_std = scale * gain / math.sqrt(fan_in)
+    std = target_std / _TRUNC_CORRECTION
+    with torch.no_grad():
+        if std < 1e-10:
+            tensor.fill_(0.0)
+        else:
+            nn.init.trunc_normal_(tensor, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
+
+
+# ============================================================
+# 卷积 + 全局池化模块
+# ============================================================
+
+class ConvAndGPool(nn.Module):
+    """合并到 ResBlock 内层第一个 conv 的位置 (不是独立残差块).
+
+    out = conv1r(x) + linear_g(gpool(act(normg(conv1g(x)))))   [as conv bias]
+    """
+
+    def __init__(self, c_in: int, c_out: int, c_gpool: int, activation: str = "mish") -> None:
+        super().__init__()
+        self.activation = activation
+        self.conv1r = nn.Conv2d(c_in, c_out, kernel_size=3, padding=1, bias=False)
+        self.conv1g = nn.Conv2d(c_in, c_gpool, kernel_size=3, padding=1, bias=False)
+        self.normg = FixscaleNorm(c_gpool, use_gamma=True)
+        self.actg = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.gpool = KataGPool()
+        self.linear_g = nn.Linear(3 * c_gpool, c_out, bias=False)
+
+    def initialize(self, scale: float) -> None:
+        # KataGo master 538-549 (fixscaleonenorm path)
+        r_scale, g_scale = 0.8, 0.6
+        init_weights(self.conv1r.weight, self.activation, scale=scale * r_scale)
+        init_weights(self.conv1g.weight, self.activation, scale=math.sqrt(scale) * math.sqrt(g_scale))
+        init_weights(self.linear_g.weight, self.activation, scale=math.sqrt(scale) * math.sqrt(g_scale))
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        out_r = self.conv1r(x)
+        out_g = self.conv1g(x)
+        out_g = self.normg(out_g, mask)
+        out_g = self.actg(out_g)
+        out_g = self.gpool(out_g, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
+        out_g = self.linear_g(out_g).unsqueeze(-1).unsqueeze(-1)
+        return out_r + out_g
+
+
+# ============================================================
+# norm → act → (conv | conv-and-gpool) 组合
+# ============================================================
+
+class NormActConv(nn.Module):
+    """norm → act → (conv | conv-and-gpool)."""
+
+    def __init__(self, c_in: int, c_out: int, activation: str = "mish",
+                 kernel_size: int = 3, c_gpool: Optional[int] = None,
+                 fixup_use_gamma: bool = True,
+                 use_repvgg_init: bool = True) -> None:
+        super().__init__()
+        self.activation = activation
+        self.kernel_size = kernel_size
+        self.norm = FixscaleNorm(c_in, use_gamma=fixup_use_gamma)
+        self.act = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.use_repvgg_init = use_repvgg_init and kernel_size > 1
+        if c_gpool is not None:
+            self.convpool = ConvAndGPool(c_in, c_out, c_gpool, activation)
+            self.conv = None
+        else:
+            padding = kernel_size // 2
+            self.conv = nn.Conv2d(c_in, c_out, kernel_size=kernel_size,
+                                  padding=padding, bias=False)
+            self.convpool = None
+
+    def initialize(self, scale: float, norm_scale: Optional[float] = None) -> None:
+        self.norm.set_scale(norm_scale)
+        if self.convpool is not None:
+            self.convpool.initialize(scale=scale)
+        else:
+            if self.use_repvgg_init:
+                init_weights(self.conv.weight, self.activation, scale=scale * 0.8)
+                w = self.conv.weight
+                center_bonus = w.new_zeros((w.shape[0], w.shape[1]), requires_grad=False)
+                init_weights(center_bonus, self.activation, scale=scale * 0.6)
+                with torch.no_grad():
+                    self.conv.weight[:, :, 1, 1] += center_bonus
+            else:
+                init_weights(self.conv.weight, self.activation, scale=scale)
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        out = self.norm(x, mask)
+        out = self.act(out)
+        if self.convpool is not None:
+            return self.convpool(out, mask, mask_sum_hw)
+        return self.conv(out)
+
+
+# ============================================================
+# 残差块 (ResBlock 只返残差; 调用方负责加回主干)
+# ============================================================
+
+class ResBlock(nn.Module):
+    def __init__(self, c_mid: int, c_gpool: Optional[int] = None,
+                 activation: str = "mish") -> None:
+        super().__init__()
+        c_out1 = c_mid - (0 if c_gpool is None else c_gpool)
+        self.normactconv1 = NormActConv(c_mid, c_out1, activation,
+                                        kernel_size=3, c_gpool=c_gpool,
+                                        fixup_use_gamma=True)
+        self.normactconv2 = NormActConv(c_out1, c_mid, activation,
+                                        kernel_size=3, c_gpool=None,
+                                        fixup_use_gamma=True)
+
+    def initialize(self, fixup_scale: float) -> None:
+        self.normactconv1.initialize(scale=1.0, norm_scale=fixup_scale)
+        self.normactconv2.initialize(scale=1.0, norm_scale=None)
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        out = self.normactconv1(x, mask, mask_sum_hw)
+        out = self.normactconv2(out, mask, mask_sum_hw)
+        return out
+
+
+# ============================================================
+# 嵌套瓶颈残差块 (NestedBottleneckResBlock)
+# ============================================================
+
+class NestedBottleneckResBlock(nn.Module):
+    """1×1 (c_main → c_mid) → N 个内层 ResBlock → 1×1 (c_mid → c_main).
+
+    ⚠️ forward 只返残差; 调用方必须 `out = out + block(out, mask, mask_sum_hw)`.
+    """
+
+    def __init__(self, internal_length: int, c_main: int, c_mid: int,
+                 c_gpool: Optional[int] = None, activation: str = "mish") -> None:
+        super().__init__()
+        self.internal_length = internal_length
+        # 1×1 conv => 不走 RepVGG (在 NormActConv 内部 use_repvgg_init=ks>1)
+        self.normactconvp = NormActConv(c_main, c_mid, activation,
+                                        kernel_size=1, fixup_use_gamma=True)
+        self.blockstack = nn.ModuleList()
+        for i in range(internal_length):
+            use_gpool = c_gpool if i == 0 else None
+            self.blockstack.append(ResBlock(c_mid, c_gpool=use_gpool, activation=activation))
+        self.normactconvq = NormActConv(c_mid, c_main, activation,
+                                        kernel_size=1, fixup_use_gamma=True)
+
+    def initialize(self, fixup_scale: float) -> None:
+        self.normactconvp.initialize(scale=1.0, norm_scale=fixup_scale)
+        for j, block in enumerate(self.blockstack):
+            block.initialize(fixup_scale=1.0 / math.sqrt(j + 1.0))
+        self.normactconvq.initialize(scale=1.0,
+                                     norm_scale=1.0 / math.sqrt(self.internal_length + 1.0))
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # ⚠️ 只返残差, 调用方负责 out + block(out, mask)
+        out = self.normactconvp(x, mask, mask_sum_hw)
+        for block in self.blockstack:
+            out = out + block(out, mask, mask_sum_hw)        # 内层加法
+        out = self.normactconvq(out, mask, mask_sum_hw)
+        return out
+
+
+# ============================================================
+# Policy Head (v15, no pass — Gomoku 不需要)
+# ============================================================
+
+class PolicyHead(nn.Module):
+    """v15 PolicyHead 6 输出 (main/aux/soft/soft_aux/opt/opp), 删 pass 路径.
+
+    KataGo 原版: forward 输出 cat([spatial logits, pass logit]) → (B, 6, H*W+1).
+    SkyZero 改: 只输出 (B, 6, H*W) — Gomoku 无 pass 着法.
+    """
+
+    def __init__(self, c_in: int, c_p1: int, c_g1: int,
+                 activation: str = "mish", version: int = 15) -> None:
+        super().__init__()
+        self.activation = activation
+        self.version = version
+        # v15 → 6 outputs (我们固定 v15)
+        if version <= 11:
+            self.num_policy_outputs = 4
+        elif version <= 15:
+            self.num_policy_outputs = 6
+        else:
+            self.num_policy_outputs = 8
+
+        self.conv1p = nn.Conv2d(c_in, c_p1, kernel_size=1, bias=False)
+        self.conv1g = nn.Conv2d(c_in, c_g1, kernel_size=1, bias=False)
+        self.biasg = BiasMask(c_g1)
+        self.actg = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.gpool = KataGPool()
+        self.linear_g = nn.Linear(3 * c_g1, c_p1, bias=False)
+        self.bias2 = BiasMask(c_p1)
+        self.act2 = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.conv2p = nn.Conv2d(c_p1, self.num_policy_outputs, kernel_size=1, bias=False)
+
+    def initialize(self) -> None:
+        # KataGo master 2416-2432
+        p_scale, g_scale, scale_output = 0.8, 0.6, 0.3
+        init_weights(self.conv1p.weight, self.activation, scale=p_scale)
+        init_weights(self.conv1g.weight, self.activation, scale=1.0)
+        init_weights(self.linear_g.weight, self.activation, scale=g_scale)
+        init_weights(self.conv2p.weight, "identity", scale=scale_output)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None) -> torch.Tensor:
+        outp = self.conv1p(x)
+        outg = self.conv1g(x)
+        outg = self.biasg(outg, mask)
+        outg = self.actg(outg)
+        outg = self.gpool(outg, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
+        outg = self.linear_g(outg).unsqueeze(-1).unsqueeze(-1)
+        outp = outp + outg
+        outp = self.bias2(outp, mask)
+        outp = self.act2(outp)
+        outp = self.conv2p(outp)
+        outp = outp - (1.0 - mask) * 5000.0   # mask 外 cell push 到极小
+        return outp.view(outp.shape[0], outp.shape[1], -1)
+
+
+# ============================================================
+# Value Head (Gomoku-only outputs)
+# ============================================================
+
+class ValueHead(nn.Module):
+    """简化的 ValueHead — 删去围棋特化的 score-belief / scoring / seki.
+
+    输出 6 元 tuple:
+        wdl:                 (B, 3)         W/D/L logits (index 1 = draw)
+        td_value:            (B, 9)         3 horizons × 3 wdl (long/mid/short × W/D/L)
+        shortterm_error:     (B, 1)         pretanh, 短 horizon Q 预测误差幅度
+        variance_time:       (B, 1)         残留 KataGo 输出 (Gomoku 可选, 占位)
+        ownership_pretanh:   (B, 1, H, W)   终局每格占有 ±1
+        futurepos_pretanh:   (B, 2, H, W)   +N / +2N 步占据
+    """
+
+    def __init__(self, c_in: int, c_v1: int, c_v2: int, activation: str = "mish",
+                 pos_len: int = 15) -> None:
+        super().__init__()
+        self.activation = activation
+        self.pos_len = pos_len
+
+        self.conv1 = nn.Conv2d(c_in, c_v1, kernel_size=1, bias=False)
+        self.bias1 = BiasMask(c_v1)
+        self.act1 = nn.Mish() if activation == "mish" else nn.ReLU()
+        self.gpool = KataValueHeadGPool()
+
+        self.linear2 = nn.Linear(3 * c_v1, c_v2, bias=True)
+        self.act2 = nn.Mish() if activation == "mish" else nn.ReLU()
+
+        # WDL 输出 (KataGo: linear_valuehead 输出 3, 我们保留)
+        self.linear_valuehead = nn.Linear(c_v2, 3, bias=True)
+        # td_value 多 horizon: 3 horizons × 3 wdl = 9 输出
+        # 切片顺序: TD_LONG_SLICE / TD_MID_SLICE / TD_SHORT_SLICE (定义在文件顶层)
+        self.linear_miscvaluehead = nn.Linear(c_v2, 9, bias=True)
+        # shortterm error + variance_time (合并 2 维)
+        self.linear_moremiscvaluehead = nn.Linear(c_v2, 2, bias=True)
+
+        # 空间 head
+        self.conv_ownership = nn.Conv2d(c_v1, 1, kernel_size=1, bias=False)
+        self.conv_futurepos = nn.Conv2d(c_in, 2, kernel_size=1, bias=False)
+
+    def initialize(self) -> None:
+        bias_scale = 0.2
+        init_weights(self.conv1.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.bias, self.activation, scale=bias_scale,
+                     fan_tensor=self.linear2.weight)
+
+        for lin in (self.linear_valuehead, self.linear_miscvaluehead, self.linear_moremiscvaluehead):
+            init_weights(lin.weight, "identity", scale=1.0)
+            init_weights(lin.bias, "identity", scale=bias_scale, fan_tensor=lin.weight)
+
+        aux_scale = 0.2
+        for c in (self.conv_ownership, self.conv_futurepos):
+            init_weights(c.weight, "identity", scale=aux_scale)
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor,
+                mask_sum_hw: Optional[torch.Tensor] = None
+               ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+                          torch.Tensor, torch.Tensor, torch.Tensor]:
+        outv1 = self.conv1(x)
+        outv1 = self.bias1(outv1, mask)
+        outv1 = self.act1(outv1)
+
+        outpooled = self.gpool(outv1, mask, mask_sum_hw).squeeze(-1).squeeze(-1)
+        outv2 = self.act2(self.linear2(outpooled))
+
+        wdl = self.linear_valuehead(outv2)                          # (B, 3)
+        td_value = self.linear_miscvaluehead(outv2)                 # (B, 9) = 3 horizons × 3
+        more_misc = self.linear_moremiscvaluehead(outv2)            # (B, 2)
+        st_error = more_misc[:, 0:1]
+        # variance_time: KataGo 残留输出, Gomoku 无对应 target.
+        # Phase B: 不要给 var_time 加 loss, 或权重设 0.
+        var_time = more_misc[:, 1:2]
+
+        ownership = self.conv_ownership(outv1) * mask               # (B, 1, H, W)
+        futurepos = self.conv_futurepos(x) * mask                   # (B, 2, H, W)
+
+        return wdl, td_value, st_error, var_time, ownership, futurepos
+
+
+# ============================================================
+# 输出语义常量 (Phase B 训练 loss 用)
+# ============================================================
+
+# td_value 输出 (B, 9) 的 horizon 切片 (long/mid/short × WDL).
+# Phase B loss 必须用这些常量切片, 不要硬编码 0:3 / 3:6 / 6:9.
+TD_LONG_SLICE = slice(0, 3)
+TD_MID_SLICE = slice(3, 6)
+TD_SHORT_SLICE = slice(6, 9)
+
+
+# ============================================================
+# 完整模型
+# ============================================================
+
+class KataGoNet(nn.Module):
+    def __init__(
+        self,
+        num_blocks: int = 8,
+        c_main: int = 96,
+        c_mid: int = 48,
+        c_gpool: int = 16,
+        internal_length: int = 2,
+        num_in_channels: int = 5,
+        num_global_features: int = 12,
+        activation: str = "mish",
+        version: int = 15,
+        has_intermediate_head: bool = True,
+        intermediate_head_blocks: int = 5,
+        c_p1: int = 24,
+        c_g1: int = 24,
+        c_v1: int = 24,
+        c_v2: int = 32,
+        pos_len: int = 15,
+    ) -> None:
+        super().__init__()
+        self.activation = activation
+        self.version = version
+        self.num_blocks = num_blocks
+        self.pos_len = pos_len
+        self.has_intermediate_head = has_intermediate_head
+        self.intermediate_head_blocks = intermediate_head_blocks
+        self.num_in_channels = num_in_channels
+        self.num_global_features = num_global_features
+
+        # 输入投影
+        self.conv_spatial = nn.Conv2d(num_in_channels, c_main, kernel_size=3,
+                                      padding=1, bias=False)
+        self.linear_global = nn.Linear(num_global_features, c_main, bias=False)
+
+        # 主干 — gpool 仅在 i % 3 == 2 的块上
+        self.blocks = nn.ModuleList()
+        for i in range(num_blocks):
+            use_gpool = c_gpool if (i % 3 == 2) else None
+            self.blocks.append(NestedBottleneckResBlock(
+                internal_length=internal_length, c_main=c_main, c_mid=c_mid,
+                c_gpool=use_gpool, activation=activation,
+            ))
+
+        self.norm_trunkfinal = BiasMask(c_main)
+        self.act_trunkfinal = nn.Mish() if activation == "mish" else nn.ReLU()
+
+        if has_intermediate_head:
+            self.norm_intermediate_trunkfinal = LastBatchNorm(c_main)
+            self.act_intermediate_trunkfinal = nn.Mish() if activation == "mish" else nn.ReLU()
+            self.intermediate_policy_head = PolicyHead(c_main, c_p1, c_g1,
+                                                       activation=activation, version=version)
+            self.intermediate_value_head = ValueHead(c_main, c_v1, c_v2,
+                                                     activation=activation, pos_len=pos_len)
+
+        self.policy_head = PolicyHead(c_main, c_p1, c_g1,
+                                      activation=activation, version=version)
+        self.value_head = ValueHead(c_main, c_v1, c_v2,
+                                    activation=activation, pos_len=pos_len)
+
+    def initialize(self) -> None:
+        """KataGo RepVGG-style fixscaleonenorm 初始化 + 设置所有 NormMask.scale.
+
+        从零训前调用一次.
+        """
+        with torch.no_grad():
+            init_weights(self.conv_spatial.weight, self.activation, scale=0.8)
+            init_weights(self.linear_global.weight, self.activation, scale=0.6)
+
+            for i, block in enumerate(self.blocks):
+                block.initialize(fixup_scale=1.0 / math.sqrt(i + 1.0))
+
+            self.norm_trunkfinal.set_scale(1.0 / math.sqrt(self.num_blocks + 1.0))
+
+            self.policy_head.initialize()
+            self.value_head.initialize()
+            if self.has_intermediate_head:
+                self.intermediate_policy_head.initialize()
+                self.intermediate_value_head.initialize()
+
+    def set_norm_scales(self) -> None:
+        """加载预训练 ckpt 时调用: 仅设置 scale, 不重置权重.
+
+        scale 不在 state_dict (plain attribute), load_state_dict 后必须手动调.
+        """
+        for i, block in enumerate(self.blocks):
+            block.normactconvp.norm.set_scale(1.0 / math.sqrt(i + 1.0))
+            block.normactconvq.norm.set_scale(1.0 / math.sqrt(block.internal_length + 1.0))
+            for j, inner in enumerate(block.blockstack):
+                inner.normactconv1.norm.set_scale(1.0 / math.sqrt(j + 1.0))
+                inner.normactconv2.norm.set_scale(None)
+        self.norm_trunkfinal.set_scale(1.0 / math.sqrt(self.num_blocks + 1.0))
+
+    def set_gamma_center_one(self, center_one: bool) -> None:
+        """设置 fixscaleonenorm 的 gamma 约定 (gamma_center_one 不在 state_dict).
+
+        True : gamma 中心 0, forward 用 (gamma+1)*scale — 当代 KataGo / b40 / 自家从零训练默认.
+        False: gamma 中心 1, forward 用 gamma*scale — 旧约定 (config 无 gamma_weight_decay_center_1,
+               如官方 b28c512nbt)。仅加载该约定的预训练权重时调一次.
+        """
+        for m in self.modules():
+            if isinstance(m, (FixscaleNorm, LastBatchNorm)):
+                m.gamma_center_one = center_one
+
+    def forward(self, input_spatial: torch.Tensor,
+                input_global: torch.Tensor) -> Dict[str, torch.Tensor]:
+        # KataGo 风格: mask 来自 input_spatial channel 0 (on-board mask).
+        # 支持变 board size — 不同 batch 元素可有不同的 mask（小棋盘外圈 padding=0）.
+        # mask_sum_hw 按每个样本独立计算, KataGPool 的 board_factor 自动适配.
+        mask = input_spatial[:, 0:1, :, :].contiguous()
+        mask_sum_hw = mask.sum(dim=(2, 3), keepdim=True)
+
+        x_spatial = self.conv_spatial(input_spatial)
+        x_global = self.linear_global(input_global).unsqueeze(-1).unsqueeze(-1)
+        out = x_spatial + x_global
+
+        result: Dict[str, torch.Tensor] = {}
+
+        if self.has_intermediate_head:
+            for block in self.blocks[: self.intermediate_head_blocks]:
+                out = out + block(out, mask, mask_sum_hw)
+
+            iout = self.norm_intermediate_trunkfinal(out, mask)
+            iout = self.act_intermediate_trunkfinal(iout)
+            iout_policy = self.intermediate_policy_head(iout, mask, mask_sum_hw)
+            iout_value = self.intermediate_value_head(iout, mask, mask_sum_hw)
+            result["intermediate_policy"] = iout_policy
+            result["intermediate_value_wdl"] = iout_value[0]
+            result["intermediate_value_td"] = iout_value[1]
+            result["intermediate_value_st_error"] = iout_value[2]
+            result["intermediate_value_var_time"] = iout_value[3]
+            result["intermediate_value_ownership"] = iout_value[4]
+            result["intermediate_value_futurepos"] = iout_value[5]
+
+            for block in self.blocks[self.intermediate_head_blocks:]:
+                out = out + block(out, mask, mask_sum_hw)
+        else:
+            for block in self.blocks:
+                out = out + block(out, mask, mask_sum_hw)
+
+        out = self.norm_trunkfinal(out, mask)
+        out = self.act_trunkfinal(out)
+
+        out_policy = self.policy_head(out, mask, mask_sum_hw)
+        out_value = self.value_head(out, mask, mask_sum_hw)
+
+        result["policy"] = out_policy
+        result["value_wdl"] = out_value[0]
+        result["value_td"] = out_value[1]
+        result["value_st_error"] = out_value[2]
+        result["value_var_time"] = out_value[3]
+        result["value_ownership"] = out_value[4]
+        result["value_futurepos"] = out_value[5]
+
+        return result
+
+
+
+
+
+
+# ============================================================
+# 工厂函数
+# ============================================================
+
+def build_model(cfg) -> KataGoNet:
+    """Build a KataGoNet from a NetConfig.
+
+    Reads num_channels (→ c_main), num_blocks, and all Phase A fields
+    (c_mid / c_gpool / c_p1 / c_g1 / c_v1 / c_v2 / intermediate_head_blocks
+    auto-derived in NetConfig.__post_init__ if not set).
+
+    NOTE: caller must run `model.initialize()` before training, OR call
+    `model.set_norm_scales()` after `load_state_dict` (NormMask.scale is
+    not in state_dict — see NOTES.md trap 3). gamma_center_one 已在此按 cfg 设好.
+    """
+    model = KataGoNet(
+        num_blocks=cfg.num_blocks,
+        c_main=cfg.num_channels,
+        c_mid=cfg.c_mid,
+        c_gpool=cfg.c_gpool,
+        internal_length=cfg.internal_length,
+        num_in_channels=cfg.num_planes,
+        num_global_features=cfg.num_global_features,
+        activation=cfg.activation,
+        version=cfg.version,
+        has_intermediate_head=cfg.has_intermediate_head,
+        intermediate_head_blocks=cfg.intermediate_head_blocks,
+        c_p1=cfg.c_p1,
+        c_g1=cfg.c_g1,
+        c_v1=cfg.c_v1,
+        c_v2=cfg.c_v2,
+        pos_len=cfg.board_size,
+    )
+    model.set_gamma_center_one(getattr(cfg, "gamma_center_one", True))
+    return model
+
+
+def build_b8c96(activation: str = "mish") -> KataGoNet:
+    """8 块 × 96 trunk (显式 num_channels 覆盖 blocks*20 推导).
+
+    head 宽度由 NetConfig.__post_init__ 按 num_channels 推导 (KataGo 风格规则).
+    """
+    from model_config import NetConfig
+    return build_model(NetConfig(num_blocks=8, num_channels=96, activation=activation))
+
+
+def build_b12c128(activation: str = "mish") -> KataGoNet:
+    """12 块 × 128 trunk (显式 num_channels 覆盖 blocks*20 推导).
+
+    head 宽度由 NetConfig.__post_init__ 按 num_channels 推导 (KataGo 风格规则).
+    """
+    from model_config import NetConfig
+    return build_model(NetConfig(num_blocks=12, num_channels=128, activation=activation))
