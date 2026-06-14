@@ -199,6 +199,9 @@ int main(int argc, char** argv) {
     std::string non_root_algo = "puct";   // puct | gumbel (eq.14 in-tree rule)
     bool enable_tree_reuse = false;        // carry subtree across plies
     std::string root_algo = "gumbel";      // gumbel (SH) | puct (per-sim root PUCT)
+    // Fast-search (PCR cheap search) algo overrides; empty = inherit the full
+    // algo above (no behaviour change). Differing from the full pair = HybridPCR.
+    std::string fast_root_algo = "", fast_non_root_algo = "";
     float root_fpu_reduction_max = 0.0f, root_desired_per_child_visits_coeff = 0.0f;
     float chosen_move_temperature = 0.0f, chosen_move_temperature_early = 0.0f;
     float chosen_move_temperature_halflife = 19.0f;
@@ -270,6 +273,8 @@ int main(int argc, char** argv) {
         else if (a == "--non-root-algo") non_root_algo = next();
         else if (a == "--enable-tree-reuse") enable_tree_reuse = (std::stoi(next()) != 0);
         else if (a == "--root-algo") root_algo = next();
+        else if (a == "--fast-root-algo") fast_root_algo = next();
+        else if (a == "--fast-non-root-algo") fast_non_root_algo = next();
         else if (a == "--root-fpu-reduction-max") root_fpu_reduction_max = std::stof(next());
         else if (a == "--root-desired-per-child-visits-coeff") root_desired_per_child_visits_coeff = std::stof(next());
         else if (a == "--chosen-move-temperature") chosen_move_temperature = std::stof(next());
@@ -350,6 +355,15 @@ int main(int argc, char** argv) {
     cfg.non_root_gumbel = (non_root_algo == "gumbel");
     cfg.enable_tree_reuse = enable_tree_reuse;
     cfg.root_puct = (root_algo == "puct");
+    // Fast-search algo: empty inherits the full algo (cheap search same as full).
+    if (fast_root_algo.empty()) fast_root_algo = root_algo;
+    if (fast_non_root_algo.empty()) fast_non_root_algo = non_root_algo;
+    cfg.fast_root_puct = (fast_root_algo == "puct");
+    cfg.fast_non_root_gumbel = (fast_non_root_algo == "gumbel");
+    // HybridPCR: fast algo differs from full → neither can warm-start a tree the
+    // other built (gumbel SH vs puct), so that arm never reuses (KataGo-faithful).
+    const bool decoupled_fast_tree =
+        (fast_root_algo != root_algo) || (fast_non_root_algo != non_root_algo);
     cfg.root_fpu_reduction_max = root_fpu_reduction_max;
     cfg.root_desired_per_child_visits_coeff = root_desired_per_child_visits_coeff;
     cfg.chosen_move_temperature = chosen_move_temperature;
@@ -467,13 +481,19 @@ int main(int argc, char** argv) {
                     const int so = s.fast
                         ? std::max(1, static_cast<int>(std::lround(sims * fast_search_fraction)))
                         : -1;
-                    // clear-before-full: a full (recorded) search drops the carried
-                    // subtree for a clean N-visit target; only cheap searches reuse.
+                    // Tree-reuse policy (mirrors V7.8 selfplay_manager):
+                    //   decoupled (fast algo != full) -> never reuse (mixed trees);
+                    //   else clear-before-full        -> full clears, cheap reuses;
+                    //   else                          -> reuse across all moves.
+                    bool reuse_tree;
+                    if (decoupled_fast_tree)   reuse_tree = false;
+                    else if (clear_before_full) reuse_tree = s.fast;
+                    else                        reuse_tree = true;
                     std::unique_ptr<skyzero::DecisionNode> reuse;
-                    if (!(clear_before_full && !s.fast)) reuse = std::move(s.reuse);
+                    if (reuse_tree) reuse = std::move(s.reuse);
                     s.reuse.reset();
                     s.mcts->begin(s.state, std::move(reuse), so, /*exploration=*/!s.fast,
-                                  /*turn_number=*/s.moves);
+                                  /*turn_number=*/s.moves, /*fast=*/s.fast);
                 }
             }
 
@@ -531,7 +551,7 @@ int main(int argc, char** argv) {
                 s.moves++;
                 if (game.is_terminal(s.state) || (max_moves > 0 && s.moves >= max_moves)) {
                     finalize(s); s.active = false;
-                } else if (cfg.enable_tree_reuse) {
+                } else if (cfg.enable_tree_reuse && !decoupled_fast_tree) {
                     // The spawned tile is the one cell that went 0 -> nonzero;
                     // carry that outcome's subtree into the next move's search.
                     int sc = -1, se = 0;
