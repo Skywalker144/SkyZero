@@ -201,9 +201,10 @@ inline std::vector<float> compute_policy_surprise_weights(
     return final_weights;
 }
 
-// Stochastic rounding by weight — replicates samples to encode surprise weight.
-// Output TrainSamples all carry the *original* sample_weight (soft-resign level).
-// Aligned to CSkyZero_V3 behavior.
+// Stochastic rounding by weight — replicates samples to encode the final weight.
+// Every emitted TrainSample carries per-row sample_weight 1.0 (KataGo
+// trainingwrite.cpp:987 hardcodes it): the soft-resign / surprise weighting is
+// applied exactly once, through the replication count `weights[i]`.
 inline std::vector<TrainSample> apply_surprise_weighting_to_game(
     const std::vector<PolicySurpriseSample>& game_data,
     const std::vector<float>& weights,
@@ -233,14 +234,15 @@ inline std::vector<TrainSample> apply_surprise_weighting_to_game(
             ts.value_target = game_data[i].value_target;
             ts.td_value_target = game_data[i].td_value_target;
             ts.futurepos_target = game_data[i].futurepos_target;
-            // fastSearch rows enter with base sample_weight 0 (KataGo
-            // cheapSearchTargetWeight=0); when the policy-surprise term
-            // resurrects one, KataGo's redistributed weight REPLACES the base
-            // (play.cpp:1878). Replication count already encodes that final
-            // weight here, so emit such replicas at weight 1.0 — rows with a
-            // positive base (soft resign) keep the original multiplier.
-            ts.sample_weight = (game_data[i].sample_weight > 0.0f)
-                ? game_data[i].sample_weight : 1.0f;
+            // KataGo applies the position weight ONCE — through the replication
+            // count. trainingwrite.cpp:981-1010 replicates by targetWeight (the
+            // post-reduceVisits, surprise-redistributed weight) yet hardcodes the
+            // per-row weight to 1.0 (addRow arg @:987 → rowGlobal[25] @:349).
+            // `weights[i]` (the replication count above) already folds in the
+            // soft-resign / fastSearch base, so the per-row weight must be 1.0 for
+            // BOTH soft-resign and resurrected fastSearch rows — otherwise the base
+            // multiplier is counted twice (replication × per-row ≈ O(w²)).
+            ts.sample_weight = 1.0f;
             ts.has_opponent_policy = game_data[i].has_opponent_policy;
             ts.has_futurepos = game_data[i].has_futurepos;
             return ts;
