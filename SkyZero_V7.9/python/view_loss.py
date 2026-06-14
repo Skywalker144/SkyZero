@@ -264,7 +264,7 @@ def _plot_probe(data_dir: pathlib.Path, plt) -> None:
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc="best")
 
-    ax2.plot(x, vmix_wl, color="C2", label="v_mix W-L")
+    ax2.plot(x, vmix_wl, color="C2", label="root value W-L")
     ax2.plot(x, nn_wl, color="C3", label="nn_value W-L")
     ax2.axhline(0.0, ls="--", color="gray", alpha=0.4)
     finite = [v for v in vmix_wl + nn_wl if not math.isnan(v)]
