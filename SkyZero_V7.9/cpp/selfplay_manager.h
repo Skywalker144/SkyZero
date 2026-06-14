@@ -582,12 +582,15 @@ private:
                 // disabled inside search() via the fast_search flag.
                 num_simulations = std::max(1, num_simulations / 6);
                 step_sample_weight = cfg_.fast_search_target_weight;
-            } else {
+            } else if (cfg_.reduced_visits_fraction > 0.0f) {
                 // KataGomo reduceVisits-aligned (play.cpp:983-1025): smooth quadratic
                 // interpolation, non-sticky (re-evaluated each move), signed-extreme
                 // over fixed-frame v_mix. Decision uses history [0..N-1] (excluding
                 // current move), matching KataGomo's pre-search visit alteration.
                 // Proportional floor: eff_min = max(MIN_FLOOR, num_simulations * FRACTION).
+                // REDUCED_VISITS_FRACTION<=0 disables reduceVisits entirely (mirrors
+                // KataGo's playSettings.reduceVisits switch) instead of merely pinning
+                // eff_min to the floor — see docs/training_pipeline_audit.md F2.
                 // TODO: if RULE_RELPROBS adds standard/freestyle, also track
                 //       historical_v_mix_draw (= v_mix[1]) and fold min_draw into
                 //       signed_extreme — see KataGomo play.cpp:1002-1008.
