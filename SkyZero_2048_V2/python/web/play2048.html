@@ -1,0 +1,1394 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>2048 · SkyZero</title>
+  <link rel="preload" href="fonts/Inter-Regular.woff2"  as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Inter-SemiBold.woff2" as="font" type="font/woff2" crossorigin>
+  <script>
+    // Reuse the same theme/lang prefs as the Gomoku page so style stays
+    // consistent across the two games.
+    (function(){
+      try {
+        var saved = localStorage.getItem('skz_theme');
+        var mode = (saved === 'light' || saved === 'dark') ? saved : 'auto';
+        var resolved = (mode === 'auto')
+          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : mode;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.themeMode = mode;
+      } catch(e) {
+        document.documentElement.dataset.theme = 'light';
+        document.documentElement.dataset.themeMode = 'auto';
+      }
+    })();
+    (function(){
+      try {
+        var lang = localStorage.getItem('skz_lang');
+        if (lang !== 'zh' && lang !== 'en') lang = 'zh';
+        document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+      } catch(e) {
+        document.documentElement.lang = 'zh-CN';
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* 2048-specific styles. Theme colors come from style.css variables so
+       light/dark mode follow the gomoku page automatically. */
+    .g2048-app {
+      max-width: 520px; margin: 0 auto; padding: 8px 16px 24px;
+      display: flex; flex-direction: column; gap: 14px;
+      touch-action: none;
+    }
+    .g2048-scores {
+      display: flex; gap: 10px; justify-content: center;
+    }
+    .g2048-score {
+      flex: 1; min-width: 0;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 8px 14px;
+      text-align: center;
+    }
+    .g2048-score-label {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--fg-muted);
+    }
+    .g2048-score-value {
+      font-family: var(--font-mono);
+      font-size: 22px; font-weight: 700; color: var(--fg);
+      line-height: 1.1; margin-top: 2px;
+    }
+    .g2048-actions {
+      display: flex; gap: 10px; justify-content: center;
+    }
+    .g2048-board {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      /* Reuse the gomoku wood color so the two pages feel like the same app.
+         Tracks the theme through the shared CSS variable. */
+      background: var(--board-bg);
+      border: 1px solid var(--border);
+      /* Concentric corners with the inner cells: outer radius = cell radius
+         + distance from cell to board outer edge. Distance is 1px border +
+         10px grid inset (.g2048-grid is absolute with inset:10px from the
+         padding-box). Equal radial gap on every point of the curve. */
+      --board-radius: calc(var(--radius-md) + 11px);
+      border-radius: var(--board-radius);
+      padding: 10px;
+      box-sizing: border-box;
+      box-shadow: var(--shadow-xs);
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .g2048-grid {
+      position: absolute; inset: 10px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: repeat(4, 1fr);
+      gap: 10px;
+    }
+    .g2048-cell {
+      background: color-mix(in srgb, var(--fg-subtle) 18%, transparent);
+      border-radius: var(--radius-md);
+    }
+    .g2048-tiles {
+      position: absolute; inset: 10px;
+      pointer-events: none;
+    }
+    /* Two-element tile: outer owns translate + slide transition; inner owns
+       scale + pop/merge keyframes. Splitting them means the merge/appear
+       animations never touch translate, so a fast slide that's interrupted
+       by another slide blends smoothly instead of snapping to its final
+       position via an overriding keyframe. */
+    .g2048-tile {
+      position: absolute;
+      /* `--slide-ms` is set by JS per-move on `#tiles` and inherits down. The
+         default keeps things sane if JS hasn't set it yet. */
+      transition: transform var(--slide-ms, 120ms) cubic-bezier(0.22, 0.5, 0.28, 1);
+      will-change: transform;
+    }
+    .g2048-tile-inner {
+      width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--font-sans);
+      font-weight: 700;
+      border-radius: var(--radius-md);
+      will-change: transform;
+    }
+    .g2048-tile.appear .g2048-tile-inner { animation: g2048-pop 150ms ease-out; }
+    .g2048-tile.merged .g2048-tile-inner { animation: g2048-merge 160ms ease-out; }
+    .g2048-tile.merged { z-index: 2; }
+    @keyframes g2048-pop {
+      from { transform: scale(0); }
+      60%  { transform: scale(1.10); }
+      to   { transform: scale(1); }
+    }
+    @keyframes g2048-merge {
+      0%, 100% { transform: scale(1); }
+      50%      { transform: scale(1.20); }
+    }
+    /* Tile palette — classic 2048 colors, tuned to look OK in dark mode too. */
+    .g2048-tile-inner[data-v="2"]    { background:#eee4da; color:#776e65; }
+    .g2048-tile-inner[data-v="4"]    { background:#ede0c8; color:#776e65; }
+    .g2048-tile-inner[data-v="8"]    { background:#f2b179; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="16"]   { background:#f59563; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="32"]   { background:#f67c5f; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="64"]   { background:#f65e3b; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="128"]  { background:#edcf72; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="256"]  { background:#edcc61; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="512"]  { background:#edc850; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="1024"] { background:#edc53f; color:#f9f6f2; }
+    .g2048-tile-inner[data-v="2048"] { background:#edc22e; color:#f9f6f2; }
+    .g2048-tile-inner[data-v-big]    { background:#3c3a32; color:#f9f6f2; }
+    .g2048-overlay {
+      position: absolute;
+      /* `inset: 0` would size the overlay to the board's padding-box (inside
+         the 1px border) — then matching the corner curve means subtracting
+         border-width, which never lines up perfectly under sub-pixel rendering
+         or after theme tweaks. Instead extend the overlay 1px past every edge
+         so it covers the border too, and use the same `--radius-lg` as the
+         board's OUTER corner. Now the curves coincide by construction. */
+      inset: -1px;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 10px;
+      background: color-mix(in srgb, var(--bg) 78%, transparent);
+      backdrop-filter: blur(2px);
+      /* Inherits --board-radius from .g2048-board so they always match. */
+      border-radius: var(--board-radius);
+      z-index: 3;
+    }
+    .g2048-overlay.show { display: flex; }
+    .g2048-overlay-title {
+      font-size: 28px; font-weight: 700; color: var(--fg);
+    }
+    .g2048-hint {
+      font-size: 12px; color: var(--fg-muted); text-align: center;
+      line-height: 1.5;
+    }
+
+    /* ---------- AI decision panel ---------- */
+    .g2048-ai-speed { font-size: 12px; color: var(--fg-muted); display: inline-flex;
+      align-items: center; gap: 6px; }
+    .g2048-ai-panel {
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .g2048-ai-head { display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 13px; color: var(--fg-muted); }
+    .g2048-ai-head #ai_value { font-family: var(--font-mono); color: var(--fg); font-weight: 600; }
+    .g2048-ai-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--fg-muted); }
+    .g2048-ai-legend i.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+    .g2048-ai-legend i.nn { background: #4d8df6; }
+    .g2048-ai-legend i.imp { background: #ef5350; }
+
+    /* ---------- Directional policy strips (around the board) ----------
+       A 3x3 grid frames the square board: the four edge cells hold one strip
+       each (top=↑ right=→ bottom=↓ left=←). The board sits in the center cell;
+       its width drives the layout (aspect-ratio makes it square, so the middle
+       row's `auto` height resolves from the board's width — no circular sizing).
+       Each strip carries two bars: nn policy (blue) above/inside improved
+       policy (green). The bar's fill grows from the center outward, length =
+       probability for that move. */
+    .g2048-policy-frame {
+      --pol-w: 42px;     /* strip thickness (and the bar's max length) */
+      --pol-gap: 10px;   /* gap between strip and board */
+      display: grid;
+      grid-template-columns: var(--pol-w) minmax(0, 1fr) var(--pol-w);
+      grid-template-rows: var(--pol-w) auto var(--pol-w);
+      gap: var(--pol-gap);
+    }
+    .g2048-policy-frame .g2048-board { grid-column: 2; grid-row: 2; }
+    .g2048-pol { display: flex; gap: 4px; border-radius: 7px; padding: 1px; }
+    .pol-up    { grid-column: 2; grid-row: 1; }
+    .pol-down  { grid-column: 2; grid-row: 3; }
+    .pol-left  { grid-column: 1; grid-row: 2; }
+    .pol-right { grid-column: 3; grid-row: 2; }
+    .g2048-pol-bar {
+      flex: 1; display: flex; overflow: hidden; border-radius: 5px;
+      background: color-mix(in srgb, var(--fg-subtle) 14%, transparent);
+    }
+    .g2048-pol-bar > i { display: block; border-radius: 5px; transition: width .18s ease, height .18s ease; }
+    .g2048-pol-bar.nn  > i { background: #4d8df6; }   /* nn policy = blue */
+    .g2048-pol-bar.imp > i { background: #ef5350; }   /* improved policy = red */
+    /* Top/bottom: two horizontal bars stacked; fill width = probability, centered. */
+    .pol-up, .pol-down { flex-direction: column; }
+    .pol-up .g2048-pol-bar, .pol-down .g2048-pol-bar { align-items: stretch; justify-content: center; }
+    .pol-up .g2048-pol-bar > i, .pol-down .g2048-pol-bar > i { height: 100%; width: var(--p, 0%); }
+    /* Left/right: two vertical bars side by side; fill height = probability, centered. */
+    .pol-left, .pol-right { flex-direction: row; }
+    .pol-left .g2048-pol-bar, .pol-right .g2048-pol-bar { flex-direction: column; align-items: stretch; justify-content: center; }
+    .pol-left .g2048-pol-bar > i, .pol-right .g2048-pol-bar > i { width: 100%; height: var(--p, 0%); }
+    /* The move the agent actually chose gets a faint accent ring. */
+    .g2048-pol.chosen { box-shadow: 0 0 0 1.5px var(--accent, #7aa2f7); }
+
+    /* ---------- Advanced options (collapsible) ---------- */
+    .g2048-advanced { display: flex; flex-direction: column; gap: 10px; }
+    .g2048-advanced-toggle {
+      align-self: center; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
+      background: none; border: none;
+      font-family: var(--font-sans);
+      font-size: 13px; font-weight: 600; color: var(--fg-muted);
+      padding: 4px 8px; border-radius: var(--radius-sm);
+    }
+    .g2048-advanced-toggle:hover { color: var(--fg); }
+    .g2048-advanced-toggle .chev { transition: transform 0.2s ease; }
+    .g2048-advanced-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+    .g2048-advanced-body {
+      display: flex; flex-direction: column; gap: 10px; align-items: center;
+      padding: 12px;
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      background: var(--surface-2);
+    }
+    .g2048-advanced-body[hidden] { display: none; }
+    /* Edit-mode toggle uses the active (pressed) accent styling of .btn.primary
+       via aria-pressed so it visibly latches on. */
+    #edit_toggle[aria-pressed="true"] {
+      background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+    }
+    #edit_toggle[aria-pressed="true"]:hover {
+      background: var(--accent-hover); border-color: var(--accent-hover);
+    }
+    .g2048-edit-hint {
+      font-size: 11px; color: var(--fg-muted); text-align: center; line-height: 1.5;
+    }
+
+    /* ---------- Edit-mode visuals ---------- */
+    .g2048-board.editing { cursor: pointer; }
+    /* Highlights the cell currently being edited. */
+    .g2048-edit-marker {
+      position: absolute; box-sizing: border-box;
+      border: 2px solid var(--accent);
+      border-radius: var(--radius-md);
+      pointer-events: none; z-index: 4;
+    }
+    /* Inline exponent editor popover, anchored near the tapped cell. */
+    .g2048-editor {
+      position: absolute; z-index: 5; width: 132px;
+      box-sizing: border-box;
+      background: var(--surface); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.22);
+      padding: 8px; pointer-events: auto;
+      display: flex; flex-direction: column; gap: 6px;
+      font-family: var(--font-sans);
+    }
+    .g2048-editor-row {
+      display: flex; align-items: baseline; justify-content: center; gap: 2px;
+    }
+    .g2048-editor-base { font-size: 20px; font-weight: 700; color: var(--fg); }
+    .g2048-editor-exp {
+      width: 46px;
+      font-family: var(--font-mono); font-size: 15px; font-weight: 700;
+      text-align: center; padding: 3px 4px;
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      background: var(--bg); color: var(--fg);
+      /* Sit it slightly raised so "2 ⁿ" reads as a power. */
+      transform: translateY(-6px);
+      -moz-appearance: textfield;
+    }
+    .g2048-editor-exp:focus {
+      outline: none; border-color: var(--accent);
+    }
+    .g2048-editor-exp::-webkit-outer-spin-button,
+    .g2048-editor-exp::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .g2048-editor-result {
+      text-align: center; font-family: var(--font-mono);
+      font-size: 17px; font-weight: 700; color: var(--fg); line-height: 1.1;
+    }
+    .g2048-editor-result.clear { color: var(--fg-muted); }
+    .g2048-editor-max {
+      text-align: center; font-family: var(--font-mono);
+      font-size: 11px; font-weight: 600; color: var(--fg-muted); line-height: 1.2;
+    }
+    .g2048-editor-tip {
+      text-align: center; font-size: 10px; color: var(--fg-muted); line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <a class="brand-title" href="index.html" style="text-decoration:none;color:inherit;"
+           title="返回五子棋" id="brand_link">← SkyZero · 2048</a>
+      </div>
+      <div class="topbar-actions">
+        <div class="seg-row compact" id="lang_seg" role="group" aria-label="Switch language">
+          <button class="seg-btn" data-lang="zh" aria-pressed="true">中</button>
+          <button class="seg-btn" data-lang="en" aria-pressed="false">EN</button>
+        </div>
+        <div class="seg-row compact" id="theme_seg" role="group" aria-label="Toggle theme">
+          <button class="seg-btn" data-theme="auto" aria-pressed="true" aria-label="Auto" title="Auto">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <circle cx="8" cy="8" r="6"></circle>
+              <path d="M8 2 a6 6 0 0 1 0 12 z" fill="currentColor" stroke="none"></path>
+            </svg>
+          </button>
+          <button class="seg-btn" data-theme="light" aria-pressed="false" aria-label="Light" title="Light">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="8" cy="8" r="3"></circle>
+              <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06"></path>
+            </svg>
+          </button>
+          <button class="seg-btn" data-theme="dark" aria-pressed="false" aria-label="Dark" title="Dark">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <div class="g2048-app">
+      <div class="g2048-scores">
+        <div class="g2048-score">
+          <div class="g2048-score-label" id="lbl_score">分数</div>
+          <div class="g2048-score-value" id="score">0</div>
+        </div>
+        <div class="g2048-score">
+          <div class="g2048-score-label" id="lbl_best">最高分</div>
+          <div class="g2048-score-value" id="best">0</div>
+        </div>
+      </div>
+      <div class="g2048-actions">
+        <button class="btn primary" id="new_btn">新对局</button>
+        <button class="btn danger-ghost" id="undo_btn">撤销</button>
+      </div>
+      <div class="g2048-actions">
+        <button class="btn primary" id="ai_btn">▶ AI 自动玩</button>
+        <button class="btn" id="ai_step_btn">AI 单步</button>
+        <label class="g2048-ai-speed">速度
+          <input id="ai_speed" type="range" min="0" max="560" value="300">
+        </label>
+      </div>
+      <div class="g2048-policy-frame" id="policy_frame">
+        <div class="g2048-pol pol-up" id="pol_up" aria-label="up policy"><div class="g2048-pol-bar nn"><i></i></div><div class="g2048-pol-bar imp"><i></i></div></div>
+        <div class="g2048-pol pol-left" id="pol_left" aria-label="left policy"><div class="g2048-pol-bar nn"><i></i></div><div class="g2048-pol-bar imp"><i></i></div></div>
+        <div class="g2048-board" id="g2048_board" tabindex="0" aria-label="2048 board">
+          <div class="g2048-grid" id="grid"></div>
+          <div class="g2048-tiles" id="tiles"></div>
+          <div class="g2048-overlay" id="overlay">
+            <div class="g2048-overlay-title" id="overlay_title">游戏结束</div>
+            <button class="btn primary" id="overlay_btn">再来一局</button>
+          </div>
+        </div>
+        <div class="g2048-pol pol-right" id="pol_right" aria-label="right policy"><div class="g2048-pol-bar nn"><i></i></div><div class="g2048-pol-bar imp"><i></i></div></div>
+        <div class="g2048-pol pol-down" id="pol_down" aria-label="down policy"><div class="g2048-pol-bar nn"><i></i></div><div class="g2048-pol-bar imp"><i></i></div></div>
+      </div>
+      <div class="g2048-hint" id="hint">↑ ↓ ← → 或 WASD;手机上滑动屏幕 · 或让 AI 来玩</div>
+
+      <div class="g2048-ai-panel" id="ai_panel">
+        <div class="g2048-ai-head">
+          <span id="ai_status">Stochastic Gumbel AlphaZero</span>
+          <span id="ai_value"></span>
+        </div>
+        <div class="g2048-ai-legend">
+          <span><i class="sw nn"></i>网络策略 nn policy</span>
+          <span><i class="sw imp"></i>改进策略 improved policy (MCTS)</span>
+        </div>
+      </div>
+
+      <div class="g2048-advanced">
+        <button class="g2048-advanced-toggle" id="adv_toggle" aria-expanded="false" aria-controls="adv_body">
+          <span id="adv_label">高级选项</span>
+          <svg class="chev" width="12" height="12" viewBox="0 0 16 16" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6l4 4 4-4"></path>
+          </svg>
+        </button>
+        <div class="g2048-advanced-body" id="adv_body" hidden>
+          <button class="btn" id="edit_toggle" aria-pressed="false">
+            <span id="edit_label">编辑方块</span>
+          </button>
+          <div class="g2048-edit-hint" id="edit_hint"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    'use strict';
+
+    // ---------- i18n (tiny, just for this page) ----------
+    const STR = {
+      zh: {
+        score: '分数', best: '最高分',
+        new_game: '新对局', undo: '撤销',
+        game_over: '游戏结束', you_win: '到达 2048!',
+        play_again: '再来一局', keep_going: '继续',
+        hint: '↑ ↓ ← → 或 WASD;手机上滑动屏幕',
+        brand: '← SkyZero · 2048',
+        advanced: '高级选项',
+        edit_tiles: '编辑方块',
+        edit_done: '完成编辑',
+        edit_hint: '点击空格添加方块,点击方块修改;输入幂(2ⁿ)后回车确认',
+        editor_tip: '回车确认 · Esc 取消',
+        editor_clear: '清空',
+        editor_max: '上限',
+        editor_full: '已达上限',
+        editor_capped: '(上限)',
+      },
+      en: {
+        score: 'Score', best: 'Best',
+        new_game: 'New game', undo: 'Undo',
+        game_over: 'Game over', you_win: 'You reached 2048!',
+        play_again: 'Play again', keep_going: 'Keep going',
+        hint: 'Arrow keys / WASD · swipe on touch',
+        brand: '← SkyZero · 2048',
+        advanced: 'Advanced',
+        edit_tiles: 'Edit tiles',
+        edit_done: 'Done editing',
+        edit_hint: 'Tap an empty cell to add a tile, a tile to edit · type the exponent (2ⁿ) and press Enter',
+        editor_tip: 'Enter to confirm · Esc to cancel',
+        editor_clear: 'Clear',
+        editor_max: 'Max',
+        editor_full: 'Board full',
+        editor_capped: '(max)',
+      },
+    };
+    let LANG = 'zh';
+    try {
+      const v = localStorage.getItem('skz_lang');
+      if (v === 'zh' || v === 'en') LANG = v;
+    } catch(_) {}
+    function t(k) { return (STR[LANG] && STR[LANG][k]) || STR.en[k] || k; }
+    function applyLang() {
+      document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
+      document.getElementById('lbl_score').textContent = t('score');
+      document.getElementById('lbl_best').textContent  = t('best');
+      document.getElementById('new_btn').textContent   = t('new_game');
+      document.getElementById('undo_btn').textContent  = t('undo');
+      document.getElementById('overlay_btn').textContent = t('play_again');
+      document.getElementById('hint').textContent      = t('hint');
+      document.getElementById('brand_link').textContent = t('brand');
+      document.getElementById('adv_label').textContent  = t('advanced');
+      document.getElementById('edit_hint').textContent  = t('edit_hint');
+      document.title = '2048 · SkyZero';
+      // Refresh overlay title if it's visible (state-dependent label).
+      if (typeof updateOverlay === 'function') updateOverlay();
+      // Refresh edit-mode label + open editor tip (both are state-dependent).
+      if (typeof updateEditUi === 'function') updateEditUi();
+    }
+
+    // ---------- Theme + lang controls (mirror gomoku page) ----------
+    function applyTheme(mode) {
+      const resolved = (mode === 'auto')
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : mode;
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.dataset.themeMode = mode;
+      document.querySelectorAll('#theme_seg .seg-btn').forEach(b => {
+        b.setAttribute('aria-pressed', String(b.dataset.theme === mode));
+      });
+    }
+    (function initThemeSeg(){
+      let mode = 'auto';
+      try {
+        const v = localStorage.getItem('skz_theme');
+        if (v === 'light' || v === 'dark') mode = v;
+      } catch(_) {}
+      applyTheme(mode);
+      document.querySelectorAll('#theme_seg .seg-btn').forEach(b => {
+        b.addEventListener('click', () => {
+          const m = b.dataset.theme;
+          try {
+            if (m === 'auto') localStorage.removeItem('skz_theme');
+            else localStorage.setItem('skz_theme', m);
+          } catch(_) {}
+          applyTheme(m);
+        });
+      });
+      // Track OS changes while in auto mode.
+      try {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+          if (document.documentElement.dataset.themeMode === 'auto') applyTheme('auto');
+        });
+      } catch(_) {}
+    })();
+    (function initLangSeg(){
+      document.querySelectorAll('#lang_seg .seg-btn').forEach(b => {
+        b.setAttribute('aria-pressed', String(b.dataset.lang === LANG));
+        b.addEventListener('click', () => {
+          LANG = b.dataset.lang;
+          try { localStorage.setItem('skz_lang', LANG); } catch(_) {}
+          document.querySelectorAll('#lang_seg .seg-btn').forEach(x => {
+            x.setAttribute('aria-pressed', String(x.dataset.lang === LANG));
+          });
+          applyLang();
+        });
+      });
+    })();
+
+    // ---------- Game ----------
+    const SIZE = 4;
+    const GAP_PX = 10;
+    // Hard ceiling: no tile may ever exceed 131072 (2^17). Two 131072 tiles
+    // would merge into 262144, so merging is blocked once a tile hits MAX_TILE,
+    // and the editor keeps the whole board sum below SUM_CAP (2^18). That sum
+    // rule is what makes the editable max halve as the board fills: after a
+    // 131072 only 65536 fits, then 32768, and so on.
+    const MAX_TILE = 131072;
+    const SUM_CAP  = MAX_TILE * 2;   // 262144
+    const BEST_KEY = 'skz_2048_best';
+    const STATE_KEY = 'skz_2048_state';
+    const UNDO_LIMIT = 20;
+    // Adaptive slide timing. We pick a slide duration per move based on how
+    // long it's been since the previous input:
+    //   gap ≤ GAP_FAST_MS  → SLIDE_MS_MIN  (rapid swipes; tiles barely linger)
+    //   gap ≥ GAP_SLOW_MS  → SLIDE_MS_MAX  (deliberate play; visible motion)
+    //   in between         → linear blend
+    // The chosen duration is published as `--slide-ms` on `#tiles` and read by
+    // every tile's CSS transition.
+    const SLIDE_MS_MAX = 120;
+    const SLIDE_MS_MIN = 40;
+    const GAP_FAST_MS  = 100;
+    const GAP_SLOW_MS  = 300;
+    const FINALIZE_PAD_MS = 10;   // wait this much after the slide before merging
+    let lastInputTs = 0;          // performance.now() of the previous move
+
+    /** @type {number[][]} */
+    let grid;
+    /** @type {number[][]} parallel to `grid`; 0 = empty, else tile id */
+    let tileIds;
+    let score = 0;
+    let best  = 0;
+    let history = [];          // stack of {grid, score, won} snapshots
+    let won = false;
+    let overlayMode = null;    // null | 'lose' | 'win'
+
+    // Board-editing mode (from the Advanced panel). While on, slides are
+    // disabled and tapping a cell opens an inline exponent editor.
+    let editMode = false;
+    let editor = null;         // { r, c, box, input, marker } when open, else null
+
+    // Live tile DOM, keyed by stable per-tile id. Each entry's DOM node
+    // persists across moves so a CSS `transform` transition animates the slide.
+    let tiles = new Map();     // id -> { v, r, c, el }
+    let nextTileId = 1;
+
+    // Bookkeeping for the post-slide finalize pass.
+    let pendingMerges = [];    // { removeId, upgradeId, newV, r, c }
+    let pendingSpawns = [];    // { r, c, v }
+    let animTimer = 0;
+
+    // ---------- DOM refs ----------
+    const boardEl = document.getElementById('g2048_board');
+    const gridEl  = document.getElementById('grid');
+    const tilesEl = document.getElementById('tiles');
+    const overlayEl = document.getElementById('overlay');
+    const overlayTitle = document.getElementById('overlay_title');
+    const scoreEl = document.getElementById('score');
+    const bestEl  = document.getElementById('best');
+
+    // Build static 4x4 background cells once.
+    (function buildBg(){
+      for (let i = 0; i < SIZE * SIZE; i++) {
+        const c = document.createElement('div');
+        c.className = 'g2048-cell';
+        gridEl.appendChild(c);
+      }
+    })();
+
+    // ---------- Helpers ----------
+    function emptyGrid() {
+      const g = new Array(SIZE);
+      for (let r = 0; r < SIZE; r++) g[r] = new Array(SIZE).fill(0);
+      return g;
+    }
+    function cloneGrid(g) { return g.map(row => row.slice()); }
+
+    function loadBest() {
+      try {
+        const v = parseInt(localStorage.getItem(BEST_KEY) || '0', 10);
+        best = isFinite(v) && v > 0 ? v : 0;
+      } catch(_) { best = 0; }
+    }
+    function saveBest() {
+      try { localStorage.setItem(BEST_KEY, String(best)); } catch(_) {}
+    }
+    function saveState() {
+      try {
+        localStorage.setItem(STATE_KEY, JSON.stringify({ grid, score, won }));
+      } catch(_) {}
+    }
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STATE_KEY);
+        if (!raw) return false;
+        const s = JSON.parse(raw);
+        if (!s || !Array.isArray(s.grid) || s.grid.length !== SIZE) return false;
+        for (let r = 0; r < SIZE; r++) {
+          if (!Array.isArray(s.grid[r]) || s.grid[r].length !== SIZE) return false;
+        }
+        grid = s.grid;
+        score = (typeof s.score === 'number') ? s.score : 0;
+        won = !!s.won;
+        return true;
+      } catch(_) { return false; }
+    }
+
+    function cellSizePx() {
+      const rect = tilesEl.getBoundingClientRect();
+      return (rect.width - GAP_PX * (SIZE - 1)) / SIZE;
+    }
+
+    // Map (line-index i, slot j) -> (grid row, col) for each slide direction.
+    // The line is oriented head-toward-slide, so compaction trivially writes
+    // non-zeros to small j.
+    function lineCoord(dir, i, j) {
+      if (dir === 'left')  return [i, j];
+      if (dir === 'right') return [i, SIZE - 1 - j];
+      if (dir === 'up')    return [j, i];
+      /* down */           return [SIZE - 1 - j, i];
+    }
+
+    function findRandomEmpty() {
+      const empties = [];
+      for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
+        if (grid[r][c] === 0) empties.push([r, c]);
+      }
+      if (empties.length === 0) return null;
+      return empties[Math.floor(Math.random() * empties.length)];
+    }
+
+    function anyMovePossible() {
+      for (let r = 0; r < SIZE; r++) {
+        for (let c = 0; c < SIZE; c++) {
+          if (grid[r][c] === 0) return true;
+          const v = grid[r][c];
+          if (v * 2 > MAX_TILE) continue;   // capped tiles can't merge
+          if (r + 1 < SIZE && grid[r + 1][c] === v) return true;
+          if (c + 1 < SIZE && grid[r][c + 1] === v) return true;
+        }
+      }
+      return false;
+    }
+
+    function maxTile() {
+      let m = 0;
+      for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
+        if (grid[r][c] > m) m = grid[r][c];
+      }
+      return m;
+    }
+
+    function boardSum() {
+      let s = 0;
+      for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) s += grid[r][c];
+      return s;
+    }
+
+    // Score implied by the current board, assuming every tile was built from
+    // 2-spawns: a 2^k tile is worth (k-1)*2^k of accumulated merge score. Used
+    // to keep score/best in sync after a board edit.
+    function scoreFromGrid() {
+      let s = 0;
+      for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
+        const v = grid[r][c];
+        if (v >= 4) s += v * (Math.round(Math.log2(v)) - 1);
+      }
+      return s;
+    }
+
+    // Largest power-of-two value the editor may write into (r,c): the biggest
+    // m (≤ MAX_TILE) that keeps the total board sum below SUM_CAP. Returns 0
+    // when even a 2 wouldn't fit (cell can only be cleared).
+    function editCapFor(r, c) {
+      const sumOthers = boardSum() - grid[r][c];
+      const room = SUM_CAP - sumOthers - 1;   // value must be ≤ room
+      if (room < 2) return 0;
+      let m = 2;
+      while (m * 2 <= room && m < MAX_TILE) m *= 2;
+      return m;
+    }
+
+    // ---------- Tile DOM ----------
+    // Outer node owns position (translate + slide transition). Inner node owns
+    // appearance and pop/merge keyframes (scale only). They never fight each
+    // other for the `transform` property.
+    function setTileVisuals(el, v, r, c) {
+      const size = cellSizePx();
+      const x = c * (size + GAP_PX);
+      const y = r * (size + GAP_PX);
+      el.style.width  = size + 'px';
+      el.style.height = size + 'px';
+      el.style.transform = `translate(${x}px, ${y}px)`;
+      const inner = el.firstChild;
+      const digits = String(v).length;
+      const base = size * (digits <= 2 ? 0.45 : digits === 3 ? 0.36 : digits === 4 ? 0.30 : 0.24);
+      inner.style.fontSize = Math.max(14, Math.round(base)) + 'px';
+      inner.textContent = String(v);
+      inner.setAttribute('data-v', String(v));
+      if (v > 2048) inner.setAttribute('data-v-big', '');
+      else inner.removeAttribute('data-v-big');
+    }
+
+    // Update only the outer transform (lets the CSS transition own the slide).
+    function setTilePos(el, r, c) {
+      const size = cellSizePx();
+      const x = c * (size + GAP_PX);
+      const y = r * (size + GAP_PX);
+      el.style.transform = `translate(${x}px, ${y}px)`;
+    }
+
+    function createTileEl(v, r, c, popClass) {
+      const el = document.createElement('div');
+      el.className = 'g2048-tile' + (popClass ? ' ' + popClass : '');
+      const inner = document.createElement('div');
+      inner.className = 'g2048-tile-inner';
+      el.appendChild(inner);
+      // Position BEFORE inserting into the DOM. Otherwise the freshly mounted
+      // outer briefly has its initial transform (identity = translate(0,0)) as
+      // the previous computed value, and the CSS transition animates from
+      // (0,0) to the target — making every new tile slide in from the top-left.
+      setTileVisuals(el, v, r, c);
+      tilesEl.appendChild(el);
+      return el;
+    }
+
+    function spawnTileAt(r, c, v, popClass) {
+      const id = nextTileId++;
+      grid[r][c] = v;
+      tileIds[r][c] = id;
+      const el = createTileEl(v, r, c, popClass || 'appear');
+      tiles.set(id, { v, r, c, el });
+      return id;
+    }
+
+    function clearAllTiles() {
+      tiles.clear();
+      while (tilesEl.firstChild) tilesEl.removeChild(tilesEl.firstChild);
+    }
+
+    function rebuildTilesFromGrid(popClass) {
+      tileIds = emptyGrid();
+      clearAllTiles();
+      for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
+        if (grid[r][c] !== 0) {
+          const id = nextTileId++;
+          tileIds[r][c] = id;
+          const el = createTileEl(grid[r][c], r, c, popClass);
+          tiles.set(id, { v: grid[r][c], r, c, el });
+        }
+      }
+    }
+
+    function reflowTiles() {
+      for (const t of tiles.values()) setTileVisuals(t.el, t.v, t.r, t.c);
+    }
+
+    function updateScoreDom() {
+      scoreEl.textContent = String(score);
+      bestEl.textContent  = String(best);
+    }
+
+    function updateOverlay() {
+      if (overlayMode === 'lose') {
+        overlayTitle.textContent = t('game_over');
+        document.getElementById('overlay_btn').textContent = t('play_again');
+        overlayEl.classList.add('show');
+      } else if (overlayMode === 'win') {
+        overlayTitle.textContent = t('you_win');
+        document.getElementById('overlay_btn').textContent = t('keep_going');
+        overlayEl.classList.add('show');
+      } else {
+        overlayEl.classList.remove('show');
+      }
+    }
+
+    // ---------- Move / merge with identity ----------
+    // Process one line. Returns { newIds, newVals, gained, moves }.
+    // moves: per source tile, where it ended up in the output line and whether
+    // it merged into a survivor (whose id stays in `newIds`).
+    function moveLine(idsLine, valsLine) {
+      const newIds = new Array(SIZE).fill(0);
+      const newVals = new Array(SIZE).fill(0);
+      const moves = [];
+      let writeIdx = 0;
+      let canMerge = true;
+      let gained = 0;
+      for (let i = 0; i < SIZE; i++) {
+        const id = idsLine[i];
+        const v  = valsLine[i];
+        if (id === 0) continue;
+        // Block the merge that would exceed the ceiling — two MAX_TILE tiles
+        // stay separate instead of forming 131072.
+        if (writeIdx > 0 && canMerge && newVals[writeIdx - 1] === v && v * 2 <= MAX_TILE) {
+          const surviveId = newIds[writeIdx - 1];
+          const merged = v * 2;
+          gained += merged;
+          newVals[writeIdx - 1] = merged;
+          moves.push({ id, toIdx: writeIdx - 1, mergedWith: surviveId, newV: merged });
+          canMerge = false;
+        } else {
+          newIds[writeIdx] = id;
+          newVals[writeIdx] = v;
+          moves.push({ id, toIdx: writeIdx, mergedWith: null });
+          writeIdx++;
+          canMerge = true;
+        }
+      }
+      return { newIds, newVals, moves, gained };
+    }
+
+    function doMove(dir) {
+      if (editMode) return;        // sliding is disabled while editing the board
+      if (overlayMode === 'lose') return;
+      // Snap any in-flight animation to its committed state before we mutate.
+      finalizeAnimation();
+
+      // Pick a slide duration based on how recently the previous input fired.
+      // Faster input → shorter slide, so the next move doesn't pile up behind
+      // a leisurely transition. The duration is published as a CSS custom
+      // property so every tile's transition picks it up automatically.
+      const now = performance.now();
+      let slideMs = SLIDE_MS_MAX;
+      if (lastInputTs > 0) {
+        const gap = now - lastInputTs;
+        if (gap <= GAP_FAST_MS) {
+          slideMs = SLIDE_MS_MIN;
+        } else if (gap < GAP_SLOW_MS) {
+          const t = (gap - GAP_FAST_MS) / (GAP_SLOW_MS - GAP_FAST_MS);
+          slideMs = Math.round(SLIDE_MS_MIN + (SLIDE_MS_MAX - SLIDE_MS_MIN) * t);
+        }
+      }
+      lastInputTs = now;
+      tilesEl.style.setProperty('--slide-ms', slideMs + 'ms');
+
+      const snapshot = { grid: cloneGrid(grid), score, won };
+
+      const newGrid = emptyGrid();
+      const newIds  = emptyGrid();
+      const allMoves = [];   // each: { id, toIdx, mergedWith, newV?, i, dir }
+      let totalGained = 0;
+      let anyChange = false;
+
+      for (let i = 0; i < SIZE; i++) {
+        const idsLine  = new Array(SIZE);
+        const valsLine = new Array(SIZE);
+        for (let j = 0; j < SIZE; j++) {
+          const [r, c] = lineCoord(dir, i, j);
+          idsLine[j]  = tileIds[r][c];
+          valsLine[j] = grid[r][c];
+        }
+        const res = moveLine(idsLine, valsLine);
+        totalGained += res.gained;
+        for (let j = 0; j < SIZE; j++) {
+          const [r, c] = lineCoord(dir, i, j);
+          newGrid[r][c] = res.newVals[j];
+          newIds[r][c]  = res.newIds[j];
+          if (idsLine[j] !== res.newIds[j] || valsLine[j] !== res.newVals[j]) anyChange = true;
+        }
+        for (const m of res.moves) allMoves.push(Object.assign({}, m, { i, dir }));
+      }
+      if (!anyChange) return;
+
+      // Commit grid state.
+      history.push(snapshot);
+      if (history.length > UNDO_LIMIT) history.shift();
+      grid = newGrid;
+      tileIds = newIds;
+      score += totalGained;
+      if (score > best) { best = score; saveBest(); }
+
+      // Trigger slides. Each existing tile gets its `transform` updated to its
+      // destination; the CSS transition handles the actual motion.
+      for (const m of allMoves) {
+        const [toR, toC] = lineCoord(m.dir, m.i, m.toIdx);
+        const tile = tiles.get(m.id);
+        if (!tile) continue;
+        tile.r = toR;
+        tile.c = toC;
+        setTilePos(tile.el, toR, toC);
+        if (m.mergedWith !== null) {
+          // The merging tile slides into the survivor's cell; both DOM nodes
+          // overlap momentarily, then the merging one is removed and the
+          // survivor pops up with its new value.
+          pendingMerges.push({
+            removeId: m.id,
+            upgradeId: m.mergedWith,
+            newV: m.newV,
+            r: toR, c: toC,
+          });
+        }
+      }
+
+      // Queue spawn of a new random tile for AFTER the slide. We do NOT write
+      // it into `grid` yet — that happens in finalizeAnimation — so a rapid
+      // second move that re-slides finds an empty cell where the spawn will
+      // land.
+      const empty = findRandomEmpty();
+      if (empty) {
+        const v = Math.random() < 0.9 ? 2 : 4;
+        pendingSpawns.push({ r: empty[0], c: empty[1], v });
+      }
+
+      updateScoreDom();
+
+      if (animTimer) clearTimeout(animTimer);
+      animTimer = setTimeout(() => { animTimer = 0; finalizeAnimation(); }, slideMs + FINALIZE_PAD_MS);
+    }
+
+    function finalizeAnimation() {
+      if (animTimer) { clearTimeout(animTimer); animTimer = 0; }
+      if (pendingMerges.length === 0 && pendingSpawns.length === 0) return;
+
+      for (const m of pendingMerges) {
+        const dying = tiles.get(m.removeId);
+        if (dying && dying.el && dying.el.parentNode) dying.el.parentNode.removeChild(dying.el);
+        tiles.delete(m.removeId);
+        const survivor = tiles.get(m.upgradeId);
+        if (survivor) {
+          survivor.v = m.newV;
+          setTileVisuals(survivor.el, survivor.v, survivor.r, survivor.c);
+          // Restart the merge keyframe by toggling the class.
+          survivor.el.classList.remove('merged');
+          void survivor.el.offsetWidth;  // force reflow
+          survivor.el.classList.add('merged');
+        }
+      }
+      pendingMerges = [];
+
+      for (const s of pendingSpawns) {
+        // The cell should still be empty (snap callers haven't moved between),
+        // but be defensive.
+        if (grid[s.r][s.c] === 0) spawnTileAt(s.r, s.c, s.v, 'appear');
+      }
+      pendingSpawns = [];
+
+      if (!won && maxTile() >= 2048) {
+        won = true;
+        overlayMode = 'win';
+      } else if (!anyMovePossible()) {
+        overlayMode = 'lose';
+      }
+      saveState();
+      updateOverlay();
+    }
+
+    function undo() {
+      finalizeAnimation();
+      closeEditor(false);
+      const prev = history.pop();
+      if (!prev) return;
+      grid = prev.grid;
+      score = prev.score;
+      won = prev.won;
+      overlayMode = null;
+      rebuildTilesFromGrid(null);  // no pop animation on undo
+      updateScoreDom();
+      updateOverlay();
+      clearDecision();
+      saveState();
+    }
+
+    function newGame() {
+      if (animTimer) { clearTimeout(animTimer); animTimer = 0; }
+      closeEditor(false);
+      pendingMerges = [];
+      pendingSpawns = [];
+      grid = emptyGrid();
+      tileIds = emptyGrid();
+      score = 0;
+      won = false;
+      history = [];
+      overlayMode = null;
+      clearAllTiles();
+      const e1 = findRandomEmpty();
+      if (e1) spawnTileAt(e1[0], e1[1], Math.random() < 0.9 ? 2 : 4, 'appear');
+      const e2 = findRandomEmpty();
+      if (e2) spawnTileAt(e2[0], e2[1], Math.random() < 0.9 ? 2 : 4, 'appear');
+      updateScoreDom();
+      updateOverlay();
+      clearDecision();
+      saveState();
+    }
+
+    // ---------- Board editing ----------
+    const advToggle  = document.getElementById('adv_toggle');
+    const advBody    = document.getElementById('adv_body');
+    const editToggle = document.getElementById('edit_toggle');
+
+    // Re-derive win/lose from the current grid. Used after edits so the overlay
+    // reflects the hand-built position rather than stale state.
+    function recomputeOverlay() {
+      if (maxTile() >= 2048) { won = true; overlayMode = 'win'; }
+      else if (!anyMovePossible()) { won = false; overlayMode = 'lose'; }
+      else { won = false; overlayMode = null; }
+      updateOverlay();
+    }
+
+    // Keep the edit toggle label + open editor tip in sync with language/state.
+    function updateEditUi() {
+      editToggle.querySelector('#edit_label').textContent =
+        editMode ? t('edit_done') : t('edit_tiles');
+      editToggle.setAttribute('aria-pressed', String(editMode));
+      if (editor) {
+        const tip = editor.box.querySelector('.g2048-editor-tip');
+        if (tip) tip.textContent = t('editor_tip');
+        const mx = editor.box.querySelector('.g2048-editor-max');
+        if (mx) mx.textContent = editor.cap > 0 ? t('editor_max') + ' ' + editor.cap : t('editor_full');
+        renderEditorResult();
+      }
+    }
+
+    // Pixel position of cell (r,c) within #tiles, matching tile layout.
+    function cellXY(r, c) {
+      const size = cellSizePx();
+      return { x: c * (size + GAP_PX), y: r * (size + GAP_PX), size };
+    }
+
+    function closeEditor(commit) {
+      if (!editor) return;
+      const ed = editor;
+      editor = null;
+      if (commit) {
+        const raw = ed.input.value.trim();
+        // Empty or 0 → clear the cell; otherwise value = 2^n, capped so the
+        // board sum stays under SUM_CAP (never letting a >65536 tile exist).
+        let value = 0;
+        if (raw !== '') {
+          const n = parseInt(raw, 10);
+          if (isFinite(n) && n >= 1) value = Math.min(Math.pow(2, Math.min(n, 17)), ed.cap);
+        }
+        applyEdit(ed.r, ed.c, value);
+      }
+      if (ed.box.parentNode) ed.box.parentNode.removeChild(ed.box);
+      if (ed.marker.parentNode) ed.marker.parentNode.removeChild(ed.marker);
+    }
+
+    // Live "= value" preview reflecting the typed exponent, clamped to the cap.
+    function renderEditorResult() {
+      if (!editor) return;
+      const res = editor.box.querySelector('.g2048-editor-result');
+      const raw = editor.input.value.trim();
+      if (raw === '') { res.textContent = t('editor_clear'); res.classList.add('clear'); return; }
+      const n = parseInt(raw, 10);
+      if (!isFinite(n) || n < 1) { res.textContent = t('editor_clear'); res.classList.add('clear'); return; }
+      let v = Math.pow(2, Math.min(n, 17));
+      const capped = v > editor.cap;
+      if (capped) v = editor.cap;
+      res.classList.remove('clear');
+      // Show the capped value, and flag when the request was clamped down.
+      res.textContent = '= ' + v + (capped ? ' ' + t('editor_capped') : '');
+    }
+
+    function openEditor(r, c) {
+      closeEditor(false);
+      const { x, y, size } = cellXY(r, c);
+
+      // Highlight the target cell.
+      const marker = document.createElement('div');
+      marker.className = 'g2048-edit-marker';
+      marker.style.left = x + 'px';
+      marker.style.top = y + 'px';
+      marker.style.width = size + 'px';
+      marker.style.height = size + 'px';
+      tilesEl.appendChild(marker);
+
+      // Build the popover.
+      const box = document.createElement('div');
+      box.className = 'g2048-editor';
+      box.innerHTML =
+        '<div class="g2048-editor-row">' +
+          '<span class="g2048-editor-base">2</span>' +
+          '<input class="g2048-editor-exp" type="text" inputmode="numeric" ' +
+                 'autocomplete="off" maxlength="2" aria-label="exponent">' +
+        '</div>' +
+        '<div class="g2048-editor-result"></div>' +
+        '<div class="g2048-editor-max"></div>' +
+        '<div class="g2048-editor-tip"></div>';
+      tilesEl.appendChild(box);
+
+      const input = box.querySelector('.g2048-editor-exp');
+      box.querySelector('.g2048-editor-tip').textContent = t('editor_tip');
+
+      // Largest value this cell may hold given the rest of the board.
+      const cap = editCapFor(r, c);
+      box.querySelector('.g2048-editor-max').textContent =
+        cap > 0 ? t('editor_max') + ' ' + cap : t('editor_full');
+
+      // Pre-fill with the current tile's exponent, if any.
+      if (grid[r][c] > 0) input.value = String(Math.round(Math.log2(grid[r][c])));
+
+      editor = { r, c, box, input, marker, cap };
+      renderEditorResult();
+
+      // Position: prefer below the cell, flip above if it would overflow the
+      // bottom, and clamp horizontally inside the tiles area.
+      const tilesW = tilesEl.clientWidth;
+      const tilesH = tilesEl.clientHeight;
+      const bw = box.offsetWidth || 132;
+      const bh = box.offsetHeight || 90;
+      let left = x + size / 2 - bw / 2;
+      left = Math.max(0, Math.min(left, tilesW - bw));
+      let top = y + size + 6;
+      if (top + bh > tilesH) top = y - bh - 6;
+      if (top < 0) top = Math.max(0, Math.min(y, tilesH - bh));
+      box.style.left = left + 'px';
+      box.style.top = top + 'px';
+
+      input.addEventListener('input', renderEditorResult);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); closeEditor(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); closeEditor(false); }
+      });
+      input.focus();
+      input.select();
+    }
+
+    // Write a single cell, snapshot for undo, refresh DOM, and re-derive the
+    // score from the new board so the best score stays in sync.
+    function applyEdit(r, c, value) {
+      if (grid[r][c] === value) return;
+      const snapshot = { grid: cloneGrid(grid), score, won };
+      history.push(snapshot);
+      if (history.length > UNDO_LIMIT) history.shift();
+      grid[r][c] = value;
+      score = scoreFromGrid();
+      if (score > best) { best = score; saveBest(); }
+      rebuildTilesFromGrid(null);
+      updateScoreDom();
+      saveState();
+    }
+
+    // Translate a board click into a cell and open its editor.
+    boardEl.addEventListener('click', (e) => {
+      if (!editMode) return;
+      // A click inside the open editor is handled by the editor itself.
+      if (editor && editor.box.contains(e.target)) return;
+      const rect = tilesEl.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+      if (px < 0 || py < 0 || px > rect.width || py > rect.height) { closeEditor(false); return; }
+      const size = cellSizePx();
+      const step = size + GAP_PX;
+      const c = Math.floor(px / step);
+      const r = Math.floor(py / step);
+      if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) { closeEditor(false); return; }
+      openEditor(r, c);
+    });
+
+    function setEditMode(on) {
+      editMode = on;
+      boardEl.classList.toggle('editing', on);
+      if (!on) {
+        closeEditor(false);
+        recomputeOverlay();   // reflect the freshly edited position
+      } else {
+        // Editing a finished board should clear any leftover overlay.
+        overlayMode = null;
+        updateOverlay();
+      }
+      updateEditUi();
+    }
+
+    advToggle.addEventListener('click', () => {
+      const open = advBody.hasAttribute('hidden');
+      if (open) advBody.removeAttribute('hidden');
+      else advBody.setAttribute('hidden', '');
+      advToggle.setAttribute('aria-expanded', String(open));
+      if (!open && editMode) setEditMode(false);  // collapsing exits edit mode
+    });
+    editToggle.addEventListener('click', () => setEditMode(!editMode));
+
+    // ---------- Input ----------
+    const KEY_DIR = {
+      'ArrowLeft': 'left', 'ArrowRight': 'right',
+      'ArrowUp': 'up', 'ArrowDown': 'down',
+      'a': 'left', 'A': 'left',
+      'd': 'right', 'D': 'right',
+      'w': 'up', 'W': 'up',
+      's': 'down', 'S': 'down',
+    };
+    window.addEventListener('keydown', (e) => {
+      // Ignore when typing in an input/textarea (none on this page today, but
+      // be defensive).
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      const d = KEY_DIR[e.key];
+      if (!d) return;
+      e.preventDefault();
+      doMove(d);
+    }, { passive: false });
+
+    // Touch swipe
+    let touchStart = null;
+    boardEl.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) { touchStart = null; return; }
+      const t0 = e.touches[0];
+      touchStart = { x: t0.clientX, y: t0.clientY };
+    }, { passive: true });
+    boardEl.addEventListener('touchend', (e) => {
+      if (!touchStart) return;
+      const t0 = e.changedTouches[0];
+      const dx = t0.clientX - touchStart.x;
+      const dy = t0.clientY - touchStart.y;
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+      const THR = 24;
+      if (Math.max(adx, ady) < THR) { touchStart = null; return; }
+      if (adx > ady) doMove(dx > 0 ? 'right' : 'left');
+      else            doMove(dy > 0 ? 'down'  : 'up');
+      touchStart = null;
+    }, { passive: true });
+
+    // Buttons
+    document.getElementById('new_btn').addEventListener('click', newGame);
+    document.getElementById('undo_btn').addEventListener('click', undo);
+    document.getElementById('overlay_btn').addEventListener('click', () => {
+      if (overlayMode === 'win') {
+        // "Keep going" — dismiss overlay, don't trigger again until next game.
+        overlayMode = null;
+        updateOverlay();
+      } else {
+        newGame();
+      }
+    });
+
+    // Re-position tiles on resize (their pixel coords depend on board width).
+    let resizeRaf = 0;
+    window.addEventListener('resize', () => {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      // The open editor is anchored to pixel coords that change with the board
+      // width, so close it rather than leave it misplaced.
+      closeEditor(false);
+      resizeRaf = requestAnimationFrame(() => { resizeRaf = 0; reflowTiles(); });
+    });
+
+    // ---------- AI driver (Stochastic Gumbel AlphaZero via /api/decide) ----------
+    const DIR_NAMES = ['up', 'right', 'down', 'left'];   // matches server action ids
+    const DIR_LABEL = ['↑ 上', '→ 右', '↓ 下', '← 左'];
+    let aiOn = false, aiBusy = false;
+    const aiBtn = document.getElementById('ai_btn');
+    const aiStepBtn = document.getElementById('ai_step_btn');
+    const aiSpeed = document.getElementById('ai_speed');
+    const aiStatus = document.getElementById('ai_status');
+    const aiValueEl = document.getElementById('ai_value');
+    // Four directional policy strips around the board, indexed by the server's
+    // action id (0=up 1=right 2=down 3=left). Each strip holds an nn bar and an
+    // improved-policy bar that we resize per decision.
+    const POL_STRIPS = [
+      document.getElementById('pol_up'),
+      document.getElementById('pol_right'),
+      document.getElementById('pol_down'),
+      document.getElementById('pol_left'),
+    ];
+
+    function gridToBoard() {
+      const b = new Array(SIZE * SIZE).fill(0);
+      for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
+        const v = grid[r][c];
+        b[r * SIZE + c] = v > 0 ? Math.round(Math.log2(v)) : 0;
+      }
+      return b;
+    }
+
+    // Resize one bar (`cls` = 'nn' | 'imp') in a strip to a 0..1 probability.
+    function setPolFill(strip, cls, p) {
+      const i = strip && strip.querySelector('.' + cls + ' > i');
+      if (i) i.style.setProperty('--p', (100 * Math.max(0, Math.min(1, p))) + '%');
+    }
+
+    // Empty all strips (e.g. on a new game / undo, when there's no fresh decision).
+    function clearDecision() {
+      for (const s of POL_STRIPS) {
+        if (!s) continue;
+        setPolFill(s, 'nn', 0);
+        setPolFill(s, 'imp', 0);
+        s.classList.remove('chosen');
+      }
+      aiValueEl.textContent = '';
+    }
+
+    function renderDecision(resp) {
+      const nn = resp.nn_policy || [0, 0, 0, 0];
+      const imp = resp.improved_policy || [0, 0, 0, 0];
+      for (let a = 0; a < 4; a++) {
+        const s = POL_STRIPS[a];
+        if (!s) continue;
+        setPolFill(s, 'nn', nn[a]);
+        setPolFill(s, 'imp', imp[a]);
+        s.classList.toggle('chosen', a === resp.action);
+      }
+      aiValueEl.textContent = 'V≈' + Math.round(resp.value);
+      aiStatus.textContent = '选择 ' + DIR_LABEL[resp.action];
+    }
+
+    async function aiStep() {
+      if (aiBusy || editMode) return false;
+      if (overlayMode === 'lose') { aiStatus.textContent = '对局结束'; return false; }
+      aiBusy = true;
+      try {
+        const r = await fetch('/api/decide', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ board: gridToBoard() }),
+        });
+        const resp = await r.json();
+        if (resp.terminal || resp.action < 0) { aiStatus.textContent = '对局结束(无合法移动)'; aiBusy = false; return false; }
+        renderDecision(resp);
+        doMove(DIR_NAMES[resp.action]);
+        aiBusy = false;
+        return true;
+      } catch (e) { aiStatus.textContent = '请求出错: ' + e; aiBusy = false; return false; }
+    }
+
+    function setAi(on) {
+      aiOn = on;
+      aiBtn.textContent = on ? '⏸ 暂停' : '▶ AI 自动玩';
+      if (on) aiLoop();
+    }
+    async function aiLoop() {
+      if (!aiOn) return;
+      const ok = await aiStep();
+      if (ok && aiOn) {
+        const delay = 600 - (+aiSpeed.value);   // slider: right = faster
+        setTimeout(aiLoop, Math.max(90, delay)); // keep > slide so moves are visible
+      } else { setAi(false); }
+    }
+    aiBtn.addEventListener('click', () => setAi(!aiOn));
+    aiStepBtn.addEventListener('click', () => { if (!aiOn) aiStep(); });
+    document.getElementById('new_btn').addEventListener('click', () => setAi(false));
+    document.getElementById('undo_btn').addEventListener('click', () => setAi(false));
+    fetch('/api/info').then(r => r.json()).then(j => {
+      aiStatus.textContent = '模型 ' + j.ckpt + ' · sims=' + j.sims;
+    }).catch(() => {});
+
+    // ---------- Boot ----------
+    loadBest();
+    const hadSavedState = loadState();
+    if (!hadSavedState || !grid) {
+      grid = emptyGrid();
+      tileIds = emptyGrid();
+      // Defer initial DOM creation until layout settles so tile sizes are right.
+      requestAnimationFrame(() => {
+        const e1 = findRandomEmpty();
+        if (e1) spawnTileAt(e1[0], e1[1], Math.random() < 0.9 ? 2 : 4, 'appear');
+        const e2 = findRandomEmpty();
+        if (e2) spawnTileAt(e2[0], e2[1], Math.random() < 0.9 ? 2 : 4, 'appear');
+        updateScoreDom();
+        saveState();
+      });
+    } else {
+      // Recreate tile DOM from the loaded grid (after layout settles).
+      requestAnimationFrame(() => {
+        rebuildTilesFromGrid('appear');
+        updateScoreDom();
+      });
+    }
+    applyLang();
+    updateScoreDom();
+    updateOverlay();
+    boardEl.focus({ preventScroll: true });
+  })();
+  </script>
+</body>
+</html>
