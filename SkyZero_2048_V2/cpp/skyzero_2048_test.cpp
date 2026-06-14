@@ -353,6 +353,50 @@ int main() {
         check(out.best_action == 1 || out.best_action == 3, "[root-puct] prefers merging move");
     }
 
+    // --- HybridPCR fast-search algo split: full=puct, fast=gumbel (FAST_*_SEARCH
+    //     _ALGO). begin(fast=true) must route the search through the fast pair. ---
+    {
+        SkyZero2048Config cfg; cfg.num_simulations = 200; cfg.gamma = 0.999f;
+        cfg.root_puct = true;  cfg.non_root_gumbel = false;    // FULL = PUCT
+        cfg.fast_root_puct = false; cfg.fast_non_root_gumbel = true;  // FAST = Full-Gumbel
+        cfg.root_desired_per_child_visits_coeff = 2.0f;        // root-puct forced playouts
+        SkyZero2048MCTS mcts(game, cfg, stub_uniform_zero, /*seed=*/9);
+        auto s = board({5,5,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0});
+        auto legal = game.get_legal_actions(s);
+
+        auto drive = [&](int so, bool fast) {
+            mcts.begin(s, nullptr, so, /*exploration=*/!fast, /*turn=*/0, fast);
+            if (mcts.root_needs_eval()) {
+                auto r = stub_uniform_zero(mcts.root_state());
+                mcts.apply_root_eval(r.first, r.second);
+            }
+            while (!mcts.done()) {
+                auto e = mcts.select_leaf();
+                if (!e.empty()) { auto r = stub_uniform_zero(e); mcts.apply_leaf(r.first, r.second); }
+            }
+            return mcts.result();
+        };
+
+        // Full search: routes through PUCT root + PUCT non-root.
+        auto full = drive(/*so=*/-1, /*fast=*/false);
+        check(mcts.eff_root_puct() && !mcts.eff_non_root_gumbel(),
+              "[fast-algo] full search uses the full (puct) pair");
+        int fvs = 0; for (int a = 0; a < 4; ++a) fvs += full.visit_counts[a];
+        check(fvs == cfg.num_simulations, "[fast-algo] full search runs full budget");
+        check(full.best_action >= 0 && legal[full.best_action] == 1, "[fast-algo] full best_action legal");
+
+        // Fast (PCR cheap) search: routes through Gumbel root + Gumbel non-root,
+        // honours the reduced budget, exploration off.
+        auto fast = drive(/*so=*/33, /*fast=*/true);
+        check(!mcts.eff_root_puct() && mcts.eff_non_root_gumbel(),
+              "[fast-algo] fast search uses the fast (gumbel) pair");
+        int qvs = 0; for (int a = 0; a < 4; ++a) qvs += fast.visit_counts[a];
+        check(qvs == 33, "[fast-algo] fast search honours reduced sims budget");
+        float qs = 0.0f; for (int a = 0; a < 4; ++a) qs += fast.visit_policy[a];
+        check(std::abs(qs - 1.0f) < 1e-4f, "[fast-algo] fast visit_policy normalized");
+        check(fast.best_action >= 0 && legal[fast.best_action] == 1, "[fast-algo] fast best_action legal");
+    }
+
     std::printf("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;
 }
