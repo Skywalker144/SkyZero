@@ -66,6 +66,18 @@ struct SkyZero2048Config {
     // forced playouts during selection, and the training target / chosen move
     // come from puct_root_assemble (forced-playout/noise excess pruned away).
     bool root_puct = false;
+    // Fast-search (PCR cheap search) algorithm overrides. When a move runs the
+    // cheap PCR search, the root / non-root selection uses these instead of
+    // root_puct / non_root_gumbel above — so full searches can run clean-target
+    // PUCT while the cheap searches run Full-Gumbel (KataGo HybridPCR). The
+    // selfplay loop defaults FAST_*_SEARCH_ALGO to the full keys, so unset =
+    // the cheap search uses the same algo (no behaviour change). Mixed algos
+    // can't share a warm-started tree, so a config where these differ from the
+    // full pair forces tree reuse off for the whole game (decoupled_fast_tree in
+    // the selfplay loop). Same constraint as the full pair: fast_root_puct=true
+    // needs fast_non_root_gumbel=false.
+    bool fast_root_puct = false;
+    bool fast_non_root_gumbel = false;
     float root_fpu_reduction_max = 0.0f;            // root-specific FPU (vs fpu_reduction_max)
     float root_desired_per_child_visits_coeff = 0.0f;  // forced playouts; 0 = off
     // Chosen-move temperature (root=puct selfplay move sampling over the pruned
@@ -301,6 +313,8 @@ public:
         const int budget = (sims_override > 0) ? sims_override : cfg_.num_simulations;
         sims_budget_ = budget;                 // sync search: no PCR
         root_explore_ = true;
+        eff_root_puct_ = cfg_.root_puct;       // sync search always uses the full algo
+        eff_non_root_gumbel_ = cfg_.non_root_gumbel;
         turn_number_ = turn_number;
 
         SearchOutput out;
@@ -341,11 +355,14 @@ public:
     // = false disables root noise for this search (PCR cheap search runs clean).
     void begin(const std::vector<int8_t>& state,
                std::unique_ptr<DecisionNode> reuse = nullptr,
-               int sims_override = -1, bool exploration = true, int turn_number = 0) {
+               int sims_override = -1, bool exploration = true, int turn_number = 0,
+               bool fast = false) {
         stats_ = MinMaxStats();
         sims_done_ = 0;
         sims_budget_ = (sims_override > 0) ? sims_override : cfg_.num_simulations;
         root_explore_ = exploration;
+        eff_root_puct_ = fast ? cfg_.fast_root_puct : cfg_.root_puct;
+        eff_non_root_gumbel_ = fast ? cfg_.fast_non_root_gumbel : cfg_.non_root_gumbel;
         turn_number_ = turn_number;
         if (reuse && reuse->expanded && !reuse->terminal && reuse->state == state) {
             // Adopt the reused subtree: no NN re-eval / re-expand / re-backup —
@@ -367,6 +384,10 @@ public:
     // A reused (already-expanded) root needs no NN eval; a fresh one does.
     bool root_needs_eval() const { return !root_->terminal && !root_->expanded; }
     const std::vector<int8_t>& root_state() const { return root_->state; }
+    // Effective algo chosen for the in-flight search (full vs fast/PCR), for tests
+    // / diagnostics: reflects whether begin() was called with fast=true.
+    bool eff_root_puct() const { return eff_root_puct_; }
+    bool eff_non_root_gumbel() const { return eff_non_root_gumbel_; }
     // Encoded root state for the deferred eval, with the stochastic root transform
     // applied (and remembered so apply_root_eval can undo it). Callers submit this
     // instead of encoding root_state() themselves.
@@ -511,12 +532,12 @@ private:
     }
 
     void setup_root(DecisionNode& root) {
-        if (cfg_.root_puct) setup_root_puct(root); else setup_gumbel(root);
+        if (eff_root_puct_) setup_root_puct(root); else setup_gumbel(root);
     }
 
     int next_root_action(DecisionNode& root, const MinMaxStats& stats) {
         if (active_.empty()) return -1;
-        if (cfg_.root_puct) return select_action(root, stats, /*is_root=*/true);
+        if (eff_root_puct_) return select_action(root, stats, /*is_root=*/true);
         const int m = static_cast<int>(active_.size());
         const int a = active_[rr_ % m];
         ++rr_; ++in_phase_;
@@ -587,7 +608,7 @@ private:
                          SearchOutput& out, bool use_lcb) {
         out.nn_policy = softmax4(root.logits);   // raw NN policy (pre-noise)
         out.nn_value = root.nn_value;
-        if (!cfg_.root_puct) {
+        if (!eff_root_puct_) {
             out.best_action = gumbel_best_action(root, stats);
             out.improved_policy = improved_policy(root, stats);
             return;
@@ -825,7 +846,7 @@ private:
 
     // Non-root descent dispatch (config NON_ROOT_SEARCH_ALGO).
     int select_nonroot(DecisionNode& node, const MinMaxStats& stats) {
-        return cfg_.non_root_gumbel ? select_action_gumbel(node, stats)
+        return eff_non_root_gumbel_ ? select_action_gumbel(node, stats)
                                     : select_action(node, stats);
     }
 
@@ -970,7 +991,7 @@ private:
     // No-op for the Gumbel root (which selects on logits, not priors) and when
     // both knobs are off. Temperature is interpolated early->late by turn.
     void apply_root_exploration(DecisionNode& root) {
-        const bool want_temp = cfg_.root_puct
+        const bool want_temp = eff_root_puct_
             && (cfg_.root_policy_temperature != 1.0f
                 || cfg_.root_policy_temperature_early != 1.0f);
         const bool want_noise = root_explore_ && cfg_.root_dirichlet_alpha > 0.0f;
@@ -1030,6 +1051,11 @@ private:
     int sims_done_ = 0;
     int sims_budget_ = 0;        // this search's sim cap (PCR cheap search reduces it)
     bool root_explore_ = true;   // root noise on for this search (off for PCR cheap)
+    // Effective root / non-root algo for THIS search: set by search()/begin() from
+    // either the full {root_puct,non_root_gumbel} or the fast/PCR
+    // {fast_root_puct,fast_non_root_gumbel} pair. All in-tree dispatch reads these.
+    bool eff_root_puct_ = false;
+    bool eff_non_root_gumbel_ = false;
     int turn_number_ = 0;        // move index (for early/late temperature interpolation)
     std::vector<DecisionNode*> pending_dec_;
     std::vector<ChanceNode*> pending_chance_;
