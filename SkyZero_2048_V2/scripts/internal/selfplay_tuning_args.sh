@@ -26,6 +26,8 @@ SP_TUNING_ARGS=(
     --non-root-algo "${NON_ROOT_SEARCH_ALGO:-puct}"
     --enable-tree-reuse "${ENABLE_TREE_REUSE:-0}"
     --root-algo "${ROOT_SEARCH_ALGO:-gumbel}"
+    --fast-root-algo "${FAST_ROOT_SEARCH_ALGO:-${ROOT_SEARCH_ALGO:-gumbel}}"
+    --fast-non-root-algo "${FAST_NON_ROOT_SEARCH_ALGO:-${NON_ROOT_SEARCH_ALGO:-puct}}"
     --root-fpu-reduction-max "${ROOT_FPU_REDUCTION_MAX:-0}"
     --root-desired-per-child-visits-coeff "${ROOT_DESIRED_PER_CHILD_VISITS_COEFF:-0}"
     --chosen-move-temperature "${CHOSEN_MOVE_TEMPERATURE:-0}"
